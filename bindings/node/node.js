@@ -9,6 +9,7 @@ const wasm = readFileSync(new URL('../../pkg/browser/stogas_verifier_bg.wasm', i
 initSync({ module: wasm });
 
 export { verify_bundle };
+export { StogasTransport } from '../browser/browser.js';
 
 export class Verifier {
 	#core;
@@ -19,6 +20,24 @@ export class Verifier {
 
 	verify_bundle(bundle) {
 		return this.#core.verify_bundle(bundle);
+	}
+
+	verify_response_proof(proof, requestBody, responseBody, e2eeTranscriptSHA256) {
+		return this.#core.verify_response_proof(proof, requestBody, responseBody, e2eeTranscriptSHA256);
+	}
+
+	verify_historical_response_proof(proof, requestBody, responseBody, ledger, e2eeTranscriptSHA256) {
+		return this.#core.verify_historical_response_proof(
+			proof,
+			requestBody,
+			responseBody,
+			ledger,
+			e2eeTranscriptSHA256
+		);
+	}
+
+	verify_node_ledger_record(ledger) {
+		return this.#core.verify_node_ledger_record(ledger);
 	}
 
 	free() {
