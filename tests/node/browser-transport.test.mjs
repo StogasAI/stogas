@@ -58,8 +58,6 @@ test('options are explicit and confidential fetch never falls through to ordinar
 		'https://e2ee.example/other'
 	])
 		assert.throws(() => new Transport({ baseURL }), /HTTPS/);
-	for (const ratchetBytes of [null, 0, 31, 33, 1153, 65536, 32.5, NaN, Infinity, '32'])
-		assert.throws(() => new Transport({ ratchetBytes }), /ratchetBytes/);
 	let calls = 0;
 	const transport = new Transport({
 		fetch: async () => {
@@ -88,7 +86,7 @@ test('options are explicit and confidential fetch never falls through to ordinar
 	assert.equal(calls, 0);
 	const options = transport.openAIOptions('secret');
 	assert.equal(options.baseURL, 'https://e2ee.example/v1');
-	assert.equal(options.maxRetries, 0);
+	assert.equal('maxRetries' in options, false);
 	assert.equal(options.fetch, transport.fetch);
 	await transport.close();
 	await assert.rejects(

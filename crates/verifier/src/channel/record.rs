@@ -17,13 +17,13 @@ pub const MAX_REQUEST_WIRE_BYTES: u64 = super::session::REQUEST_PREFIX_BYTES as 
     + MAX_RECORD_PLAINTEXT as u64
     + MAX_RECORDS * RECORD_OVERHEAD as u64
     + 2
-    + super::ratchet::MAX_HEADER_BYTES as u64;
+    + super::ratchet::HEADER_BYTES as u64;
 pub const MAX_RESPONSE_WIRE_BYTES: u64 = MAX_RESPONSE_BODY
     + MAX_RECORD_PLAINTEXT as u64
     + MAX_RECORDS * RECORD_OVERHEAD as u64
     + 2
-    + super::ratchet::MAX_HEADER_BYTES as u64;
-const KEY_DOMAIN: &[u8] = b"stogas.e2ee.record.v3\0";
+    + super::ratchet::HEADER_BYTES as u64;
+const KEY_DOMAIN: &[u8] = b"stogas.e2ee.record.v1\0";
 
 // One owner per direction. No Clone implementation: recreating encryption
 // counters under the same request key would reuse GCM nonces.
@@ -177,10 +177,7 @@ impl<C: Cipher> Records<C> {
                     .try_into()
                     .map_err(|_| Error::Record)?,
             ) as usize;
-            if !(super::ratchet::MIN_HEADER_BYTES..=super::ratchet::MAX_HEADER_BYTES)
-                .contains(&length)
-                || encoded.len() < 6 + length + 1
-            {
+            if length != super::ratchet::HEADER_BYTES || encoded.len() < 6 + length + 1 {
                 return Err(Error::Record);
             }
             Ok(6 + length)
@@ -407,15 +404,13 @@ fn key_material(
 }
 
 pub(super) fn start_header(encoded: &[u8]) -> Result<&[u8], Error> {
-    if encoded.len() < 6 + super::ratchet::MIN_HEADER_BYTES + 17
+    if encoded.len() < 6 + super::ratchet::HEADER_BYTES + 17
         || record_size(&encoded[..4])? != encoded.len()
     {
         return Err(Error::Record);
     }
     let length = u16::from_be_bytes([encoded[4], encoded[5]]) as usize;
-    if !(super::ratchet::MIN_HEADER_BYTES..=super::ratchet::MAX_HEADER_BYTES).contains(&length)
-        || encoded.len() < 6 + length + 17
-    {
+    if length != super::ratchet::HEADER_BYTES || encoded.len() < 6 + length + 17 {
         return Err(Error::Record);
     }
     Ok(&encoded[6..6 + length])

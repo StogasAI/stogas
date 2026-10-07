@@ -10,7 +10,6 @@ public sealed record TransportOptions
     [JsonPropertyName("environment")] public string Environment { get; init; } = "prod";
     [JsonPropertyName("security")] public string Security { get; init; } = "tls";
     [JsonPropertyName("max_connections")] public uint MaxConnections { get; init; } = 4;
-    [JsonPropertyName("ratchet_bytes")] public ushort RatchetBytes { get; init; } = 1152;
     [JsonPropertyName("base_url")] public string? BaseUrl { get; init; }
 }
 
@@ -19,7 +18,7 @@ public sealed class VerificationException(string message, string code) : Excepti
     public string Code { get; } = code;
 }
 
-/// <summary>A managed confidential transport. Use BaseUrl with an HTTP/OpenAI client with retries disabled.</summary>
+/// <summary>A managed confidential transport. Use BaseUrl with an HTTP/OpenAI client; the caller owns retry policy.</summary>
 public sealed class Transport : IDisposable
 {
     private readonly TransportHandle handle;

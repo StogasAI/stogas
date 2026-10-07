@@ -4,10 +4,20 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct SignedHardwarePolicy {
-    pub policy: HardwarePolicy,
+pub struct LoggedDocument<T> {
+    pub document: T,
     pub signature: StogasSignature,
     pub inclusion: Value,
+}
+
+pub type SignedHardwarePolicy = LoggedDocument<HardwarePolicy>;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseEvidence<T> {
+    pub document: T,
+    pub signature: StogasSignature,
+    pub provenance: Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -40,56 +50,46 @@ pub struct AmdTcb {
     pub tee: u8,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AllowedCatalog {
-    pub attested_builds: Vec<Value>,
-    pub manifest: CatalogReleaseManifest,
-    pub schema: String,
-    pub signature: StogasSignature,
-}
+pub type AllowedCatalog = ReleaseEvidence<CatalogReleaseManifest>;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogReleaseManifest {
-    #[serde(rename = "catalogSchema")]
-    pub catalog_schema: u16,
-    #[serde(rename = "minimumGatewaySequence")]
     pub minimum_gateway_sequence: u64,
-    pub public: String,
-    pub runtime: String,
+    pub artifacts: CatalogReleaseArtifacts,
     pub schema: String,
     pub sequence: u64,
-    pub source: CatalogSource,
+    pub source: ReleaseSource,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct CatalogSource {
+pub struct CatalogReleaseArtifacts {
+    #[serde(rename = "catalog.public.json")]
+    pub public: ReleaseArtifact,
+    #[serde(rename = "catalog.runtime.json")]
+    pub runtime: ReleaseArtifact,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseSource {
     pub commit: String,
     pub repository: String,
     pub tag: String,
     pub tree: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AllowedIgvm {
-    pub attested_builds: Vec<Value>,
-    pub manifest: GatewayReleaseManifest,
-    pub schema: String,
-    pub signature: StogasSignature,
-}
+pub type AllowedIgvm = ReleaseEvidence<GatewayReleaseManifest>;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GatewayReleaseManifest {
     pub artifacts: GatewayReleaseArtifacts,
     pub build: GatewayReleaseBuild,
-    pub git: GatewayReleaseGit,
+    pub source: ReleaseSource,
     pub schema: String,
     pub sequence: u64,
-    #[serde(rename = "sevSnp")]
     pub sev_snp: GatewayReleaseSevSnp,
 }
 
@@ -97,18 +97,18 @@ pub struct GatewayReleaseManifest {
 #[serde(deny_unknown_fields)]
 pub struct GatewayReleaseArtifacts {
     #[serde(rename = "gateway.igvm")]
-    pub gateway_igvm: GatewayReleaseArtifact,
+    pub gateway_igvm: ReleaseArtifact,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GatewayReleaseArtifact {
+#[serde(deny_unknown_fields)]
+pub struct ReleaseArtifact {
     pub sha256: String,
     pub size_bytes: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct GatewayReleaseBuild {
     pub environment: GatewayReleaseBuildEnvironment,
     pub go_vendor_tree_sha256: String,
@@ -125,7 +125,7 @@ pub struct GatewayReleaseBuild {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct GatewayReleaseBuildEnvironment {
     pub lc_all: String,
     pub source_date_epoch: String,
@@ -135,17 +135,6 @@ pub struct GatewayReleaseBuildEnvironment {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct GatewayReleaseGit {
-    pub commit: String,
-    #[serde(rename = "ref")]
-    pub git_ref: String,
-    pub repository: String,
-    pub tag: String,
-    pub tree: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewayReleaseSevSnp {
     pub check_kvm: bool,
     pub launch_measurement: String,
@@ -256,7 +245,9 @@ pub struct VerifiedCatalogRelease {
     pub minimum_gateway_sequence: u64,
     pub provenance: ReleaseProvenance,
     pub public_digest: String,
+    pub public_size_bytes: u64,
     pub runtime_digest: String,
+    pub runtime_size_bytes: u64,
     pub sequence: u64,
     pub source_commit: String,
     pub source_repository: String,

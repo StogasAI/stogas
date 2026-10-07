@@ -28,7 +28,6 @@ type TransportOptions struct {
 	Environment    string `json:"environment,omitempty"`
 	Security       string `json:"security,omitempty"`
 	MaxConnections uint64 `json:"max_connections,omitempty"`
-	RatchetBytes   uint16 `json:"ratchet_bytes,omitempty"`
 	BaseURL        string `json:"base_url,omitempty"`
 }
 
@@ -39,8 +38,12 @@ type Transport struct {
 	baseURL string
 }
 
-// NewTransport starts a managed transport and verifies the initial bundle before returning.
+// NewTransport constructs the managed transport. Verification occurs on first use,
+// before any credentials or content are released.
 func NewTransport(options TransportOptions) (*Transport, error) {
+	if err := checkNativeABI(); err != nil {
+		return nil, err
+	}
 	if options.Security == "" {
 		options.Security = "tls"
 	}

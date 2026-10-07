@@ -5,21 +5,18 @@ public struct TransportOptions: Encodable, Sendable {
     public var environment: String
     public var security: String
     public var maxConnections: UInt32
-    public var ratchetBytes: UInt16
     public var baseURL: String?
 
-    public init(environment: String = "prod", security: String = "tls", maxConnections: UInt32 = 4, ratchetBytes: UInt16 = 1152, baseURL: String? = nil) {
+    public init(environment: String = "prod", security: String = "tls", maxConnections: UInt32 = 4, baseURL: String? = nil) {
         self.environment = environment
         self.security = security
         self.maxConnections = maxConnections
-        self.ratchetBytes = ratchetBytes
         self.baseURL = baseURL
     }
 
     enum CodingKeys: String, CodingKey {
         case environment, security
         case maxConnections = "max_connections"
-        case ratchetBytes = "ratchet_bytes"
         case baseURL = "base_url"
     }
 }
@@ -32,7 +29,7 @@ public enum VerificationError: Error, Equatable {
 }
 
 /// A reusable confidential transport. Startup and refresh perform blocking setup work.
-/// Use its URL with an HTTP client with automatic retries and proxies disabled.
+/// Use its URL with an HTTP client; the caller owns retry policy and must bypass loopback proxies.
 public final class Transport: @unchecked Sendable {
     public let baseURL: URL
     private let lock = NSLock()

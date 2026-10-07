@@ -1,3 +1,12 @@
+// UI observers do not participate in request acceptance or verification.
+export function notifyRequestProgress(observer, phase) {
+	try {
+		observer?.(phase);
+	} catch {
+		/* Observer failures cannot replace transport results. */
+	}
+}
+
 export class TransportError extends Error {
 	constructor(message, submission, cause) {
 		super(message, { cause });

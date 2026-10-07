@@ -22,7 +22,8 @@ class ClientTest < Minitest::Test
         if status == 200
           assert_equal "example", request.call.id
         else
-          assert_raises(OpenAI::Errors::APIStatusError, &request)
+          failure = assert_raises(OpenAI::Errors::APIStatusError, &request)
+          assert_equal status, failure.status
         end
         assert_equal 1, calls.length
         assert_equal "/cap/v1/chat/completions", calls[0][0]

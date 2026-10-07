@@ -53,11 +53,15 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo clippy --locked --package stogas --all-targets --features staging -- -D warnings
       - run: cargo clippy --locked --package stogas-verifier --all-targets --no-default-features -- -D warnings
       - run: cargo clippy --locked --package stogas-verifier-ffi --all-targets --no-default-features --features staging -- -D warnings
 
   native:
     name: Native tests and language packages (${{ matrix.os }})
+    env:
+      # Exhaustive cryptographic fixtures keep debug assertions and overflow checks.
+      CARGO_PROFILE_TEST_OPT_LEVEL: '1'
     strategy:
       fail-fast: false
       matrix:
@@ -73,7 +77,7 @@ jobs:
           - os: windows-2025
             platform: windows-amd64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
@@ -85,6 +89,11 @@ jobs:
       - run: cargo test --locked --workspace --all-targets
       - name: Qualify the Rust OpenAI client example
         run: cargo test --locked --manifest-path examples/rust-openai/Cargo.toml
+      - name: Rust client through encrypted HTTP records
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --locked --manifest-path examples/rust-openai/Cargo.toml
+          python3 examples/check_http_client.py examples/rust-openai/target/debug/stogas-openai-example
       - name: Test compiled staging trust policy and transport
         run: cargo test --locked --package stogas-verifier --package stogas --all-targets --features staging
       - name: Test the verifier without optional SNP support
@@ -107,6 +116,9 @@ jobs:
         run: |
           python -m pip install -r examples/python-openai/requirements.txt
           python -m unittest discover -s examples/python-openai -v
+      - name: Python client through encrypted HTTP records
+        if: runner.os == 'Linux'
+        run: python examples/check_http_client.py python examples/python-openai/main.py
 
       - name: Build the staging Python wheel
         uses: PyO3/maturin-action@36db84001d74475ad1b8e6613557ae4ee2dc3598
@@ -162,12 +174,56 @@ jobs:
         env:
           DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
         run: swift test --package-path bindings/swift
-      - name: Swift static package on Linux
-        if: runner.os == 'Linux'
+  swift-linux:
+    name: Swift static package (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-amd64
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - run: cargo build --locked --package stogas-verifier-ffi
+      - run: python3 scripts/stage-native-bindings.py --platform ${{ matrix.platform }} --native-dir target/debug
+      - name: Test Swift static package
         run: >-
           docker run --rm -v "$PWD:/work" -w /work/bindings/swift
           swift@sha256:9bea530093ffff8cf6c259991715ee843fe4d0f932e612f7f4b79cca6e00db87
           swift test -j 4
+
+  python-frameworks:
+    name: Python AI frameworks over HTTP and E2EE
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - run: python -m pip install -r tests/clients/python/requirements.txt
+      - name: Status errors, supported headers, completion and broken streams
+        run: |
+          for client in langchain llamaindex litellm pydantic-ai; do
+            python examples/check_http_client.py --typed-status --unary python tests/clients/python/client.py "$client" --unary
+            python examples/check_http_client.py --typed-status python tests/clients/python/client.py "$client"
+          done
 
   http-clients:
     name: Documented native HTTP clients
@@ -330,6 +386,11 @@ jobs:
         env:
           CGO_ENABLED: '1'
         run: go test -race ./...
+      - name: Go client through encrypted HTTP records
+        if: runner.os == 'Linux'
+        run: |
+          go -C examples/go-openai build -o "$RUNNER_TEMP/stogas-go-client" .
+          python3 examples/check_http_client.py "$RUNNER_TEMP/stogas-go-client"
       - run: |
           cargo build --locked --package stogas-verifier-ffi --features staging
           mkdir -p "go/native/${{ matrix.platform }}"
@@ -357,9 +418,13 @@ jobs:
         run: go test -tags staging,stogas_offline,netgo,osusergo -ldflags='-linkmode=external -extldflags "-static -Wl,--gc-sections,--build-id=none"' ./...
 
   additional-languages:
-    name: Native examples and supervised clients
+    name: Native examples (${{ matrix.language }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [php, luajit, dart, julia, beam, haskell, ocaml, zig]
     env:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
     steps:
@@ -375,12 +440,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libcurl4-openssl-dev
       - name: Qualify the PHP native bridge and OpenAI client
+        if: matrix.language == 'php'
         run: |
           sudo apt-get install -y --no-install-recommends php-cli php-curl php-xml php-mbstring composer
           composer install --no-interaction --no-plugins --no-scripts --working-dir=examples/php-openai
           php -d ffi.enable=true examples/php-openai/test_transport.php "$PWD/target/${{ env.CARGO_BUILD_TARGET }}/debug/libstogas_verifier_ffi.so"
           python3 examples/check_http_client.py php examples/php-openai/main.php
       - name: Qualify the LuaJIT native bridge and HTTP client
+        if: matrix.language == 'luajit'
         run: |
           sudo apt-get install -y --no-install-recommends luajit libluajit-5.1-dev lua-cjson luarocks
           sudo luarocks --lua-version=5.1 install Lua-cURL 0.3.13-1 LUA_INCDIR=/usr/include/luajit-2.1 \
@@ -390,9 +457,11 @@ jobs:
           python3 examples/check_http_client.py --unary luajit examples/luajit-http/main.lua --no-stream
           python3 examples/check_http_client.py --cancel luajit examples/luajit-http/main.lua
       - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d
+        if: matrix.language == 'dart'
         with:
           sdk: '3.13.4'
       - name: Qualify the Dart native bridge and OpenAI client
+        if: matrix.language == 'dart'
         run: |
           (cd examples/dart-openai && dart pub get --enforce-lockfile && dart analyze)
           dart run examples/dart-openai/test_transport.dart "$PWD/target/${{ env.CARGO_BUILD_TARGET }}/debug/libstogas_verifier_ffi.so"
@@ -400,9 +469,11 @@ jobs:
           python3 examples/check_http_client.py --unary dart run examples/dart-openai/main.dart --no-stream
           python3 examples/check_http_client.py --cancel dart run examples/dart-openai/main.dart
       - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9
+        if: matrix.language == 'julia'
         with:
           version: '1.13.0'
       - name: Qualify the Julia native bridge and OpenAI/HTTP clients
+        if: matrix.language == 'julia'
         run: |
           julia --project=examples/julia-openai -e 'using Pkg; Pkg.instantiate()'
           julia --project=examples/julia-openai examples/julia-openai/test_transport.jl "$PWD/target/${{ env.CARGO_BUILD_TARGET }}/debug/libstogas_verifier_ffi.so"
@@ -410,11 +481,13 @@ jobs:
           python3 examples/check_http_client.py --unary julia --project=examples/julia-openai examples/julia-openai/main.jl --no-stream
           python3 examples/check_http_client.py --cancel julia --project=examples/julia-openai examples/julia-openai/main.jl
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+        if: matrix.language == 'beam'
         with:
           otp-version: '27.3.4.6'
           elixir-version: '1.18.3'
           rebar3-version: '3.26.0'
       - name: Qualify the Elixir OpenAI client and supervised verifier
+        if: matrix.language == 'beam'
         run: |
           cd examples/elixir-openai
           mix deps.get --check-locked
@@ -424,6 +497,7 @@ jobs:
           python3 ../check_http_client.py mix run main.exs
           python3 ../check_http_client.py --unary mix run main.exs --no-stream
       - name: Qualify the Erlang HTTP client and supervised verifier
+        if: matrix.language == 'beam'
         working-directory: examples/erlang-http
         run: |
           rebar3 escriptize
@@ -431,10 +505,12 @@ jobs:
           python3 ../check_http_client.py --sse-framing _build/default/bin/stogas-example
           python3 ../check_http_client.py --unary _build/default/bin/stogas-example --no-stream
       - uses: haskell-actions/setup@7fd2bb5ca789761088fbc831406b2910e47e56f1
+        if: matrix.language == 'haskell'
         with:
           ghc-version: '9.10.3'
           cabal-version: '3.12.1.0'
       - name: Qualify the Haskell native bridge and HTTP client
+        if: matrix.language == 'haskell'
         working-directory: examples/haskell-http
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/target/${{ env.CARGO_BUILD_TARGET }}/debug"
@@ -446,9 +522,11 @@ jobs:
           python3 ../check_http_client.py --unary "$stogas_example_binary" --no-stream
           python3 ../check_http_client.py --cancel "$stogas_example_binary"
       - uses: ocaml/setup-ocaml@93303b622b2522e4411e295f9e77411a24912ac7
+        if: matrix.language == 'ocaml'
         with:
           ocaml-compiler: '5.4.0'
       - name: Qualify the OCaml native bridge and HTTP client
+        if: matrix.language == 'ocaml'
         working-directory: examples/ocaml-http
         run: |
           opam install . --deps-only --yes
@@ -458,9 +536,11 @@ jobs:
           opam exec -- python3 ../check_http_client.py --unary _build/default/main.exe --no-stream
           opam exec -- python3 ../check_http_client.py --cancel _build/default/main.exe
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        if: matrix.language == 'zig'
         with:
           version: '0.16.0'
       - name: Qualify the Zig native bridge and HTTP client
+        if: matrix.language == 'zig'
         run: |
           export LD_LIBRARY_PATH="$PWD/target/${{ env.CARGO_BUILD_TARGET }}/debug"
           zig test examples/zig-http/test_native.zig -Iinclude -L"$LD_LIBRARY_PATH" -lstogas_verifier_ffi -lcurl -lc
@@ -528,7 +608,15 @@ jobs:
       - name: Verify with every browser network request blocked
         run: npm run test:browser
       - name: Verify the Node package entrypoint
-        run: npm run test:node
+        run: |
+          npm run test:node
+          node tests/clients/fetch-load.mjs
+      - name: Verify Bun and Deno Fetch clients
+        run: |
+          npx --yes --package bun@1.4.2 bun test tests/node
+          npx --yes --package bun@1.4.2 bun tests/clients/fetch-load.mjs
+          npx --yes --package deno@2.9.6 deno test --allow-all --no-check tests/node/*.test.mjs
+          npx --yes --package deno@2.9.6 deno run --allow-all tests/clients/fetch-load.mjs
       - name: Verify the Worker package in workerd
         run: npm run test:worker
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e

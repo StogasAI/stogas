@@ -87,12 +87,20 @@ pub struct BootRecord {
     pub report_data: BootReportData,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct BootPublication {
+    pub schema: String,
+    pub boot: BootRecord,
+    pub evidence_sha256: String,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BootInclusion {
     evidence_sha256: String,
     signature: crate::StogasSignature,
-    rekor: serde_json::Value,
+    inclusion: serde_json::Value,
 }
 
 /// Compact facts for an authority's verified registration database. Deserialization
@@ -280,9 +288,11 @@ impl Snapshot {
             .ok_or(Error::Approval(crate::approvals::Error::NotApproved(
                 "gateway",
             )))?;
-        crate::appraise_hardware(&self.hardware_evidence.policy, &facts.chip_id, |profile| {
-            facts.hardware.appraise(profile, &facts.node_id)
-        })
+        crate::appraise_hardware(
+            &self.hardware_evidence.document,
+            &facts.chip_id,
+            |profile| facts.hardware.appraise(profile, &facts.node_id),
+        )
         .map_err(invalid)?;
         self.collateral_validity(&facts.chip_id, &facts.hardware.reported_tcb(), now_unix_ms)?;
         Ok(())
@@ -363,7 +373,12 @@ impl Snapshot {
             .chain(&keys.retired_keys)
             .find(|key| key.key_id == proof.signature.key_id)
             .ok_or(Error::Approval(crate::approvals::Error::InactiveKey))?;
-        let publication = serde_json::json!({"schema":BOOT_PUBLICATION_SCHEMA, "boot":record, "evidence_sha256":proof.evidence_sha256});
+        let publication = serde_json::to_value(BootPublication {
+            schema: BOOT_PUBLICATION_SCHEMA.into(),
+            boot: record.clone(),
+            evidence_sha256: proof.evidence_sha256,
+        })
+        .map_err(invalid)?;
         crate::approvals::verify_signature(
             &publication,
             &proof.signature,
@@ -373,8 +388,7 @@ impl Snapshot {
         let integrated = crate::approvals::verify_document_inclusion(
             &publication,
             &proof.signature,
-            &proof.rekor,
-            signer,
+            &proof.inclusion,
             now_unix_ms,
         )?;
         let identity = self.verify_boot_report(document, record, now_unix_ms)?;

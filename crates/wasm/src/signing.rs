@@ -140,17 +140,12 @@ pub fn prepare_rekor_submission_with_seed(
 pub fn verify_rekor_document_inclusion(
     bundle: &[u8],
     signed_document: &[u8],
-    submission_key_spki: &[u8],
     now_unix_ms: f64,
 ) -> Result<f64, JsError> {
     let now = super::parse_unix_ms(now_unix_ms, "now_unix_ms")?;
-    let time = stogas_offline_sigstore::verify_rekor_document_inclusion(
-        bundle,
-        signed_document,
-        submission_key_spki,
-        now,
-    )
-    .map_err(|error| JsError::new(&error.to_string()))?;
+    let time =
+        stogas_offline_sigstore::verify_rekor_document_inclusion(bundle, signed_document, now)
+            .map_err(|error| JsError::new(&error.to_string()))?;
     // A verified seconds value is bounded by the safe-integer millisecond input above.
     #[allow(clippy::cast_precision_loss)]
     Ok(time as f64)

@@ -6,7 +6,7 @@ use sha2::{Digest as _, Sha256};
 use std::{
     io::Read as _,
     path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use stogas::SecurityMode;
 use stogas_verifier::{
@@ -46,7 +46,6 @@ struct ServeCommandInput {
     upstream: Option<String>,
     listen: String,
     max_connections: usize,
-    ratchet_bytes: u16,
     security: SecurityMode,
     browser_origin: Option<String>,
     exit_on_stdin_close: bool,
@@ -59,6 +58,19 @@ fn parse_environment(value: &str) -> Result<stogas::Environment, String> {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Check fresh session verification and gateway admission without a provider call.
+    Probe {
+        #[arg(long, default_value = "prod", value_parser = parse_environment)]
+        environment: stogas::Environment,
+        /// Optional HTTPS API origin; the environment's evidence roots remain fixed.
+        #[arg(long)]
+        upstream: Option<String>,
+        #[arg(long, value_enum, default_value = "tls")]
+        security: SecurityMode,
+        /// Total evidence, session setup and response deadline in milliseconds.
+        #[arg(long, default_value_t = 8_000)]
+        timeout_ms: u32,
+    },
     /// Generate an organization encryption key locally; print only its public identifier.
     EncryptionKey {
         #[arg(long)]
@@ -131,9 +143,6 @@ enum Command {
         /// Maximum reusable channels, opened lazily.
         #[arg(long, default_value_t = 4)]
         max_connections: usize,
-        /// Maximum ML-KEM payload per E2EE message; even, 32 through 1152.
-        #[arg(long, default_value_t = 1152)]
-        ratchet_bytes: u16,
         #[arg(long, value_enum, default_value = "tls")]
         security: SecurityMode,
         /// Allow one browser origin to use the capability-protected local endpoint.
@@ -148,6 +157,27 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::Probe {
+            environment,
+            upstream,
+            security,
+            timeout_ms,
+        } => {
+            let report = stogas::probe::check(
+                &stogas::TransportOptions {
+                    environment,
+                    security,
+                    base_url: upstream,
+                    max_connections: 1,
+                },
+                Duration::from_millis(u64::from(timeout_ms)),
+            )
+            .await?;
+            println!("{}", serde_json::to_string(&report)?);
+            if !report.ready {
+                std::process::exit(1);
+            }
+        }
         Command::EncryptionKey { output } => customer_encryption::generate(&output)?,
         Command::Encrypt {
             key_file,
@@ -199,7 +229,6 @@ async fn main() -> Result<()> {
             upstream,
             listen,
             max_connections,
-            ratchet_bytes,
             security,
             browser_origin,
             exit_on_stdin_close,
@@ -209,7 +238,6 @@ async fn main() -> Result<()> {
                 upstream,
                 listen,
                 max_connections,
-                ratchet_bytes,
                 security,
                 browser_origin,
                 exit_on_stdin_close,
@@ -246,7 +274,6 @@ async fn run_serve(input: ServeCommandInput) -> Result<()> {
             environment: input.environment,
             security: input.security,
             max_connections: input.max_connections,
-            ratchet_bytes: input.ratchet_bytes,
             base_url: input.upstream,
         },
         listen: input.listen,

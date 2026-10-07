@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 #[derive(Clone, Debug)]
 pub struct VerifiedKeys {
-    pub(super) manifest: KeyManifest,
+    pub(super) document: KeyManifest,
     pub(super) digest: String,
 }
 
@@ -21,13 +21,13 @@ impl KeyState {
     pub(super) fn learn(&self, keys: VerifiedKeys) -> Result<(), Error> {
         let mut state = self.0.lock().map_err(invalid)?;
         if let Some(previous) = state.as_mut() {
-            if keys.manifest.generation == previous.keys.manifest.generation
+            if keys.document.generation == previous.keys.document.generation
                 && keys.digest != previous.keys.digest
             {
                 previous.conflicting = true;
                 return Err(Error::Equivocation);
             }
-            check(previous, &keys.manifest, &keys.digest)?;
+            check(previous, &keys.document, &keys.digest)?;
         }
         *state = Some(Learned {
             keys,
@@ -50,15 +50,14 @@ impl KeyState {
         if learned.conflicting {
             return Err(Error::Equivocation);
         }
-        if keys.generation != learned.keys.manifest.generation {
-            let current = &learned.keys.manifest;
+        if keys.generation != learned.keys.document.generation {
+            let current = &learned.keys.document;
             // A root renewal with unchanged keys may arrive before its complete
             // approval package. Keep existing work eligible until its original
-            // deadline; never accept the older manifest as a new candidate.
+            // deadline; never accept the older document as a new candidate.
             if keys.generation > current.generation
-                || keys.active_key != current.active_key
-                || keys.retired_keys != current.retired_keys
-                || keys.expires_at >= current.expires_at
+                || !keys.active_key.same_signer(&current.active_key)
+                || keys.expires_at > current.expires_at
             {
                 return Err(Error::Rollback);
             }
@@ -69,23 +68,13 @@ impl KeyState {
 }
 
 fn check(previous: &Learned, keys: &KeyManifest, digest: &str) -> Result<(), Error> {
-    let old = &previous.keys.manifest;
+    let old = &previous.keys.document;
     if keys.generation < old.generation {
         return Err(Error::Rollback);
     }
-    if keys.generation == old.generation {
-        if previous.conflicting || digest != previous.keys.digest {
-            return Err(Error::Equivocation);
-        }
-    } else {
-        for retired in &old.retired_keys {
-            if !keys.retired_keys.contains(retired) {
-                return Err(Error::RetiredKey);
-            }
-        }
-        if keys.active_key != old.active_key && !keys.retired_keys.contains(&old.active_key) {
-            return Err(Error::RetiredKey);
-        }
+    if keys.generation == old.generation && (previous.conflicting || digest != previous.keys.digest)
+    {
+        return Err(Error::Equivocation);
     }
     Ok(())
 }
@@ -101,26 +90,27 @@ mod tests {
         ))
         .unwrap();
         let original = VerifiedKeys {
-            manifest: serde_json::from_value(vector["key_manifest"].clone()).unwrap(),
+            document: serde_json::from_value(vector["key_manifest"].clone()).unwrap(),
             digest: vector["key_manifest_sha256"].as_str().unwrap().into(),
         };
         let state = KeyState::default();
         state.learn(original.clone()).unwrap();
         let mut renewal = original.clone();
-        renewal.manifest.generation += 1;
-        renewal.manifest.expires_at = "2100-02-01T00:00:00Z".into();
+        renewal.document.generation += 1;
+        renewal.document.expires_at = "2100-02-01T00:00:00Z".into();
+        renewal.document.active_key.rekor_public_key = "different publisher metadata".into();
         renewal.digest = "authenticated renewal".into();
         state.learn(renewal.clone()).unwrap();
-        state.require_current(&original.manifest).unwrap();
+        state.require_current(&original.document).unwrap();
         assert_eq!(state.learn(original.clone()).unwrap_err(), Error::Rollback);
 
         let mut shortened = renewal;
-        shortened.manifest.generation += 1;
-        shortened.manifest.expires_at = "2099-12-31T00:00:00Z".into();
+        shortened.document.generation += 1;
+        shortened.document.expires_at = "2099-12-31T00:00:00Z".into();
         shortened.digest = "authenticated earlier deadline".into();
         state.learn(shortened).unwrap();
         assert_eq!(
-            state.require_current(&original.manifest).unwrap_err(),
+            state.require_current(&original.document).unwrap_err(),
             Error::Rollback
         );
     }
@@ -131,9 +121,9 @@ mod tests {
             "../../../../tests/fixtures/approval-decisions.json"
         ))
         .unwrap();
-        let manifest: KeyManifest = serde_json::from_value(vector["key_manifest"].clone()).unwrap();
+        let document: KeyManifest = serde_json::from_value(vector["key_manifest"].clone()).unwrap();
         let original = VerifiedKeys {
-            manifest,
+            document,
             digest: vector["key_manifest_sha256"].as_str().unwrap().into(),
         };
         let state = KeyState::default();
@@ -142,7 +132,7 @@ mod tests {
         conflicting.digest = "different authenticated decision".into();
         assert_eq!(state.learn(conflicting).unwrap_err(), Error::Equivocation);
         assert_eq!(
-            state.require_current(&original.manifest).unwrap_err(),
+            state.require_current(&original.document).unwrap_err(),
             Error::Equivocation
         );
         assert_eq!(
@@ -150,14 +140,11 @@ mod tests {
             Error::Equivocation
         );
         let mut recovery = original.clone();
-        recovery.manifest.generation += 1;
+        recovery.document.generation += 1;
         recovery.digest = "later authenticated root decision".into();
         state.learn(recovery.clone()).unwrap();
-        state.require_current(&recovery.manifest).unwrap();
-        assert_eq!(
-            state.require_current(&original.manifest).unwrap_err(),
-            Error::Rollback
-        );
+        state.require_current(&recovery.document).unwrap();
+        state.require_current(&original.document).unwrap();
         assert_eq!(state.learn(original).unwrap_err(), Error::Rollback);
     }
 }

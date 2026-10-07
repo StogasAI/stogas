@@ -60,6 +60,10 @@ function stream_chat(base, key, model)
             end
             completed && isempty(line) && isempty(data) && !expired[] || error("Incomplete stream")
             HTTP.closeread(stream)
+        catch
+            # Do not let HTTP.open drain an unfinished persistent response on cancellation.
+            close(stream)
+            rethrow()
         finally
             close(timer)
         end

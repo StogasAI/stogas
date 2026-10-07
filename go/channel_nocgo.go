@@ -9,10 +9,10 @@ type ChannelSession struct{}
 type ChannelReader struct{}
 type ChannelWriter struct{}
 
-func GenerateChannelKey() (private, public [32]byte, err error) {
+func GenerateChannelKey() (private [32]byte, public [ChannelPublicKeyBytes]byte, err error) {
 	return private, public, ErrNativeLibraryUnavailable
 }
-func NewChannelSession(root, id, initialPrivate [32]byte, ratchetBytes uint16) (*ChannelSession, error) {
+func NewChannelSession(root, id, initialPrivate [32]byte) (*ChannelSession, error) {
 	clear(root[:])
 	clear(initialPrivate[:])
 	return nil, ErrNativeLibraryUnavailable

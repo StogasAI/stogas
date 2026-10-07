@@ -1,4 +1,4 @@
-//! Offline verification of the narrow GitHub Actions Sigstore profile used by Stogas.
+//! Offline verification of GitHub build attestations and Stogas document publication.
 
 mod crypto;
 mod hashedrekord;
@@ -73,39 +73,11 @@ pub struct VerifiedAttestation {
     pub subjects: Vec<(String, String)>,
 }
 
-/// Verify one public-key DSSE signature and its public Rekor v1 inclusion proof.
-///
-/// The public key is selected by the caller's local policy. Rekor proves publication time and
-/// inclusion; it does not select or authorize the Stogas signing key.
-///
-/// # Errors
-///
-/// Returns an error when the DSSE signature, key identity, Rekor entry, checkpoint, inclusion
-/// proof, or authenticated time is invalid.
-pub fn verify_keyed_dsse(
-    bundle: &Value,
-    expected_payload: &[u8],
-    expected_payload_type: &str,
-    expected_key_id: &str,
-    public_key_spki: &[u8],
-    now_unix_ms: i64,
-) -> Result<i64, Error> {
-    sigstore::verify_keyed_dsse(
-        bundle,
-        expected_payload,
-        expected_payload_type,
-        expected_key_id,
-        public_key_spki,
-        now_unix_ms,
-    )
-    .map_err(Error::Cryptographic)
-}
-
 /// Verify publication of exact artifact bytes through Rekor's SHA-512/Ed25519ph profile.
 ///
-/// The caller supplies the expected submission key from its authenticated policy.
-/// This proves log inclusion, submission identity and time, **not** the artifact's
-/// author or approval. Separately authenticate the artifact with its trusted signing
+/// The entry's submission key authenticates its Rekor envelope, not the artifact's
+/// author or approval. This proves exact log inclusion and time without requiring a
+/// designated publisher. Separately authenticate the artifact with its trusted signing
 /// policy, including any post-quantum signature.
 ///
 /// # Errors
@@ -113,7 +85,6 @@ pub fn verify_keyed_dsse(
 pub fn verify_rekor_document_inclusion(
     bundle: &[u8],
     artifact: &[u8],
-    submission_key_spki: &[u8],
     now_unix_ms: i64,
 ) -> Result<i64, Error> {
     if bundle.len() > MAX_BUNDLE_BYTES || artifact.len() > MAX_DOCUMENT_BYTES {
@@ -121,8 +92,7 @@ pub fn verify_rekor_document_inclusion(
     }
     let value =
         strict_json::from_slice(bundle).map_err(|error| Error::InvalidBundle(error.to_string()))?;
-    hashedrekord::verify(&value, artifact, submission_key_spki, now_unix_ms)
-        .map_err(Error::Cryptographic)
+    hashedrekord::verify(&value, artifact, now_unix_ms).map_err(Error::Cryptographic)
 }
 
 /// Offline Sigstore verification failure.

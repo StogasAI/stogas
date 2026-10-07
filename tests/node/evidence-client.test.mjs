@@ -167,3 +167,126 @@ test('closing during acquisition cancels network work before freeing the verifie
 	assert.equal(core.freed, true);
 	client.close();
 });
+
+test('measured checks follow actual verification and observer failures cannot reject evidence', async () => {
+	const core = verifier();
+	const refresh = core.refresh.bind(core);
+	core.refresh = (bytes, observe) => {
+		observe({ step: 'signing_manifest', reference: null, cached: false });
+		const snapshot = refresh(bytes);
+		observe({ step: 'accepted', reference: null, cached: false });
+		return snapshot;
+	};
+	const progress = [];
+	let snapshot;
+	const client = new EvidenceClient(
+		core,
+		origins,
+		async () => response(7),
+		(value) => {
+			snapshot = value;
+		},
+		(checks) => {
+			progress.push(checks);
+			throw new Error('display failed');
+		}
+	);
+	assert.deepEqual(await client.acquire(), { revision: 7 });
+	assert.deepEqual(
+		progress.map((checks) => checks.length),
+		[1, 2]
+	);
+	assert.deepEqual(
+		snapshot.verificationChecks.map((check) => check.step),
+		['signing_manifest', 'accepted']
+	);
+	assert.ok(
+		snapshot.verificationChecks.every(
+			(check) => Number.isFinite(check.durationMs) && check.durationMs >= 0
+		)
+	);
+	assert.ok(
+		snapshot.verificationDurationMs >=
+			snapshot.verificationChecks.reduce((total, check) => total + check.durationMs, 0)
+	);
+	client.close();
+});
+
+test('fetch and verification timings include fallback work but exclude observers on warm refresh', async (t) => {
+	let now = 0;
+	t.mock.method(performance, 'now', () => now);
+	const core = verifier();
+	const refresh = core.refresh.bind(core);
+	let warm = false;
+	core.refresh = (bytes, observe) => {
+		now += warm ? 3 : 12;
+		observe({ step: 'gateway_release', reference: 'release', cached: warm });
+		return refresh(bytes);
+	};
+	const snapshots = [];
+	const client = new EvidenceClient(
+		core,
+		origins,
+		async (url, options) => {
+			now += 20;
+			if (url === origins[0]) return response(1, undefined, { invalid: true });
+			if (warm) {
+				assert.equal(options.headers['if-none-match'], 'accepted');
+				return new Response(null, { status: 304 });
+			}
+			return response(2, 'accepted');
+		},
+		(snapshot) => snapshots.push(snapshot),
+		() => {
+			now += 100;
+		}
+	);
+	await client.acquire();
+	assert.equal(snapshots[0].fetchDurationMs, 40);
+	assert.equal(snapshots[0].verificationDurationMs, 24);
+	assert.equal(snapshots[0].verificationChecks[0].durationMs, 12);
+	warm = true;
+	await client.acquire();
+	assert.equal(snapshots[1].fetchDurationMs, 40);
+	assert.equal(snapshots[1].verificationDurationMs, 6);
+	assert.equal(snapshots[1].verificationChecks[0].cached, true);
+	assert.equal(snapshots[1].verificationChecks[0].durationMs, 3);
+	client.close();
+});
+
+test('failed candidate progress clears before replica verification without replacing accepted evidence', async () => {
+	const core = verifier();
+	const refresh = core.refresh.bind(core);
+	core.refresh = (bytes, observe) => {
+		observe({ step: 'decode', reference: null, cached: false });
+		const snapshot = refresh(bytes);
+		observe({ step: 'accepted', reference: null, cached: false });
+		return snapshot;
+	};
+	const progress = [];
+	const accepted = [];
+	const retained = [];
+	let invalid = false;
+	const client = new EvidenceClient(
+		core,
+		origins,
+		async (url) => response(7, undefined, { invalid: invalid && url === origins[0] }),
+		(snapshot) => accepted.push(snapshot),
+		(checks) => {
+			progress.push(checks?.map((check) => check.step) ?? null);
+			if (checks === null) retained.push(client.check((current) => current.summary()));
+		}
+	);
+	await client.acquire();
+	progress.length = 0;
+	invalid = true;
+	await client.acquire();
+	assert.deepEqual(progress, [['decode'], null, ['decode'], ['decode', 'accepted']]);
+	assert.equal(accepted.length, 2);
+	assert.deepEqual(retained, [{ revision: 7 }]);
+	assert.deepEqual(
+		accepted[1].verificationChecks.map((check) => check.step),
+		['decode', 'accepted']
+	);
+	client.close();
+});

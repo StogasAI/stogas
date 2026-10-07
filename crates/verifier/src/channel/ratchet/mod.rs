@@ -1,19 +1,54 @@
-//! Independent implementation of the public-domain Double, Sparse Post-Quantum
-//! and Triple Ratchet specifications. This is not Signal's implementation.
+//! Double Ratchet with encrypted headers and full X448 + ML-KEM-768 turns.
+//!
+//! State transitions follow PQ2HE; the wire encoding and domain-separated KDFs
+//! are Stogas-specific. No sparse KEM fragments or protocol negotiation.
 
 use super::Error;
+use hkdf::Hkdf;
+use sha2_v11::Sha512;
+use zeroize::Zeroizing;
 
-mod braid;
-mod double;
-mod erasure;
-mod hybrid;
-mod kem;
+mod header;
+mod keys;
 mod peer;
 
-pub use hybrid::{InitialKey, MAX_HEADER_BYTES, MIN_HEADER_BYTES, Peer};
-pub use peer::{MAX_SKIPPED_KEYS, SKIPPED_KEY_LIFETIME_MS, SendKey};
+pub use header::HEADER_BYTES;
+pub use keys::PUBLIC_KEY_BYTES;
+pub use peer::{InitialKey, Peer, SendKey};
 
-const MAX_PIECE: usize = ChunkSize::FULL.0 as usize;
+// These are one bound: outstanding starts, replay distance, and retained keys.
+pub const MAX_SKIPPED_KEYS: usize = 256;
+pub const SKIPPED_KEY_LIFETIME_MS: u64 = 60_000;
+const PROTOCOL: &[u8] = b"stogas.e2ee.pqdr.v1_X448_MLKEM768_HKDFSHA512_AES256GCM";
+type Secret = Zeroizing<[u8; 32]>;
+
+fn expand<const N: usize>(salt: Option<&[u8]>, input: &[u8], label: &[u8]) -> Zeroizing<[u8; N]> {
+    let mut output = Zeroizing::new([0; N]);
+    Hkdf::<Sha512>::new(salt, input)
+        .expand_multi_info(&[PROTOCOL, label], output.as_mut())
+        .expect("fixed HKDF outputs are within SHA-512 bounds");
+    output
+}
+
+fn secret(bytes: &[u8]) -> Secret {
+    let mut result = Zeroizing::new([0; 32]);
+    result.copy_from_slice(bytes);
+    result
+}
+
+// Growing vectors and tree nodes move their values without erasing old slots.
+// Container-held secrets need fixed allocations; only their pointers may move.
+type HeapSecret = Box<Zeroizing<[u8; 32]>>;
+
+#[expect(
+    clippy::unnecessary_box_returns,
+    reason = "The fixed heap allocation prevents container moves from copying secret bytes."
+)]
+fn heap_secret(secret: &[u8; 32]) -> HeapSecret {
+    let mut owned = Box::new(Zeroizing::new([0; 32]));
+    owned.copy_from_slice(secret);
+    owned
+}
 
 // Admission deadlines apply to delayed request starts. Response keys belong
 // to outstanding request owners, which can legitimately wait much longer.
@@ -29,36 +64,5 @@ impl Retention {
             Self::Timed => Some(now.saturating_add(SKIPPED_KEY_LIFETIME_MS)),
             Self::Owned => None,
         }
-    }
-}
-
-/// Maximum KEM payload in one recovery message. The full profile sends each
-/// available piece at once. Smaller chunks trade bandwidth for recovery speed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ChunkSize(u16);
-
-impl ChunkSize {
-    pub const FULL: Self = Self(1152);
-
-    /// # Errors
-    /// Requires an even width from 32 through 1152 bytes. The minimum preserves
-    /// the published 32-byte profile's bound of at most 36 erasure symbols.
-    pub const fn new(bytes: u16) -> Result<Self, Error> {
-        if bytes < 32 || bytes > Self::FULL.0 || !bytes.is_multiple_of(2) {
-            Err(Error::Limit)
-        } else {
-            Ok(Self(bytes))
-        }
-    }
-
-    #[must_use]
-    pub const fn get(self) -> u16 {
-        self.0
-    }
-}
-
-impl Default for ChunkSize {
-    fn default() -> Self {
-        Self::FULL
     }
 }

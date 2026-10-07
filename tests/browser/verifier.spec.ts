@@ -118,14 +118,17 @@ test('browser boot history remains offline and separate from current evidence', 
 	const fixture = JSON.parse(
 		await readFile(resolve(ROOT, 'tests/fixtures/hardware-session-v1.json'), 'utf8')
 	);
-	const evidence = Buffer.from(fixture.e2ee.response, 'base64url').subarray(1198);
-	const start = 1186 + evidence.readUInt16BE(1184);
-	const boot = evidence.subarray(start + 4, start + 4 + evidence.readUInt32BE(start));
-	const proofStart = start + 4 + boot.length;
+	const registration = JSON.parse(
+		await readFile(resolve(ROOT, 'tests/fixtures/hardware-registration-v1.json'), 'utf8')
+	);
 	const archive = {
-		boot: JSON.parse(boot.toString()),
-		inclusion: JSON.parse(evidence.subarray(proofStart + 4).toString()),
-		evidence_sha256: fixture.bundle.body_sha256
+		document: {
+			schema: 'stogas.node-registration.v1',
+			boot: registration.boot,
+			evidence_sha256: registration.inclusion.evidence_sha256
+		},
+		signature: registration.inclusion.signature,
+		inclusion: registration.inclusion.inclusion
 	};
 	const result = await page.evaluate(
 		({ fixture, archive }) => {
@@ -144,7 +147,7 @@ test('browser boot history remains offline and separate from current evidence', 
 			Date.now = () => fixture.verified_at_ms + 366 * 24 * 60 * 60 * 1000;
 			try {
 				const verified = core.verify_boot_archive(encode(archive), encode(fixture.bundle));
-				archive.evidence_sha256 = '0'.repeat(64);
+				archive.document.evidence_sha256 = '0'.repeat(64);
 				let rejected = false;
 				try {
 					core.verify_boot_archive(encode(archive), encode(fixture.bundle));
@@ -160,7 +163,9 @@ test('browser boot history remains offline and separate from current evidence', 
 		{ fixture, archive }
 	);
 	expect(result).toEqual({
-		digest: createHash('sha256').update(boot).digest('hex'),
+		digest: JSON.parse(
+			await readFile(resolve(ROOT, 'tests/fixtures/content-receipt-v1.json'), 'utf8')
+		).hardware_receipt.boot_sha256,
 		rejected: true
 	});
 	expect(requests).toEqual([]);
@@ -233,7 +238,7 @@ test('encrypted setup cannot release a browser session without its own verified 
 		}
 	}, fixture);
 	expect(result).toEqual({
-		helloLength: 1257,
+		helloLength: 1255,
 		fresh: true,
 		retainedHello: true,
 		noPrematureSeal: true,
@@ -258,7 +263,7 @@ test('compiled staging authority verifies logged key decisions without network a
 		const core = api.EvidenceVerifier.for_stogas('staging');
 		try {
 			const keys = core.verify_key_manifest(new TextEncoder().encode(JSON.stringify(signed)));
-			signed.manifest.generation++;
+			signed.document.generation++;
 			let rejected = false;
 			try {
 				core.verify_key_manifest(new TextEncoder().encode(JSON.stringify(signed)));
@@ -270,7 +275,7 @@ test('compiled staging authority verifies logged key decisions without network a
 			core.free();
 		}
 	}, signed);
-	expect(result).toEqual({ key: signed.manifest.active_key.key_id, rejected: true });
+	expect(result).toEqual({ key: signed.document.active_key.key_id, rejected: true });
 	expect(requests).toEqual([]);
 });
 

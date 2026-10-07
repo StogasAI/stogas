@@ -1,26 +1,50 @@
-//! SPQR with the previous-chain-length variant in Double Ratchet §5.7.
-//! Receives stage only the small active state and newly skipped keys. Existing
-//! delayed-message keys stay in place until the caller authenticates the record.
-
 use super::{
-    ChunkSize, Error, Retention,
-    braid::{Braid, EpochKey, Message},
+    Error, HeapSecret, MAX_SKIPPED_KEYS, Retention, Secret, expand,
+    header::{HEADER_BYTES, Header, HeaderCipher},
+    heap_secret,
+    keys::{KeyPair, PUBLIC_KEY_BYTES, PublicKeys},
+    secret,
 };
-use hkdf::Hkdf;
-use sha2_v11::Sha256;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 use zeroize::Zeroizing;
 
-const PROTOCOL: &[u8] = b"stogas.e2ee.spqr.v3_MLKEM768_HKDFSHA256";
-pub(super) const MIN_HEADER_BYTES: usize = 16 + 9;
-pub const MAX_HEADER_BYTES: usize = 16 + 11 + super::MAX_PIECE;
-pub const MAX_SKIPPED_KEYS: usize = 4096;
-pub const SKIPPED_KEY_LIFETIME_MS: u64 = 60_000;
+// A 128-bit pseudorandom nonce and at most 2^32 headers per key keep the nonce
+// collision probability below 2^-65. Exhaustion requires a fresh session.
+const MAX_CHAIN_MESSAGES: u64 = 1 << 32;
 
-type KeyId = (u64, u64);
-type Secret = Zeroizing<[u8; 32]>;
+/// The responder's ephemeral setup key. The seed is only exported to transfer
+/// ownership across a binding; establishing the peer consumes and erases it.
+pub struct InitialKey {
+    seed: Secret,
+    keys: Arc<KeyPair>,
+}
 
-/// One allocation from the sending chain. A dropped allocation is never reused.
+impl InitialKey {
+    /// # Errors
+    /// Rejects unavailable secure randomness.
+    pub fn generate() -> Result<Self, Error> {
+        let mut seed = Zeroizing::new([0; 32]);
+        getrandom::fill(seed.as_mut()).map_err(|_| Error::Crypto)?;
+        Ok(Self::from_bytes(seed))
+    }
+
+    #[must_use]
+    pub fn from_bytes(seed: Secret) -> Self {
+        let keys = Arc::new(KeyPair::from_seed(&seed));
+        Self { seed, keys }
+    }
+
+    #[must_use]
+    pub fn public_key(&self) -> &[u8; PUBLIC_KEY_BYTES] {
+        &self.keys.public.0
+    }
+
+    #[must_use]
+    pub fn secret_bytes(&self) -> &[u8; 32] {
+        &self.seed
+    }
+}
+
 pub struct SendKey {
     pub header: Vec<u8>,
     pub secret: Secret,
@@ -28,133 +52,121 @@ pub struct SendKey {
 
 #[derive(Clone)]
 struct Chain {
-    key: Secret,
-    number: u64,
+    secret: Secret,
+    count: u64,
 }
 
 impl Chain {
-    fn step(&mut self) -> Result<Secret, Error> {
-        let number = self.number.checked_add(1).ok_or(Error::Limit)?;
-        let mut material = Zeroizing::new([0; 64]);
-        Hkdf::<Sha256>::new(None, self.key.as_ref())
-            .expand_multi_info(
-                &[PROTOCOL, b":Chain Step", &number.to_be_bytes()],
-                material.as_mut(),
-            )
-            .map_err(|_| Error::Crypto)?;
-        self.key.copy_from_slice(&material[..32]);
-        self.number = number;
-        let mut message = Zeroizing::new([0; 32]);
-        message.copy_from_slice(&material[32..]);
-        Ok(message)
+    fn step(&mut self) -> Result<(Secret, [u8; 16]), Error> {
+        if self.count >= MAX_CHAIN_MESSAGES {
+            return Err(Error::Limit);
+        }
+        let material = expand::<80>(None, self.secret.as_ref(), b":Chain");
+        self.secret.copy_from_slice(&material[..32]);
+        self.count += 1;
+        Ok((
+            secret(&material[32..64]),
+            material[64..].try_into().expect("fixed nonce width"),
+        ))
     }
 }
 
 #[derive(Clone)]
-struct Chains {
-    send: Option<Chain>,
-    receive: Option<Chain>,
+struct Sending {
+    chain: Chain,
+    cipher: Arc<HeaderCipher>,
+    header: Header,
+}
+
+struct ReceiveHeader {
+    cipher: Arc<HeaderCipher>,
+    turn: [u8; 32],
+}
+
+#[derive(Clone)]
+struct Receiving {
+    chain: Chain,
+    header: Arc<ReceiveHeader>,
+    epoch: u64,
 }
 
 #[derive(Clone)]
 struct Active {
-    braid: Braid,
     root: Secret,
-    alice: bool,
-    epoch: u64,
-    sending: u64,
-    receiving: u64,
+    local: Option<Arc<KeyPair>>,
+    remote: Option<PublicKeys>,
+    send: Option<Sending>,
+    receive: Option<Receiving>,
+    next_send: Arc<HeaderCipher>,
+    next_receive: Arc<HeaderCipher>,
     previous_sent: u64,
-    chains: BTreeMap<u64, Chains>,
 }
 
+type KeyId = (u64, u64);
+type PendingKey = (KeyId, Arc<ReceiveHeader>, HeapSecret);
+
 impl Active {
-    fn install(&mut self, epoch: u64, material: &[u8; 96]) {
-        self.root.copy_from_slice(&material[..32]);
-        let mut a2b = Zeroizing::new([0; 32]);
-        let mut b2a = Zeroizing::new([0; 32]);
-        a2b.copy_from_slice(&material[32..64]);
-        b2a.copy_from_slice(&material[64..]);
-        let (send, receive) = if self.alice { (a2b, b2a) } else { (b2a, a2b) };
-        self.chains.insert(
-            epoch,
-            Chains {
-                send: Some(Chain {
-                    key: send,
-                    number: 0,
-                }),
-                receive: Some(Chain {
-                    key: receive,
-                    number: 0,
-                }),
-            },
-        );
-        self.epoch = epoch;
-    }
-
-    fn incorporate(&mut self, key: Option<EpochKey>) -> Result<(), Error> {
-        if let Some(key) = key {
-            if self.epoch.checked_add(1) != Some(key.epoch) {
-                return Err(Error::Record);
-            }
-            let mut material = Zeroizing::new([0; 96]);
-            Hkdf::<Sha256>::new(Some(self.root.as_ref()), key.secret.as_ref())
-                .expand_multi_info(&[PROTOCOL, b":Chain Add Epoch"], material.as_mut())
-                .map_err(|_| Error::Crypto)?;
-            self.install(key.epoch, &material);
-        }
-        Ok(())
-    }
-
-    fn discard_empty(&mut self) {
-        self.chains
-            .retain(|_, chains| chains.send.is_some() || chains.receive.is_some());
-    }
-
-    fn sending_chain(&mut self, epoch: u64) -> Result<&mut Chain, Error> {
-        if epoch != self.sending {
-            if self.sending.checked_add(1) != Some(epoch) {
-                return Err(Error::Record);
-            }
-            let previous = self
-                .chains
-                .get_mut(&self.sending)
-                .ok_or(Error::Record)?
-                .send
-                .take()
-                .ok_or(Error::Record)?;
-            self.previous_sent = previous.number;
-            self.sending = epoch;
-            self.discard_empty();
-        }
-        self.chains
-            .get_mut(&epoch)
-            .and_then(|chains| chains.send.as_mut())
-            .ok_or(Error::Record)
-    }
-
-    fn receive_chain(&mut self, epoch: u64) -> Result<&mut Chain, Error> {
-        self.chains
-            .get_mut(&epoch)
-            .and_then(|chains| chains.receive.as_mut())
-            .ok_or(Error::Record)
-    }
-
-    fn skip(
-        &mut self,
-        epoch: u64,
-        until: u64,
-        keys: &mut Vec<(KeyId, Secret)>,
-        available: usize,
-    ) -> Result<(), Error> {
-        let chain = self.receive_chain(epoch)?;
-        let count = until.checked_sub(chain.number).ok_or(Error::Record)?;
-        if count > available.saturating_sub(keys.len()) as u64 {
+    fn skipped_count(&self, header: &Header, next: bool) -> Result<u64, Error> {
+        if header.number >= MAX_CHAIN_MESSAGES {
             return Err(Error::Limit);
         }
-        while chain.number < until {
-            let key = chain.step()?;
-            keys.push(((epoch, chain.number), key));
+        let received = self.receive.as_ref().map_or(0, |r| r.chain.count);
+        let previous = if next {
+            if self.local.is_none() || (self.receive.is_some() && self.send.is_none()) {
+                return Err(Error::Record);
+            }
+            header.previous.checked_sub(received).ok_or(Error::Record)?
+        } else {
+            0
+        };
+        let current = header
+            .number
+            .checked_sub(if next { 0 } else { received })
+            .ok_or(Error::Record)?;
+        let count = previous.checked_add(current).ok_or(Error::Limit)?;
+        if count > MAX_SKIPPED_KEYS as u64 {
+            return Err(Error::Limit);
+        }
+        Ok(count)
+    }
+
+    fn advance(&mut self, dh: &[u8; 56], kem: &Secret) -> (Chain, Arc<HeaderCipher>) {
+        let mut input = Zeroizing::new([0; 88]);
+        input[..56].copy_from_slice(dh);
+        input[56..].copy_from_slice(kem.as_ref());
+        let material = expand::<96>(Some(self.root.as_ref()), input.as_ref(), b":Root");
+        self.root.copy_from_slice(&material[..32]);
+        let chain = Chain {
+            secret: secret(&material[32..64]),
+            count: 0,
+        };
+        let header = Arc::new(HeaderCipher::new(&secret(&material[64..])));
+        (chain, header)
+    }
+
+    fn skip(&mut self, until: u64, pending: &mut Vec<PendingKey>) -> Result<(), Error> {
+        let Some(receive) = &mut self.receive else {
+            return if until == 0 {
+                Ok(())
+            } else {
+                Err(Error::Record)
+            };
+        };
+        let count = until
+            .checked_sub(receive.chain.count)
+            .ok_or(Error::Record)?;
+        if count > MAX_SKIPPED_KEYS.saturating_sub(pending.len()) as u64 {
+            return Err(Error::Limit);
+        }
+        pending.reserve_exact(usize::try_from(count).map_err(|_| Error::Limit)?);
+        while receive.chain.count < until {
+            let number = receive.chain.count;
+            let (key, _) = receive.chain.step()?;
+            pending.push((
+                (receive.epoch, number),
+                Arc::clone(&receive.header),
+                heap_secret(&key),
+            ));
         }
         Ok(())
     }
@@ -162,130 +174,209 @@ impl Active {
     fn receive_key(
         &mut self,
         header: &Header,
-        keys: &mut Vec<(KeyId, Secret)>,
-        available: usize,
+        next: bool,
+        pending: &mut Vec<PendingKey>,
     ) -> Result<Secret, Error> {
-        let epoch = header.message.epoch - 1;
-        if epoch > self.receiving {
-            if self.receiving.checked_add(1) != Some(epoch) {
+        if next {
+            // Another remote turn requires our intervening public key. The
+            // responder's first turn is the sole exception.
+            if self.receive.is_some() && self.send.is_none() {
                 return Err(Error::Record);
             }
-            self.skip(self.receiving, header.previous, keys, available)?;
-            self.chains
-                .get_mut(&self.receiving)
-                .ok_or(Error::Record)?
-                .receive = None;
-            self.receiving = epoch;
-            self.discard_empty();
-        } else if epoch < self.receiving {
-            return Err(Error::Record);
+            header.public.validate()?;
+            self.skip(header.previous, pending)?;
+            let local = self.local.take().ok_or(Error::Record)?;
+            let dh = local.agree(&header.public)?;
+            let kem = local.decapsulate(&header.ciphertext);
+            let (chain, next_header) = self.advance(&dh, &kem);
+            let epoch = self
+                .receive
+                .as_ref()
+                .map_or(Ok(0), |r| r.epoch.checked_add(1).ok_or(Error::Limit))?;
+            self.receive = Some(Receiving {
+                chain,
+                epoch,
+                header: Arc::new(ReceiveHeader {
+                    cipher: Arc::clone(&self.next_receive),
+                    turn: header.turn(),
+                }),
+            });
+            self.next_receive = next_header;
+            self.remote = Some(header.public.clone());
+            self.previous_sent = self.send.as_ref().map_or(0, |s| s.chain.count);
+            self.send = None;
         }
-        self.skip(epoch, header.number - 1, keys, available)?;
-        self.receive_chain(epoch)?.step()
-    }
-}
-
-struct Header {
-    previous: u64,
-    number: u64,
-    message: Message,
-}
-
-impl Header {
-    fn decode(bytes: &[u8], size: ChunkSize) -> Result<Self, Error> {
-        if !(MIN_HEADER_BYTES..=MAX_HEADER_BYTES).contains(&bytes.len()) {
-            return Err(Error::Record);
-        }
-        let previous = u64::from_be_bytes(bytes[..8].try_into().map_err(|_| Error::Record)?);
-        let number = u64::from_be_bytes(bytes[8..16].try_into().map_err(|_| Error::Record)?);
-        if number == 0 {
-            return Err(Error::Record);
-        }
-        let message = Message::decode(&bytes[16..], size)?;
-        Ok(Self {
-            previous,
-            number,
-            message,
-        })
+        self.skip(header.number, pending)?;
+        self.receive
+            .as_mut()
+            .ok_or(Error::Record)?
+            .chain
+            .step()
+            .map(|(key, _)| key)
     }
 }
 
 struct Skipped {
-    secret: Secret,
+    secret: HeapSecret,
     expires: Option<u64>,
+    order: u64,
+}
+struct Group {
+    header: Arc<ReceiveHeader>,
+    keys: BTreeMap<u64, Skipped>,
+}
+enum Opened {
+    Current(Header),
+    Next(Header),
+    Skipped(u64, Header),
 }
 
-/// Session key agreement and independent, advancing directional message chains.
-/// This layer performs no I/O, owns no clock, and never persists secret state.
+/// One endpoint, with bounded delayed-message storage and transactional body
+/// authentication. It owns no clock, transport, or persisted state.
 pub struct Peer {
     active: Active,
-    size: ChunkSize,
-    skipped: BTreeMap<KeyId, Skipped>,
-    next_expiry: Option<u64>,
+    skipped: BTreeMap<u64, Group>,
+    order: BTreeMap<u64, KeyId>,
+    next_order: u64,
     last_now: u64,
     retention: Retention,
 }
 
 impl Peer {
+    /// # Errors
+    /// Rejects invalid initial X448 or ML-KEM public keys.
+    pub fn initiator(root: &[u8; 32], responder: &[u8; PUBLIC_KEY_BYTES]) -> Result<Self, Error> {
+        let remote = PublicKeys(*responder);
+        remote.validate()?;
+        Ok(Self::new(root, None, Some(remote), true))
+    }
+
     #[must_use]
-    #[allow(
-        clippy::missing_panics_doc,
-        reason = "The fixed 96-byte HKDF output is within the specified SHA-256 bound."
-    )]
-    pub fn new(alice: bool, secret: &[u8; 32], size: ChunkSize, retention: Retention) -> Self {
-        let mut material = Zeroizing::new([0; 96]);
-        Hkdf::<Sha256>::new(None, secret)
-            .expand_multi_info(&[PROTOCOL, b":Chain Start"], material.as_mut())
-            .expect("fixed HKDF output is within SHA-256 bounds");
-        let mut active = Active {
-            braid: Braid::new(alice, secret, size),
-            root: Zeroizing::new([0; 32]),
-            alice,
-            epoch: 0,
-            sending: 0,
-            receiving: 0,
-            previous_sent: 0,
-            chains: BTreeMap::new(),
-        };
-        active.install(0, &material);
+    pub fn responder(root: &[u8; 32], initial: InitialKey) -> Self {
+        Self::new(root, Some(initial.keys), None, false)
+    }
+
+    fn new(
+        root: &[u8; 32],
+        local: Option<Arc<KeyPair>>,
+        remote: Option<PublicKeys>,
+        client: bool,
+    ) -> Self {
+        let material = expand::<96>(None, root, b":Initialization");
+        let alice = Arc::new(HeaderCipher::new(&secret(&material[32..64])));
+        let bob = Arc::new(HeaderCipher::new(&secret(&material[64..])));
+        let (next_send, next_receive) = if client { (alice, bob) } else { (bob, alice) };
         Self {
-            active,
-            size,
+            active: Active {
+                root: secret(&material[..32]),
+                local,
+                remote,
+                send: None,
+                receive: None,
+                next_send,
+                next_receive,
+                previous_sent: 0,
+            },
             skipped: BTreeMap::new(),
-            next_expiry: None,
+            order: BTreeMap::new(),
+            next_order: 0,
             last_now: 0,
-            retention,
+            retention: if client {
+                Retention::Owned
+            } else {
+                Retention::Timed
+            },
         }
     }
 
-    pub(super) fn send_with(
+    /// # Errors
+    /// Rejects exhausted counters, failed randomness, or a responder send before
+    /// the first authenticated client message.
+    pub fn send(&mut self) -> Result<SendKey, Error> {
+        self.send_with(&mut |bytes| getrandom::fill(bytes).map_err(|_| Error::Crypto))
+    }
+
+    fn send_with(
         &mut self,
         random: &mut impl FnMut(&mut [u8]) -> Result<(), Error>,
     ) -> Result<SendKey, Error> {
         let mut active = self.active.clone();
-        let (message, key) = active.braid.send(random)?;
-        active.incorporate(key)?;
-        let chain = active.sending_chain(message.epoch - 1)?;
-        let secret = chain.step()?;
-        let number = chain.number;
-        let mut header = Vec::with_capacity(MAX_HEADER_BYTES);
-        header.extend_from_slice(&active.previous_sent.to_be_bytes());
-        header.extend_from_slice(&number.to_be_bytes());
-        message.encode(&mut header);
+        if active.send.is_none() {
+            let remote = active.remote.as_ref().ok_or(Error::Pending)?;
+            let mut seed = Zeroizing::new([0; 32]);
+            random(seed.as_mut())?;
+            let local = Arc::new(KeyPair::from_seed(&seed));
+            let mut randomness = Zeroizing::new([0; 32]);
+            random(randomness.as_mut())?;
+            let (ciphertext, kem) = remote.encapsulate(*randomness)?;
+            let dh = local.agree(remote)?;
+            let (chain, next_header) = active.advance(&dh, &kem);
+            active.send = Some(Sending {
+                chain,
+                cipher: Arc::clone(&active.next_send),
+                header: Header {
+                    public: local.public.clone(),
+                    ciphertext,
+                    previous: active.previous_sent,
+                    number: 0,
+                },
+            });
+            active.local = Some(local);
+            active.next_send = next_header;
+        }
+        let sending = active.send.as_mut().ok_or(Error::Pending)?;
+        sending.header.number = sending.chain.count;
+        let (secret, nonce) = sending.chain.step()?;
+        let header = sending.cipher.seal(&sending.header, nonce)?;
         self.active = active;
         Ok(SendKey { header, secret })
     }
 
-    /// Derive a candidate key, authenticate the complete public header and
-    /// ciphertext through `authenticate`, then commit the state atomically.
-    /// The caller serializes this operation with other allocations and receives.
-    ///
-    /// `now_ms` uses the adapter's elapsed-time clock. Clock regressions are
-    /// clamped; no receive extends an existing skipped key's lifetime.
-    ///
+    fn open_header(&self, bytes: &[u8]) -> Result<Opened, Error> {
+        if bytes.len() != HEADER_BYTES {
+            return Err(Error::Record);
+        }
+        if let Some(receive) = &self.active.receive
+            && let Ok(header) = receive.header.cipher.open(bytes)
+        {
+            if header.turn() != receive.header.turn {
+                return Err(Error::Record);
+            }
+            return Ok(Opened::Current(header));
+        }
+        if let Ok(header) = self.active.next_receive.open(bytes) {
+            return Ok(Opened::Next(header));
+        }
+        for (&epoch, group) in &self.skipped {
+            if self
+                .active
+                .receive
+                .as_ref()
+                .is_some_and(|r| r.epoch == epoch)
+            {
+                continue;
+            }
+            if let Ok(header) = group.header.cipher.open(bytes) {
+                if header.turn() != group.header.turn {
+                    return Err(Error::Record);
+                }
+                return Ok(Opened::Skipped(epoch, header));
+            }
+        }
+        Err(Error::Authentication)
+    }
+
+    fn stored(&self, epoch: u64, number: u64, now: u64) -> Option<&Skipped> {
+        self.skipped
+            .get(&epoch)?
+            .keys
+            .get(&number)
+            .filter(|key| key.expires.is_none_or(|end| end > now))
+    }
+
     /// # Errors
     /// Rejects malformed, replayed, expired, too-distant or unauthenticated input.
-    /// Authentication failure cannot consume a key or advance the ratchet.
+    /// Only successful body authentication commits a candidate or consumes a key.
     pub fn receive<T>(
         &mut self,
         bytes: &[u8],
@@ -293,66 +384,97 @@ impl Peer {
         authenticate: impl FnOnce(&[u8; 32]) -> Result<T, Error>,
     ) -> Result<T, Error> {
         self.expire(now_ms);
-        let header = Header::decode(bytes, self.size)?;
-        let id = (header.message.epoch - 1, header.number);
-        let mut active = self.active.clone();
-        let key = active.braid.receive(&header.message)?;
-        active.incorporate(key)?;
-        let mut pending = Vec::new();
-        let existing = self.skipped.get(&id);
-        let secret = if let Some(existing) = existing {
-            &existing.secret
-        } else {
-            // A separate owner keeps this secret alive through authentication;
-            // it is never inserted into the delayed-message key cache.
-            let secret = active.receive_key(&header, &mut pending, MAX_SKIPPED_KEYS)?;
-            let output = authenticate(&secret)?;
-            self.commit(active, pending);
-            return Ok(output);
+        let opened = self.open_header(bytes)?;
+        let (header, next) = match opened {
+            Opened::Skipped(epoch, header) => {
+                return self.receive_stored(epoch, header.number, authenticate);
+            }
+            Opened::Current(header) => {
+                let receive = self.active.receive.as_ref().ok_or(Error::Record)?;
+                if header.number < receive.chain.count {
+                    return self.receive_stored(receive.epoch, header.number, authenticate);
+                }
+                (header, false)
+            }
+            Opened::Next(header) => (header, true),
         };
-        let output = authenticate(secret)?;
-        self.skipped.remove(&id);
+        // Validate both gaps before allocating keys or doing X448/ML-KEM work.
+        self.active.skipped_count(&header, next)?;
+        let mut active = self.active.clone();
+        let mut pending = Vec::new();
+        let key = active.receive_key(&header, next, &mut pending)?;
+        let next_order = self
+            .next_order
+            .checked_add(pending.len() as u64)
+            .ok_or(Error::Limit)?;
+        let output = authenticate(&key)?;
+        while self.order.len() + pending.len() > MAX_SKIPPED_KEYS {
+            let (&order, &id) = self.order.first_key_value().ok_or(Error::Limit)?;
+            self.remove(id, order);
+        }
+        for ((epoch, number), header, secret) in pending {
+            let order = self.next_order;
+            self.skipped
+                .entry(epoch)
+                .or_insert_with(|| Group {
+                    header,
+                    keys: BTreeMap::new(),
+                })
+                .keys
+                .insert(
+                    number,
+                    Skipped {
+                        secret,
+                        order,
+                        expires: self.retention.deadline(self.last_now),
+                    },
+                );
+            self.order.insert(order, (epoch, number));
+            self.next_order += 1;
+        }
+        debug_assert_eq!(self.next_order, next_order);
         self.active = active;
         Ok(output)
     }
 
-    fn commit(&mut self, active: Active, pending: Vec<(KeyId, Secret)>) {
-        let expires = self.retention.deadline(self.last_now);
-        if let Some(expires) = expires.filter(|_| !pending.is_empty()) {
-            self.next_expiry = Some(
-                self.next_expiry
-                    .map_or(expires, |previous| previous.min(expires)),
-            );
-        }
-        // New gaps follow the active receiving chain, so their IDs are newer
-        // than every retained key. Evict after authentication, before insertion,
-        // to bound peak memory as well as retained memory.
-        let evictions = (self.skipped.len() + pending.len()).saturating_sub(MAX_SKIPPED_KEYS);
-        for _ in 0..evictions {
-            self.skipped.pop_first();
-        }
-        for (id, secret) in pending {
-            self.skipped.insert(id, Skipped { secret, expires });
-        }
-        self.active = active;
+    fn receive_stored<T>(
+        &mut self,
+        epoch: u64,
+        number: u64,
+        authenticate: impl FnOnce(&[u8; 32]) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let key = self
+            .stored(epoch, number, self.last_now)
+            .ok_or(Error::Record)?;
+        let output = authenticate(&key.secret)?;
+        let order = key.order;
+        self.remove((epoch, number), order);
+        Ok(output)
     }
 
-    /// Erase expired delayed-message keys, also when the session is idle.
+    fn remove(&mut self, (epoch, number): KeyId, order: u64) {
+        if let Some(group) = self.skipped.get_mut(&epoch) {
+            group.keys.remove(&number);
+            if group.keys.is_empty() {
+                self.skipped.remove(&epoch);
+            }
+        }
+        self.order.remove(&order);
+    }
+
     pub fn expire(&mut self, now_ms: u64) {
         self.last_now = self.last_now.max(now_ms);
-        if self
-            .next_expiry
-            .is_some_and(|expiry| self.last_now >= expiry)
-        {
-            self.skipped
-                .retain(|_, key| key.expires.is_none_or(|expires| self.last_now < expires));
-            self.next_expiry = self.skipped.values().filter_map(|key| key.expires).min();
+        while let Some((&order, &(epoch, number))) = self.order.first_key_value() {
+            if self.stored(epoch, number, self.last_now).is_some() {
+                break;
+            }
+            self.remove((epoch, number), order);
         }
     }
 
     pub fn discard_delayed(&mut self) {
         self.skipped.clear();
-        self.next_expiry = None;
+        self.order.clear();
     }
 }
 

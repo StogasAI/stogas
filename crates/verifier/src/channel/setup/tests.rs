@@ -18,7 +18,7 @@ struct Fixture {
 
 fn fixture() -> Fixture {
     serde_json::from_str(include_str!(
-        "../../../../../tests/fixtures/channel-setup-v3.json"
+        "../../../../../tests/fixtures/channel-setup.json"
     ))
     .unwrap()
 }
@@ -31,13 +31,12 @@ fn pending(vector: &Fixture) -> PendingSetup {
         ),
         hello: hex::decode(&vector.hello).unwrap(),
         environment: Environment::Production,
-        chunk_size: ChunkSize::FULL,
     }
 }
 
 #[cfg(feature = "staging")]
 #[test]
-fn retired_e2ee_profile_is_rejected_even_with_genuine_hardware_evidence() {
+fn incompatible_setup_is_rejected_even_with_genuine_hardware_evidence() {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../../tests/fixtures/hardware-session-v1.json"
@@ -53,14 +52,13 @@ fn retired_e2ee_profile_is_rejected_even_with_genuine_hardware_evidence() {
         .refresh(&serde_json::to_vec(&fixture["bundle"]).unwrap(), now)
         .unwrap();
     // The immutable v1 capture has genuine hardware evidence, but cannot
-    // authorize the v3 key schedule. Native certificate verification is unchanged.
+    // authorize the current key schedule. Native certificate verification is unchanged.
     let mut pending = PendingSetup {
         private_key: Some(<XWing as hpke::Kem>::PrivateKey::from_bytes(&[7; 32]).unwrap()),
         hello: URL_SAFE_NO_PAD
             .decode(fixture["e2ee"]["hello"].as_str().unwrap())
             .unwrap(),
         environment: Environment::Staging,
-        chunk_size: ChunkSize::FULL,
     };
     let response = URL_SAFE_NO_PAD
         .decode(fixture["e2ee"]["response"].as_str().unwrap())
@@ -117,7 +115,7 @@ fn go_setup_matches_rust_exporter_and_session_keys() {
     assert_eq!(session.idle_seconds(), 600);
     let root: [u8; 32] = hex::decode(vector.root).unwrap().try_into().unwrap();
     let mut request = session.request().unwrap();
-    let mut expected_prefix = b"STGS\x03\x03".to_vec();
+    let mut expected_prefix = b"STGS\x01\x03".to_vec();
     expected_prefix.extend_from_slice(&id);
     expected_prefix.extend_from_slice(&0_u64.to_be_bytes());
     assert_eq!(request.prefix().as_slice(), expected_prefix);
@@ -127,7 +125,7 @@ fn go_setup_matches_rust_exporter_and_session_keys() {
             .try_into()
             .unwrap(),
     ));
-    let mut server = ServerSession::new(Zeroizing::new(root), id, ChunkSize::FULL, initial);
+    let mut server = ServerSession::new(Zeroizing::new(root), id, initial);
     let mut encoded = request.seal(Kind::Metadata, b"credentials").unwrap();
     let (_, mut response, metadata) = server
         .accept_start(request.number(), &mut encoded, 0)

@@ -21,7 +21,7 @@
   },
   "key_manifest_sha256": "4fd7279f065e2bce3b97ca6e62e52a9d67b065f4b557f483a7d10d3ae4006aa4",
   "approval": {
-    "manifest": {
+    "document": {
       "schema": "stogas.approvals.v1",
       "environment": "prod",
       "revision": 1,

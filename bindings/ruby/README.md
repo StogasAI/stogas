@@ -18,4 +18,4 @@ The package wraps the Rust verifier and includes its native library. It performs
 
 `refresh` updates verification evidence. `Stogas::VerificationError#code` preserves the native error code. The block closes the transport even when application code raises. Without a block, call `close` after all HTTP clients finish; cleanup allows up to five seconds. Calling `close` again is safe.
 
-Bypass proxies for the returned loopback URL. With Ruby Net::HTTP, set `ignore_eof = false` so truncated responses cannot look complete. Do not automatically retry interrupted inference.
+Bypass proxies for the returned loopback URL. With Ruby Net::HTTP, set `ignore_eof = false` so truncated responses cannot look complete. Choose retries in the OpenAI client; interrupted inference may already have executed.

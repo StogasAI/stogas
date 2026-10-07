@@ -12,6 +12,7 @@ package verifier
 #cgo windows,amd64 LDFLAGS: -L${SRCDIR}/native/windows-amd64 -lstogas_verifier_ffi -lws2_32 -lbcrypt -luserenv -lntdll
 #include <stddef.h>
 #include <stdint.h>
+uint32_t stogas_verifier_abi_version(void);
 void stogas_verifier_string_free(char *value);
 */
 import "C"
@@ -25,6 +26,13 @@ import (
 
 // ErrClosed is returned after a verifier session has been closed.
 var ErrClosed = errors.New("stogas verifier is closed")
+
+func checkNativeABI() error {
+	if version := uint32(C.stogas_verifier_abi_version()); version != 1 {
+		return fmt.Errorf("native verifier ABI %d does not match required ABI 1", version)
+	}
+	return nil
+}
 
 type abiResponse struct {
 	OK    bool            `json:"ok"`

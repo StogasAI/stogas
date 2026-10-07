@@ -1,5 +1,5 @@
 {
-  "manifest": {
+  "document": {
     "schema": "stogas.keys.v1",
     "environment": "staging",
     "generation": 1,

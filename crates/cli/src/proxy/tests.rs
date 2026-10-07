@@ -1,4 +1,5 @@
 use super::*;
+use crate::SecurityMode;
 
 fn config(browser: Option<&str>) -> ServeConfig {
     ServeConfig::new(&TransportOptions::default(), "127.0.0.1:1234", browser).unwrap()

@@ -1,21 +1,21 @@
 use super::{
     Direction, Error, Kind,
     cipher::{Cipher, SoftwareCipher},
-    ratchet::{ChunkSize, Peer},
+    ratchet::{MAX_SKIPPED_KEYS, PUBLIC_KEY_BYTES, Peer},
     record::{Records, start_header},
 };
 use std::sync::{Arc, Mutex};
 use zeroize::{Zeroize as _, Zeroizing};
 
-const REPLAY_WINDOW: u64 = 4096;
-const REQUEST_HEADER: &[u8] = b"STGS\x03\x03";
+const REPLAY_WINDOW: u64 = MAX_SKIPPED_KEYS as u64;
+const REQUEST_HEADER: &[u8] = b"STGS\x01\x03";
 pub const REQUEST_PREFIX_BYTES: usize = REQUEST_HEADER.len() + 32 + 8;
 
 struct Starts {
     next: u64,
     first_pending: u64,
     confirmed_next: u64,
-    pending: [u64; 64],
+    pending: [u64; MAX_SKIPPED_KEYS / 64],
 }
 
 impl Default for Starts {
@@ -24,7 +24,7 @@ impl Default for Starts {
             next: 0,
             first_pending: 0,
             confirmed_next: 0,
-            pending: [0; 64],
+            pending: [0; MAX_SKIPPED_KEYS / 64],
         }
     }
 }
@@ -101,19 +101,18 @@ impl ClientSession {
         root: Zeroizing<[u8; 32]>,
         id: [u8; 32],
         idle_seconds: u32,
-        size: ChunkSize,
-        responder: [u8; 32],
-    ) -> Self {
-        let peer = Peer::initiator(&root, size, responder);
+        responder: &[u8; PUBLIC_KEY_BYTES],
+    ) -> Result<Self, Error> {
+        let peer = Peer::initiator(&root, responder)?;
         drop(root);
-        Self {
+        Ok(Self {
             shared: Some(Arc::new(Mutex::new(Shared {
                 starts: Starts::default(),
                 peer,
             }))),
             id,
             idle_seconds,
-        }
+        })
     }
 
     #[must_use]

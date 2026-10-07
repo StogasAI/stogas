@@ -13,8 +13,9 @@
       "name": "directions_match",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_updates_derive_unique_keys_and_delete_finished_chains_in_both_directions",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::initialization_epoch_and_directional_chains_match_independent_hkdf_vectors"
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors"
       ]
     },
     {
@@ -28,8 +29,8 @@
       "name": "previously_returned_key",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_remain_independent_after_multiple_epochs_and_replay_fails",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::failed_authentication_never_consumes_current_skipped_or_new_epoch_keys"
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
       ]
     },
     {
@@ -37,8 +38,10 @@
       "name": "very_old_keys_are_trimmed",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::cache_limits_are_global_and_expiry_is_not_extended_by_clock_regression_or_bad_input",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_updates_derive_unique_keys_and_delete_finished_chains_in_both_directions"
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::expiry_is_monotonic_and_owned_response_keys_survive_until_discarded",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner"
       ],
       "scope": "Uses the published previous-chain-length alternative: erase old chain roots and retain only individually bounded delayed-message keys."
     },
@@ -47,8 +50,8 @@
       "name": "out_of_order_keys",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_remain_independent_after_multiple_epochs_and_replay_fails",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::failed_authentication_never_consumes_current_skipped_or_new_epoch_keys"
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
       ]
     },
     {
@@ -56,8 +59,10 @@
       "name": "clear_old_send_keys",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::cache_limits_are_global_and_expiry_is_not_extended_by_clock_regression_or_bad_input",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_updates_derive_unique_keys_and_delete_finished_chains_in_both_directions"
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::expiry_is_monotonic_and_owned_response_keys_survive_until_discarded",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner"
       ],
       "scope": "Uses the published previous-chain-length alternative: erase old chain roots and retain only individually bounded delayed-message keys."
     },
@@ -66,8 +71,8 @@
       "name": "key_history_prop_test",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_remain_independent_after_multiple_epochs_and_replay_fails",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::failed_authentication_never_consumes_current_skipped_or_new_epoch_keys"
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
       ]
     },
     {
@@ -75,112 +80,88 @@
       "name": "ced_prop_test",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::cache_limits_are_global_and_expiry_is_not_extended_by_clock_regression_or_bad_input",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_updates_derive_unique_keys_and_delete_finished_chains_in_both_directions"
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::expiry_is_monotonic_and_owned_response_keys_survive_until_discarded",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner"
       ],
       "scope": "Uses the published previous-chain-length alternative: erase old chain roots and retain only individually bounded delayed-message keys."
     },
     {
       "path": "src/encoding/gf.rs",
       "name": "add",
-      "status": "covered_behavior",
-      "tests": [
-        "crates/verifier/src/channel/ratchet/erasure/tests.rs::field_matches_polynomial_reference_and_every_nonzero_element_has_an_inverse"
-      ]
+      "status": "not_applicable",
+      "reason": "Full ML-KEM turns have no erasure coding, polynomial interpolation or field-symbol codec."
     },
     {
       "path": "src/encoding/gf.rs",
       "name": "mul",
-      "status": "covered_behavior",
-      "tests": [
-        "crates/verifier/src/channel/ratchet/erasure/tests.rs::field_matches_polynomial_reference_and_every_nonzero_element_has_an_inverse"
-      ]
+      "status": "not_applicable",
+      "reason": "Full ML-KEM turns have no erasure coding, polynomial interpolation or field-symbol codec."
     },
     {
       "path": "src/encoding/gf.rs",
       "name": "div",
-      "status": "covered_behavior",
-      "tests": [
-        "crates/verifier/src/channel/ratchet/erasure/tests.rs::field_matches_polynomial_reference_and_every_nonzero_element_has_an_inverse"
-      ]
+      "status": "not_applicable",
+      "reason": "Full ML-KEM turns have no erasure coding, polynomial interpolation or field-symbol codec."
     },
     {
       "path": "src/encoding/gf.rs",
       "name": "x86_barrett_reduction",
       "status": "not_applicable",
-      "reason": "The public-data erasure field uses scalar polynomial reduction; no SIMD Barrett implementation exists."
+      "reason": "Full ML-KEM turns have no erasure coding, polynomial interpolation or field-symbol codec."
     },
     {
       "path": "src/encoding/polynomial.rs",
       "name": "encode_and_decode_small",
-      "status": "covered_behavior",
-      "tests": [
-        "crates/verifier/src/channel/ratchet/erasure/tests.rs::any_distinct_chunks_recover_full_compact_and_uneven_pieces",
-        "crates/verifier/src/channel/ratchet/erasure/tests.rs::erasure_input_is_bounded_and_conflicting_duplicates_are_rejected",
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::public_messages_have_one_bounded_canonical_encoding"
-      ]
+      "status": "not_applicable",
+      "reason": "Full ML-KEM turns have no erasure coding, polynomial interpolation or field-symbol codec."
     },
     {
       "path": "src/encoding/polynomial.rs",
       "name": "encode_and_decode_large",
-      "status": "covered_behavior",
-      "tests": [
-        "crates/verifier/src/channel/ratchet/erasure/tests.rs::any_distinct_chunks_recover_full_compact_and_uneven_pieces",
-        "crates/verifier/src/channel/ratchet/erasure/tests.rs::erasure_input_is_bounded_and_conflicting_duplicates_are_rejected",
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::public_messages_have_one_bounded_canonical_encoding"
-      ]
+      "status": "not_applicable",
+      "reason": "Full ML-KEM turns have no erasure coding, polynomial interpolation or field-symbol codec."
     },
     {
       "path": "src/encoding/polynomial.rs",
       "name": "poly_lagrange_interpolate",
-      "status": "covered_behavior",
-      "tests": [
-        "crates/verifier/src/channel/ratchet/erasure/tests.rs::any_distinct_chunks_recover_full_compact_and_uneven_pieces",
-        "crates/verifier/src/channel/ratchet/erasure/tests.rs::erasure_input_is_bounded_and_conflicting_duplicates_are_rejected",
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::public_messages_have_one_bounded_canonical_encoding"
-      ]
+      "status": "not_applicable",
+      "reason": "Full ML-KEM turns have no erasure coding, polynomial interpolation or field-symbol codec."
     },
     {
       "path": "src/encoding/polynomial.rs",
       "name": "point_serialize_deserialize",
-      "status": "covered_behavior",
-      "tests": [
-        "crates/verifier/src/channel/ratchet/erasure/tests.rs::any_distinct_chunks_recover_full_compact_and_uneven_pieces",
-        "crates/verifier/src/channel/ratchet/erasure/tests.rs::erasure_input_is_bounded_and_conflicting_duplicates_are_rejected",
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::public_messages_have_one_bounded_canonical_encoding"
-      ]
+      "status": "not_applicable",
+      "reason": "Full ML-KEM turns have no erasure coding, polynomial interpolation or field-symbol codec."
     },
     {
       "path": "src/encoding/polynomial.rs",
       "name": "to_and_from_pb",
       "status": "not_applicable",
-      "reason": "Secret state is never serialized or restored. The fixed binary wire grammar is separately covered; no Protobuf or varint codec is used."
+      "reason": "Full ML-KEM turns have no erasure coding, polynomial interpolation or field-symbol codec."
     },
     {
       "path": "src/encoding/polynomial.rs",
       "name": "const_polys",
-      "status": "covered_behavior",
-      "tests": [
-        "crates/verifier/src/channel/ratchet/erasure/tests.rs::any_distinct_chunks_recover_full_compact_and_uneven_pieces",
-        "crates/verifier/src/channel/ratchet/erasure/tests.rs::erasure_input_is_bounded_and_conflicting_duplicates_are_rejected",
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::public_messages_have_one_bounded_canonical_encoding"
-      ]
+      "status": "not_applicable",
+      "reason": "Full ML-KEM turns have no erasure coding, polynomial interpolation or field-symbol codec."
     },
     {
       "path": "src/incremental_mlkem768.rs",
       "name": "incremental_mlkem768_round_trip",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/kem/tests.rs::incremental_mlkem_matches_independent_fips_implementation"
-      ]
+        "crates/verifier/src/channel/ratchet/keys/tests.rs::full_mlkem_matches_independent_rustcrypto_and_every_ciphertext_mutation"
+      ],
+      "scope": "Full ML-KEM-768 key generation, encapsulation, decapsulation and implicit rejection; no incremental variant remains."
     },
     {
       "path": "src/lib.rs",
       "name": "ratchet",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::loss_reordering_replay_asymmetric_bursts_and_offline_periods_preserve_epoch_agreement",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::loss_reordering_asymmetric_batches_and_different_chunk_sizes_make_progress",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
         "fuzz/fuzz_targets/ratchet.rs"
       ]
     },
@@ -188,27 +169,28 @@
       "path": "src/lib.rs",
       "name": "ratchet_v0_empty_states",
       "status": "not_applicable",
-      "reason": "No version negotiation, empty initialization or legacy v0 exists. Setup authenticates the required v3 profile and rejects retired profiles."
+      "reason": "Setup authenticates the single current profile; upstream version negotiation and empty initialization do not apply."
     },
     {
       "path": "src/lib.rs",
       "name": "empty_constructor_for_state",
       "status": "not_applicable",
-      "reason": "No version negotiation, empty initialization or legacy v0 exists. Setup authenticates the required v3 profile and rejects retired profiles."
+      "reason": "Setup authenticates the single current profile; upstream version negotiation and empty initialization do not apply."
     },
     {
       "path": "src/lib.rs",
       "name": "empty_key_until_version_negotiation",
       "status": "not_applicable",
-      "reason": "No version negotiation, empty initialization or legacy v0 exists. Setup authenticates the required v3 profile and rejects retired profiles."
+      "reason": "Setup authenticates the single current profile; upstream version negotiation and empty initialization do not apply."
     },
     {
       "path": "src/lib.rs",
       "name": "min_version_v1_always_creates_keys_a2b",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_updates_derive_unique_keys_and_delete_finished_chains_in_both_directions",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::initialization_epoch_and_directional_chains_match_independent_hkdf_vectors"
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors"
       ]
     },
     {
@@ -216,41 +198,41 @@
       "name": "min_version_v1_always_creates_keys_b2a",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_updates_derive_unique_keys_and_delete_finished_chains_in_both_directions",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::initialization_epoch_and_directional_chains_match_independent_hkdf_vectors"
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors"
       ]
     },
     {
       "path": "src/lib.rs",
       "name": "negotiate_to_v0_a2b",
       "status": "not_applicable",
-      "reason": "No version negotiation, empty initialization or legacy v0 exists. Setup authenticates the required v3 profile and rejects retired profiles."
+      "reason": "Setup authenticates the single current profile; upstream version negotiation and empty initialization do not apply."
     },
     {
       "path": "src/lib.rs",
       "name": "negotiate_to_v0_b2a",
       "status": "not_applicable",
-      "reason": "No version negotiation, empty initialization or legacy v0 exists. Setup authenticates the required v3 profile and rejects retired profiles."
+      "reason": "Setup authenticates the single current profile; upstream version negotiation and empty initialization do not apply."
     },
     {
       "path": "src/lib.rs",
       "name": "negotiation_refused_a2b",
       "status": "not_applicable",
-      "reason": "No version negotiation, empty initialization or legacy v0 exists. Setup authenticates the required v3 profile and rejects retired profiles."
+      "reason": "Setup authenticates the single current profile; upstream version negotiation and empty initialization do not apply."
     },
     {
       "path": "src/lib.rs",
       "name": "negotiation_refused_b2a",
       "status": "not_applicable",
-      "reason": "No version negotiation, empty initialization or legacy v0 exists. Setup authenticates the required v3 profile and rejects retired profiles."
+      "reason": "Setup authenticates the single current profile; upstream version negotiation and empty initialization do not apply."
     },
     {
       "path": "src/lib.rs",
       "name": "lockstep_run_with_logging",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::loss_reordering_replay_asymmetric_bursts_and_offline_periods_preserve_epoch_agreement",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::loss_reordering_asymmetric_batches_and_different_chunk_sizes_make_progress",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
         "fuzz/fuzz_targets/ratchet.rs"
       ]
     },
@@ -259,48 +241,54 @@
       "name": "regression_test_libcrux_issue_1275_from_generated_states",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/kem/tests.rs::incremental_mlkem_matches_independent_fips_implementation",
-        "crates/verifier/src/channel/ratchet/kem/tests.rs::wycheproof_mlkem768_incremental_encapsulation"
+        "crates/verifier/src/channel/ratchet/keys/tests.rs::full_mlkem_matches_independent_rustcrypto_and_every_ciphertext_mutation",
+        "crates/verifier/src/channel/ratchet/keys/tests.rs::wycheproof_full_mlkem_seed_encapsulation_decapsulation_and_implicit_rejection"
       ],
-      "scope": "The historical issue involved serialized incremental state crossing SIMD backends. No state is persisted or transferred here. Exact deterministic incremental results are checked on native and portable Wasm backends against the same independent vectors."
+      "scope": "Only locally generated private keys are decapsulated; complete Wycheproof and independent primitive differential checks cover the supported inputs."
     },
     {
       "path": "src/lib.rs",
       "name": "disallow_downgrade_due_to_unsupported_version",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/setup/tests.rs::retired_e2ee_profile_is_rejected_even_with_genuine_hardware_evidence",
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::public_messages_have_one_bounded_canonical_encoding"
+        "crates/verifier/src/channel/setup/tests.rs::incompatible_setup_is_rejected_even_with_genuine_hardware_evidence",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing"
       ]
     },
     {
       "path": "src/lib.rs",
       "name": "high_version_to_v1_uses_chain_keys",
       "status": "not_applicable",
-      "reason": "No version negotiation, empty initialization or legacy v0 exists. Setup authenticates the required v3 profile and rejects retired profiles."
+      "reason": "Setup authenticates the single current profile; upstream version negotiation and empty initialization do not apply."
     },
     {
       "path": "src/lib.rs",
       "name": "empty_recv_fails_minv1",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/setup/tests.rs::retired_e2ee_profile_is_rejected_even_with_genuine_hardware_evidence",
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::public_messages_have_one_bounded_canonical_encoding"
+        "crates/verifier/src/channel/setup/tests.rs::incompatible_setup_is_rejected_even_with_genuine_hardware_evidence",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing"
       ]
     },
     {
       "path": "src/test/generic_dr.rs",
       "name": "hybrid_ratchet",
-      "status": "not_applicable",
-      "reason": "The selected recovery protocol is ML-KEM Braid plus SPQR. The upstream experimental X25519 SCKA and classical Triple Ratchet composition are not implemented."
+      "status": "covered_behavior",
+      "tests": [
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+      ],
+      "scope": "Both full X448 and ML-KEM secrets enter each alternating root step. Independent Go/CIRCL vectors check this distinct encoding and KDF profile."
     },
     {
       "path": "src/test/messaging_scka.rs",
       "name": "random_balanced",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::loss_reordering_replay_asymmetric_bursts_and_offline_periods_preserve_epoch_agreement",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::loss_reordering_asymmetric_batches_and_different_chunk_sizes_make_progress",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
         "fuzz/fuzz_targets/ratchet.rs"
       ]
     },
@@ -309,8 +297,7 @@
       "name": "random_balanced_out_of_order",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::loss_reordering_replay_asymmetric_bursts_and_offline_periods_preserve_epoch_agreement",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::loss_reordering_asymmetric_batches_and_different_chunk_sizes_make_progress",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
         "fuzz/fuzz_targets/ratchet.rs"
       ]
     },
@@ -319,69 +306,69 @@
       "name": "random_balanced_healing",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::fresh_entropy_changes_later_secrets_after_snapshots_of_every_protocol_state",
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::loss_reordering_replay_asymmetric_bursts_and_offline_periods_preserve_epoch_agreement",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::loss_reordering_asymmetric_batches_and_different_chunk_sizes_make_progress"
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
       ],
-      "scope": "Checks agreement, progress, and fresh-entropy influence after snapshots of all eleven states. Does not claim equivalence to upstream symbolic compromise analysis or inherit its proof."
+      "scope": "Empirical capture, fresh-entropy and delivery checks for the fixed PQ2HE profile; no claim of equivalence to upstream symbolic compromise analysis or proof."
     },
     {
       "path": "src/test/messaging_scka.rs",
       "name": "pingpong_healing",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::fresh_entropy_changes_later_secrets_after_snapshots_of_every_protocol_state",
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::loss_reordering_replay_asymmetric_bursts_and_offline_periods_preserve_epoch_agreement",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::loss_reordering_asymmetric_batches_and_different_chunk_sizes_make_progress"
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
       ],
-      "scope": "Checks agreement, progress, and fresh-entropy influence after snapshots of all eleven states. Does not claim equivalence to upstream symbolic compromise analysis or inherit its proof."
+      "scope": "Empirical capture, fresh-entropy and delivery checks for the fixed PQ2HE profile; no claim of equivalence to upstream symbolic compromise analysis or proof."
     },
     {
       "path": "src/test/messaging_scka.rs",
       "name": "onlineoffline_healing",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::fresh_entropy_changes_later_secrets_after_snapshots_of_every_protocol_state",
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::loss_reordering_replay_asymmetric_bursts_and_offline_periods_preserve_epoch_agreement",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::loss_reordering_asymmetric_batches_and_different_chunk_sizes_make_progress"
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
       ],
-      "scope": "Checks agreement, progress, and fresh-entropy influence after snapshots of all eleven states. Does not claim equivalence to upstream symbolic compromise analysis or inherit its proof."
+      "scope": "Empirical capture, fresh-entropy and delivery checks for the fixed PQ2HE profile; no claim of equivalence to upstream symbolic compromise analysis or proof."
     },
     {
       "path": "src/test/x25519_scka/states.rs",
       "name": "balanced_healing",
       "status": "not_applicable",
-      "reason": "The selected recovery protocol is ML-KEM Braid plus SPQR. The upstream experimental X25519 SCKA and classical Triple Ratchet composition are not implemented."
+      "reason": "The experimental SCKA state machine is absent; the fixed X448/ML-KEM protocol has separate turn, agreement, mutation and retention tests.",
+      "scope": "Empirical capture, fresh-entropy and delivery checks for the fixed PQ2HE profile; no claim of equivalence to upstream symbolic compromise analysis or proof."
     },
     {
       "path": "src/test/x25519_scka/states.rs",
       "name": "random_balanced",
       "status": "not_applicable",
-      "reason": "The selected recovery protocol is ML-KEM Braid plus SPQR. The upstream experimental X25519 SCKA and classical Triple Ratchet composition are not implemented."
+      "reason": "The experimental SCKA state machine is absent; the fixed X448/ML-KEM protocol has separate turn, agreement, mutation and retention tests."
     },
     {
       "path": "src/test/x25519_scka/states.rs",
       "name": "chaos",
       "status": "not_applicable",
-      "reason": "The selected recovery protocol is ML-KEM Braid plus SPQR. The upstream experimental X25519 SCKA and classical Triple Ratchet composition are not implemented."
+      "reason": "The experimental SCKA state machine is absent; the fixed X448/ML-KEM protocol has separate turn, agreement, mutation and retention tests."
     },
     {
       "path": "src/test/x25519_scka/states.rs",
       "name": "onlineoffline_healing",
       "status": "not_applicable",
-      "reason": "The selected recovery protocol is ML-KEM Braid plus SPQR. The upstream experimental X25519 SCKA and classical Triple Ratchet composition are not implemented."
+      "reason": "The experimental SCKA state machine is absent; the fixed X448/ML-KEM protocol has separate turn, agreement, mutation and retention tests.",
+      "scope": "Empirical capture, fresh-entropy and delivery checks for the fixed PQ2HE profile; no claim of equivalence to upstream symbolic compromise analysis or proof."
     },
     {
       "path": "src/test/x25519_scka/states.rs",
       "name": "random_balanced_out_of_order",
       "status": "not_applicable",
-      "reason": "The selected recovery protocol is ML-KEM Braid plus SPQR. The upstream experimental X25519 SCKA and classical Triple Ratchet composition are not implemented."
+      "reason": "The experimental SCKA state machine is absent; the fixed X448/ML-KEM protocol has separate turn, agreement, mutation and retention tests."
     },
     {
       "path": "src/test/x25519_scka/states.rs",
       "name": "random_slow_alex_healing",
       "status": "not_applicable",
-      "reason": "The selected recovery protocol is ML-KEM Braid plus SPQR. The upstream experimental X25519 SCKA and classical Triple Ratchet composition are not implemented."
+      "reason": "The experimental SCKA state machine is absent; the fixed X448/ML-KEM protocol has separate turn, agreement, mutation and retention tests.",
+      "scope": "Empirical capture, fresh-entropy and delivery checks for the fixed PQ2HE profile; no claim of equivalence to upstream symbolic compromise analysis or proof."
     },
     {
       "path": "src/v1/chunked/states/serialize.rs",
@@ -412,19 +399,17 @@
       "name": "balanced_healing",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::fresh_entropy_changes_later_secrets_after_snapshots_of_every_protocol_state",
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::loss_reordering_replay_asymmetric_bursts_and_offline_periods_preserve_epoch_agreement",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::loss_reordering_asymmetric_batches_and_different_chunk_sizes_make_progress"
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
       ],
-      "scope": "Checks agreement, progress, and fresh-entropy influence after snapshots of all eleven states. Does not claim equivalence to upstream symbolic compromise analysis or inherit its proof."
+      "scope": "Empirical capture, fresh-entropy and delivery checks for the fixed PQ2HE profile; no claim of equivalence to upstream symbolic compromise analysis or proof."
     },
     {
       "path": "src/v1.rs",
       "name": "random_balanced",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::loss_reordering_replay_asymmetric_bursts_and_offline_periods_preserve_epoch_agreement",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::loss_reordering_asymmetric_batches_and_different_chunk_sizes_make_progress",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
         "fuzz/fuzz_targets/ratchet.rs"
       ]
     },
@@ -433,8 +418,7 @@
       "name": "chaos",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::loss_reordering_replay_asymmetric_bursts_and_offline_periods_preserve_epoch_agreement",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::loss_reordering_asymmetric_batches_and_different_chunk_sizes_make_progress",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
         "fuzz/fuzz_targets/ratchet.rs"
       ]
     },
@@ -443,19 +427,17 @@
       "name": "onlineoffline_healing_unidir",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::fresh_entropy_changes_later_secrets_after_snapshots_of_every_protocol_state",
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::loss_reordering_replay_asymmetric_bursts_and_offline_periods_preserve_epoch_agreement",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::loss_reordering_asymmetric_batches_and_different_chunk_sizes_make_progress"
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
       ],
-      "scope": "Checks agreement, progress, and fresh-entropy influence after snapshots of all eleven states. Does not claim equivalence to upstream symbolic compromise analysis or inherit its proof."
+      "scope": "Empirical capture, fresh-entropy and delivery checks for the fixed PQ2HE profile; no claim of equivalence to upstream symbolic compromise analysis or proof."
     },
     {
       "path": "src/v1.rs",
       "name": "random_balanced_out_of_order",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::loss_reordering_replay_asymmetric_bursts_and_offline_periods_preserve_epoch_agreement",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::loss_reordering_asymmetric_batches_and_different_chunk_sizes_make_progress",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
         "fuzz/fuzz_targets/ratchet.rs"
       ]
     },
@@ -464,14 +446,13 @@
       "name": "random_slow_alex_healing_auth_bidir",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::fresh_entropy_changes_later_secrets_after_snapshots_of_every_protocol_state",
-        "crates/verifier/src/channel/ratchet/braid/tests.rs::loss_reordering_replay_asymmetric_bursts_and_offline_periods_preserve_epoch_agreement",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::loss_reordering_asymmetric_batches_and_different_chunk_sizes_make_progress"
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
       ],
-      "scope": "Checks agreement, progress, and fresh-entropy influence after snapshots of all eleven states. Does not claim equivalence to upstream symbolic compromise analysis or inherit its proof."
+      "scope": "Empirical capture, fresh-entropy and delivery checks for the fixed PQ2HE profile; no claim of equivalence to upstream symbolic compromise analysis or proof."
     }
   ],
-  "scope": "Independent behavioral coverage of the public specifications. This is not Signal wire compatibility or an inherited formal proof. No upstream implementation or test body is included.",
+  "scope": "Pinned upstream inventories and scoped behavioral comparisons for the current profile. Covered behavior means independent local regression tests, not copied test bodies, protocol interoperability, an inherited proof or exhaustive security assurance.",
   "baseline": {
     "upstream_tests_passed": 57,
     "version": "1.6.0"
@@ -480,7 +461,7 @@
     {
       "source": "https://github.com/C2SP/wycheproof",
       "provenance": "wycheproof/provenance.json",
-      "cases": 1084
+      "cases": 1076
     },
     {
       "source": "https://github.com/RustCrypto/KEMs",
@@ -490,7 +471,7 @@
     },
     {
       "source": "https://github.com/signalapp/libsignal",
-      "revision": "e8cc2dddd578859b4a029c9c94670b24ce2b616a",
+      "revision": "257105c55a7389ca6b1e85185e2769465e6729f1",
       "scope": "Complete inventories for protocol session/ratchet integration tests, chain-key unit tests and session-management regression/property tests. Group messaging, sealed sender, identity fingerprints and other unrelated APIs are outside this channel. Behavioral mappings are independent tests, not copied bodies or a claim of identical wire compatibility.",
       "cases": [
         {
@@ -504,8 +485,9 @@
           "name": "test_chain_jump_over_limit",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/double/tests.rs::skipped_key_bounds_apply_across_both_chains_and_all_dh_turns",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::impossible_counters_and_epochs_do_not_advance_or_allocate"
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::random_failure_and_counter_exhaustion_are_transactional"
           ]
         },
         {
@@ -513,9 +495,9 @@
           "name": "test_chain_jump_over_limit_with_self",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/double/tests.rs::skipped_key_bounds_apply_across_both_chains_and_all_dh_turns"
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns"
           ],
-          "scope": "No self-messaging identity special case; every endpoint uses the same 4096 derivation bound."
+          "scope": "No self-messaging identity special case; every endpoint uses the same 256 derivation bound."
         },
         {
           "path": "rust/protocol/tests/session.rs",
@@ -546,8 +528,8 @@
           "name": "test_basic_session",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/hybrid/tests.rs::hybrid_sessions_agree_across_fresh_classical_and_post_quantum_epochs",
-            "crates/verifier/src/channel/ratchet/hybrid/tests.rs::concurrent_reordering_loss_and_old_messages_cross_both_component_epochs"
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
           ]
         },
         {
@@ -555,10 +537,10 @@
           "name": "test_message_key_limits",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/double/tests.rs::skipped_key_bounds_apply_across_both_chains_and_all_dh_turns",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::cache_limits_are_global_and_expiry_is_not_extended_by_clock_regression_or_bad_input"
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::expiry_is_monotonic_and_owned_response_keys_survive_until_discarded"
           ],
-          "scope": "Exercises our global 4096-key component limit, authenticated eviction, consumption and expiry rather than Signal's 2000-key limit."
+          "scope": "Exercises our global 256-key limit, authenticated eviction, consumption and expiry rather than Signal's 2000-key limit."
         },
         {
           "path": "rust/protocol/tests/session.rs",
@@ -637,7 +619,7 @@
           "name": "test_longer_sessions",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/hybrid/tests.rs::concurrent_reordering_loss_and_old_messages_cross_both_component_epochs",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
             "fuzz/fuzz_targets/ratchet.rs"
           ]
         },
@@ -654,7 +636,7 @@
           "name": "test_pqr_state_and_message_contents_nonempty",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/hybrid/tests.rs::hybrid_sessions_agree_across_fresh_classical_and_post_quantum_epochs"
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers"
           ]
         },
         {
@@ -697,20 +679,20 @@
           "path": "rust/protocol/tests/ratchet.rs",
           "name": "test_bob_rejects_torsioned_basekey",
           "status": "not_applicable",
-          "reason": "This upstream check authenticates a PQXDH base key. Our setup authenticates every initial DH-key byte in its quote/transcript; every record authenticates its exact public-key encoding, including the X25519 ignored high bit."
+          "reason": "This upstream check authenticates a PQXDH base key. Our setup authenticates every initial DH-key byte in its quote/transcript; every record authenticates the exact encrypted X448/ML-KEM header encoding."
         },
         {
           "path": "rust/protocol/tests/ratchet.rs",
           "name": "test_bob_rejects_highbit_basekey",
           "status": "not_applicable",
-          "reason": "This upstream check authenticates a PQXDH base key. Our setup authenticates every initial DH-key byte in its quote/transcript; every record authenticates its exact public-key encoding, including the X25519 ignored high bit."
+          "reason": "This upstream check authenticates a PQXDH base key. Our setup authenticates every initial DH-key byte in its quote/transcript; every record authenticates the exact encrypted X448/ML-KEM header encoding."
         },
         {
           "path": "rust/protocol/src/ratchet/keys.rs",
           "name": "test_chain_key_derivation",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/double/tests.rs::double_ratchet_matches_independent_x25519_hkdf_hmac_vectors"
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors"
           ]
         },
         {
@@ -748,7 +730,7 @@
           "name": "scenario_interleaved_delivery_with_gaps_and_recovery",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/hybrid/tests.rs::concurrent_reordering_loss_and_old_messages_cross_both_component_epochs"
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
           ],
           "scope": "Covers message behavior; does not implement legacy event-machine migration."
         },
@@ -757,7 +739,7 @@
           "name": "scenario_chain_jump_over_limit",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/double/tests.rs::skipped_key_bounds_apply_across_both_chains_and_all_dh_turns"
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns"
           ],
           "scope": "Covers message behavior; does not implement legacy event-machine migration."
         },
@@ -773,7 +755,8 @@
           "status": "covered_behavior",
           "tests": [
             "crates/verifier/src/channel/server.rs::admission_rejects_forgery_and_replay_and_streams_outlive_the_session",
-            "crates/verifier/src/channel/ratchet/hybrid/tests.rs::invalid_composite_headers_and_ciphertexts_never_commit_either_component"
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing"
           ],
           "scope": "Covers message behavior; does not implement legacy event-machine migration."
         },
@@ -818,5 +801,401 @@
         "normally_ignored_session_tests_included": 2
       }
     }
+  ],
+  "design_reviews": [
+    {
+      "repository": "https://github.com/matrix-org/vodozemac",
+      "revision": "70ad23e8cbb1c7c0ab5884553f49a4e4f05af80b",
+      "reviewed_paths": [
+        "src/olm/session/mod.rs",
+        "src/olm/session/receiver_chain.rs",
+        "src/olm/session/double_ratchet.rs",
+        "src/olm/session/chain_key.rs",
+        "src/olm/session/message_key.rs",
+        "src/olm/session/ratchet.rs",
+        "src/olm/session/root_key.rs"
+      ],
+      "scope": "Olm one-to-one ratchet implementation and selected ratchet tests. Excludes Megolm, identity/prekey establishment, pickling, libolm migration, getters and optional low-level key export.",
+      "behavior_comparisons": [
+        {
+          "upstream_cases": [
+            "out_of_order_decryption",
+            "more_out_of_order_decryption",
+            "ratchet_counts"
+          ],
+          "local_tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+          ]
+        },
+        {
+          "upstream_cases": [
+            "max_keys_out_of_order_decryption",
+            "max_gap_out_of_order_decryption",
+            "respect_max_gap"
+          ],
+          "local_tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+          ],
+          "scope": "Equivalent bounded-work/retention risks; numeric limits and eviction policies differ."
+        },
+        {
+          "upstream_cases": [
+            "advance_with_non_contributory_key_fails"
+          ],
+          "local_tests": [
+            "crates/verifier/src/channel/ratchet/keys/tests.rs::wycheproof_x448_including_twists_noncanonical_and_low_order_points"
+          ]
+        },
+        {
+          "upstream_cases": [
+            "advancing_chain_key_increments_index",
+            "advancing_remote_chain_key_increments_index"
+          ],
+          "local_tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors"
+          ]
+        }
+      ],
+      "design_decision": "Keep bounded candidate derivation followed by authenticated commit and single-use delayed keys. Its separate derivation and retention limits are policy tradeoffs, not a reason to change this profile. Check effective dependency erasure features as well as wrapper types.",
+      "upstream_execution": "Source and test review; this upstream suite was not executed."
+    },
+    {
+      "repository": "https://github.com/openmls/openmls",
+      "revision": "350ddbe55ed742e4f311db628363ec314ddac6f9",
+      "reviewed_paths": [
+        "openmls/src/tree/sender_ratchet.rs",
+        "openmls/src/tree/secret_tree.rs",
+        "openmls/src/tree/tests_and_kats/unit_tests/test_sender_ratchet.rs"
+      ],
+      "scope": "Four ordinary sender-ratchet tests and their implementation. MLS group trees, membership/epoch transactions and draft virtual-client DualUseRatchet are different protocols and are excluded.",
+      "behavior_comparisons": [
+        {
+          "upstream_cases": [
+            "test_max_forward_distance"
+          ],
+          "local_tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns"
+          ]
+        },
+        {
+          "upstream_cases": [
+            "test_out_of_order_generations",
+            "test_forward_secrecy"
+          ],
+          "local_tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::expiry_is_monotonic_and_owned_response_keys_survive_until_discarded"
+          ]
+        },
+        {
+          "upstream_cases": [
+            "sender_ratchet_generation_overflow"
+          ],
+          "local_tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::random_failure_and_counter_exhaustion_are_transactional"
+          ]
+        }
+      ],
+      "design_decision": "Retain explicit generation-overflow rejection, bounded forward derivation and deletion after use. Group key-tree and own-message recovery semantics do not belong in a two-endpoint session.",
+      "upstream_execution": "Source and test review; this upstream suite was not executed."
+    },
+    {
+      "repository": "https://github.com/BelledonneCommunications/lime",
+      "revision": "4242fb4b6e4c915fb8ddde6fdac80c5d49790847",
+      "reviewed_paths": [
+        "tester/lime_double_ratchet-tester.cpp",
+        "tester/lime_lime-tester.cpp",
+        "src/lime_double_ratchet.cpp"
+      ],
+      "scope": "One-to-one double-ratchet suite plus hybrid KEM rotation tests. Multi-device fanout, SQLite persistence, prekeys and alternate payload/encryption policies are excluded.",
+      "behavior_comparisons": [
+        {
+          "upstream_cases": [
+            "Basic",
+            "Pattern",
+            "Long Exchange 1",
+            "Long Exchange 3",
+            "Long Exchange 10",
+            "Skip message"
+          ],
+          "local_tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+          ]
+        },
+        {
+          "upstream_cases": [
+            "Skip more messages than limit"
+          ],
+          "local_tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns"
+          ],
+          "scope": "Includes combined gaps across the old and new DH chain, not only a single-chain limit."
+        }
+      ],
+      "design_decision": "Keep tests for a global skipped-key bound across DH turns. Its message/time-based KEM cadence saves bandwidth but changes recovery timing; this profile requires a full KEM exchange at every alternating turn.",
+      "upstream_execution": "Source and test review; this upstream suite was not executed."
+    },
+    {
+      "repository": "https://github.com/simplex-chat/simplexmq",
+      "revision": "27a37387be98d9c7ec0e62373e125539675d0095",
+      "reviewed_paths": [
+        "tests/AgentTests/DoubleRatchetTests.hs",
+        "src/Simplex/Messaging/Crypto/Ratchet.hs",
+        "protocol/pqdr.md"
+      ],
+      "scope": "PQ2HE state transitions, encrypted headers, root/chain derivation and all named DoubleRatchetTests schedules. X448 and full ML-KEM are mandatory here; SNTRUP negotiation, X3DH and persisted/versioned states are absent.",
+      "behavior_comparisons": [
+        {
+          "upstream_cases": [
+            "should encrypt and decrypt messages",
+            "should encrypt and decrypt skipped messages",
+            "should encrypt and decrypt many messages",
+            "should allow skipped after ratchet advance"
+          ],
+          "local_tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+          ],
+          "scope": "The local profile fixes X448/ML-KEM-768 and includes asymmetric bursts, cross-turn retention, replay, rollback and loss."
+        },
+        {
+          "upstream_cases": [
+            "should serialize and parse message header",
+            "should serialize and parse message header (KEM)"
+          ],
+          "local_tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
+          ],
+          "scope": "Local coverage validates its own fixed binary grammar, not SimpleX encoding."
+        }
+      ],
+      "design_decision": "Use full KEM plus DH on both root steps, fixed encrypted headers and deferred fresh send entropy. Domain separation, header encoding and ML-KEM substitution are Stogas-specific; this is not SimpleX wire compatibility or inherited security qualification.",
+      "upstream_execution": "Source and test review; this upstream suite was not executed.",
+      "cases": [
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should serialize and parse message header",
+          "status": "covered_behavior",
+          "tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
+          ]
+        },
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should encode/decode ratchet as JSON",
+          "status": "not_applicable",
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+        },
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should decode v2 Ratchet with default field values",
+          "status": "not_applicable",
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+        },
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should agree the same ratchet parameters",
+          "status": "not_applicable",
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+        },
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should agree the same ratchet parameters with version 1",
+          "status": "not_applicable",
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+        },
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should propose KEM during agreement, but no shared secret",
+          "status": "not_applicable",
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+        },
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should agree shared secret using KEM",
+          "status": "not_applicable",
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+        },
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should reject proposed KEM in reply",
+          "status": "not_applicable",
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+        },
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should allow second proposal in reply",
+          "status": "not_applicable",
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+        },
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should fail if reply contains acceptance without proposal",
+          "status": "not_applicable",
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+        },
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should serialize and parse public KEM params",
+          "status": "not_applicable",
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+        },
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should disable and re-enable KEM",
+          "status": "not_applicable",
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+        },
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should disable and re-enable KEM (always set PQEncryption)",
+          "status": "not_applicable",
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+        },
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should enable KEM when it was not enabled in handshake",
+          "status": "not_applicable",
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+        },
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should enable KEM when it was not enabled in handshake (always set PQEncryption)",
+          "status": "not_applicable",
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+        },
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should encrypt and decrypt messages",
+          "status": "covered_behavior",
+          "tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers"
+          ]
+        },
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should encrypt and decrypt skipped messages",
+          "status": "covered_behavior",
+          "tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers"
+          ]
+        },
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should encrypt and decrypt many messages",
+          "status": "covered_behavior",
+          "tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers"
+          ]
+        },
+        {
+          "path": "tests/AgentTests/DoubleRatchetTests.hs",
+          "name": "should allow skipped after ratchet advance",
+          "status": "covered_behavior",
+          "tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers"
+          ]
+        }
+      ]
+    },
+    {
+      "repository": "https://github.com/Syndace/python-doubleratchet",
+      "revision": "9ef33939048e7a09d76ce96232645717a5073c47",
+      "reviewed_paths": [
+        "tests/test_double_ratchet.py",
+        "tests/test_diffie_hellman_ratchet.py",
+        "tests/test_symmetric_key_ratchet.py",
+        "tests/test_kdf_chain.py",
+        "tests/test_recommended_kdfs.py",
+        "tests/test_recommended_aeads.py",
+        "doubleratchet/double_ratchet.py"
+      ],
+      "scope": "All eight named test functions reviewed for applicable behavior. Serialization migrations, configurable cryptographic providers and its AES-CBC/HMAC construction are not this protocol.",
+      "behavior_comparisons": [
+        {
+          "upstream_cases": [
+            "test_double_ratchet"
+          ],
+          "local_tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+          ],
+          "scope": "Compares associated-data authentication, failed-decryption rollback and duplicate rejection before/after DH changes; JSON snapshot restoration intentionally differs."
+        },
+        {
+          "upstream_cases": [
+            "test_diffie_hellman_ratchet"
+          ],
+          "local_tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
+          ]
+        },
+        {
+          "upstream_cases": [
+            "test_symmetric_key_ratchet",
+            "test_kdf_chain",
+            "test_kdf_hkdf",
+            "test_kdf_separate_hmacs"
+          ],
+          "local_tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
+          ],
+          "scope": "Independent vectors cover the selected KDFs; algorithms and labels are not interchangeable."
+        }
+      ],
+      "design_decision": "Keep rollback tests using actual authenticated encryption. An authentication callback that always rejects checks rollback alone and cannot establish header/ciphertext binding; the local composite test now exercises AES-GCM.",
+      "upstream_execution": "Source and test review; this upstream suite was not executed."
+    },
+    {
+      "repository": "https://github.com/wireapp/proteus",
+      "revision": "bb759d762bfde376fa5a8a08b1d1153a345ab28a",
+      "reviewed_paths": [
+        "src/internal/session.rs"
+      ],
+      "scope": "Session ratchet implementation and its test module. Prekey retry/replacement, identity/session-state selection and serialized state are excluded.",
+      "behavior_comparisons": [
+        {
+          "upstream_cases": [
+            "encrypt_decrypt",
+            "can_decrypt_in_wrong_order_but_can_not_decrypt_twice",
+            "mass_communication",
+            "skipped_message_keys"
+          ],
+          "local_tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+          ]
+        },
+        {
+          "upstream_cases": [
+            "fail_on_decryption_of_a_too_old_message",
+            "max_counter_gap"
+          ],
+          "local_tests": [
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::expiry_is_monotonic_and_owned_response_keys_survive_until_discarded"
+          ],
+          "scope": "Count-based eviction and time-based expiry differ; both require refusing discarded keys while preserving live chains."
+        }
+      ],
+      "design_decision": "Reserve pending-key storage only after validating the gap; commit and consume keys after authentication. This pattern also appears upstream and does not change cryptographic derivation.",
+      "upstream_execution": "Source and test review; this upstream suite was not executed."
+    }
+  ],
+  "protocol_documents": [
+    "https://github.com/simplex-chat/simplexmq/blob/27a37387be98d9c7ec0e62373e125539675d0095/protocol/pqdr.md",
+    "https://signal.org/docs/specifications/doubleratchet/#double-ratchet-with-header-encryption",
+    "https://www.rfc-editor.org/rfc/rfc7748.html"
   ]
 }

@@ -6,7 +6,7 @@ use std::{
 };
 use stogas_verifier::channel::{
     Error, Kind, MAX_RECORD_BYTES, MAX_RECORD_PLAINTEXT, ServerReader, ServerSession, ServerWriter,
-    ratchet::{ChunkSize, InitialKey},
+    ratchet::{InitialKey, PUBLIC_KEY_BYTES},
 };
 use zeroize::Zeroizing;
 
@@ -46,7 +46,7 @@ const unsafe fn record<'a>(data: *mut u8, len: usize) -> Result<&'a mut [u8], Er
 }
 
 /// # Safety
-/// Both outputs point to 32 writable, disjoint bytes. Copy the public key into
+/// Outputs point to 32 private and 1240 public writable, disjoint bytes. Bind the public key into
 /// the authenticated setup; erase the private output after transferring it to
 /// `stogas_channel_session_new` or abandoning setup.
 #[unsafe(no_mangle)]
@@ -58,16 +58,16 @@ pub unsafe extern "C" fn stogas_channel_key_generate(
         if private_key.is_null() || public_key.is_null() {
             return Err(Error::Record);
         }
-        // SAFETY: caller supplies disjoint writable 32-byte outputs.
+        // SAFETY: caller supplies disjoint writable outputs of the declared lengths.
         unsafe {
             private_key.write_bytes(0, 32);
-            public_key.write_bytes(0, 32);
+            public_key.write_bytes(0, PUBLIC_KEY_BYTES);
         }
         let key = InitialKey::generate()?;
-        // SAFETY: the borrowed source arrays each have exactly 32 bytes.
+        // SAFETY: source and destination lengths match the public ABI.
         unsafe {
             private_key.copy_from_nonoverlapping(key.secret_bytes().as_ptr(), 32);
-            public_key.copy_from_nonoverlapping(key.public_key().as_ptr(), 32);
+            public_key.copy_from_nonoverlapping(key.public_key().as_ptr(), PUBLIC_KEY_BYTES);
         }
         Ok(())
     })
@@ -81,7 +81,6 @@ pub unsafe extern "C" fn stogas_channel_session_new(
     root: *const u8,
     id: *const u8,
     initial_private: *const u8,
-    ratchet_bytes: u16,
     output: *mut *mut StogasChannelSession,
 ) -> u32 {
     status(|| {
@@ -93,7 +92,6 @@ pub unsafe extern "C" fn stogas_channel_session_new(
         if root.is_null() || id.is_null() || initial_private.is_null() {
             return Err(Error::Record);
         }
-        let size = ChunkSize::new(ratchet_bytes)?;
         let mut secret = Zeroizing::new([0; 32]);
         let mut initial = Zeroizing::new([0; 32]);
         let mut identity = [0; 32];
@@ -103,7 +101,7 @@ pub unsafe extern "C" fn stogas_channel_session_new(
             initial.copy_from_slice(slice::from_raw_parts(initial_private, 32));
             identity.copy_from_slice(slice::from_raw_parts(id, 32));
             output.write(Box::into_raw(Box::new(StogasChannelSession(
-                ServerSession::new(secret, identity, size, InitialKey::from_bytes(initial)),
+                ServerSession::new(secret, identity, InitialKey::from_bytes(initial)),
             ))));
         }
         Ok(())

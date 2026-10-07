@@ -8,6 +8,46 @@ import { Exchange, record, response } from './channel-fixture.mjs';
 
 const header = { status: 200, headers: { 'Content-Type': 'text/event-stream' } };
 
+test('acknowledgement can cancel safely even when headers arrive in the same chunk', async () => {
+	const abort = new AbortController();
+	const state = fixture({
+		fetch: async () => response([record(4), record(1, JSON.stringify(header)), record(3)])
+	});
+	await assert.rejects(
+		state.send({
+			signal: abort.signal,
+			onProgress(phase) {
+				if (phase !== 'acknowledged') return;
+				assert.equal(state.exchange.emitting, false);
+				abort.abort();
+			}
+		}),
+		{ submission: 'execution_unknown' }
+	);
+	assert.equal(state.exchange.freed, 1);
+	assert.equal(state.releases, 1);
+});
+
+test('an incomplete response start cannot notify an acknowledgement', async () => {
+	let calls = 0;
+	const state = fixture({
+		fetch: async () =>
+			new Response(record(4).slice(0, -1), {
+				headers: { 'content-type': SESSION_CONTENT_TYPE }
+			})
+	});
+	await assert.rejects(
+		state.send({
+			onProgress(phase) {
+				if (phase !== 'acknowledged') return;
+				calls++;
+			}
+		}),
+		{ submission: 'execution_unknown' }
+	);
+	assert.equal(calls, 0);
+});
+
 function fixture(options = {}) {
 	const exchange = new Exchange();
 	let releases = 0;
@@ -215,17 +255,17 @@ test('large source chunks split into bounded records without base64', async () =
 		fetch: async () =>
 			response([record(1, JSON.stringify({ status: 204, headers: {} })), record(3)])
 	});
+	const body = Uint8Array.from({ length: 200_000 }, (_, index) => index % 251);
 	const request = new Request('https://e2ee.example/v1/chat/completions', {
 		method: 'POST',
-		body: new Uint8Array(200_000)
+		body
 	});
 	const result = await state.send({ request });
 	assert.equal(result.status, 204);
 	assert.equal(result.body, null);
-	assert.deepEqual(
-		state.exchange.sealed.filter((entry) => entry.kind === 2).map((entry) => entry.bytes.length),
-		[65_515, 65_515, 65_515, 3_455]
-	);
+	const data = state.exchange.sealed.filter((entry) => entry.kind === 2);
+	assert.ok(data.every((entry) => entry.bytes.length > 0 && entry.bytes.length <= 65_515));
+	assert.deepEqual(new Uint8Array(Buffer.concat(data.map((entry) => entry.bytes))), body);
 	assert.equal(state.releases, 1);
 });
 

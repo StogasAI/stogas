@@ -2,10 +2,7 @@
 mod async_tests;
 
 use super::{
-    Direction, Error, Kind,
-    ratchet::{ChunkSize, InitialKey},
-    record::Records,
-    record_size,
+    Direction, Error, Kind, ratchet::InitialKey, record::Records, record_size,
     session::ClientSession,
 };
 use serde::Deserialize;
@@ -42,7 +39,7 @@ struct Record {
 
 fn fixture() -> Vector {
     serde_json::from_str(include_str!(
-        "../../../../tests/fixtures/channel-records-v3.json"
+        "../../../../tests/fixtures/channel-records.json"
     ))
     .unwrap()
 }
@@ -53,14 +50,8 @@ fn header() -> Vec<u8> {
 
 fn sessions(root: [u8; 32], id: [u8; 32]) -> (ClientSession, super::ServerSession) {
     let initial = InitialKey::from_bytes(Zeroizing::new([3; 32]));
-    let client = ClientSession::new(
-        Zeroizing::new(root),
-        id,
-        600,
-        ChunkSize::FULL,
-        initial.public_key(),
-    );
-    let server = super::ServerSession::new(Zeroizing::new(root), id, ChunkSize::FULL, initial);
+    let client = ClientSession::new(Zeroizing::new(root), id, 600, initial.public_key()).unwrap();
+    let server = super::ServerSession::new(Zeroizing::new(root), id, initial);
     (client, server)
 }
 
@@ -198,7 +189,7 @@ fn record_mutation_order_and_truncation_fail_closed() {
 #[test]
 fn client_bounds_unacknowledged_distance_and_never_reuses_numbers() {
     let (mut session, mut server_session) = sessions([1; 32], [2; 32]);
-    let mut requests: Vec<_> = (0..4096).map(|_| session.request().unwrap()).collect();
+    let mut requests: Vec<_> = (0..256).map(|_| session.request().unwrap()).collect();
     assert!(matches!(session.request(), Err(Error::Pending)));
     // Later acknowledgements cannot let the sender retire a delayed first start.
     let mut response = response_records(&mut server_session, requests.last_mut().unwrap());
@@ -217,11 +208,11 @@ fn client_bounds_unacknowledged_distance_and_never_reuses_numbers() {
         .open(&mut keepalive, 0)
         .unwrap();
     let next = session.request().unwrap();
-    assert_eq!(next.number(), 4096);
+    assert_eq!(next.number(), 256);
     assert!(matches!(session.request(), Err(Error::Pending)));
     drop(requests);
     drop(next);
-    assert_eq!(session.request().unwrap().number(), 4097);
+    assert_eq!(session.request().unwrap().number(), 257);
     session.close();
     assert!(matches!(session.request(), Err(Error::Closed)));
 }
@@ -231,7 +222,7 @@ fn invalid_response_cannot_acknowledge_and_active_keys_survive_close() {
     let (mut session, _) = sessions([1; 32], [2; 32]);
     let mut first = session.request().unwrap();
     assert!(first.open(&mut [0; 21], 0).is_err());
-    for _ in 1..4096 {
+    for _ in 1..256 {
         drop(session.request().unwrap());
     }
     assert!(matches!(session.request(), Err(Error::Limit)));
@@ -252,7 +243,7 @@ fn invalid_response_cannot_acknowledge_and_active_keys_survive_close() {
 fn split_request_preserves_independent_owners_during_early_response() {
     let (mut session, mut server_session) = sessions([1; 32], [2; 32]);
     let (mut upload, mut response) = session.request().unwrap().split();
-    for _ in 1..4096 {
+    for _ in 1..256 {
         drop(session.request().unwrap());
     }
     assert!(matches!(session.request(), Err(Error::Pending)));
@@ -268,7 +259,7 @@ fn split_request_preserves_independent_owners_during_early_response() {
             Ok(())
         })
         .unwrap();
-    assert_eq!(session.request().unwrap().number(), 4096);
+    assert_eq!(session.request().unwrap().number(), 256);
     session.close();
     // The admitted directions outlive both session owners.
     server_session.close();
@@ -480,7 +471,7 @@ fn an_admitted_late_response_survives_key_expiry_and_later_recovery_epochs() {
 #[test]
 fn dropped_starts_require_session_renewal() {
     let (mut session, _) = sessions([1; 32], [2; 32]);
-    for number in 0..4096 {
+    for number in 0..256 {
         let request = session.request().unwrap();
         assert_eq!(request.number(), number);
         drop(request);

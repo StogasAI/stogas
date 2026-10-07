@@ -25,10 +25,11 @@ ed25519-dalek = { workspace = true, features = ["digest"] }
 getrandom = "0.4.3"
 hex.workspace = true
 hkdf = "0.13.0"
+# Enable erasure for HKDF's HMAC state through Cargo feature unification.
 hmac = { version = "0.13.0", features = ["zeroize"] }
 hpke = { version = "=0.14.0", default-features = false, features = ["alloc", "getrandom", "aes", "x25519", "mlkem"] }
 libcrux-ml-dsa = { version = "=0.0.10", default-features = false, features = ["mldsa65"] }
-libcrux-ml-kem = { version = "=0.0.10", default-features = false, features = ["incremental", "mlkem768"] }
+libcrux-ml-kem = { version = "=0.0.10", default-features = false, features = ["mlkem768"] }
 libcrux-sha3 = { version = "=0.0.10", default-features = false }
 p256 = { version = "0.13.2", default-features = false, features = ["ecdsa", "pkcs8"] }
 p384 = { version = "0.13.1", default-features = false, features = ["ecdsa", "pkcs8"], optional = true }
@@ -46,7 +47,7 @@ stogas-offline-sigstore = { path = "../offline-sigstore", version = "0.1.0-alpha
 subtle = { version = "2.6.1", default-features = false }
 thiserror.workspace = true
 x509-parser = { version = "0.18.0" }
-x25519-dalek = { version = "=3.0.0", default-features = false, features = ["static_secrets", "zeroize"] }
+x448 = { version = "=0.14.0-pre.12", default-features = false, features = ["static_secrets"] }
 zeroize.workspace = true
 
 [dev-dependencies]

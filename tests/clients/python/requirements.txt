@@ -1,0 +1,5 @@
+langchain-openai==1.6.7
+llama-index-llms-openai-like==0.8.1
+litellm==1.104.0
+pydantic-ai-slim[openai]==2.31.1
+openai==2.54.0

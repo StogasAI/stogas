@@ -26,9 +26,17 @@ fn client(base_url: &str, api_key: &str) -> anyhow::Result<Client<OpenAIConfig>>
 async fn main() -> anyhow::Result<()> {
     let api_key = std::env::var("STOGAS_API_KEY")?;
     let model = std::env::var("STOGAS_MODEL")?;
-    let mut transport = Transport::start(&TransportOptions::default())?;
+    let supplied_base = std::env::var("STOGAS_BASE_URL").ok();
+    let mut transport = if supplied_base.is_none() {
+        Some(Transport::start(&TransportOptions::default())?)
+    } else {
+        None
+    };
+    let base_url = supplied_base
+        .as_deref()
+        .unwrap_or_else(|| transport.as_ref().unwrap().base_url());
     let result = async {
-        let client = client(transport.base_url(), &api_key)?;
+        let client = client(base_url, &api_key)?;
         let request = CreateChatCompletionRequestArgs::default()
             .model(model)
             .messages([ChatCompletionRequestUserMessageArgs::default()
@@ -58,7 +66,9 @@ async fn main() -> anyhow::Result<()> {
         Ok(())
     }
     .await;
-    transport.close();
+    if let Some(transport) = &mut transport {
+        transport.close();
+    }
     result
 }
 

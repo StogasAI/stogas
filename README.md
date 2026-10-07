@@ -28,8 +28,19 @@ stogas serve --security tls
 ```
 
 Use the complete URL printed by the command as your client's base URL. Keep its capability
-private and disable automatic inference retries. Use `--security e2ee` for encrypted transport
+private and configure retries in your OpenAI client. The transport never replays inference;
+a retry after interruption may execute again. Use `--security e2ee` for encrypted transport
 over HTTPS, and stop the process with Ctrl+C.
+
+Check a fresh verified connection and gateway admission without an API key or provider request:
+
+```console
+stogas probe --security tls
+stogas probe --security e2ee
+```
+
+Each command prints a JSON report and exits zero only when the verified gateway passes admission.
+This does not test provider health or database-backed authorization.
 
 For offline verification:
 
@@ -81,7 +92,12 @@ This project is pre-1.0. APIs and package interfaces may change.
 cargo test --locked --workspace --all-targets
 ```
 
-[CI](.github/workflows/ci.yml) covers the core, transports and language bindings.
+[CI](.github/workflows/ci.yml) covers the core, transports and language bindings. Documented HTTP
+examples run against plain HTTP and real Rust encrypted-record fixtures. Python framework coverage
+includes LangChain, LlamaIndex, LiteLLM and Pydantic AI; Fetch coverage includes Node, Bun, Deno,
+Chromium, Firefox, WebKit and Workers. The fixture setup is synthetic; separate signed-evidence
+and hardware tests own attestation. This is a pinned compatibility matrix, not a guarantee for
+every third-party client or version.
 [Fuzzing](.github/workflows/fuzz.yml) exercises parsers and verification boundaries.
 Report vulnerabilities through the [security policy](SECURITY.md).
 

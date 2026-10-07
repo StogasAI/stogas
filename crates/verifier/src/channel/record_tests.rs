@@ -1,7 +1,7 @@
 use super::*;
 
 fn records(direction: Direction) -> Records {
-    let mut header = vec![0; crate::channel::ratchet::MIN_HEADER_BYTES];
+    let mut header = vec![0; crate::channel::ratchet::HEADER_BYTES];
     header[48 + 15] = 1;
     header[48 + 23] = 1;
     Records::new(&[1; 32], &[2; 32], 42, direction, header).unwrap()
@@ -217,7 +217,7 @@ fn every_key_context_component_is_required_and_first_header_has_one_encoding() {
         0,
         24,
         26,
-        u16::try_from(super::super::ratchet::MAX_HEADER_BYTES).unwrap() + 1,
+        u16::try_from(super::super::ratchet::HEADER_BYTES).unwrap() + 1,
         u16::MAX,
     ] {
         let mut changed = wire.clone();

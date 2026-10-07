@@ -1,11 +1,11 @@
 use super::{
     Direction, Error, Kind,
-    ratchet::{ChunkSize, InitialKey, Peer},
+    ratchet::{InitialKey, MAX_SKIPPED_KEYS, Peer},
     record::{Records, start_header},
 };
 use zeroize::Zeroizing;
 
-const REPLAY_WINDOW: u64 = 4096;
+const REPLAY_WINDOW: u64 = MAX_SKIPPED_KEYS as u64;
 
 /// Server-side request admission. The caller serializes access to this owner;
 /// accepted requests have independent upload and response cipher owners.
@@ -13,25 +13,20 @@ pub struct ServerSession {
     peer: Option<Peer>,
     id: [u8; 32],
     next: u64,
-    accepted: [u64; 64],
+    accepted: [u64; MAX_SKIPPED_KEYS / 64],
 }
 
 impl ServerSession {
     /// Construct from the root exported by the authenticated server setup.
     #[must_use]
-    pub fn new(
-        root: Zeroizing<[u8; 32]>,
-        id: [u8; 32],
-        size: ChunkSize,
-        initial: InitialKey,
-    ) -> Self {
-        let peer = Peer::responder(&root, size, initial);
+    pub fn new(root: Zeroizing<[u8; 32]>, id: [u8; 32], initial: InitialKey) -> Self {
+        let peer = Peer::responder(&root, initial);
         drop(root);
         Self {
             peer: Some(peer),
             id,
             next: 0,
-            accepted: [0; 64],
+            accepted: [0; MAX_SKIPPED_KEYS / 64],
         }
     }
 
@@ -140,19 +135,13 @@ mod tests {
     fn admission_rejects_forgery_and_replay_and_streams_outlive_the_session() {
         let root = Zeroizing::new([1; 32]);
         let initial = InitialKey::from_bytes(Zeroizing::new([3; 32]));
-        let mut client = ClientSession::new(
-            root.clone(),
-            [2; 32],
-            600,
-            ChunkSize::FULL,
-            initial.public_key(),
-        );
-        let mut server = ServerSession::new(root, [2; 32], ChunkSize::FULL, initial);
+        let mut client =
+            ClientSession::new(root.clone(), [2; 32], 600, initial.public_key()).unwrap();
+        let mut server = ServerSession::new(root, [2; 32], initial);
         let mut delayed = client.request().unwrap();
         let mut request = client.request().unwrap();
         let mut start = request.seal(Kind::Metadata, b"metadata").unwrap();
-        // X25519 masks the high bit, so this alternate encoding derives the
-        // same DH result. The authenticated header must still reject it.
+        // A change to the encrypted ratchet header cannot be admitted.
         let mut aliased = start.clone();
         aliased[6 + 31] ^= 128;
         assert!(matches!(
@@ -215,22 +204,18 @@ mod exchange_tests {
 
     #[test]
     fn concurrent_streams_authenticate_across_recovery_epochs_and_session_close() {
-        for width in [32, 34, 256, 1152] {
-            let size = ChunkSize::new(width).unwrap();
+        {
             let root = Zeroizing::new([31; 32]);
             let initial = InitialKey::from_bytes(Zeroizing::new([3; 32]));
             let mut client =
-                ClientSession::new(root.clone(), [32; 32], 600, size, initial.public_key());
-            let mut server = ServerSession::new(root, [32; 32], size, initial);
-            let mut maximum_epoch = 0;
+                ClientSession::new(root.clone(), [32; 32], 600, initial.public_key()).unwrap();
+            let mut server = ServerSession::new(root, [32; 32], initial);
             for round in 0..100 {
                 let mut pending = Vec::new();
                 for index in 0..24 {
                     let mut request = client.request().unwrap();
                     let metadata = [u8::try_from(round).unwrap(), index];
                     let start = request.seal(Kind::Metadata, &metadata).unwrap();
-                    maximum_epoch =
-                        maximum_epoch.max(u64::from_be_bytes(start[70..78].try_into().unwrap()));
                     pending.push((request, start, metadata));
                 }
                 let mut admitted = Vec::new();
@@ -273,7 +258,6 @@ mod exchange_tests {
                     request.complete().unwrap();
                 }
             }
-            assert!(maximum_epoch >= 4, "ratchet stalled at width {width}");
             assert!(matches!(client.request(), Err(Error::Closed)));
         }
     }

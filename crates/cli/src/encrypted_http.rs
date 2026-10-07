@@ -26,6 +26,16 @@ use url::Url;
 const MAX_METADATA_BYTES: usize = 16 * 1024;
 const MAX_REQUEST_BYTES: usize = 128 * 1024 * 1024;
 
+/// Authenticated session retirement, independent of the application's HTTP result.
+#[derive(Clone, Copy)]
+pub(crate) struct SessionClosing;
+
+struct ResponseMetadata {
+    status: StatusCode,
+    headers: HeaderMap,
+    closing: bool,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("invalid encrypted request metadata; request was not sent")]
@@ -129,7 +139,7 @@ pub async fn send(
     while state.metadata.is_none() && state.decoder.is_some() {
         state.advance().await?;
     }
-    let (status, headers) = state.metadata.take().ok_or(Error::Metadata)?;
+    let metadata = state.metadata.take().ok_or(Error::Metadata)?;
     let body = if state.body_allowed {
         Body::from_stream(stream::unfold(Some(state), |state| async {
             let mut state = state?;
@@ -147,8 +157,11 @@ pub async fn send(
         Body::empty()
     };
     let mut response = Response::new(body);
-    *response.status_mut() = status;
-    *response.headers_mut() = headers;
+    *response.status_mut() = metadata.status;
+    *response.headers_mut() = metadata.headers;
+    if metadata.closing {
+        response.extensions_mut().insert(SessionClosing);
+    }
     Ok(response)
 }
 
@@ -247,7 +260,7 @@ struct Incoming {
     decoder: Option<ResponseDecoder>,
     input: Bytes,
     pending: VecDeque<Bytes>,
-    metadata: Option<(StatusCode, HeaderMap)>,
+    metadata: Option<ResponseMetadata>,
     completion: Option<stogas_verifier::receipt::StreamCompletion>,
     body_allowed: bool,
     deadline: Instant,
@@ -289,9 +302,11 @@ impl Incoming {
                 }
                 match kind {
                     Kind::Metadata => {
-                        if let Ok((status, headers)) = response_metadata(bytes) {
-                            self.body_allowed = !matches!(status.as_u16(), 204 | 205 | 304);
-                            if headers
+                        if let Ok(metadata) = response_metadata(bytes) {
+                            self.body_allowed =
+                                !matches!(metadata.status.as_u16(), 204 | 205 | 304);
+                            if metadata
+                                .headers
                                 .get(header::CONTENT_TYPE)
                                 .and_then(|v| v.to_str().ok())
                                 .is_some_and(|v| {
@@ -303,7 +318,7 @@ impl Incoming {
                                 self.completion =
                                     Some(stogas_verifier::receipt::StreamCompletion::default());
                             }
-                            self.metadata = Some((status, headers));
+                            self.metadata = Some(metadata);
                         } else {
                             metadata_error = true;
                             return Err(channel::Error::Record);
@@ -351,15 +366,23 @@ impl Incoming {
     }
 }
 
-fn response_metadata(bytes: &[u8]) -> Result<(StatusCode, HeaderMap), Error> {
+fn response_metadata(bytes: &[u8]) -> Result<ResponseMetadata, Error> {
     if bytes.len() > MAX_METADATA_BYTES {
         return Err(Error::Metadata);
     }
     let value: Value = serde_json::from_slice(bytes).map_err(|_| Error::Metadata)?;
     let object = value.as_object().ok_or(Error::Metadata)?;
-    if object.len() != 2 {
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "status" | "headers" | "closing"))
+    {
         return Err(Error::Metadata);
     }
+    let closing = match object.get("closing") {
+        None => false,
+        Some(Value::Bool(value)) => *value,
+        _ => return Err(Error::Metadata),
+    };
     let status = object
         .get("status")
         .and_then(Value::as_u64)
@@ -385,7 +408,11 @@ fn response_metadata(bytes: &[u8]) -> Result<(StatusCode, HeaderMap), Error> {
             .map_err(|_| Error::Metadata)?;
         headers.insert(name, value);
     }
-    Ok((status, headers))
+    Ok(ResponseMetadata {
+        status,
+        headers,
+        closing,
+    })
 }
 
 #[cfg(test)]

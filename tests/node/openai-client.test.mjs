@@ -7,7 +7,7 @@ import { Exchange, record, response } from './channel-fixture.mjs';
 
 // Exercise the real OpenAI client through the shared public Fetch adapter.
 // Crypto is doubled; the same wire and receipt rules have real Rust/Wasm vectors.
-async function fixture(inference) {
+async function fixture(inference, maxRetries = 0) {
 	let calls = 0;
 	const exchanges = [];
 	const Transport = createTransportClass({
@@ -61,12 +61,107 @@ async function fixture(inference) {
 	return {
 		transport,
 		exchanges,
-		client: new OpenAI(transport.openAIOptions('private-example-key')),
+		client: new OpenAI({ ...transport.openAIOptions('private-example-key'), maxRetries }),
 		calls: () => calls
 	};
 }
 
 const request = { model: 'example/model', messages: [{ role: 'user', content: 'hello' }] };
+
+test('OpenAI owns retries after an acknowledged inner rejection, with a fresh encrypted exchange', async () => {
+	for (const status of [429, 503]) {
+		let attempts = 0;
+		const state = await fixture(() => {
+			const rejected = ++attempts === 1;
+			return response([
+				record(4),
+				record(4),
+				record(
+					1,
+					JSON.stringify({
+						status: rejected ? status : 200,
+						headers: { 'content-type': 'application/json', 'retry-after': '0.001' }
+					})
+				),
+				record(
+					2,
+					JSON.stringify(
+						rejected
+							? { error: { message: 'Try again', type: 'server_error' } }
+							: { choices: [{ message: { content: 'Hello' } }] }
+					)
+				),
+				record(3)
+			]);
+		}, 1);
+		try {
+			assert.equal(
+				(await state.client.chat.completions.create(request)).choices[0].message.content,
+				'Hello'
+			);
+			assert.equal(state.calls(), 2);
+			assert.equal(state.exchanges.length, 2);
+			assert.notEqual(state.exchanges[0], state.exchanges[1]);
+			for (const exchange of state.exchanges) assert.equal(exchange.freed, 1);
+		} finally {
+			await state.transport.close();
+		}
+	}
+});
+
+test('acknowledgement precedes inner headers, runs outside decoding and fires once', async () => {
+	let output;
+	let acknowledge;
+	const acknowledged = new Promise((resolve) => {
+		acknowledge = resolve;
+	});
+	let calls = 0;
+	const state = await fixture(
+		() =>
+			new Response(
+				new ReadableStream({
+					start(controller) {
+						output = controller;
+						controller.enqueue(record(4));
+					}
+				}),
+				{ headers: { 'content-type': SESSION_CONTENT_TYPE } }
+			)
+	);
+	let returned = false;
+	const sending = state.transport
+		.fetch(`${state.transport.baseURL}/chat/completions`, {
+			method: 'POST',
+			body: '{}',
+			onProgress(phase) {
+				if (phase !== 'acknowledged') return;
+				calls++;
+				assert.equal(state.exchanges[0].emitting, false);
+				acknowledge();
+				throw new Error('observer failure');
+			}
+		})
+		.then((response) => {
+			returned = true;
+			return response;
+		});
+	await acknowledged;
+	assert.equal(returned, false);
+	output.enqueue(record(4));
+	output.enqueue(
+		record(1, '{"status":429,"headers":{"content-type":"application/json","retry-after":"7"}}')
+	);
+	output.enqueue(record(2, '{"error":"later rejection"}'));
+	output.enqueue(record(3));
+	output.close();
+	const response = await sending;
+	assert.equal(response.status, 429);
+	assert.equal(response.headers.get('retry-after'), '7');
+	assert.deepEqual(await response.json(), { error: 'later rejection' });
+	assert.equal(calls, 1);
+	assert.equal(state.exchanges[0].freed, 1);
+	await state.transport.close();
+});
 
 test('outer IP rejection stays execution-unknown and OpenAI never resubmits it', async () => {
 	for (const status of [429, 503]) {
@@ -147,15 +242,21 @@ test('OpenAI request objects use the transport and upstream errors do not retry 
 				: { error: { message: 'Unavailable', type: 'server_error' } };
 		const state = await fixture(() =>
 			response([
+				record(4),
+				record(4),
 				record(1, JSON.stringify({ status, headers: { 'content-type': 'application/json' } })),
 				record(2, JSON.stringify(body)),
 				record(3)
 			])
 		);
 		try {
-			const result = state.client.chat.completions.create(request);
+			const phases = [];
+			const result = state.client.chat.completions.create(request, {
+				fetchOptions: { onProgress: (phase) => phases.push(phase) }
+			});
 			if (status === 200) assert.equal((await result).choices[0].message.content, 'Hello');
 			else await assert.rejects(result, (error) => error.status === status);
+			assert.deepEqual(phases, ['securing', 'encrypting', 'sending', 'acknowledged']);
 			assert.equal(state.calls(), 1);
 			const headers = JSON.parse(new TextDecoder().decode(state.exchanges[0].sealed[0].bytes));
 			assert.equal(headers.headers.authorization, 'Bearer private-example-key');
@@ -187,6 +288,7 @@ test('OpenAI DONE stays pending until record completion; a missing final record 
 				new Response(
 					new ReadableStream({
 						async start(controller) {
+							controller.enqueue(record(4));
 							controller.enqueue(
 								record(
 									1,
@@ -208,7 +310,14 @@ test('OpenAI DONE stays pending until record completion; a missing final record 
 				)
 		);
 		try {
-			const stream = await state.client.chat.completions.create({ ...request, stream: true });
+			const phases = [];
+			const stream = await state.client.chat.completions.create(
+				{ ...request, stream: true },
+				{
+					fetchOptions: { onProgress: (phase) => phases.push(phase) }
+				}
+			);
+			assert.deepEqual(phases, ['securing', 'encrypting', 'sending', 'acknowledged']);
 			const iterator = stream[Symbol.asyncIterator]();
 			assert.equal((await iterator.next()).value.choices[0].delta.content, 'Hello');
 			let finished = false;

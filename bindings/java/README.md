@@ -8,7 +8,7 @@ import java.net.http.HttpClient;
 
 try (var transport = new Transport()) {
     var baseUrl = transport.baseUrl();
-    // Configure your HTTP or OpenAI client with baseUrl and automatic retries disabled.
+    // Configure your HTTP or OpenAI client with baseUrl and your application retry policy.
 }
 ```
 

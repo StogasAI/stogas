@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -56,6 +57,12 @@ func TestRequestObjectsDoNotRetryOrFollowRedirects(t *testing.T) {
 				}
 			} else if err == nil {
 				t.Fatal("accepted error or redirect")
+			}
+			if status >= 400 {
+				var failure *openai.Error
+				if !errors.As(err, &failure) || failure.StatusCode != status {
+					t.Fatalf("lost typed HTTP status %d: %v", status, err)
+				}
 			}
 			if calls.Load() != 1 {
 				t.Fatalf("inference dispatched %d times", calls.Load())
