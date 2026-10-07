@@ -1,0 +1,33 @@
+[
+  {
+    "name": "ECMAScript numbers",
+    "input": {
+      "numbers": [
+        333333333.3333333,
+        1e+30,
+        4.5,
+        0.002,
+        1e-27,
+        -0.0
+      ]
+    },
+    "canonical": "{\"numbers\":[333333333.3333333,1e+30,4.5,0.002,1e-27,0]}"
+  },
+  {
+    "name": "UTF-16 and numeric property order",
+    "input": {
+      "2": false,
+      "10": true,
+      "דּ": "Hebrew",
+      "😀": "Emoji",
+      "\r": "Control",
+      "nested": [
+        {
+          "z": null,
+          "a": "line\nquote\""
+        }
+      ]
+    },
+    "canonical": "{\"\\r\":\"Control\",\"10\":true,\"2\":false,\"nested\":[{\"a\":\"line\\nquote\\\"\",\"z\":null}],\"😀\":\"Emoji\",\"דּ\":\"Hebrew\"}"
+  }
+]

@@ -114,18 +114,17 @@ fn registered_facts_recheck_current_policy_collateral_and_release_membership() {
     // policy must appraise the retained facts through the same hardware engine.
     drop(verifier);
     let mut snapshot = std::sync::Arc::try_unwrap(snapshot)
-        .ok()
-        .expect("exclusive fixture snapshot");
-    let original = snapshot.hardware_evidence.policy.clone();
-    snapshot.hardware_evidence.policy.policies[0]
+        .unwrap_or_else(|_| panic!("exclusive fixture snapshot"));
+    let original = snapshot.hardware_evidence.document.clone();
+    snapshot.hardware_evidence.document.policies[0]
         .minimum_tcb
         .snp = 255;
     assert!(snapshot.appraise_registered_boot(&facts, now).is_err());
-    snapshot.hardware_evidence.policy = original.clone();
-    snapshot.hardware_evidence.policy.policies[0].required_current_mitigation_mask =
+    snapshot.hardware_evidence.document = original.clone();
+    snapshot.hardware_evidence.document.policies[0].required_current_mitigation_mask =
         "0xffffffffffffffff".into();
     assert!(snapshot.appraise_registered_boot(&facts, now).is_err());
-    snapshot.hardware_evidence.policy = original;
+    snapshot.hardware_evidence.document = original;
     snapshot.appraise_registered_boot(&facts, now).unwrap();
 }
 
@@ -147,12 +146,12 @@ fn hardware_alternatives_apply_to_quotes_registered_facts_and_fresh_sessions() {
     // appraisal paths with genuine hardware evidence and validated alternatives.
     drop(verifier);
     let mut snapshot = std::sync::Arc::try_unwrap(snapshot).ok().unwrap();
-    let mut smt_on = snapshot.hardware_evidence.policy.policies[0].clone();
+    let mut smt_on = snapshot.hardware_evidence.document.policies[0].clone();
     smt_on.required_platform_info_mask = "0x0000000000000025".into();
-    let mut smt_off = snapshot.hardware_evidence.policy.policies[0].clone();
+    let mut smt_off = snapshot.hardware_evidence.document.policies[0].clone();
     smt_off.forbidden_platform_info_mask = "0x0000000000000001".into();
-    snapshot.hardware_evidence.policy.policies = vec![smt_on.clone(), smt_off.clone()];
-    crate::validate_hardware_policy(&snapshot.hardware_evidence.policy).unwrap();
+    snapshot.hardware_evidence.document.policies = vec![smt_on.clone(), smt_off.clone()];
+    crate::validate_hardware_policy(&snapshot.hardware_evidence.document).unwrap();
     snapshot
         .verify_registered_boot(document.as_bytes(), &digest, now)
         .unwrap();
@@ -164,8 +163,8 @@ fn hardware_alternatives_apply_to_quotes_registered_facts_and_fresh_sessions() {
     // Retiring the SMT-on alternative immediately rejects that configuration in
     // all three paths. Another chip's matching configuration grants no permission.
     smt_on.chip_ids = vec!["ff".repeat(64)];
-    snapshot.hardware_evidence.policy.policies = vec![smt_off, smt_on];
-    crate::validate_hardware_policy(&snapshot.hardware_evidence.policy).unwrap();
+    snapshot.hardware_evidence.document.policies = vec![smt_off, smt_on];
+    crate::validate_hardware_policy(&snapshot.hardware_evidence.document).unwrap();
     assert!(
         snapshot
             .verify_registered_boot(document.as_bytes(), &digest, now)
@@ -345,6 +344,65 @@ fn online_key_rotation_keeps_the_same_hardware_boot_and_release_verifiable() {
         original.boot().record().gateway_release_id,
         updated.boot().record().gateway_release_id
     );
+
+    let pruning: Value = serde_json::from_str(include_str!(
+        "../../../../../tests/fixtures/key-omission-v1.json"
+    ))
+    .unwrap();
+    bundle["body"]["keys"] = pruning["keys"].clone();
+    bundle["body"]["approvals"] = pruning["approvals"].clone();
+    bundle["body_sha256"] =
+        serde_json::json!(crate::approvals::payload_sha256(&bundle["body"]).unwrap());
+    let now = now.max(pruning["verified_at_ms"].as_i64().unwrap());
+    let bytes = serde_json::to_vec(&bundle).unwrap();
+    let pruned = verifier.refresh(&bytes, now).unwrap();
+    assert!(pruned.approvals().keys().retired_keys.is_empty());
+    // Removing historical public keys does not change the active signer or
+    // shorten its deadline. Existing request-owned evidence remains usable.
+    after.require_current_keys().unwrap();
+    after.check_session(&updated, now).unwrap();
+    assert!(matches!(
+        pruned.reappraise_session(&updated, now),
+        Err(Error::Approval(crate::approvals::Error::InactiveKey))
+    ));
+
+    let (mut fresh, historical_bundle, _, _, _) = fixture();
+    let cold = fresh.refresh(&bytes, now).unwrap();
+    let parsed = ParsedNativeCertificate::parse(&certificate).unwrap();
+    // The verifier accepts the new manifest without knowing fleet membership.
+    // Operators must remove boots still depending on an omitted public key.
+    assert!(matches!(
+        cold.verify_logged_boot(
+            parsed.evidence.boot_document,
+            parsed.evidence.boot_inclusion,
+            now
+        ),
+        Err(Error::Approval(crate::approvals::Error::InactiveKey))
+    ));
+    let proof: Value = serde_json::from_slice(parsed.evidence.boot_inclusion).unwrap();
+    let archive = serde_json::json!({
+        "document": {
+            "schema": "stogas.node-registration.v1",
+            "boot": serde_json::from_slice::<Value>(parsed.evidence.boot_document).unwrap(),
+            "evidence_sha256": proof["evidence_sha256"]
+        },
+        "signature": proof["signature"],
+        "inclusion": proof["inclusion"]
+    });
+    let historical_bytes = serde_json::to_vec(&historical_bundle).unwrap();
+    let archived = fresh
+        .verify_boot_archive(
+            &serde_json::to_vec(&archive).unwrap(),
+            &historical_bytes,
+            now,
+        )
+        .unwrap();
+    assert_eq!(
+        archived.document_sha256(),
+        original.boot().document_sha256()
+    );
+    cold.require_current_keys().unwrap();
+    assert!(fresh.refresh(&historical_bytes, now).is_err());
 }
 
 #[test]
@@ -358,7 +416,7 @@ fn learned_release_withdrawal_blocks_warm_reappraisal_but_keeps_owned_request_ev
     let session = original
         .verify_native_certificate(&certificate, challenge, now)
         .unwrap();
-    let approval = &mut bundle["body"]["approvals"]["manifest"];
+    let approval = &mut bundle["body"]["approvals"]["document"];
     approval["revision"] = json!(approval["revision"].as_u64().unwrap() + 1);
     approval["gateways"] = json!([]);
     let variants: Value = serde_json::from_str(include_str!(

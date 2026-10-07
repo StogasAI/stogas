@@ -33,14 +33,17 @@ func run(ctx context.Context) error {
 	if key == "" || model == "" {
 		return errors.New("STOGAS_API_KEY and STOGAS_MODEL are required")
 	}
-	transport, err := stogas.NewTransport(stogas.TransportOptions{})
-	if err != nil {
-		return err
-	}
-	defer transport.Close()
-	baseURL, err := transport.BaseURL()
-	if err != nil {
-		return err
+	baseURL := os.Getenv("STOGAS_BASE_URL")
+	if baseURL == "" {
+		transport, err := stogas.NewTransport(stogas.TransportOptions{})
+		if err != nil {
+			return err
+		}
+		defer transport.Close()
+		baseURL, err = transport.BaseURL()
+		if err != nil {
+			return err
+		}
 	}
 	api, network := client(baseURL, key)
 	defer network.CloseIdleConnections()

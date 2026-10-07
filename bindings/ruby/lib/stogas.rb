@@ -56,11 +56,11 @@ module Stogas
       end
     end
 
-    def initialize(environment: 'prod', security: 'tls', max_connections: 4, ratchet_bytes: 1152, base_url: nil)
+    def initialize(environment: 'prod', security: 'tls', max_connections: 4, base_url: nil)
       raise 'Unsupported Stogas native ABI.' unless Native.stogas_verifier_abi_version == 1
       @mutex = Mutex.new
       bytes = JSON.generate({environment: environment, security: security,
-                             max_connections: max_connections, ratchet_bytes: ratchet_bytes, base_url: base_url})
+                             max_connections: max_connections, base_url: base_url})
       Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP, Fiddle::RUBY_FREE) do |output|
         output[0, Fiddle::SIZEOF_VOIDP] = [0].pack('J')
         raw = Native.stogas_transport_start(bytes, bytes.bytesize, output)

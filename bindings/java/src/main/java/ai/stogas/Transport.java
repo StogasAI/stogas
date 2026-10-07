@@ -11,7 +11,7 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
-/** Reusable confidential transport. Configure your HTTP/OpenAI client with baseUrl() and no retries. */
+/** Reusable confidential transport. Configure your HTTP/OpenAI client with baseUrl(); the caller owns retry policy. */
 public final class Transport implements AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final Cleaner CLEANER = Cleaner.create();
@@ -21,7 +21,7 @@ public final class Transport implements AutoCloseable {
 
     public Transport() { this(Map.of()); }
 
-    /** Options use the native names: environment, security, max_connections, ratchet_bytes and base_url. */
+    /** Options use the native names: environment, security, max_connections and base_url. */
     public Transport(Map<String, ?> options) {
         Api api = Loaded.API;
         if (api.stogas_verifier_abi_version() != 1) throw new IllegalStateException("Unsupported Stogas native ABI.");

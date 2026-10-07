@@ -101,6 +101,10 @@ static size_t receive(char *data, size_t size, size_t count, void *context) {
 }
 
 int main(int argc, char **argv) {
+    if (stogas_verifier_abi_version() != STOGAS_VERIFIER_ABI_VERSION) {
+        fputs("Unsupported Stogas native ABI.\n", stderr);
+        return 1;
+    }
     const char *key = getenv("STOGAS_API_KEY"), *model = getenv("STOGAS_MODEL");
     if (!key || !*key || !model || !*model || strpbrk(key, "\r\n")) {
         fputs("Set STOGAS_API_KEY and STOGAS_MODEL.\n", stderr);

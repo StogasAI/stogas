@@ -2,7 +2,7 @@
 //! tests cannot contaminate the session's retained and temporary memory totals.
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-use stogas_verifier::channel::ratchet::{ChunkSize, InitialKey, MAX_SKIPPED_KEYS, Peer};
+use stogas_verifier::channel::ratchet::{InitialKey, MAX_SKIPPED_KEYS, Peer};
 
 struct Counting;
 static USED: AtomicUsize = AtomicUsize::new(0);
@@ -31,39 +31,49 @@ unsafe impl GlobalAlloc for Counting {
 
 #[test]
 fn full_skipped_window_and_authenticated_replacement_fit_the_embedding_reservation() {
-    for width in [32, 34, 1152] {
-        let size = ChunkSize::new(width).unwrap();
+    for separate_turns in [false, true] {
         let initial = InitialKey::generate().unwrap();
-        let mut sender = Peer::initiator(&[1; 32], size, initial.public_key());
+        let mut sender = Peer::initiator(&[1; 32], initial.public_key()).unwrap();
         let baseline = USED.load(Relaxed);
-        let mut receiver = Peer::responder(&[1; 32], size, initial);
+        let mut receiver = Peer::responder(&[1; 32], initial);
         let mut largest_peak = 0;
         let mut largest_retained = 0;
-        for round in 0..4 {
-            for _ in 0..MAX_SKIPPED_KEYS {
+        let rounds = if separate_turns {
+            MAX_SKIPPED_KEYS + 2
+        } else {
+            4
+        };
+        for round in 0..rounds {
+            let gap = if separate_turns { 1 } else { MAX_SKIPPED_KEYS };
+            for _ in 0..gap {
                 drop(sender.send().unwrap());
             }
             let packet = sender.send().unwrap();
             let before = USED.load(Relaxed);
             PEAK.store(before, Relaxed);
             receiver
-                .receive(&packet.header, round, |secret| {
+                .receive(&packet.header, round as u64, |secret| {
                     assert_eq!(*secret, *packet.secret);
                     Ok(())
                 })
                 .unwrap();
+            if separate_turns {
+                let reply = receiver.send().unwrap();
+                sender
+                    .receive(&reply.header, round as u64, |secret| {
+                        assert_eq!(*secret, *reply.secret);
+                        Ok(())
+                    })
+                    .unwrap();
+            }
             let retained = USED.load(Relaxed).saturating_sub(baseline);
             let peak = retained + PEAK.load(Relaxed).saturating_sub(USED.load(Relaxed));
             largest_peak = largest_peak.max(peak);
             largest_retained = largest_retained.max(retained);
         }
-        // The embedding reserves three MiB including the smaller active KEM and
-        // admission state. The gap cache is its dominant allocation. This bound
-        // intentionally leaves room for a different standard-library allocator.
-        assert!(
-            largest_peak < 3 * 1024 * 1024,
-            "width {width}: {largest_peak}"
-        );
-        println!("width={width} retained={largest_retained} peak={largest_peak}");
+        // Includes fixed header ciphers from up to 256 separate retained turns,
+        // as well as a staged replacement before old keys are evicted.
+        assert!(largest_peak < 512 * 1024, "{largest_peak}");
+        println!("separate_turns={separate_turns} retained={largest_retained} peak={largest_peak}");
     }
 }

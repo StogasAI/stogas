@@ -3,16 +3,14 @@
 use libfuzzer_sys::fuzz_target;
 use stogas_verifier::channel::{
     Error,
-    ratchet::{ChunkSize, InitialKey, Peer, SendKey},
+    ratchet::{InitialKey, Peer, SendKey},
 };
 
 fuzz_target!(|input: &[u8]| {
-    let width = [32, 34, 256, 1152][usize::from(input.first().copied().unwrap_or(0)) % 4];
-    let size = ChunkSize::new(width).unwrap();
     let initial = InitialKey::generate().unwrap();
     let mut peers = [
-        Peer::initiator(&[7; 32], size, initial.public_key()),
-        Peer::responder(&[7; 32], size, initial),
+        Peer::initiator(&[7; 32], initial.public_key()).unwrap(),
+        Peer::responder(&[7; 32], initial),
     ];
     let first = peers[0].send().unwrap();
     peers[1]
@@ -22,7 +20,8 @@ fuzz_target!(|input: &[u8]| {
         })
         .unwrap();
     let mut packets: [Vec<SendKey>; 2] = [Vec::new(), Vec::new()];
-    for (round, command) in input.chunks(4).take(128).enumerate() {
+    // Bound the schedule and queued messages while exercising repeated turns.
+    for (round, command) in input.chunks(4).take(512).enumerate() {
         let side = usize::from(command[0] & 1);
         if command[0] & 2 == 0 || packets[side].is_empty() {
             if packets[side].len() < 16 {
@@ -33,7 +32,10 @@ fuzz_target!(|input: &[u8]| {
             let packet = packets[side].remove(index);
             let receiver = &mut peers[1 - side];
             let mut changed = packet.header.clone();
-            let offset = usize::from(command.get(2).copied().unwrap_or(0)) % changed.len();
+            let offset = usize::from(u16::from_be_bytes([
+                command[0] >> 2,
+                command.get(2).copied().unwrap_or(0),
+            ])) % changed.len();
             changed[offset] ^= command.get(3).copied().unwrap_or(1);
             assert!(
                 receiver

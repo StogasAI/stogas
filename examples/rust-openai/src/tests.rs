@@ -52,6 +52,12 @@ async fn typed_request_uses_transport_path_and_never_retries_errors_or_redirects
             .await
             .unwrap();
         assert_eq!(result.is_ok(), status == 200);
+        if status >= 400 {
+            let Err(async_openai::error::OpenAIError::ApiError(error)) = &result else {
+                panic!("lost typed HTTP error: {result:?}");
+            };
+            assert_eq!(error.status_code.as_u16(), status);
+        }
         if let Ok(response) = result {
             assert_eq!(
                 response.choices[0].message.content.as_deref(),

@@ -151,10 +151,15 @@ fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
             false
         );
         assert!(rejected.is_null());
+        let proof: Value = serde_json::from_slice(evidence.boot_inclusion).unwrap();
         let archive = serde_json::to_vec(&json!({
-            "boot": boot,
-            "inclusion": serde_json::from_slice::<Value>(evidence.boot_inclusion).unwrap(),
-            "evidence_sha256": fixture["bundle"]["body_sha256"]
+            "document": {
+                "schema": "stogas.node-registration.v1",
+                "boot": serde_json::from_slice::<Value>(evidence.boot_document).unwrap(),
+                "evidence_sha256": proof["evidence_sha256"]
+            },
+            "signature": proof["signature"],
+            "inclusion": proof["inclusion"]
         }))
         .unwrap();
         let later = now + 366 * 24 * 60 * 60 * 1000;

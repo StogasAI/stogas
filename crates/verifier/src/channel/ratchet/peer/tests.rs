@@ -1,393 +1,511 @@
 use super::*;
-use sha2::{Digest as _, Sha256 as SeedHash};
-use std::collections::{BTreeSet, VecDeque};
+use crate::channel::{cipher::SoftwareCipher, ratchet::SKIPPED_KEY_LIFETIME_MS};
+use sha2_v11::{Digest as _, Sha256};
 
-fn random(seed: u64) -> impl FnMut(&mut [u8]) -> Result<(), Error> {
-    let mut counter = 0_u64;
-    move |output| {
-        for part in output.chunks_mut(32) {
-            let mut hash = SeedHash::new();
-            hash.update(seed.to_be_bytes());
+fn random(seed: u8) -> impl FnMut(&mut [u8]) -> Result<(), Error> {
+    let mut counter = 0u64;
+    move |bytes| {
+        for piece in bytes.chunks_mut(32) {
+            let mut hash = Sha256::new();
+            hash.update([seed]);
             hash.update(counter.to_be_bytes());
+            piece.copy_from_slice(&hash.finalize()[..piece.len()]);
             counter += 1;
-            part.copy_from_slice(&hash.finalize()[..part.len()]);
         }
         Ok(())
     }
 }
 
-fn pair(size: ChunkSize) -> (Peer, Peer) {
-    (
-        Peer::new(true, &[5; 32], size, Retention::Timed),
-        Peer::new(false, &[5; 32], size, Retention::Timed),
-    )
+fn peers() -> [Peer; 2] {
+    let initial = InitialKey::from_bytes(Zeroizing::new([3; 32]));
+    [
+        Peer::initiator(&[5; 32], initial.public_key()).unwrap(),
+        Peer::responder(&[5; 32], initial),
+    ]
 }
 
 fn deliver(receiver: &mut Peer, packet: &SendKey, now: u64) {
     receiver
-        .receive::<()>(&packet.header, now, |secret| {
-            if *secret == *packet.secret {
-                Ok(())
-            } else {
-                Err(Error::Authentication)
-            }
+        .receive(&packet.header, now, |key| {
+            assert_eq!(key, packet.secret.as_ref());
+            Ok(())
         })
         .unwrap();
-    assert!(receiver.active.chains.len() <= 3);
-    assert!(receiver.skipped.len() <= MAX_SKIPPED_KEYS);
+    assert!(
+        receiver
+            .receive::<()>(&packet.header, now, |_| panic!("consumed key survived"))
+            .is_err()
+    );
 }
 
 fn capture(peer: &Peer) -> Peer {
     Peer {
         active: peer.active.clone(),
-        size: peer.size,
-        skipped: peer
-            .skipped
-            .iter()
-            .map(|(id, key)| {
-                (
-                    *id,
-                    Skipped {
-                        secret: key.secret.clone(),
-                        expires: key.expires,
-                    },
-                )
-            })
-            .collect(),
-        next_expiry: peer.next_expiry,
+        skipped: BTreeMap::new(),
+        order: BTreeMap::new(),
+        next_order: 0,
         last_now: peer.last_now,
         retention: peer.retention,
     }
 }
 
-#[test]
-fn captured_completed_state_erases_message_keys_and_fresh_kem_changes_future_chains() {
-    let (mut alice, mut bob) = pair(ChunkSize::FULL);
-    let mut rng = random(80);
-    let mut completed = Vec::new();
-    for _ in 0..25 {
-        let packet = alice.send_with(&mut rng).unwrap();
-        deliver(&mut bob, &packet, 0);
-        completed.push(packet.secret);
-        let packet = bob.send_with(&mut rng).unwrap();
-        deliver(&mut alice, &packet, 0);
-        completed.push(packet.secret);
-    }
-    for peer in [&alice, &bob] {
-        let snapshot = capture(peer);
-        assert!(snapshot.skipped.is_empty());
-        for old in &completed {
-            assert_ne!(&snapshot.active.root, old);
-            for chain in snapshot.active.chains.values() {
-                for state in [&chain.send, &chain.receive].into_iter().flatten() {
-                    assert_ne!(&state.key, old);
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers() {
+    let mut peers = peers();
+    assert!(matches!(peers[1].send(), Err(Error::Pending)));
+    let mut rng = random(1);
+    let mut previous = [0; 32];
+    for round in 0..20 {
+        for side in 0..2 {
+            let mut public = None;
+            for number in 0..8 {
+                let packet = peers[side].send_with(&mut rng).unwrap();
+                assert_eq!(packet.header.len(), HEADER_BYTES);
+                assert_ne!(*packet.secret, previous);
+                previous = *packet.secret;
+                let sending = peers[side].active.send.as_ref().unwrap();
+                let header = sending.cipher.open(&packet.header).unwrap();
+                assert_eq!(header.number, number);
+                assert_eq!(header.previous, if round == 0 { 0 } else { 8 });
+                assert!(
+                    !packet
+                        .header
+                        .windows(56)
+                        .any(|w| w == &header.public.0[..56])
+                );
+                if let Some(public) = &public {
+                    assert!(public == &header.public);
                 }
+                public = Some(header.public);
+                deliver(&mut peers[1 - side], &packet, round);
             }
+            assert_eq!(
+                peers[1 - side].active.receive.as_ref().unwrap().epoch,
+                round
+            );
+            assert!(peers[1 - side].active.local.is_none());
         }
     }
-    // Start with identical complete captured states, then change only future
-    // KEM entropy. This catches failure to mix fresh Braid output into message
-    // chains; epoch-counter progress alone cannot establish that property.
-    let initial_epoch = alice.active.epoch.max(bob.active.epoch);
-    let mut outcomes = Vec::new();
-    for seed in [81, 82] {
-        let (mut a, mut b) = (capture(&alice), capture(&bob));
-        let mut rng = random(seed);
-        let mut latest = Zeroizing::new([0; 32]);
-        for _ in 0..25 {
-            let packet = a.send_with(&mut rng).unwrap();
-            deliver(&mut b, &packet, 0);
-            let packet = b.send_with(&mut rng).unwrap();
-            deliver(&mut a, &packet, 0);
-            latest = packet.secret;
-        }
-        assert!(a.active.epoch >= initial_epoch + 2 && b.active.epoch >= initial_epoch + 2);
-        outcomes.push(latest);
-    }
-    assert_ne!(outcomes[0], outcomes[1]);
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn full_updates_derive_unique_keys_and_delete_finished_chains_in_both_directions() {
-    let (mut alice, mut bob) = pair(ChunkSize::FULL);
-    let mut rng = random(0);
-    let mut keys = BTreeSet::new();
-    for _ in 0..25 {
-        let packet = alice.send_with(&mut rng).unwrap();
-        assert!(keys.insert(*packet.secret));
-        deliver(&mut bob, &packet, 0);
-        let packet = bob.send_with(&mut rng).unwrap();
-        assert!(keys.insert(*packet.secret));
-        deliver(&mut alice, &packet, 0);
-    }
-    assert_eq!(alice.active.epoch, 10);
-    assert_eq!(bob.active.epoch, 10);
-    for peer in [&alice, &bob] {
-        assert!(peer.skipped.is_empty());
-        for (epoch, chains) in &peer.active.chains {
-            assert!(*epoch >= peer.active.epoch - 1);
-            assert_eq!(chains.send.is_some(), *epoch >= peer.active.sending);
-            assert_eq!(chains.receive.is_some(), *epoch >= peer.active.receiving);
+fn delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts() {
+    let mut peers = peers();
+    let mut rng = random(2);
+    let first = peers[0].send_with(&mut rng).unwrap();
+    deliver(&mut peers[1], &first, 0);
+    let mut queues: [Vec<SendKey>; 2] = [Vec::new(), Vec::new()];
+    for round in 0..80 {
+        for side in [1, 0] {
+            for _ in 0..if round % 3 == side { 17 } else { 3 } {
+                queues[side].push(peers[side].send_with(&mut rng).unwrap());
+            }
+            let newest = queues[side].pop().unwrap();
+            deliver(&mut peers[1 - side], &newest, round as u64);
+            while queues[side].len() > 31 {
+                let index = if round % 2 == 0 {
+                    0
+                } else {
+                    queues[side].len() / 2
+                };
+                let packet = queues[side].remove(index);
+                deliver(&mut peers[1 - side], &packet, round as u64);
+            }
         }
+    }
+    for side in 0..2 {
+        for packet in queues[side].drain(..).rev() {
+            deliver(&mut peers[1 - side], &packet, 80);
+        }
+        assert!(peers[1 - side].order.is_empty());
+        assert!(peers[1 - side].skipped.is_empty());
     }
 }
 
-#[test]
-fn delayed_messages_remain_independent_after_multiple_epochs_and_replay_fails() {
-    let (mut alice, mut bob) = pair(ChunkSize::FULL);
-    let mut rng = random(1);
-    let mut delayed_alice = Vec::new();
-    let mut delayed_bob = Vec::new();
-    for round in 0..25 {
-        delayed_alice.push(alice.send_with(&mut rng).unwrap());
-        let packet = alice.send_with(&mut rng).unwrap();
-        deliver(&mut bob, &packet, round);
-        delayed_bob.push(bob.send_with(&mut rng).unwrap());
-        let packet = bob.send_with(&mut rng).unwrap();
-        deliver(&mut alice, &packet, round);
-    }
-    assert!(alice.active.epoch >= 8);
-    assert!(bob.active.epoch >= 8);
-    assert_eq!(alice.skipped.len(), 25);
-    assert_eq!(bob.skipped.len(), 25);
-    for (packets, receiver) in [(delayed_alice, &mut bob), (delayed_bob, &mut alice)] {
-        for packet in packets.into_iter().rev() {
-            deliver(receiver, &packet, 50);
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn header_and_body_mutation_and_truncation_never_commit_or_consume_keys() {
+    let mut peers = peers();
+    let mut rng = random(3);
+    let old = peers[0].send_with(&mut rng).unwrap();
+    let newer = peers[0].send_with(&mut rng).unwrap();
+    deliver(&mut peers[1], &newer, 0);
+    let reply = peers[1].send_with(&mut rng).unwrap();
+    deliver(&mut peers[0], &reply, 0);
+    let next = peers[0].send_with(&mut rng).unwrap();
+    let current = peers[0].send_with(&mut rng).unwrap();
+    for packet in [&old, &next, &current] {
+        let mut ciphertext = b"authenticated message".to_vec();
+        let tag = SoftwareCipher::new(packet.secret.as_ref())
+            .unwrap()
+            .encrypt_now([0; 12], &packet.header, &mut ciphertext)
+            .unwrap();
+        ciphertext.extend_from_slice(&tag);
+        let authenticate = |key: &[u8; 32], header: &[u8], bytes: &[u8]| {
+            SoftwareCipher::new(key)?.decrypt_now([0; 12], header, &mut bytes.to_vec())
+        };
+        for index in 0..packet.header.len() {
+            let mut forged = packet.header.clone();
+            forged[index] ^= 1;
             assert!(
-                receiver
-                    .receive::<()>(&packet.header, 50, |_| panic!(
-                        "replay reached authentication"
+                peers[1]
+                    .receive(&forged, 0, |key| authenticate(key, &forged, &ciphertext))
+                    .is_err()
+            );
+        }
+        for length in 0..packet.header.len() {
+            assert!(
+                peers[1]
+                    .receive::<()>(&packet.header[..length], 0, |_| panic!("short header"))
+                    .is_err()
+            );
+        }
+        let mut oversized = packet.header.clone();
+        oversized.push(0);
+        assert!(
+            peers[1]
+                .receive::<()>(&oversized, 0, |_| panic!("long header"))
+                .is_err()
+        );
+        for index in 0..ciphertext.len() {
+            let mut forged = ciphertext.clone();
+            forged[index] ^= 1;
+            assert!(
+                peers[1]
+                    .receive(&packet.header, 0, |key| authenticate(
+                        key,
+                        &packet.header,
+                        &forged
                     ))
                     .is_err()
             );
         }
-        assert!(receiver.skipped.is_empty());
+        peers[1]
+            .receive(&packet.header, 0, |key| {
+                authenticate(key, &packet.header, &ciphertext)
+            })
+            .unwrap();
     }
-}
-
-#[test]
-fn failed_authentication_never_consumes_current_skipped_or_new_epoch_keys() {
-    let (mut alice, mut bob) = pair(ChunkSize::FULL);
-    let mut rng = random(2);
-    for round in 0..15 {
-        let skipped = alice.send_with(&mut rng).unwrap();
-        let packet = alice.send_with(&mut rng).unwrap();
-        // Every public header byte is bound by the record layer. Even mutations
-        // accepted by the parser cannot change the ratchet before its AEAD agrees.
-        for offset in 0..packet.header.len() {
-            let mut changed = packet.header.clone();
-            changed[offset] ^= 1;
-            assert!(
-                bob.receive::<()>(&changed, round, |_| Err::<(), _>(Error::Authentication))
-                    .is_err()
-            );
-        }
-        assert_eq!(
-            bob.receive::<()>(&packet.header, round, |_| Err::<(), _>(
-                Error::Authentication
-            )),
-            Err(Error::Authentication)
-        );
-        deliver(&mut bob, &packet, round);
-        assert_eq!(
-            bob.receive::<()>(&skipped.header, round, |_| Err::<(), _>(
-                Error::Authentication
-            )),
-            Err(Error::Authentication)
-        );
-        deliver(&mut bob, &skipped, round);
-        let packet = bob.send_with(&mut rng).unwrap();
-        assert_eq!(
-            alice.receive::<()>(&packet.header, round, |_| Err::<(), _>(
-                Error::Authentication
-            )),
-            Err(Error::Authentication)
-        );
-        deliver(&mut alice, &packet, round);
-    }
-    assert!(alice.active.epoch >= 6);
-}
-
-#[test]
-fn cache_limits_are_global_and_expiry_is_not_extended_by_clock_regression_or_bad_input() {
-    let (mut alice, mut bob) = pair(ChunkSize::FULL);
-    let mut rng = random(3);
-    let first = alice.send_with(&mut rng).unwrap();
-    for _ in 1..MAX_SKIPPED_KEYS {
-        let _ = alice.send_with(&mut rng).unwrap();
-    }
-    let last = alice.send_with(&mut rng).unwrap();
-    deliver(&mut bob, &last, 10);
-    assert_eq!(bob.skipped.len(), MAX_SKIPPED_KEYS);
-    let gap = alice.send_with(&mut rng).unwrap();
-    let next = alice.send_with(&mut rng).unwrap();
-    assert_eq!(
-        bob.receive::<()>(&next.header, 20, |_| Err(Error::Authentication)),
-        Err(Error::Authentication)
-    );
-    assert_eq!(
-        bob.receive::<()>(&first.header, 30, |_| Err::<(), _>(Error::Authentication)),
-        Err(Error::Authentication)
-    );
-    bob.expire(0);
-    assert_eq!(bob.next_expiry, Some(10 + SKIPPED_KEY_LIFETIME_MS));
-    deliver(&mut bob, &next, 30);
-    assert_eq!(bob.skipped.len(), MAX_SKIPPED_KEYS);
-    assert!(
-        bob.receive::<()>(&first.header, 30, |_| panic!("retired key"))
-            .is_err()
-    );
-    bob.expire(10 + SKIPPED_KEY_LIFETIME_MS);
-    assert_eq!(bob.skipped.len(), 1);
-    assert!(
-        bob.receive::<()>(&first.header, 0, |_| panic!("expired key"))
-            .is_err()
-    );
-    deliver(&mut bob, &gap, 10 + SKIPPED_KEY_LIFETIME_MS);
-    assert!(bob.skipped.is_empty());
-}
-
-#[test]
-fn impossible_counters_and_epochs_do_not_advance_or_allocate() {
-    let (mut alice, mut bob) = pair(ChunkSize::FULL);
-    let packet = alice.send_with(&mut random(4)).unwrap();
-    for (offset, value) in [(8, 0), (8, u64::MAX), (16, 0), (16, 3), (16, u64::MAX)] {
-        let mut changed = packet.header.clone();
-        changed[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
-        assert!(
-            bob.receive::<()>(&changed, 0, |_| panic!("invalid counter"))
-                .is_err()
-        );
-        assert!(bob.skipped.is_empty());
-        assert_eq!(bob.active.epoch, 0);
-    }
-    deliver(&mut bob, &packet, 0);
-    alice
-        .active
-        .chains
-        .get_mut(&0)
-        .unwrap()
-        .send
-        .as_mut()
-        .unwrap()
-        .number = u64::MAX;
-    assert!(matches!(alice.send_with(&mut random(4)), Err(Error::Limit)));
-    assert_eq!(
-        alice.active.chains[&0].send.as_ref().unwrap().number,
-        u64::MAX
-    );
-}
-
-#[test]
-fn loss_reordering_asymmetric_batches_and_different_chunk_sizes_make_progress() {
-    for width in [32, 34, 256, 1152] {
-        let (mut alice, mut bob) = pair(ChunkSize::new(width).unwrap());
-        let mut rng = random(u64::from(width));
-        let mut to_alice = VecDeque::new();
-        let mut to_bob = VecDeque::new();
-        for round in 0..500 {
-            for _ in 0..=(round % 5) {
-                to_bob.push_back(alice.send_with(&mut rng).unwrap());
-            }
-            for _ in 0..=(round % 3) {
-                to_alice.push_back(bob.send_with(&mut rng).unwrap());
-            }
-            // Offline intervals delay both directions; later fair delivery is
-            // necessary for progress, and is distinct from bounded message loss.
-            if round < 60 && round % 13 < 8 {
-                continue;
-            }
-            for (queue, peer) in [(&mut to_bob, &mut bob), (&mut to_alice, &mut alice)] {
-                while let Some(packet) = if round % 3 == 0 {
-                    queue.pop_back()
-                } else {
-                    queue.pop_front()
-                } {
-                    if round < 60 && packet.header[15] % 7 == 0 {
-                        continue;
-                    }
-                    deliver(peer, &packet, round);
-                    assert!(
-                        peer.receive::<()>(&packet.header, round, |_| panic!("duplicate"))
-                            .is_err()
-                    );
-                }
-            }
-        }
-        assert!(
-            alice.active.epoch.min(bob.active.epoch) >= 5,
-            "no progress for {width}"
-        );
-        assert!(alice.active.epoch.abs_diff(bob.active.epoch) <= 1);
-    }
-}
-
-#[test]
-fn randomness_failure_is_transactional_and_does_not_reuse_an_allocation() {
-    let (mut alice, mut bob) = pair(ChunkSize::FULL);
-    assert!(matches!(
-        alice.send_with(&mut |_| Err(Error::Crypto)),
-        Err(Error::Crypto)
-    ));
-    let mut rng = random(5);
-    let first = alice.send_with(&mut rng).unwrap();
-    let second = alice.send_with(&mut rng).unwrap();
-    assert_ne!(*first.secret, *second.secret);
-    deliver(&mut bob, &second, 0);
-    deliver(&mut bob, &first, 0);
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn initialization_epoch_and_directional_chains_match_independent_hkdf_vectors() {
-    let vector: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../../../tests/fixtures/channel-ratchet-v3.json"
-    ))
-    .unwrap();
-    let root: [u8; 32] = hex::decode(vector["root_hex"].as_str().unwrap())
-        .unwrap()
-        .try_into()
-        .unwrap();
-    let mut alice = Peer::new(true, &root, ChunkSize::FULL, Retention::Timed);
-    let mut bob = Peer::new(false, &root, ChunkSize::FULL, Retention::Timed);
-    for epoch in vector["epochs"].as_array().unwrap() {
-        let number = epoch["epoch"].as_u64().unwrap();
-        let material = hex::decode(epoch["material_hex"].as_str().unwrap()).unwrap();
-        assert_eq!(alice.active.root.as_slice(), &material[..32]);
-        assert_eq!(alice.active.root, bob.active.root);
-        for (index, (sender, receiver)) in [(&alice, &bob), (&bob, &alice)].into_iter().enumerate()
-        {
-            let mut sending = sender.active.chains[&number].send.clone().unwrap();
-            let mut receiving = receiver.active.chains[&number].receive.clone().unwrap();
-            assert_eq!(sending.key, receiving.key);
-            for expected in epoch["chains"][index]["steps"].as_array().unwrap() {
-                let until = expected["number"].as_u64().unwrap();
-                let mut message = Zeroizing::new([0; 32]);
-                while sending.number < until {
-                    message = sending.step().unwrap();
-                    assert_eq!(message, receiving.step().unwrap());
-                }
-                assert_eq!(
-                    hex::encode(*message),
-                    expected["message_hex"].as_str().unwrap()
-                );
-                assert_eq!(
-                    hex::encode(*sending.key),
-                    expected["next_hex"].as_str().unwrap()
-                );
-            }
+fn skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns() {
+    for excess in [false, true] {
+        let mut peers = peers();
+        let first = peers[0].send().unwrap();
+        deliver(&mut peers[1], &first, 0);
+        let mut old = Vec::new();
+        for _ in 0..MAX_SKIPPED_KEYS / 2 {
+            old.push(peers[0].send().unwrap());
         }
-        if let Some(shared) = epoch["next_shared_hex"].as_str() {
-            let shared: [u8; 32] = hex::decode(shared).unwrap().try_into().unwrap();
-            for peer in [&mut alice, &mut bob] {
-                peer.active
-                    .incorporate(Some(EpochKey {
-                        epoch: number + 1,
-                        secret: Zeroizing::new(shared),
-                    }))
-                    .unwrap();
+        let reply = peers[1].send().unwrap();
+        deliver(&mut peers[0], &reply, 0);
+        for _ in 0..MAX_SKIPPED_KEYS / 2 + usize::from(excess) {
+            peers[0].send().unwrap();
+        }
+        let last = peers[0].send().unwrap();
+        if excess {
+            assert!(matches!(
+                peers[1].receive::<()>(&last.header, 1, |_| panic!("oversized derivation")),
+                Err(Error::Limit)
+            ));
+            assert!(peers[1].order.is_empty());
+            deliver(&mut peers[1], &old[0], 1);
+        }
+        deliver(&mut peers[1], &last, 1);
+        assert_eq!(peers[1].order.len(), MAX_SKIPPED_KEYS);
+        let skipped = peers[0].send().unwrap();
+        let newest = peers[0].send().unwrap();
+        deliver(&mut peers[1], &newest, 2);
+        assert_eq!(peers[1].order.len(), MAX_SKIPPED_KEYS);
+        assert!(
+            peers[1]
+                .receive::<()>(&old[usize::from(excess)].header, 2, |_| panic!(
+                    "oldest key survived eviction"
+                ))
+                .is_err()
+        );
+        deliver(&mut peers[1], &skipped, 2);
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn expiry_is_monotonic_and_owned_response_keys_survive_until_discarded() {
+    let mut peers = peers();
+    let old = peers[0].send().unwrap();
+    let latest = peers[0].send().unwrap();
+    deliver(&mut peers[1], &latest, 10);
+    peers[1].expire(9);
+    assert!(
+        peers[1]
+            .receive::<()>(&old.header, 11, |_| Err(Error::Authentication))
+            .is_err()
+    );
+    peers[1].expire(SKIPPED_KEY_LIFETIME_MS + 10);
+    assert!(
+        peers[1]
+            .receive::<()>(&old.header, 0, |_| panic!("expired key revived"))
+            .is_err()
+    );
+    let old_response = peers[1].send().unwrap();
+    let new_response = peers[1].send().unwrap();
+    deliver(&mut peers[0], &new_response, 0);
+    peers[0].expire(u64::MAX);
+    assert!(matches!(
+        peers[0].receive::<()>(&old_response.header, u64::MAX, |_| Err(
+            Error::Authentication
+        )),
+        Err(Error::Authentication)
+    ));
+    peers[0].discard_delayed();
+    assert!(
+        peers[0]
+            .receive::<()>(&old_response.header, 0, |_| panic!(
+                "discarded key survived"
+            ))
+            .is_err()
+    );
+    let current = peers[1].send().unwrap();
+    deliver(&mut peers[0], &current, 0);
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn random_failure_and_counter_exhaustion_are_transactional() {
+    let mut peers = peers();
+    let mut rng = random(4);
+    for round in 0..4 {
+        for side in 0..2 {
+            for fail_at in 0..2 {
+                let mut call = 0;
+                assert!(matches!(
+                    peers[side].send_with(&mut |bytes| {
+                        let current = call;
+                        call += 1;
+                        if current == fail_at {
+                            Err(Error::Crypto)
+                        } else {
+                            rng(bytes)
+                        }
+                    }),
+                    Err(Error::Crypto)
+                ));
+                assert!(peers[side].active.send.is_none());
             }
+            let packet = peers[side].send_with(&mut rng).unwrap();
+            deliver(&mut peers[1 - side], &packet, round);
         }
     }
+    peers[1].active.send.as_mut().unwrap().chain.count = MAX_CHAIN_MESSAGES;
+    assert!(matches!(peers[1].send(), Err(Error::Limit)));
+    assert_eq!(
+        peers[1].active.send.as_ref().unwrap().chain.count,
+        MAX_CHAIN_MESSAGES
+    );
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns() {
+    for side in [0, 1] {
+        let mut peers = peers();
+        let first = peers[0].send().unwrap();
+        deliver(&mut peers[1], &first, 0);
+        if side == 1 {
+            let reply = peers[1].send().unwrap();
+            deliver(&mut peers[0], &reply, 0);
+        }
+        let mut captured = capture(&peers[side]);
+        // A stolen current sending chain predicts later one-way messages.
+        let predicted = captured
+            .send_with(&mut |_| panic!("one-way traffic gained fresh entropy"))
+            .unwrap();
+        let actual = peers[side].send().unwrap();
+        assert_eq!(predicted.header, actual.header);
+        assert_eq!(predicted.secret, actual.secret);
+        deliver(&mut peers[1 - side], &actual, 1);
+        assert!(
+            peers[1 - side]
+                .receive::<()>(&actual.header, 1, |_| panic!("consumed key recovered"))
+                .is_err()
+        );
+        // The first incoming turn is still readable using the stolen DH/KEM keys.
+        let incoming = peers[1 - side].send().unwrap();
+        deliver(&mut captured, &incoming, 2);
+        deliver(&mut peers[side], &incoming, 2);
+        // Independent fresh send entropy separates roots despite identical snapshots.
+        let honest = peers[side].send_with(&mut random(81)).unwrap();
+        let attacker = captured.send_with(&mut random(82)).unwrap();
+        assert_ne!(honest.secret, attacker.secret);
+        assert_ne!(peers[side].active.root, captured.active.root);
+        deliver(&mut peers[1 - side], &honest, 3);
+        let response = peers[1 - side].send().unwrap();
+        assert!(
+            captured
+                .receive(&response.header, 4, |key| {
+                    assert_ne!(key, response.secret.as_ref());
+                    Err::<(), _>(Error::Authentication)
+                })
+                .is_err()
+        );
+        deliver(&mut peers[side], &response, 4);
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn cached_secrets_keep_fixed_addresses_and_used_keys_release_their_header_group() {
+    let mut peers = peers();
+    let old = peers[0].send().unwrap();
+    let new = peers[0].send().unwrap();
+    deliver(&mut peers[1], &new, 0);
+    let address = peers[1].skipped[&0].keys[&0].secret.as_ptr();
+    for _ in 0..64 {
+        peers[0].send().unwrap();
+        let new = peers[0].send().unwrap();
+        deliver(&mut peers[1], &new, 0);
+        assert_eq!(address, peers[1].skipped[&0].keys[&0].secret.as_ptr());
+    }
+    deliver(&mut peers[1], &old, 0);
+    peers[1].discard_delayed();
+    assert!(peers[1].skipped.is_empty());
+    assert!(peers[1].order.is_empty());
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn full_transcript_matches_independent_go_circl_vectors() {
+    let vector: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../../tests/fixtures/channel-ratchet.json"
+    ))
+    .unwrap();
+    let bytes =
+        |value: &serde_json::Value, name: &str| hex::decode(value[name].as_str().unwrap()).unwrap();
+    let initial = InitialKey::from_bytes(Zeroizing::new(
+        bytes(&vector, "initial_seed_hex").try_into().unwrap(),
+    ));
+    assert_eq!(
+        initial.public_key().as_slice(),
+        bytes(&vector, "initial_public_hex")
+    );
+    let root: [u8; 32] = bytes(&vector, "root_hex").try_into().unwrap();
+    let mut peers = [
+        Peer::initiator(&root, initial.public_key()).unwrap(),
+        Peer::responder(&root, initial),
+    ];
+    for message in vector["messages"].as_array().unwrap() {
+        let side = usize::try_from(message["side"].as_u64().unwrap()).unwrap();
+        let mut entropy = [bytes(message, "seed_hex"), bytes(message, "randomness_hex")]
+            .into_iter()
+            .filter(|v| !v.is_empty());
+        let packet = peers[side]
+            .send_with(&mut |out| {
+                out.copy_from_slice(&entropy.next().expect("unexpected entropy request"));
+                Ok(())
+            })
+            .unwrap();
+        assert!(entropy.next().is_none());
+        assert_eq!(packet.header, bytes(message, "header_hex"));
+        assert_eq!(packet.secret.as_slice(), bytes(message, "secret_hex"));
+        let independent = SendKey {
+            header: bytes(message, "header_hex"),
+            secret: Zeroizing::new(bytes(message, "secret_hex").try_into().unwrap()),
+        };
+        deliver(&mut peers[1 - side], &independent, 0);
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing() {
+    let mut peers = peers();
+    let first = peers[0].send().unwrap();
+    let sending = peers[0].active.send.as_ref().unwrap().clone();
+    for mutation in 0..5 {
+        let mut header = sending.header.clone();
+        match mutation {
+            0 => header.public.0[..56].fill(0),
+            1 => header.public.0[56..].fill(255),
+            2 => header.number = u64::MAX,
+            3 => header.previous = 1,
+            4 => header.ciphertext[0] ^= 1,
+            _ => unreachable!(),
+        }
+        let forged = sending.cipher.seal(&header, [31; 16]).unwrap();
+        assert!(
+            peers[1]
+                .receive(&forged, 0, |key| {
+                    assert_ne!(key, first.secret.as_ref());
+                    Err::<(), _>(Error::Authentication)
+                })
+                .is_err()
+        );
+        assert!(peers[1].active.receive.is_none());
+        assert!(peers[1].skipped.is_empty());
+    }
+    deliver(&mut peers[1], &first, 0);
+    let mut changed = peers[0].active.send.as_ref().unwrap().header.clone();
+    changed.ciphertext[0] ^= 1;
+    changed.number = 1;
+    let forged = peers[0]
+        .active
+        .send
+        .as_ref()
+        .unwrap()
+        .cipher
+        .seal(&changed, [32; 16])
+        .unwrap();
+    assert!(
+        peers[1]
+            .receive::<()>(&forged, 0, |_| panic!("changed KEM material within a turn"))
+            .is_err()
+    );
+    let next = peers[0].send().unwrap();
+    deliver(&mut peers[1], &next, 0);
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner() {
+    let initial = InitialKey::from_bytes(Zeroizing::new([3; 32]));
+    let initial_owner = Arc::downgrade(&initial.keys);
+    let mut peers = [
+        Peer::initiator(&[5; 32], initial.public_key()).unwrap(),
+        Peer::responder(&[5; 32], initial),
+    ];
+    let first = peers[0].send().unwrap();
+    assert!(
+        peers[1]
+            .receive::<()>(&first.header, 0, |_| Err(Error::Authentication))
+            .is_err()
+    );
+    assert!(initial_owner.upgrade().is_some());
+    deliver(&mut peers[1], &first, 0);
+    assert!(initial_owner.upgrade().is_none());
+    let delayed = peers[0].send().unwrap();
+    let latest = peers[0].send().unwrap();
+    deliver(&mut peers[1], &latest, 0);
+    let old_header = Arc::downgrade(&peers[1].active.receive.as_ref().unwrap().header);
+    for _ in 0..8 {
+        for side in [1, 0] {
+            let private = Arc::downgrade(peers[1 - side].active.local.as_ref().unwrap());
+            let packet = peers[side].send().unwrap();
+            assert!(
+                peers[1 - side]
+                    .receive::<()>(&packet.header, 0, |_| Err(Error::Authentication))
+                    .is_err()
+            );
+            assert!(private.upgrade().is_some());
+            deliver(&mut peers[1 - side], &packet, 0);
+            assert!(private.upgrade().is_none());
+            assert!(peers[1 - side].active.local.is_none());
+        }
+    }
+    assert!(old_header.upgrade().is_some());
+    deliver(&mut peers[1], &delayed, 0);
+    assert!(old_header.upgrade().is_none());
 }

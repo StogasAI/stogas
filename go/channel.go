@@ -10,7 +10,7 @@ typedef struct StogasChannelReader StogasChannelReader;
 typedef struct StogasChannelWriter StogasChannelWriter;
 typedef struct { uint8_t *data; size_t len; } StogasChannelBuffer;
 uint32_t stogas_channel_key_generate(uint8_t *, uint8_t *);
-uint32_t stogas_channel_session_new(const uint8_t *, const uint8_t *, const uint8_t *, uint16_t, StogasChannelSession **);
+uint32_t stogas_channel_session_new(const uint8_t *, const uint8_t *, const uint8_t *, StogasChannelSession **);
 uint32_t stogas_channel_accept(StogasChannelSession *, uint64_t, uint8_t *, size_t, uint64_t, StogasChannelReader **, StogasChannelWriter **, size_t *, size_t *);
 uint32_t stogas_channel_session_expire(StogasChannelSession *, uint64_t);
 uint32_t stogas_channel_open(StogasChannelReader *, uint8_t *, size_t, uint8_t *, size_t *, size_t *);
@@ -52,7 +52,10 @@ func channelStatus(status C.uint32_t) error {
 
 // GenerateChannelKey creates the initial responder key in Rust. Bind public into
 // the authenticated setup and clear private after session creation or failure.
-func GenerateChannelKey() (private, public [32]byte, err error) {
+func GenerateChannelKey() (private [32]byte, public [ChannelPublicKeyBytes]byte, err error) {
+	if err = checkNativeABI(); err != nil {
+		return
+	}
 	err = channelStatus(C.stogas_channel_key_generate(bytePointer(private[:]), bytePointer(public[:])))
 	return
 }
@@ -65,13 +68,15 @@ type ChannelSession struct {
 	started time.Time
 }
 
-// NewChannelSession consumes a copy of the authenticated setup root. ratchetBytes
-// is the setup-authenticated even ML-KEM chunk size from 32 through 1152.
-func NewChannelSession(root, id, initialPrivate [32]byte, ratchetBytes uint16) (*ChannelSession, error) {
+// NewChannelSession consumes a copy of the authenticated setup root and initial key seed.
+func NewChannelSession(root, id, initialPrivate [32]byte) (*ChannelSession, error) {
 	defer clear(root[:])
 	defer clear(initialPrivate[:])
+	if err := checkNativeABI(); err != nil {
+		return nil, err
+	}
 	var handle *C.StogasChannelSession
-	if err := channelStatus(C.stogas_channel_session_new(bytePointer(root[:]), bytePointer(id[:]), bytePointer(initialPrivate[:]), C.uint16_t(ratchetBytes), &handle)); err != nil {
+	if err := channelStatus(C.stogas_channel_session_new(bytePointer(root[:]), bytePointer(id[:]), bytePointer(initialPrivate[:]), &handle)); err != nil {
 		return nil, err
 	}
 	if handle == nil {
@@ -96,10 +101,11 @@ func (s *ChannelSession) AcceptStart(number uint64, encoded []byte) (*ChannelRea
 	if s.handle == nil {
 		return nil, nil, nil, ErrClosed
 	}
+	now := s.elapsed(time.Now())
 	var reader *C.StogasChannelReader
 	var writer *C.StogasChannelWriter
 	var offset, length C.size_t
-	status := C.stogas_channel_accept(s.handle, C.uint64_t(number), bytePointer(encoded), C.size_t(len(encoded)), s.elapsed(time.Now()), &reader, &writer, &offset, &length)
+	status := C.stogas_channel_accept(s.handle, C.uint64_t(number), bytePointer(encoded), C.size_t(len(encoded)), now, &reader, &writer, &offset, &length)
 	if status == 255 {
 		C.stogas_channel_session_free(s.handle)
 		s.handle = nil

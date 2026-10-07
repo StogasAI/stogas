@@ -44,6 +44,9 @@ type EvidenceSnapshot struct {
 
 // NewEvidence constructs the shared offline verifier from local configuration.
 func NewEvidence(options EvidenceOptions) (*Evidence, error) {
+	if err := checkNativeABI(); err != nil {
+		return nil, err
+	}
 	configuration, err := json.Marshal(options)
 	if err != nil {
 		return nil, err

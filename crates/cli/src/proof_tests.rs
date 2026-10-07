@@ -40,10 +40,15 @@ impl Files {
             serde_json::to_vec(&fixture["bundle"]).unwrap(),
         )
         .unwrap();
+        let proof: Value = serde_json::from_slice(parsed.evidence.boot_inclusion).unwrap();
         let archive = json!({
-            "boot": serde_json::from_slice::<Value>(parsed.evidence.boot_document).unwrap(),
-            "inclusion": serde_json::from_slice::<Value>(parsed.evidence.boot_inclusion).unwrap(),
-            "evidence_sha256": fixture["bundle"]["body_sha256"]
+            "document": {
+                "schema": "stogas.node-registration.v1",
+                "boot": serde_json::from_slice::<Value>(parsed.evidence.boot_document).unwrap(),
+                "evidence_sha256": proof["evidence_sha256"]
+            },
+            "signature": proof["signature"],
+            "inclusion": proof["inclusion"]
         });
         std::fs::write(&input.boot, serde_json::to_vec(&archive).unwrap()).unwrap();
         std::fs::write(&input.request, b"{\n  \"messages\": []\n}\n").unwrap();

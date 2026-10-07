@@ -278,10 +278,99 @@ test('session growth follows actual replay-window pressure and honors the caller
 	await (await state.send()).text();
 	assert.equal(state.setups, 2);
 	pending.add('node-1');
-	await assert.rejects(state.send(), { submission: 'not_sent' });
+	const cancel = new AbortController();
+	let returned = false;
+	const waiting = state.send(cancel.signal).finally(() => {
+		returned = true;
+	});
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(returned, false);
+	cancel.abort();
+	await assert.rejects(waiting, { submission: 'not_sent' });
 	assert.equal(state.requests, 2);
 	assert.equal(state.setups, 2);
 	pending.clear();
+	await state.transport.close();
+});
+
+test('an authenticated ACK releases pool capacity before provider headers or body completion', async () => {
+	let pending = false;
+	let output;
+	let started;
+	const entered = new Promise((resolve) => {
+		started = resolve;
+	});
+	const state = fixture({
+		request() {
+			if (pending)
+				throw Object.assign(new Error('pending'), {
+					name: 'EncryptedChannelError',
+					code: 'pending'
+				});
+			pending = true;
+		},
+		fetchResponse(_options, count) {
+			if (count !== 1) {
+				pending = false;
+				return response([record(1, '{"status":200,"headers":{}}'), record(3)]);
+			}
+			return new Response(
+				new ReadableStream({
+					start(controller) {
+						output = controller;
+						started();
+					}
+				}),
+				{ headers: { 'content-type': SESSION_CONTENT_TYPE } }
+			);
+		}
+	});
+	let firstReturned = false;
+	const first = state.send().then((response) => {
+		firstReturned = true;
+		return response;
+	});
+	await entered;
+	const second = state.send();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(state.requests, 1);
+	pending = false;
+	output.enqueue(record(4));
+	await (await second).text();
+	assert.equal(state.requests, 2);
+	assert.equal(state.setups, 1);
+	assert.equal(firstReturned, false);
+	output.enqueue(record(1, '{"status":200,"headers":{}}'));
+	output.enqueue(record(3));
+	output.close();
+	await (await first).text();
+	await state.transport.close();
+});
+
+test('local cancellation after authenticated feedback keeps the session for independent requests', async () => {
+	const state = fixture({
+		fetchResponse(_options, count) {
+			if (count !== 1) return response([record(1, '{"status":200,"headers":{}}'), record(3)]);
+			return new Response(
+				new ReadableStream({
+					start(controller) {
+						controller.enqueue(record(4));
+						controller.enqueue(record(1, '{"status":200,"headers":{}}'));
+						controller.enqueue(record(2, 'partial'));
+					}
+				}),
+				{ headers: { 'content-type': SESSION_CONTENT_TYPE } }
+			);
+		}
+	});
+	const cancel = new AbortController();
+	const partial = await state.send(cancel.signal);
+	cancel.abort();
+	await assert.rejects(partial.text(), { submission: 'execution_unknown' });
+	assert.equal(state.cores[0].closed, false);
+	await (await state.send()).text();
+	assert.equal(state.setups, 1);
+	assert.equal(state.requests, 2);
 	await state.transport.close();
 });
 
@@ -315,9 +404,9 @@ test('close aborts a pending setup and never releases application bytes', async 
 });
 
 test('setup carriage accepts the full hybrid evidence bound and rejects one extra byte before verification', async () => {
-	// 1194-byte server prefix, 32-byte confirmation, 4-byte evidence length,
+	// 2402-byte server prefix, 32-byte confirmation, 4-byte evidence length,
 	// and the shared 58-KiB evidence maximum. The core tests validate contents.
-	const maximum = 1194 + 32 + 4 + 58 * 1024;
+	const maximum = 2402 + 32 + 4 + 58 * 1024;
 	for (const size of [maximum, maximum + 1]) {
 		let checked = 0;
 		const state = fixture({

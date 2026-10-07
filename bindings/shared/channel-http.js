@@ -1,9 +1,9 @@
-import { abortableReader, TransportError } from './http.js';
+import { abortableReader, TransportError, notifyRequestProgress } from './http.js';
 import { verifyReceiptResponse } from './receipt-response.js';
 
 // HTTP owns delivery; the Rust core owns verification, record keys and counters.
 export const SESSION_CONTENT_TYPE = 'application/vnd.stogas.session';
-export const MAX_SETUP_RESPONSE_BYTES = 60_622;
+export const MAX_SETUP_RESPONSE_BYTES = 61_830;
 const MAX_RECORD_PAYLOAD = 65_515;
 const MAX_METADATA_BYTES = 16 * 1024;
 const MAX_REQUEST_BYTES = 128 * 1024 * 1024;
@@ -30,8 +30,18 @@ async function encodeRequest(exchange, request, signal) {
 	signal?.throwIfAborted();
 	const parts = [exchange.prefix, await exchange.seal(1, metadata)];
 	let size = 0;
-	if (request.body) {
-		const reader = abortableReader(request.body, signal);
+	let source = request.body;
+	// Some Fetch implementations expose buffered bodies only through blob().
+	// Check its size before reading plaintext chunks; an absent body property
+	// does not mean that the application sent an empty request.
+	if (source === undefined) {
+		const blob = await request.blob();
+		signal?.throwIfAborted();
+		if (blob.size > MAX_REQUEST_BYTES) throw new Error('request exceeds its byte limit');
+		source = blob.stream();
+	}
+	if (source) {
+		const reader = abortableReader(source, signal);
 		try {
 			if (Number(request.headers.get('content-length')) > MAX_REQUEST_BYTES) {
 				throw new Error('request exceeds its byte limit');
@@ -70,7 +80,8 @@ function responseMetadata(bytes) {
 		!value ||
 		typeof value !== 'object' ||
 		Array.isArray(value) ||
-		Object.keys(value).some((key) => key !== 'status' && key !== 'headers') ||
+		Object.keys(value).some((key) => !['status', 'headers', 'closing'].includes(key)) ||
+		('closing' in value && typeof value.closing !== 'boolean') ||
 		!Number.isInteger(value.status) ||
 		value.status < 200 ||
 		value.status > 599 ||
@@ -91,7 +102,7 @@ function responseMetadata(bytes) {
 		}
 		headers.set(name, content);
 	}
-	return { status: value.status, headers };
+	return { status: value.status, headers, closing: value.closing === true };
 }
 
 // No delivery failure in this function retries an inference. The returned
@@ -104,10 +115,12 @@ export async function sendSessionRequest({
 	fetch,
 	signal = request.signal,
 	release = () => {},
-	failed = () => {},
+	retire = () => {},
+	onProgress,
 	onMetadata = () => {}
 }) {
 	let submitted = false;
+	let acknowledged = false;
 	let reader;
 	let released = false;
 	let abortResponse;
@@ -130,7 +143,9 @@ export async function sendSessionRequest({
 		release();
 	};
 	const failure = (error) => {
-		if (submitted) failed(error);
+		// A local cancellation after authenticated feedback erases this request's
+		// independent keys. It does not invalidate the reusable session ratchet.
+		if (submitted && !(acknowledged && signal?.aborted)) retire();
 		return new TransportError(
 			'Encrypted request failed',
 			submitted ? 'execution_unknown' : 'not_sent',
@@ -144,11 +159,13 @@ export async function sendSessionRequest({
 			void (reader?.cancel(signal.reason) ?? Promise.resolve()).then(cleanup);
 		};
 		signal?.addEventListener('abort', abortResponse, { once: true });
+		notifyRequestProgress(onProgress, 'encrypting');
 		const body = await encodeRequest(exchange, request, signal);
 		signal?.throwIfAborted();
 		if (request.headers.get('Stogas-Metadata') === 'v1') receipt = exchange.response_receipt();
 		// Create before decoding: a Wasm push callback cannot re-enter its exchange.
 		completion = exchange.response_completion();
+		notifyRequestProgress(onProgress, 'sending');
 		signal?.throwIfAborted();
 		submitted = true;
 		const outer = await fetch(endpoint, {
@@ -183,9 +200,11 @@ export async function sendSessionRequest({
 		let inputOffset = 0;
 		let finished = false;
 		let sse = false;
+		let authenticated = false;
 		const emit = (kind, content) => {
 			signal?.throwIfAborted();
 			if (exchangeClosed) throw new Error('encrypted request is closed');
+			authenticated = true;
 			if (kind === 1) {
 				if (metadata) throw new Error('duplicate encrypted response metadata');
 				metadata = responseMetadata(content);
@@ -223,9 +242,19 @@ export async function sendSessionRequest({
 			signal?.throwIfAborted();
 			if (exchangeClosed) throw new Error('encrypted request is closed');
 			inputOffset = end;
+			// Run observers after the Rust borrow ends. The receipt acknowledges
+			// only the request start, not authorization or provider acceptance.
+			if (authenticated && !acknowledged) {
+				acknowledged = true;
+				notifyRequestProgress(onProgress, 'acknowledged');
+				signal?.throwIfAborted();
+				if (exchangeClosed) throw new Error('encrypted request is closed');
+			}
 		};
 		while (!metadata && !finished) await advance();
 		if (!metadata) throw new Error('encrypted response ended before metadata');
+		// Session closure can enter Wasm; run it after the record callback's borrow ends.
+		if (metadata.closing) retire();
 		if ([204, 205, 304].includes(metadata.status)) {
 			while (!finished) await advance();
 			if (receipt) throw new Error('receipt response has no content');

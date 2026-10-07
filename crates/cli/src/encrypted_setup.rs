@@ -9,7 +9,6 @@ use stogas_verifier::{
     approvals::Environment,
     channel::{
         ClientSession,
-        ratchet::ChunkSize,
         setup::{MAX_SERVER_SETUP_BYTES, PendingSetup, SetupError},
     },
     evidence::{self, Snapshot, VerifiedSession},
@@ -80,7 +79,6 @@ pub async fn connect(
     http: &Client,
     endpoint: Url,
     environment: Environment,
-    chunk_size: ChunkSize,
     deadline: Instant,
 ) -> Result<Connection, Error> {
     if Instant::now() >= deadline {
@@ -89,7 +87,7 @@ pub async fn connect(
     let deadline = deadline.min(Instant::now() + SETUP_BUDGET);
     timeout_at(
         deadline,
-        connect_inner(evidence, http, endpoint, environment, chunk_size, deadline),
+        connect_inner(evidence, http, endpoint, environment, deadline),
     )
     .await
     .map_err(|_| Error::Deadline)?
@@ -100,7 +98,6 @@ async fn connect_inner(
     http: &Client,
     endpoint: Url,
     environment: Environment,
-    chunk_size: ChunkSize,
     deadline: Instant,
 ) -> Result<Connection, Error> {
     let snapshot = match evidence.current()? {
@@ -108,9 +105,7 @@ async fn connect_inner(
         None => evidence.recover(deadline, |_| Ok(())).await?,
     };
     let pending = evidence
-        .compute(deadline, move || {
-            PendingSetup::with_chunk_size(environment, chunk_size)
-        })
+        .compute(deadline, move || PendingSetup::new(environment))
         .await??;
     let mut response = http
         .post(endpoint)

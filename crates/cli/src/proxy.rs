@@ -1,6 +1,8 @@
 use crate::{
-    SecurityMode, TransportOptions, encrypted_client, evidence_client::EvidenceClient, http2_pool,
-    native_http,
+    TransportOptions, encrypted_client,
+    evidence_client::EvidenceClient,
+    http2_pool, native_http,
+    upstream::{self, Upstream},
 };
 use anyhow::{Context as _, Result, bail};
 use axum::{
@@ -13,11 +15,9 @@ use axum::{
 };
 use futures_util::{StreamExt as _, stream};
 use rand::Rng as _;
-use rustls::pki_types::ServerName;
 use std::{
     collections::HashSet,
     net::SocketAddr,
-    num::NonZeroUsize,
     sync::{Arc, mpsc::SyncSender},
     time::Duration,
 };
@@ -51,15 +51,7 @@ impl ServeConfig {
         listen: &str,
         browser_origin: Option<&str>,
     ) -> Result<Self> {
-        options.validate()?;
-        let origin = options
-            .base_url
-            .as_deref()
-            .unwrap_or_else(|| match options.security {
-                SecurityMode::Tls => options.environment.api_origin(),
-                SecurityMode::E2ee => options.environment.e2ee_origin(),
-            });
-        let upstream = secure_base_url(origin, "upstream URL")?;
+        let upstream = upstream::origin(options)?;
         let listen: SocketAddr = listen.parse().context("invalid listen address")?;
         if !listen.ip().is_loopback() {
             bail!("serve listener must use a loopback address");
@@ -97,10 +89,6 @@ impl ServeConfig {
     }
 }
 
-enum Upstream {
-    Tls(native_http::Client),
-    E2ee(encrypted_client::Client),
-}
 struct ProxyState {
     config: ServeConfig,
     evidence: Arc<EvidenceClient>,
@@ -114,44 +102,7 @@ impl ProxyState {
             environment.stogas_root()?,
         )?);
         evidence.refresh(Instant::now() + SETUP_BUDGET).await?;
-        let maximum = NonZeroUsize::new(config.options.max_connections)
-            .context("invalid connection maximum")?;
-        let upstream = match config.options.security {
-            SecurityMode::Tls => {
-                let host = config
-                    .upstream
-                    .host_str()
-                    .context("missing upstream host")?
-                    .to_owned();
-                let server_name = ServerName::try_from(host.clone())?;
-                let port = config
-                    .upstream
-                    .port_or_known_default()
-                    .context("missing upstream port")?;
-                let limits = http2_pool::Limits {
-                    connections: maximum,
-                    waiting_requests: NonZeroUsize::new(1024).context("invalid wait count")?,
-                    waiting_bytes: NonZeroUsize::new(256 * 1024 * 1024)
-                        .context("invalid wait bytes")?,
-                };
-                Upstream::Tls(native_http::Client::new(
-                    Arc::clone(&evidence),
-                    move || {
-                        let host = host.clone();
-                        async move { tokio::net::TcpStream::connect((host.as_str(), port)).await }
-                    },
-                    server_name,
-                    limits,
-                ))
-            }
-            SecurityMode::E2ee => Upstream::E2ee(encrypted_client::Client::new(
-                Arc::clone(&evidence),
-                config.upstream.join("/v1/session")?,
-                environment,
-                maximum,
-                stogas_verifier::channel::ratchet::ChunkSize::new(config.options.ratchet_bytes)?,
-            )),
-        };
+        let upstream = Upstream::new(&config.options, &config.upstream, Arc::clone(&evidence))?;
         Ok(Self {
             config,
             evidence,
@@ -159,14 +110,7 @@ impl ProxyState {
         })
     }
     async fn close(&self, deadline: Instant) {
-        match &self.upstream {
-            Upstream::Tls(client) => {
-                let _ = client.close(deadline).await;
-            }
-            Upstream::E2ee(client) => {
-                let _ = client.close(deadline).await;
-            }
-        }
+        self.upstream.close(deadline).await;
     }
 }
 
@@ -642,21 +586,6 @@ fn random_capability() -> String {
     let mut bytes = [0_u8; 32];
     rand::rng().fill(&mut bytes);
     hex::encode(bytes)
-}
-
-fn secure_base_url(value: &str, label: &str) -> Result<Url> {
-    let url = Url::parse(value).with_context(|| format!("invalid {label}"))?;
-    if url.scheme() != "https"
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || !matches!(url.path(), "" | "/")
-    {
-        bail!("{label} must be an HTTPS origin without credentials, query, fragment, or path");
-    }
-    Ok(url)
 }
 
 fn routed_path<'a>(

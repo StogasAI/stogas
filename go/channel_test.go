@@ -4,12 +4,7 @@ package verifier
 
 import (
 	"bytes"
-	"crypto/aes"
 	"crypto/cipher"
-	"crypto/ecdh"
-	"crypto/hkdf"
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	ref "github.com/StogasAI/verifier/go/testutil/channeltest"
 )
 
 type channelVectorRecord struct {
@@ -30,16 +27,15 @@ type channelFixture struct {
 	Root      string                `json:"root_hex"`
 	ID        string                `json:"session_id_hex"`
 	Initial   string                `json:"initial_private_hex"`
-	Alice     string                `json:"alice_private_hex"`
-	Classical string                `json:"classical_after_request_root_hex"`
-	Quantum   string                `json:"quantum_response_message_hex"`
+	Alice     string                `json:"alice_seed_hex"`
+	RootAfter string                `json:"after_request_root_hex"`
 	Request   []channelVectorRecord `json:"request"`
 	Response  []channelVectorRecord `json:"response"`
 }
 
 func channelVector(t *testing.T) channelFixture {
 	t.Helper()
-	encoded, err := os.ReadFile("../tests/fixtures/channel-exchange-v3.json")
+	encoded, err := os.ReadFile("../tests/fixtures/channel-exchange.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,55 +46,25 @@ func channelVector(t *testing.T) channelFixture {
 	return vector
 }
 
-// Standard-library decryption is independent of the Rust implementation. The
-// fixture's root and PQ message key were derived with Python cryptography.
+// Independent CIRCL/Go decryption of fresh Rust response keys and headers.
 func channelResponseCipher(t *testing.T, v channelFixture, encoded []byte) (cipher.AEAD, [12]byte) {
 	t.Helper()
-	if len(encoded) < 96 {
+	if len(encoded) < 6+ref.HeaderBytes+17 {
 		t.Fatal("short response")
 	}
-	h := encoded[6:]
-	if binary.BigEndian.Uint64(h[32:40]) != 0 || binary.BigEndian.Uint64(h[40:48]) != 0 || binary.BigEndian.Uint64(h[48:56]) != 0 || binary.BigEndian.Uint64(h[56:64]) != 1 || binary.BigEndian.Uint64(h[64:72]) != 1 {
-		t.Fatal("unexpected first response counters")
-	}
-	alice, err := ecdh.X25519().NewPrivateKey(channelHex(t, v.Alice))
+	initial := ref.KDF(nil, channelHex(t, v.Root), ":Initialization", 96)
+	header, err := ref.OpenHeader(initial[64:], encoded[6:6+ref.HeaderBytes])
 	if err != nil {
 		t.Fatal(err)
 	}
-	bob, err := ecdh.X25519().NewPublicKey(h[:32])
-	if err != nil {
-		t.Fatal(err)
+	if binary.BigEndian.Uint64(header[2328:2336]) != 0 || binary.BigEndian.Uint64(header[2336:2344]) != 0 {
+		t.Fatal("unexpected response counters")
 	}
-	shared, err := alice.ECDH(bob)
-	if err != nil {
-		t.Fatal(err)
-	}
-	root, err := hkdf.Key(sha256.New, shared, channelHex(t, v.Classical), "stogas.e2ee.double.v3_X25519_HKDFSHA256:Root", 64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mac := hmac.New(sha256.New, root[32:])
-	mac.Write([]byte{1})
-	secret, err := hkdf.Key(sha256.New, mac.Sum(nil), channelHex(t, v.Quantum), "stogas.e2ee.triple.v3_X25519_MLKEM768_HKDFSHA256", 32)
-	if err != nil {
-		t.Fatal(err)
-	}
-	info := append([]byte("stogas.e2ee.record.v3\x00"), channelHex(t, v.ID)...)
-	info = binary.BigEndian.AppendUint64(info, 0)
-	info = append(info, 2)
-	material, err := hkdf.Expand(sha256.New, secret, string(info), 44)
-	if err != nil {
-		t.Fatal(err)
-	}
-	block, err := aes.NewCipher(material[:32])
-	if err != nil {
-		t.Fatal(err)
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return aead, [12]byte(material[32:])
+	alice := ref.KeyPair(channelHex(t, v.Alice))
+	root := ref.KDF(channelHex(t, v.RootAfter), append(alice.Agree(header[:ref.PublicBytes]), alice.Decap(header[ref.PublicBytes:2328])...), ":Root", 96)
+	_, secret, _ := ref.Chain(root[32:64])
+	aead, nonce := ref.RecordMaterial(secret, channelHex(t, v.ID), 0, 2)
+	return aead, [12]byte(nonce)
 }
 func channelHex(t *testing.T, value string) []byte {
 	t.Helper()
@@ -109,11 +75,40 @@ func channelHex(t *testing.T, value string) []byte {
 	return decoded
 }
 
+func TestChannelForgedGapDoesNotConsumeSessionState(t *testing.T) {
+	v := channelVector(t)
+	session, err := NewChannelSession([32]byte(channelHex(t, v.Root)), [32]byte(channelHex(t, v.ID)), [32]byte(channelHex(t, v.Initial)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(session.Close)
+	initial := ref.KeyPair(channelHex(t, v.Initial))
+	client := ref.New(channelHex(t, v.Root), initial, true)
+	var message ref.Message
+	for range 256 {
+		message = client.Send(channelHex(t, v.Alice), bytes.Repeat([]byte{9}, 32))
+	}
+	forged := ref.SealRecord(message.Secret, channelHex(t, v.ID), 255, 1, 0, message.Header, 1, []byte("credentials"))
+	forged[len(forged)-1] ^= 1
+	if _, _, _, err := session.AcceptStart(255, forged); !errors.Is(err, ErrChannelAuthentication) {
+		t.Fatalf("forged body accepted: %v", err)
+	}
+	reader, writer, metadata, err := session.AcceptStart(0, channelHex(t, v.Request[0].Encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(reader.Close)
+	t.Cleanup(writer.Close)
+	if !bytes.Equal(metadata, channelHex(t, v.Request[0].Plaintext)) {
+		t.Fatal("rejected starts changed the authenticated metadata")
+	}
+}
+
 func TestChannelConcurrentOwnersAndCloseUseTheRustCore(t *testing.T) {
 	v := channelVector(t)
 	root, id, initial := [32]byte(channelHex(t, v.Root)), [32]byte(channelHex(t, v.ID)), [32]byte(channelHex(t, v.Initial))
 	request, response := v.Request, v.Response
-	session, err := NewChannelSession(root, id, initial, 1152)
+	session, err := NewChannelSession(root, id, initial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,12 +199,7 @@ func TestChannelMalformedInputsDoNotExposePlaintextOrReuseFailedWriters(t *testi
 	v := channelVector(t)
 	root, id, initial := [32]byte(channelHex(t, v.Root)), [32]byte(channelHex(t, v.ID)), [32]byte(channelHex(t, v.Initial))
 	request := v.Request
-	for _, width := range []uint16{0, 1, 31, 33, 1153, 65535} {
-		if session, err := NewChannelSession(root, id, initial, width); session != nil || err == nil {
-			t.Fatal("accepted invalid size", width)
-		}
-	}
-	session, err := NewChannelSession(root, id, initial, 32)
+	session, err := NewChannelSession(root, id, initial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,15 +229,15 @@ func TestChannelMalformedInputsDoNotExposePlaintextOrReuseFailedWriters(t *testi
 	}
 }
 
-func TestChannelSetupKeyMatchesIndependentX25519(t *testing.T) {
+func TestChannelSetupKeyMatchesIndependentX448AndMLKEM(t *testing.T) {
 	private, public, err := GenerateChannelKey()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer clear(private[:])
-	key, err := ecdh.X25519().NewPrivateKey(private[:])
-	if err != nil || !bytes.Equal(key.PublicKey().Bytes(), public[:]) {
-		t.Fatal("setup key pair mismatch", err)
+	key := ref.KeyPair(private[:])
+	if !bytes.Equal(key.Public[:], public[:]) {
+		t.Fatal("setup key pair mismatch")
 	}
 	_, next, err := GenerateChannelKey()
 	if err != nil || next == public {

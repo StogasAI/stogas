@@ -1,88 +1,15 @@
 use super::*;
 use axum::{Router, body::to_bytes, routing::post};
-use hpke::{
-    Deserializable as _, OpModeS, Serializable as _, aead::ExportOnlyAead, kdf::HkdfSha256,
-    kem::XWing, setup_sender,
-};
-use sha2::{Digest as _, Sha256, Sha512};
+use sha2::{Digest as _, Sha256};
 use std::time::Duration;
-use stogas_verifier::{
-    approvals::Environment,
-    channel::{ClientSession, setup::PendingSetup},
-};
+use stogas_verifier::{approvals::Environment, channel::setup::PendingSetup};
 use zeroize::Zeroizing;
 
-// This HTTP test peer creates synthetic hardware bytes solely for transport tests.
-// Managed setup uses complete_verified; its genuine-SNP tests reject this evidence.
-pub fn session() -> (ClientSession, [u8; 32], [u8; 32]) {
-    let mut pending = PendingSetup::new(Environment::Production).unwrap();
-    let hello = pending.hello();
-    let recipient = <XWing as hpke::Kem>::PublicKey::from_bytes(&hello[41..]).unwrap();
-    let info = [b"stogas.e2ee.setup.v3\0".as_slice(), &Sha256::digest(hello)].concat();
-    let (enc, sender) =
-        setup_sender::<ExportOnlyAead, HkdfSha256, XWing>(&OpModeS::Base, &recipient, &info)
-            .unwrap();
-    let id = [22; 32];
-    let mut response = b"STGS\x03\x02".to_vec();
-    response.extend_from_slice(&id);
-    response.extend_from_slice(&600_u32.to_be_bytes());
-    response.extend_from_slice(&enc.to_bytes());
-    response.extend_from_slice(
-        &channel::ratchet::InitialKey::from_bytes(Zeroizing::new([3; 32])).public_key(),
-    );
-    let boot = br#"{"synthetic":"HTTP transport test"}"#;
-    let boot_digest = Sha256::digest(boot);
-    let transcript = Sha256::digest(
-        [
-            b"stogas.e2ee.transcript.v3\0".as_slice(),
-            hello,
-            &response,
-            &boot_digest,
-        ]
-        .concat(),
-    );
-    let leaf = Sha512::digest(
-        [
-            b"\x00stogas.e2ee-session.v1\0\x01".as_slice(),
-            &boot_digest,
-            &transcript,
-        ]
-        .concat(),
-    );
-    let report_data = Sha512::digest(
-        [
-            b"stogas.quote-batch.v1\0".as_slice(),
-            &1_u16.to_be_bytes(),
-            &leaf,
-        ]
-        .concat(),
-    );
-    let mut evidence = vec![0_u8; 1184];
-    evidence[0x50..0x90].copy_from_slice(&report_data);
-    evidence.extend_from_slice(&[0, 4, 0, 1, 0, 0]);
-    for field in [boot.as_slice(), b"test inclusion"] {
-        evidence.extend_from_slice(&u32::try_from(field.len()).unwrap().to_be_bytes());
-        evidence.extend_from_slice(field);
-    }
-    let mut confirmation = [0; 32];
-    sender
-        .export(
-            &[b"stogas.e2ee.confirmation.v3\0".as_slice(), &transcript].concat(),
-            &mut confirmation,
-        )
-        .unwrap();
-    let mut root = [0; 32];
-    sender
-        .export(
-            &[b"stogas.e2ee.root.v3\0".as_slice(), &transcript].concat(),
-            &mut root,
-        )
-        .unwrap();
-    response.extend_from_slice(&confirmation);
-    response.extend_from_slice(&u32::try_from(evidence.len()).unwrap().to_be_bytes());
-    response.extend_from_slice(&evidence);
-    (pending.complete(&response, |_| Ok(())).unwrap(), root, id)
-}
+mod clients;
+
+#[path = "../../../../tests/support/channel.rs"]
+mod channel_fixture;
+pub use channel_fixture::session;
 
 // These tests exercise HTTP carriage against the real server implementation.
 // Independent primitive and wire interoperability lives in the core/Go suites.
@@ -97,7 +24,6 @@ impl Records {
             session: channel::ServerSession::new(
                 Zeroizing::new(*root),
                 *id,
-                channel::ratchet::ChunkSize::FULL,
                 channel::ratchet::InitialKey::from_bytes(Zeroizing::new([3; 32])),
             ),
             reader: None,
@@ -169,6 +95,88 @@ impl Drop for Server {
 }
 
 #[tokio::test]
+async fn acknowledged_response_waits_for_provider_status_and_preserves_retry_headers() {
+    for (status, closing) in [(200, false), (429, false), (503, false), (503, true)] {
+        let (mut session, root, id) = session();
+        let provider = Arc::new(Notify::new());
+        let waiting = Arc::clone(&provider);
+        let server = Server::new(Router::new().route(
+            "/v1/session",
+            post(move |request: Request<Body>| {
+                let waiting = Arc::clone(&waiting);
+                async move {
+                    let wire = to_bytes(request.into_body(), 1024 * 1024).await.unwrap();
+                    let mut records = Records::from_request(&root, &id, &wire);
+                    let ack = records.seal(Kind::Keepalive, &[]);
+                    let metadata = serde_json::to_vec(&json!({
+                        "status": status,
+                        "closing": closing,
+                        "headers": {"content-type": "application/json", "retry-after": "7", "cache-control": "no-store"}
+                    })).unwrap();
+                    let (output, receiver) = tokio::sync::mpsc::channel(1);
+                    tokio::spawn(async move {
+                        output.send(Ok::<_, std::io::Error>(ack)).await.unwrap();
+                        waiting.notified().await;
+                        for (kind, bytes) in [
+                            (Kind::Keepalive, &[][..]),
+                            (Kind::Metadata, metadata.as_slice()),
+                            (Kind::Data, br#"{"message":"provider result"}"#.as_slice()),
+                            (Kind::Finished, &[][..]),
+                        ] {
+                            output.send(Ok(records.seal(kind, bytes))).await.unwrap();
+                        }
+                    });
+                    Response::builder().header(header::CONTENT_TYPE, CONTENT_TYPE)
+                        .body(Body::from_stream(stream::unfold(receiver, |mut receiver| async {
+                            receiver.recv().await.map(|item| (item, receiver))
+                        }))).unwrap()
+                }
+            }),
+        )).await;
+        let acknowledged = Arc::new(Notify::new());
+        let ack = Arc::clone(&acknowledged);
+        let endpoint = server.endpoint.clone();
+        let exchange = session.request().unwrap();
+        let sending = tokio::spawn(async move {
+            send(
+                &http(),
+                endpoint,
+                "owner",
+                exchange,
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .body(Bytes::from_static(br#"{"stream":true}"#))
+                    .unwrap(),
+                deadline(),
+                Some(ack),
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), acknowledged.notified())
+            .await
+            .unwrap();
+        assert!(
+            !sending.is_finished(),
+            "an ACK must not expose an HTTP status"
+        );
+        provider.notify_one();
+        let response = sending.await.unwrap().unwrap();
+        assert_eq!(response.status().as_u16(), status);
+        assert_eq!(
+            response.extensions().get::<SessionClosing>().is_some(),
+            closing
+        );
+        assert_eq!(response.headers()[header::RETRY_AFTER], "7");
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(
+            to_bytes(response.into_body(), 1024).await.unwrap(),
+            br#"{"message":"provider result"}"#.as_slice()
+        );
+    }
+}
+
+#[tokio::test]
 async fn binary_upload_streams_bounded_records_and_authenticates_fragmented_response() {
     let (mut session, root, id) = session();
     let request_body = Bytes::from(vec![33; 3 * MAX_RECORD_PLAINTEXT + 13]);
@@ -181,7 +189,7 @@ async fn binary_upload_streams_bounded_records_and_authenticates_fragmented_resp
                 assert_eq!(request.headers()["stogas-node-id"], "owner");
                 assert!(!request.headers().contains_key("authorization"));
                 let wire = to_bytes(request.into_body(), 1024 * 1024).await.unwrap();
-                assert_eq!(&wire[..6], b"STGS\x03\x03");
+                assert_eq!(&wire[..6], b"STGS\x01\x03");
                 assert_eq!(&wire[6..38], &id);
                 assert_eq!(&wire[38..46], &0_u64.to_be_bytes());
                 let mut records = Records::new(&root, &id);
@@ -386,6 +394,8 @@ fn metadata_rejects_transport_overrides_and_unsupported_paths_before_submission(
         br#"{"status":100,"headers":{}}"#.as_slice(),
         br#"{"status":200,"headers":{"Content-Type":"a","content-type":"b"}}"#,
         br#"{"status":200,"headers":{},"extra":true}"#,
+        br#"{"status":503,"headers":{},"closing":"true"}"#,
+        br#"{"status":503,"headers":{},"closing":null}"#,
     ] {
         assert!(response_metadata(metadata).is_err());
     }
@@ -396,7 +406,7 @@ fn metadata_rejects_transport_overrides_and_unsupported_paths_before_submission(
 async fn client_fixture_proxy<F, Fut>(acquire: F, endpoint: Url, node_id: String) -> Server
 where
     F: Fn() -> Fut + Clone + Send + Sync + 'static,
-    Fut: std::future::Future<Output = channel::ClientRequest> + Send,
+    Fut: std::future::Future<Output = Result<channel::ClientRequest, Response<Body>>> + Send,
 {
     let http = http();
     let prefix = format!("/{}", hex::encode(rand::random::<[u8; 32]>()));
@@ -422,7 +432,10 @@ where
                     parts.headers.remove(name);
                 }
                 let bytes = to_bytes(body, MAX_REQUEST_BYTES).await.unwrap();
-                let exchange = acquire().await;
+                let exchange = match acquire().await {
+                    Ok(exchange) => exchange,
+                    Err(response) => return response,
+                };
                 send(
                     &http,
                     endpoint,
@@ -433,7 +446,13 @@ where
                     None,
                 )
                 .await
-                .unwrap()
+                .unwrap_or_else(|_| {
+                    Response::builder()
+                        .status(StatusCode::BAD_GATEWAY)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(r#"{"error":{"message":"encrypted transport failed","type":"transport_error"}}"#))
+                        .unwrap()
+                })
             }
         }),
     );
@@ -444,7 +463,10 @@ where
     server
 }
 
-async fn client_fixture_request(endpoint: Url, fixture: Value) -> channel::ClientRequest {
+async fn client_fixture_request(
+    endpoint: Url,
+    fixture: Value,
+) -> Result<channel::ClientRequest, Response<Body>> {
     let mut pending = PendingSetup::new(Environment::Production).unwrap();
     let response = http()
         .post(endpoint.clone())
@@ -454,7 +476,16 @@ async fn client_fixture_request(endpoint: Url, fixture: Value) -> channel::Clien
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    if response.status() != StatusCode::OK {
+        let status = response.status();
+        let content_type = response.headers().get(header::CONTENT_TYPE).cloned();
+        let body = response.bytes().await.unwrap();
+        let mut response = Response::builder().status(status);
+        if let Some(content_type) = content_type {
+            response = response.header(header::CONTENT_TYPE, content_type);
+        }
+        return Err(response.body(Body::from(body)).unwrap());
+    }
     let response = response.bytes().await.unwrap();
     assert!(response.len() <= stogas_verifier::channel::setup::MAX_SERVER_SETUP_BYTES);
     let mut session = pending
@@ -467,7 +498,7 @@ async fn client_fixture_request(endpoint: Url, fixture: Value) -> channel::Clien
             Ok(())
         })
         .unwrap();
-    session.request().unwrap()
+    Ok(session.request().unwrap())
 }
 
 #[tokio::test]
@@ -538,7 +569,7 @@ async fn open_source_client_compatibility_proxy() {
     .await;
     let session = Arc::new(std::sync::Mutex::new(session));
     let proxy = client_fixture_proxy(
-        move || std::future::ready(session.lock().unwrap().request().unwrap()),
+        move || std::future::ready(Ok(session.lock().unwrap().request().unwrap())),
         peer.endpoint.clone(),
         "owner".into(),
     )

@@ -7,7 +7,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    AllowedCatalog, AllowedIgvm, HardwarePolicy, SignedHardwarePolicy, VerifiedCatalogRelease,
+    AllowedCatalog, AllowedIgvm, SignedHardwarePolicy, VerifiedCatalogRelease,
     VerifiedHardwarePolicy, VerifiedRelease,
     approvals::{
         self, ApprovalVerifier, Environment, RootKey, SignedApprovalManifest, SignedKeyManifest,
@@ -32,6 +32,30 @@ pub use history::MAX_ARCHIVE_BYTES;
 pub use session::VerifiedSession;
 #[cfg(feature = "snp")]
 pub use snp::{SnpHardwareFacts, VerifiedSnpReport};
+
+/// Completed local work. Individual checks never imply that the candidate was accepted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationStep {
+    Decode,
+    SigningManifest,
+    VendorRevocations,
+    Envelope,
+    ReleasePolicy,
+    GatewayRelease,
+    CatalogRelease,
+    HardwarePolicy,
+    VendorCollateral,
+    Accepted,
+}
+
+/// An observation of a successful check, independent of the caller's clock and UI.
+#[derive(Debug, Serialize)]
+pub struct VerificationCheck<'a> {
+    pub step: VerificationStep,
+    pub reference: Option<&'a str>,
+    pub cached: bool,
+}
 
 /// The replacement body of `evidence/latest.json`. Boot records travel with session evidence.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -92,9 +116,7 @@ impl Error {
             Self::Approval(approvals::Error::Rollback) => "rollback",
             Self::Approval(approvals::Error::Equivocation) => "conflicting_approval",
             Self::Approval(approvals::Error::NotApproved(_)) => "not_approved",
-            Self::Approval(approvals::Error::InactiveKey | approvals::Error::RetiredKey) => {
-                "key_rejected"
-            }
+            Self::Approval(approvals::Error::InactiveKey) => "key_rejected",
             Self::Approval(approvals::Error::Authority) => "wrong_authority",
             Self::Approval(approvals::Error::Expired) => "expired_key_authorization",
             Self::Attestation(_) => "invalid_attestation",
@@ -132,6 +154,7 @@ pub struct Snapshot {
     catalogs: BTreeMap<String, Cached<VerifiedCatalogRelease>>,
     hardware: Cached<VerifiedHardwarePolicy>,
     hardware_evidence: SignedHardwarePolicy,
+    collateral_evidence: Vec<BTreeMap<String, Value>>,
     collateral: collateral::Store,
 }
 
@@ -169,7 +192,8 @@ impl Snapshot {
             "keys": self.approvals.keys(), "approvals": self.approvals.manifest(),
             "keys_evidence": self.keys_evidence, "approvals_evidence": self.approvals_evidence,
             "gateways": gateways, "catalogs": catalogs, "hardware_policy": self.hardware_policy(),
-            "hardware_policy_evidence": self.hardware_evidence
+            "hardware_policy_evidence": self.hardware_evidence,
+            "vendor_collateral_evidence": self.collateral_evidence
         })
     }
 
@@ -217,11 +241,6 @@ impl Snapshot {
     #[must_use]
     pub fn hardware_policy(&self) -> &VerifiedHardwarePolicy {
         &self.hardware.value
-    }
-
-    #[must_use]
-    pub const fn hardware_rules(&self) -> &HardwarePolicy {
-        &self.hardware_evidence.policy
     }
 
     /// The vendor-signed interval for one chip/TCB, capped by the root authorization deadline.
@@ -307,44 +326,94 @@ impl Verifier {
     /// Rejects invalid, incomplete, conflicting or superseded evidence without losing current
     /// artifacts. Previously learned vendor revocation still constrains their use.
     pub fn refresh(&mut self, bytes: &[u8], now_unix_ms: i64) -> Result<Arc<Snapshot>, Error> {
+        self.refresh_observed(bytes, now_unix_ms, |_| {})
+    }
+
+    /// Refresh with observations after actual checks, including reuse of authenticated bytes.
+    /// Observers must not panic. Only `Accepted` establishes a complete current snapshot.
+    ///
+    /// # Errors
+    /// Has the same validation and retained-revocation behavior as [`Self::refresh`].
+    pub fn refresh_observed(
+        &mut self,
+        bytes: &[u8],
+        now_unix_ms: i64,
+        mut observer: impl FnMut(VerificationCheck<'_>),
+    ) -> Result<Arc<Snapshot>, Error> {
+        let mut checked = |step, reference: Option<&str>, cached| {
+            observer(VerificationCheck {
+                step,
+                reference,
+                cached,
+            });
+        };
         let value = parse_json(bytes)?;
+        checked(VerificationStep::Decode, None, false);
         // Vendor revocation is an independent signed decision. Retain it even if a missing
         // release, altered approval or other malformed object prevents snapshot installation.
         let keys = self.approvals.observe_keys(
             &serde_json::to_vec(&value["body"]["keys"]).map_err(invalid)?,
             now_unix_ms,
         );
+        if keys.is_ok() {
+            checked(VerificationStep::SigningManifest, None, false);
+        }
         #[cfg(feature = "snp")]
         let vendor = self.revocations.observe(&value["body"], now_unix_ms);
+        #[cfg(feature = "snp")]
+        if keys.is_ok() && vendor.is_ok() {
+            checked(VerificationStep::VendorRevocations, None, false);
+        }
         // Process both independent authorities before returning either delivery failure.
         let keys = keys?;
         #[cfg(feature = "snp")]
         vendor?;
         let envelope = parse_envelope(value)?;
-        let body = envelope.body;
+        checked(VerificationStep::Envelope, None, false);
         let approvals = self.approvals.verify_with_keys(
             keys,
-            &serde_json::to_vec(&body.approvals).map_err(invalid)?,
+            &serde_json::to_vec(&envelope.body.approvals).map_err(invalid)?,
             now_unix_ms,
         )?;
+        checked(VerificationStep::ReleasePolicy, None, false);
+        let snapshot =
+            Arc::new(self.verify_snapshot(envelope, approvals, now_unix_ms, &mut checked)?);
+        self.approvals.accept(snapshot.approvals.clone())?;
+        self.current = Some(Arc::clone(&snapshot));
+        checked(VerificationStep::Accepted, None, false);
+        Ok(snapshot)
+    }
+
+    fn verify_snapshot(
+        &self,
+        envelope: Envelope,
+        approvals: VerifiedApprovals,
+        now_unix_ms: i64,
+        checked: &mut impl FnMut(VerificationStep, Option<&str>, bool),
+    ) -> Result<Snapshot, Error> {
+        let body = envelope.body;
         // Exact evidence bytes alone are not a trust-cache key after a signing-key change.
-        let reusable = self
-            .current
-            .as_deref()
-            .filter(|snapshot| snapshot.approvals.keys().active_key == approvals.keys().active_key);
+        let reusable = self.current.as_deref().filter(|snapshot| {
+            snapshot
+                .approvals
+                .keys()
+                .active_key
+                .same_signer(&approvals.keys().active_key)
+        });
         let mut gateways = BTreeMap::new();
         for gateway in body.allowed_igvms {
-            let id = payload_sha256(&gateway.manifest)?;
+            let id = payload_sha256(&gateway.document)?;
             if !approvals.allows_gateway(&id) || gateways.contains_key(&id) {
                 return Err(Error::Incomplete("gateway"));
             }
             let digest = payload_sha256(&gateway)?;
-            let entry = cached(
+            let (entry, reused) = cached(
                 reusable.and_then(|snapshot| snapshot.gateways.get(&id)),
                 digest,
                 now_unix_ms,
                 || approvals.verify_gateway(&gateway, now_unix_ms),
             )?;
+            checked(VerificationStep::GatewayRelease, Some(id.as_str()), reused);
             gateways.insert(id, entry);
         }
         if gateways.len() != approvals.manifest().gateways.len() {
@@ -353,43 +422,46 @@ impl Verifier {
         let mut catalogs = BTreeMap::new();
         let mut sequences = std::collections::BTreeSet::new();
         for catalog in body.catalogs {
-            let id = payload_sha256(&catalog.manifest)?;
+            let id = payload_sha256(&catalog.document)?;
             if !approvals.allows_catalog(&id)
                 || catalogs.contains_key(&id)
-                || !sequences.insert(catalog.manifest.sequence)
+                || !sequences.insert(catalog.document.sequence)
             {
                 return Err(Error::Incomplete("catalog"));
             }
             let digest = payload_sha256(&catalog)?;
-            let entry = cached(
+            let (entry, reused) = cached(
                 reusable.and_then(|snapshot| snapshot.catalogs.get(&id)),
                 digest,
                 now_unix_ms,
                 || approvals.verify_catalog(&catalog, now_unix_ms),
             )?;
+            checked(VerificationStep::CatalogRelease, Some(id.as_str()), reused);
             catalogs.insert(id, entry);
         }
         if catalogs.len() != approvals.manifest().catalogs.len() {
             return Err(Error::Incomplete("catalog"));
         }
         // Recheck selection even on a cache hit: unchanged bytes may have been withdrawn.
-        if payload_sha256(&body.hardware_policy.policy)?
+        if payload_sha256(&body.hardware_policy.document)?
             != approvals.manifest().hardware_policy_sha256
         {
             return Err(Error::Incomplete("hardware policy"));
         }
-        let hardware = cached(
+        let (hardware, reused) = cached(
             reusable.map(|snapshot| &snapshot.hardware),
             payload_sha256(&body.hardware_policy)?,
             now_unix_ms,
             || approvals.verify_hardware_policy(&body.hardware_policy, now_unix_ms),
         )?;
+        checked(VerificationStep::HardwarePolicy, None, reused);
         let collateral = collateral::Store::verify(
             &body.vendor_collateral,
             self.current.as_deref().map(|snapshot| &snapshot.collateral),
             Arc::clone(&self.revocations),
         )?;
-        let snapshot = Arc::new(Snapshot {
+        checked(VerificationStep::VendorCollateral, None, false);
+        Ok(Snapshot {
             body_sha256: envelope.body_sha256,
             #[cfg(feature = "snp")]
             identity: Arc::new(()),
@@ -401,11 +473,9 @@ impl Verifier {
             catalogs,
             hardware,
             hardware_evidence: body.hardware_policy,
+            collateral_evidence: body.vendor_collateral,
             collateral,
-        });
-        self.approvals.accept(snapshot.approvals.clone())?;
-        self.current = Some(Arc::clone(&snapshot));
-        Ok(snapshot)
+        })
     }
 }
 
@@ -414,17 +484,20 @@ fn cached<T>(
     digest: String,
     now_unix_ms: i64,
     verify: impl FnOnce() -> Result<T, approvals::Error>,
-) -> Result<Cached<T>, Error> {
-    let (value, verified_at) =
+) -> Result<(Cached<T>, bool), Error> {
+    let (value, verified_at, reused) =
         match prior.filter(|entry| entry.digest == digest && now_unix_ms >= entry.verified_at) {
-            Some(entry) => (Arc::clone(&entry.value), entry.verified_at),
-            None => (Arc::new(verify()?), now_unix_ms),
+            Some(entry) => (Arc::clone(&entry.value), entry.verified_at, true),
+            None => (Arc::new(verify()?), now_unix_ms, false),
         };
-    Ok(Cached {
-        digest,
-        verified_at,
-        value,
-    })
+    Ok((
+        Cached {
+            digest,
+            verified_at,
+            value,
+        },
+        reused,
+    ))
 }
 
 fn parse_json(bytes: &[u8]) -> Result<Value, Error> {

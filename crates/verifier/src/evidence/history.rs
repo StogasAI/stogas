@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use serde::Deserialize;
 use serde_json::Value;
 
 use super::{Error, Verifier, boot::VerifiedBoot};
@@ -10,13 +9,7 @@ use super::{Error, Verifier, boot::VerifiedBoot};
 /// Maximum encoded boot archive size, including its inclusion proof.
 pub const MAX_ARCHIVE_BYTES: usize = 64 * 1024;
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Archive {
-    boot: Value,
-    inclusion: Value,
-    evidence_sha256: String,
-}
+type Archive = crate::LoggedDocument<super::boot::BootPublication>;
 
 #[cfg(all(test, feature = "staging"))]
 mod tests {
@@ -39,10 +32,15 @@ mod tests {
             .decode(fixture["certificate"].as_str().unwrap())
             .unwrap();
         let parsed = ParsedNativeCertificate::parse(&certificate).unwrap();
+        let proof: Value = serde_json::from_slice(parsed.evidence.boot_inclusion).unwrap();
         let archive = json!({
-            "boot": serde_json::from_slice::<Value>(parsed.evidence.boot_document).unwrap(),
-            "inclusion": serde_json::from_slice::<Value>(parsed.evidence.boot_inclusion).unwrap(),
-            "evidence_sha256": fixture["bundle"]["body_sha256"]
+            "document": {
+                "schema": "stogas.node-registration.v1",
+                "boot": serde_json::from_slice::<Value>(parsed.evidence.boot_document).unwrap(),
+                "evidence_sha256": proof["evidence_sha256"]
+            },
+            "signature": proof["signature"],
+            "inclusion": proof["inclusion"]
         });
         (
             verifier,
@@ -75,7 +73,7 @@ mod tests {
         assert_eq!(approvals["body_sha256"], bundle["body_sha256"]);
         assert_eq!(
             approvals["evidence"]["approvals"],
-            bundle["body"]["approvals"]["manifest"]
+            bundle["body"]["approvals"]["document"]
         );
         let boot = verifier
             .verify_boot_archive(&bytes(&archive), &bytes(&bundle), later)
@@ -102,17 +100,20 @@ mod tests {
             .verify_boot_archive(&bytes(&archive), &bytes(&bundle), now)
             .unwrap();
         for (pointer, replacement) in [
-            ("/evidence_sha256", json!("0".repeat(64))),
-            ("/boot/report_data/tls_spki_sha256", json!("0".repeat(64))),
+            ("/document/evidence_sha256", json!("0".repeat(64))),
             (
-                "/inclusion/rekor/verificationMaterial/tlogEntries/0/integratedTime",
+                "/document/boot/report_data/tls_spki_sha256",
+                json!("0".repeat(64)),
+            ),
+            (
+                "/inclusion/verificationMaterial/tlogEntries/0/integratedTime",
                 json!("1"),
             ),
             (
-                "/inclusion/rekor/verificationMaterial/tlogEntries/0/inclusionProof/rootHash",
+                "/inclusion/verificationMaterial/tlogEntries/0/inclusionProof/rootHash",
                 json!("AAAA"),
             ),
-            ("/inclusion/signature/signature", json!("AAAA")),
+            ("/signature/signature", json!("AAAA")),
         ] {
             let mut changed = archive.clone();
             *changed.pointer_mut(pointer).unwrap() = replacement;
@@ -125,7 +126,7 @@ mod tests {
             assert!(verifier.current().is_none());
         }
         let mut changed = bundle.clone();
-        changed["body"]["approvals"]["manifest"]["gateways"] = json!([]);
+        changed["body"]["approvals"]["document"]["gateways"] = json!([]);
         assert!(
             verifier
                 .verify_boot_archive(&bytes(&archive), &bytes(&changed), now)
@@ -200,7 +201,7 @@ impl Verifier {
             crate::strict_json::from_slice(archive).map_err(super::invalid)?,
         )
         .map_err(super::invalid)?;
-        let entries = archive.inclusion["rekor"]["verificationMaterial"]["tlogEntries"]
+        let entries = archive.inclusion["verificationMaterial"]["tlogEntries"]
             .as_array()
             .filter(|entries| entries.len() == 1)
             .ok_or_else(|| super::invalid("boot archive requires one log entry"))?;
@@ -213,14 +214,21 @@ impl Verifier {
             .filter(|value| *value > 0 && *value <= now_unix_ms)
             .ok_or_else(|| super::invalid("invalid boot archive log time"))?;
         let snapshot = self.historical_verifier()?.refresh(evidence, at)?;
-        if snapshot.body_sha256() != archive.evidence_sha256
-            || archive.inclusion["evidence_sha256"].as_str()
-                != Some(archive.evidence_sha256.as_str())
+        if archive.document.schema != super::boot::BOOT_PUBLICATION_SCHEMA
+            || snapshot.body_sha256() != archive.document.evidence_sha256
         {
-            return Err(super::invalid("boot archive evidence digest differs"));
+            return Err(super::invalid("boot archive evidence identity differs"));
         }
-        let document = crate::canonical_json(&archive.boot).map_err(super::invalid)?;
-        let inclusion = serde_json::to_vec(&archive.inclusion).map_err(super::invalid)?;
+        let document = crate::canonical_json(
+            &serde_json::to_value(&archive.document.boot).map_err(super::invalid)?,
+        )
+        .map_err(super::invalid)?;
+        let inclusion = serde_json::to_vec(&serde_json::json!({
+            "evidence_sha256": archive.document.evidence_sha256,
+            "signature": archive.signature,
+            "inclusion": archive.inclusion,
+        }))
+        .map_err(super::invalid)?;
         let boot = snapshot.verify_logged_boot(document.as_bytes(), &inclusion, at)?;
         if boot.integrated_time_unix_ms() != at {
             return Err(super::invalid("boot archive log time differs"));

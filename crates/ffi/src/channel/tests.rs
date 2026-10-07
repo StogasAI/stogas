@@ -2,7 +2,7 @@ use super::*;
 
 fn fixture() -> serde_json::Value {
     serde_json::from_str(include_str!(
-        "../../../../tests/fixtures/channel-exchange-v3.json"
+        "../../../../tests/fixtures/channel-exchange.json"
     ))
     .unwrap()
 }
@@ -28,7 +28,6 @@ fn binary_abi_authentication_ownership_and_fail_closed_boundaries() {
                 root.as_ptr(),
                 id.as_ptr(),
                 initial.as_ptr(),
-                1152,
                 ptr::null_mut()
             ),
             1
@@ -39,7 +38,6 @@ fn binary_abi_authentication_ownership_and_fail_closed_boundaries() {
                 ptr::null(),
                 id.as_ptr(),
                 initial.as_ptr(),
-                1152,
                 &raw mut session
             ),
             1
@@ -50,18 +48,6 @@ fn binary_abi_authentication_ownership_and_fail_closed_boundaries() {
                 root.as_ptr(),
                 id.as_ptr(),
                 initial.as_ptr(),
-                33,
-                &raw mut session
-            ),
-            3
-        );
-        assert!(session.is_null());
-        assert_eq!(
-            stogas_channel_session_new(
-                root.as_ptr(),
-                id.as_ptr(),
-                initial.as_ptr(),
-                1152,
                 &raw mut session
             ),
             0
@@ -146,7 +132,7 @@ fn binary_abi_authentication_ownership_and_fail_closed_boundaries() {
         }
         assert_eq!(stogas_channel_complete(reader), 0);
         stogas_channel_reader_free(reader);
-        for record in vector["response"].as_array().unwrap() {
+        for (index, record) in vector["response"].as_array().unwrap().iter().enumerate() {
             let plain = bytes(record, "plaintext_hex");
             let mut output = StogasChannelBuffer {
                 data: ptr::null_mut(),
@@ -167,7 +153,7 @@ fn binary_abi_authentication_ownership_and_fail_closed_boundaries() {
                 u32::from_be_bytes(encoded[..4].try_into().unwrap()) as usize,
                 encoded.len()
             );
-            let prefix = if record["kind"] == 1 {
+            let prefix = if index == 0 {
                 6 + usize::from(u16::from_be_bytes(encoded[4..6].try_into().unwrap()))
             } else {
                 4
@@ -208,7 +194,6 @@ fn invalid_binary_arguments_close_record_owners_and_panics_have_a_distinct_statu
                     root.as_ptr(),
                     id.as_ptr(),
                     initial.as_ptr(),
-                    1152,
                     &raw mut session
                 ),
                 0
@@ -263,10 +248,11 @@ fn invalid_binary_arguments_close_record_owners_and_panics_have_a_distinct_statu
 }
 
 #[test]
-fn setup_key_outputs_reject_missing_storage() {
+fn setup_key_outputs_reject_missing_storage_and_respect_buffer_bounds() {
     let mut private = [0; 32];
-    let mut public = [0; 32];
-    // SAFETY: the valid arguments point to disjoint 32-byte arrays.
+    let mut storage = [0xA5; PUBLIC_KEY_BYTES + 32];
+    let public = &mut storage[16..16 + PUBLIC_KEY_BYTES];
+    // SAFETY: disjoint storage has the ABI-required private/public lengths.
     unsafe {
         assert_eq!(
             stogas_channel_key_generate(ptr::null_mut(), public.as_mut_ptr()),
@@ -280,6 +266,8 @@ fn setup_key_outputs_reject_missing_storage() {
             stogas_channel_key_generate(private.as_mut_ptr(), public.as_mut_ptr()),
             0
         );
-        assert_ne!(public, [0; 32]);
+        assert!(public.iter().any(|byte| *byte != 0));
     }
+    assert_eq!(&storage[..16], &[0xA5; 16]);
+    assert_eq!(&storage[16 + PUBLIC_KEY_BYTES..], &[0xA5; 16]);
 }

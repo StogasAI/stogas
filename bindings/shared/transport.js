@@ -3,14 +3,7 @@ import { SessionTransport } from './session-transport.js';
 import { TransportError } from './http.js';
 
 const PATHS = new Set(['/v1/chat/completions', '/v1/responses', '/v1/policies/validate']);
-const OPTIONS = new Set([
-	'environment',
-	'baseURL',
-	'maxConnections',
-	'ratchetBytes',
-	'fetch',
-	'onMetadata'
-]);
+const OPTIONS = new Set(['environment', 'baseURL', 'maxConnections', 'fetch', 'onMetadata']);
 
 function baseURL(value) {
 	let url;
@@ -51,7 +44,10 @@ export function createTransportClass({
 			bundleURL: null,
 			error: null,
 			fetchedAtUnixMs: null,
+			fetchDurationMs: null,
 			verificationDurationMs: null,
+			verificationChecks: [],
+			verificationProgress: null,
 			status: 'idle'
 		});
 
@@ -66,15 +62,6 @@ export function createTransportClass({
 			const maximum = options.maxConnections ?? 4;
 			if (!Number.isSafeInteger(maximum) || maximum < 1)
 				throw new RangeError('maxConnections must be a positive safe integer');
-			const ratchetBytes = options.ratchetBytes;
-			if (
-				ratchetBytes !== undefined &&
-				(!Number.isInteger(ratchetBytes) ||
-					ratchetBytes < 32 ||
-					ratchetBytes > 1152 ||
-					ratchetBytes % 2 !== 0)
-			)
-				throw new RangeError('ratchetBytes must be even, from 32 through 1152');
 			const fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
 			if (
 				typeof fetch !== 'function' ||
@@ -85,9 +72,14 @@ export function createTransportClass({
 			this.#baseURL = baseURL(options.baseURL ?? `${config.e2ee_origin}/v1`);
 			this.#origins = config.evidence_origins;
 			const core = EvidenceVerifier.for_stogas(config.environment);
-			this.#evidence = new EvidenceClient(core, this.#origins, fetch, (snapshot) => {
-				this.#publish({ ...snapshot, status: 'ready', error: null });
-			});
+			this.#evidence = new EvidenceClient(
+				core,
+				this.#origins,
+				fetch,
+				(snapshot) =>
+					this.#publish({ ...snapshot, verificationProgress: null, status: 'ready', error: null }),
+				(verificationProgress) => this.#publish({ ...this.#snapshot, verificationProgress })
+			);
 			this.#sessions = new SessionTransport({
 				Setup: EncryptedSetup,
 				evidence: this.#evidence,
@@ -95,7 +87,6 @@ export function createTransportClass({
 				endpoint: `${this.#baseURL}/session`,
 				fetch,
 				maxSessions: maximum,
-				ratchetBytes,
 				onMetadata: options.onMetadata
 			});
 			this.fetch = this.fetch.bind(this);
@@ -129,8 +120,7 @@ export function createTransportClass({
 				apiKey,
 				baseURL: this.#baseURL,
 				dangerouslyAllowBrowser: true,
-				fetch: this.fetch,
-				maxRetries: 0
+				fetch: this.fetch
 			};
 		}
 
@@ -149,7 +139,12 @@ export function createTransportClass({
 		async refreshBundle() {
 			this.#assertOpen();
 			if (this.#refresh) return this.#refresh;
-			this.#publish({ ...this.#snapshot, status: 'refreshing', error: null });
+			this.#publish({
+				...this.#snapshot,
+				verificationProgress: [],
+				status: 'refreshing',
+				error: null
+			});
 			const refresh = this.#evidence
 				.acquire()
 				.catch((error) => {
@@ -157,6 +152,7 @@ export function createTransportClass({
 						this.#publish({
 							...this.#snapshot,
 							status: 'error',
+							verificationProgress: null,
 							error: String(error.message ?? error)
 						});
 					throw error;
@@ -170,6 +166,8 @@ export function createTransportClass({
 
 		async fetch(input, init) {
 			this.#assertOpen();
+			if (init?.onProgress !== undefined && typeof init.onProgress !== 'function')
+				throw new TypeError('onProgress must be a function');
 			const request = new Request(input, init);
 			const url = new URL(request.url);
 			if (
@@ -187,7 +185,7 @@ export function createTransportClass({
 					'not_sent'
 				);
 			}
-			return this.#sessions.send(request);
+			return this.#sessions.send(request, init?.onProgress);
 		}
 
 		close() {

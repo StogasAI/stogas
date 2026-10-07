@@ -63,7 +63,6 @@ const SNP_POLICY_COMMON_FORBIDDEN: u64 =
 #[cfg(feature = "staging")]
 const STAGING_PROVENANCE_TYPE: &str = "https://stogas.ai/attestations/staging-development/v1";
 const STOGAS_SIGNATURE_DOMAIN: &[u8] = b"stogas signed document v1\n";
-const RELEASE_EVIDENCE_SCHEMA: &str = "stogas.release-evidence.v1";
 const BUNDLE_ENVELOPE_SCHEMA: &str = "stogas.confidential-bundle-envelope.v1";
 const SNP_PLATFORM_INFO_KNOWN_MASK: u64 = 0xbf;
 
@@ -499,8 +498,8 @@ fn verify_signed_hardware_policy_with_key(
     key: &approvals::OnlineKey,
     now_unix_ms: i64,
 ) -> Result<VerifiedHardwarePolicy, Error> {
-    let canonical = validate_hardware_policy(&signed.policy)?;
-    let document = serde_json::to_value(&signed.policy)
+    let canonical = validate_hardware_policy(&signed.document)?;
+    let document = serde_json::to_value(&signed.document)
         .map_err(|error| Error::InvalidBundle(error.to_string()))?;
     approvals::verify_signature(&document, &signed.signature, &key.key_id, &key.public_key)
         .map_err(|error| Error::InvalidBundle(error.to_string()))?;
@@ -508,12 +507,11 @@ fn verify_signed_hardware_policy_with_key(
         &document,
         &signed.signature,
         &signed.inclusion,
-        key,
         now_unix_ms,
     )
     .map_err(|error| Error::InvalidBundle(format!("hardware policy transparency: {error}")))?;
     Ok(verified_hardware_policy(
-        &signed.policy,
+        &signed.document,
         &canonical,
         HardwarePolicySource::StogasBundle,
         Some(key.key_id.clone()),
@@ -668,11 +666,8 @@ fn validate_catalog_shape(catalog: &AllowedCatalog) -> Result<(), Error> {
     const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
     let release = catalog;
-    let manifest = &release.manifest;
-    if catalog.schema != RELEASE_EVIDENCE_SCHEMA
-        || catalog.attested_builds.len() != 1
-        || manifest.schema != "stogas.catalog.release.v1"
-        || manifest.catalog_schema != 1
+    let manifest = &release.document;
+    if manifest.schema != "stogas.catalog.release.v1"
         || manifest.minimum_gateway_sequence == 0
         || manifest.minimum_gateway_sequence > MAX_SAFE_INTEGER
         || manifest.sequence == 0
@@ -681,20 +676,17 @@ fn validate_catalog_shape(catalog: &AllowedCatalog) -> Result<(), Error> {
         || manifest.source.tag != format!("catalog-v{}", manifest.sequence)
         || !is_lower_hex(&manifest.source.commit, 20)
         || !is_lower_hex(&manifest.source.tree, 20)
-        || !is_sha256_identity(&manifest.runtime)
-        || !is_sha256_identity(&manifest.public)
-        || release.signature.key_id.is_empty()
-        || release.signature.key_id.len() > 200
+        || !valid_artifact(&manifest.artifacts.runtime, 64 * 1024 * 1024)
+        || !valid_artifact(&manifest.artifacts.public, 64 * 1024 * 1024)
+        || !approvals::valid_key_id(&release.signature.key_id)
     {
         return Err(Error::InvalidBundle("invalid catalog release shape".into()));
     }
     Ok(())
 }
 
-fn is_sha256_identity(value: &str) -> bool {
-    value
-        .strip_prefix("sha256:")
-        .is_some_and(|digest| is_lower_hex(digest, 32))
+fn valid_artifact(artifact: &ReleaseArtifact, maximum_bytes: u64) -> bool {
+    is_lower_hex(&artifact.sha256, 32) && (1..=maximum_bytes).contains(&artifact.size_bytes)
 }
 
 fn validate_gateway_release_manifest(manifest: &GatewayReleaseManifest) -> Result<(), Error> {
@@ -728,12 +720,11 @@ fn gateway_release_manifest_shape_is_valid(manifest: &GatewayReleaseManifest) ->
     let sev_snp = &manifest.sev_snp;
     let build = &manifest.build;
     manifest.schema == "stogas.gateway.release.v1"
-        && manifest.git.repository == "https://github.com/StogasAI/gateway"
-        && gateway_release_sequence(&manifest.git.tag) == Some(manifest.sequence)
-        && manifest.git.git_ref == format!("refs/tags/{}", manifest.git.tag)
-        && manifest.git.tag.len() <= 100
-        && is_lower_hex(&manifest.git.commit, 20)
-        && is_lower_hex(&manifest.git.tree, 20)
+        && manifest.source.repository == "https://github.com/StogasAI/gateway"
+        && gateway_release_sequence(&manifest.source.tag) == Some(manifest.sequence)
+        && manifest.source.tag.len() <= 100
+        && is_lower_hex(&manifest.source.commit, 20)
+        && is_lower_hex(&manifest.source.tree, 20)
         && is_lower_hex(&manifest.artifacts.gateway_igvm.sha256, 32)
         && manifest.artifacts.gateway_igvm.size_bytes > 0
         && manifest.artifacts.gateway_igvm.size_bytes <= 128 * 1024 * 1024
@@ -883,18 +874,12 @@ fn compatible_launch_policy<'a>(
 }
 
 fn validate_release_shape(release: &AllowedIgvm) -> Result<(), Error> {
-    if release.schema != RELEASE_EVIDENCE_SCHEMA {
+    if !approvals::valid_key_id(&release.signature.key_id) {
         return Err(Error::InvalidBundle(
-            "unsupported release evidence schema".into(),
+            "release signing key identifier".into(),
         ));
     }
-    validate_gateway_release_manifest(&release.manifest)?;
-    if release.attested_builds.len() != 1 {
-        return Err(Error::InvalidBundle(
-            "a release must contain exactly one GitHub attestation".into(),
-        ));
-    }
-    Ok(())
+    validate_gateway_release_manifest(&release.document)
 }
 
 fn gateway_release_sequence(release_tag: &str) -> Option<u64> {
@@ -945,7 +930,7 @@ fn verify_catalog_with_key(
 ) -> Result<VerifiedCatalogRelease, Error> {
     validate_catalog_shape(catalog)?;
     let signed = catalog;
-    let manifest = &signed.manifest;
+    let manifest = &signed.document;
     let manifest_value =
         serde_json::to_value(manifest).map_err(|error| Error::Release(error.to_string()))?;
     let canonical = canonical_json(&manifest_value)?;
@@ -957,10 +942,7 @@ fn verify_catalog_with_key(
     payload.extend_from_slice(signed_canonical.as_bytes());
     verify_mldsa65(key, &payload, &signed.signature.signature).map_err(Error::Release)?;
 
-    let attestation = catalog
-        .attested_builds
-        .first()
-        .ok_or_else(|| Error::Release("catalog GitHub attestation is absent".into()))?;
+    let attestation = &catalog.provenance;
     let attestation_bytes =
         serde_json::to_vec(attestation).map_err(|error| Error::Release(error.to_string()))?;
     let (github_integrated_time_unix_ms, provenance) =
@@ -971,8 +953,10 @@ fn verify_catalog_with_key(
         github_integrated_time_unix_ms,
         minimum_gateway_sequence: manifest.minimum_gateway_sequence,
         provenance,
-        public_digest: manifest.public.clone(),
-        runtime_digest: manifest.runtime.clone(),
+        public_digest: format!("sha256:{}", manifest.artifacts.public.sha256),
+        public_size_bytes: manifest.artifacts.public.size_bytes,
+        runtime_digest: format!("sha256:{}", manifest.artifacts.runtime.sha256),
+        runtime_size_bytes: manifest.artifacts.runtime.size_bytes,
         sequence: manifest.sequence,
         source_commit: manifest.source.commit.clone(),
         source_repository: manifest.source.repository.clone(),
@@ -993,8 +977,8 @@ fn verify_catalog_provenance(
         attestation_bytes,
         &[
             ("catalog-release.json", manifest_digest),
-            ("catalog.runtime.json", &manifest.runtime[7..]),
-            ("catalog.public.json", &manifest.public[7..]),
+            ("catalog.runtime.json", &manifest.artifacts.runtime.sha256),
+            ("catalog.public.json", &manifest.artifacts.public.sha256),
         ],
     )? {
         return Ok((None, ReleaseProvenance::Staging));
@@ -1013,11 +997,11 @@ fn verify_catalog_provenance(
             },
             Subject {
                 name: "catalog.runtime.json",
-                sha256: &manifest.runtime[7..],
+                sha256: &manifest.artifacts.runtime.sha256,
             },
             Subject {
                 name: "catalog.public.json",
-                sha256: &manifest.public[7..],
+                sha256: &manifest.artifacts.public.sha256,
             },
         ],
         &GithubPolicy {
@@ -1039,7 +1023,7 @@ fn verify_release_with_key(
     now_unix_ms: i64,
 ) -> Result<VerifiedRelease, Error> {
     validate_release_shape(release)?;
-    let manifest = &release.manifest;
+    let manifest = &release.document;
     let signature = &release.signature;
     let manifest_value =
         serde_json::to_value(manifest).map_err(|error| Error::Release(error.to_string()))?;
@@ -1048,10 +1032,7 @@ fn verify_release_with_key(
     payload.extend_from_slice(canonical.trim_end_matches('\n').as_bytes());
     verify_mldsa65(key, &payload, &signature.signature).map_err(Error::Release)?;
 
-    let attestation_value = release
-        .attested_builds
-        .first()
-        .ok_or_else(|| Error::Release("GitHub attestation is absent".into()))?;
+    let attestation_value = &release.provenance;
     let attestation_bytes =
         serde_json::to_vec(attestation_value).map_err(|error| Error::Release(error.to_string()))?;
     let manifest_digest = hex::encode(Sha256::digest(canonical.as_bytes()));
@@ -1066,11 +1047,11 @@ fn verify_release_with_key(
         measurement: manifest.sev_snp.launch_measurement.clone(),
         provenance,
         release_manifest_sha256: manifest_digest,
-        release_tag: manifest.git.tag.clone(),
+        release_tag: manifest.source.tag.clone(),
         sequence: manifest.sequence,
-        source_commit: manifest.git.commit.clone(),
-        source_repository: manifest.git.repository.clone(),
-        source_tree: manifest.git.tree.clone(),
+        source_commit: manifest.source.commit.clone(),
+        source_repository: manifest.source.repository.clone(),
+        source_tree: manifest.source.tree.clone(),
         stogas_signing_key_id: signature.key_id.clone(),
         vcpu_count: manifest.sev_snp.vcpu_count,
     })
@@ -1095,7 +1076,7 @@ fn verify_release_provenance(
 
     let workflow_identity = format!(
         "https://github.com/StogasAI/gateway/.github/workflows/gateway-igvm-release.yml@refs/tags/{}",
-        manifest.git.tag
+        manifest.source.tag
     );
     verify_github_provenance(
         attestation_bytes,
@@ -1110,10 +1091,10 @@ fn verify_release_provenance(
             },
         ],
         &GithubPolicy {
-            repository: manifest.git.repository.clone(),
+            repository: manifest.source.repository.clone(),
             workflow_identity,
-            source_ref: manifest.git.git_ref.clone(),
-            source_commit: manifest.git.commit.clone(),
+            source_ref: format!("refs/tags/{}", manifest.source.tag),
+            source_commit: manifest.source.commit.clone(),
             predicate_type: "https://slsa.dev/provenance/v1".into(),
             require_github_hosted: true,
         },
@@ -1881,51 +1862,12 @@ fn verify_mldsa65(
 }
 
 fn canonical_json(value: &Value) -> Result<String, Error> {
-    fn write(value: &Value, output: &mut String) -> Result<(), Error> {
-        match value {
-            Value::Null => output.push_str("null"),
-            Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
-            Value::Number(value) => output.push_str(&value.to_string()),
-            Value::String(value) => {
-                output.push_str(&serde_json::to_string(value).map_err(|error| {
-                    Error::InvalidBundle(format!("serialize canonical JSON string: {error}"))
-                })?);
-            }
-            Value::Array(values) => {
-                output.push('[');
-                for (index, value) in values.iter().enumerate() {
-                    if index > 0 {
-                        output.push(',');
-                    }
-                    write(value, output)?;
-                }
-                output.push(']');
-            }
-            Value::Object(values) => {
-                output.push('{');
-                let mut keys: Vec<_> = values.keys().collect();
-                // Match the UTF-16 ordering used by the JavaScript document publisher.
-                keys.sort_unstable_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
-                for (index, key) in keys.into_iter().enumerate() {
-                    if index > 0 {
-                        output.push(',');
-                    }
-                    output.push_str(&serde_json::to_string(key).map_err(|error| {
-                        Error::InvalidBundle(format!("serialize canonical JSON key: {error}"))
-                    })?);
-                    output.push(':');
-                    write(&values[key], output)?;
-                }
-                output.push('}');
-            }
-        }
-        Ok(())
-    }
-    let mut output = String::new();
-    write(value, &mut output)?;
+    let mut output = serde_json_canonicalizer::to_string(value)
+        .map_err(|error| Error::InvalidBundle(format!("canonical JSON: {error}")))?;
     output.push('\n');
     Ok(output)
 }
+
 #[cfg(test)]
 mod tests {
 
@@ -2165,19 +2107,18 @@ mod tests {
         let launch_policies_bytes = canonical_json(&launch_policies).unwrap();
         let launch_policies_sha256 = hex::encode(Sha256::digest(launch_policies_bytes.as_bytes()));
         serde_json::from_value(serde_json::json!({
-            "schema": "stogas.release-evidence.v1",
-            "attested_builds": [{}],
-            "manifest": {
+            "provenance": {},
+            "document": {
                 "artifacts": {
-                    "gateway.igvm": { "sha256": "11".repeat(32), "sizeBytes": 1 },
+                    "gateway.igvm": { "sha256": "11".repeat(32), "size_bytes": 1 },
                 },
                 "build": {
-                    "environment": { "lcAll": "C", "sourceDateEpoch": "1", "tz": "UTC", "umask": "022" },
-                    "goVendorTreeSha256": "17".repeat(32),
-                    "goVersion": "go1.25.0",
-                    "guestCaBundlePath": "/etc/ssl/certs/ca-certificates.crt",
-                    "guixChannelCommit": "19".repeat(20),
-                    "inputSha256": {
+                    "environment": { "lc_all": "C", "source_date_epoch": "1", "tz": "UTC", "umask": "022" },
+                    "go_vendor_tree_sha256": "17".repeat(32),
+                    "go_version": "go1.25.0",
+                    "guest_ca_bundle_path": "/etc/ssl/certs/ca-certificates.crt",
+                    "guix_channel_commit": "19".repeat(20),
+                    "input_sha256": {
                         "stogas/release/guix/cmdline.txt": "12".repeat(32),
                         "core/go.mod": "13".repeat(32),
                         "core/go.sum": "14".repeat(32),
@@ -2189,32 +2130,32 @@ mod tests {
                         "source": "20".repeat(32),
                         "stogas/release/snp-launch-policies.json": launch_policies_sha256
                     },
-                    "kernelConfigSha256": "21".repeat(32),
-                    "kernelVersion": "6.12.0",
-                    "linuxBzImageSha256": "22".repeat(32),
-                    "ovmfSha256": "24".repeat(32),
-                    "systemdStubSha256": "26".repeat(32),
-                    "ukiSha256": "27".repeat(32)
+                    "kernel_config_sha256": "21".repeat(32),
+                    "kernel_version": "6.12.0",
+                    "linux_bz_image_sha256": "22".repeat(32),
+                    "ovmf_sha256": "24".repeat(32),
+                    "systemd_stub_sha256": "26".repeat(32),
+                    "uki_sha256": "27".repeat(32)
                 },
-                "git": {
+                "source": {
                     "commit": "33".repeat(20),
-                    "ref": "refs/tags/v0.0.1",
+
                     "repository": "https://github.com/StogasAI/gateway",
                     "tag": "v0.0.1",
                     "tree": "44".repeat(20)
                 },
                 "schema": "stogas.gateway.release.v1",
                 "sequence": 1,
-                "sevSnp": {
-                    "checkKvm": true,
-                    "launchMeasurement": "55".repeat(48),
-                    "launchPolicies": launch_policies,
-                    "measurementCommand": "igvmmeasure --check-kvm gateway.igvm measure",
-                    "measurementTool": "igvmmeasure",
-                    "measurementToolSha256": "66".repeat(32),
-                    "measurementToolVersion": "0.3.1",
+                "sev_snp": {
+                    "check_kvm": true,
+                    "launch_measurement": "55".repeat(48),
+                    "launch_policies": launch_policies,
+                    "measurement_command": "igvmmeasure --check-kvm gateway.igvm measure",
+                    "measurement_tool": "igvmmeasure",
+                    "measurement_tool_sha256": "66".repeat(32),
+                    "measurement_tool_version": "0.3.1",
                     "platform": "SEV_SNP",
-                    "vcpuCount": 4,
+                    "vcpu_count": 4,
                     "vmm": "qemu-kvm"
                 }
             },
@@ -2228,13 +2169,13 @@ mod tests {
 
     pub fn catalog_fixture() -> AllowedCatalog {
         serde_json::from_value(serde_json::json!({
-            "schema": "stogas.release-evidence.v1",
-            "attested_builds": [{}],
-            "manifest": {
-                "catalogSchema": 1,
-                "minimumGatewaySequence": 1,
-                "public": format!("sha256:{}", "11".repeat(32)),
-                "runtime": format!("sha256:{}", "22".repeat(32)),
+            "provenance": {},
+            "document": {
+                "minimum_gateway_sequence": 1,
+                "artifacts": {
+                    "catalog.public.json": { "sha256": "11".repeat(32), "size_bytes": 1 },
+                    "catalog.runtime.json": { "sha256": "22".repeat(32), "size_bytes": 1 }
+                },
                 "schema": "stogas.catalog.release.v1",
                 "sequence": 1,
                 "source": {
@@ -2300,7 +2241,7 @@ mod tests {
         use crate::signing::SigningKey;
 
         let signing_key = SigningKey::from_seed(&[0x42; 32]);
-        let canonical = canonical_json(&serde_json::to_value(&release.manifest).unwrap()).unwrap();
+        let canonical = canonical_json(&serde_json::to_value(&release.document).unwrap()).unwrap();
         let mut payload = STOGAS_SIGNATURE_DOMAIN.to_vec();
         payload.extend_from_slice(canonical.trim_end_matches('\n').as_bytes());
         release.signature.key_id = "test-release-key".into();
@@ -2313,7 +2254,7 @@ mod tests {
         use crate::signing::SigningKey;
 
         let signing_key = SigningKey::from_seed(&[0x42; 32]);
-        let canonical = canonical_json(&serde_json::to_value(&catalog.manifest).unwrap()).unwrap();
+        let canonical = canonical_json(&serde_json::to_value(&catalog.document).unwrap()).unwrap();
         let canonical = canonical.strip_suffix('\n').unwrap();
         let mut payload = STOGAS_SIGNATURE_DOMAIN.to_vec();
         payload.extend_from_slice(canonical.trim_end_matches('\n').as_bytes());
@@ -2332,7 +2273,7 @@ mod tests {
     #[test]
     fn release_manifest_rejects_nonzero_vmpl() {
         let mut release = release_fixture();
-        release.manifest.sev_snp.launch_policies.policies[0]
+        release.document.sev_snp.launch_policies.policies[0]
             .launch
             .vmpl = 1;
         let error = validate_release_shape(&release).unwrap_err();
@@ -2340,36 +2281,31 @@ mod tests {
     }
 
     #[test]
-    fn release_evidence_requires_supported_schema_independently_of_manifest_schema() {
-        let release = release_fixture();
-        let catalog = catalog_fixture();
-        validate_release_shape(&release).unwrap();
-        validate_catalog_shape(&catalog).unwrap();
-        for schema in [
-            None,
-            Some(Value::Null),
-            Some(1.into()),
-            Some("".into()),
-            Some("stogas.release-evidence.v2".into()),
-            Some("stogas.gateway.release.v1".into()),
+    fn release_evidence_rejects_ambiguous_envelopes_and_unsupported_documents() {
+        for (document, gateway) in [
+            (serde_json::to_value(release_fixture()).unwrap(), true),
+            (serde_json::to_value(catalog_fixture()).unwrap(), false),
         ] {
-            let mut release_value = serde_json::to_value(&release).unwrap();
-            let mut catalog_value = serde_json::to_value(&catalog).unwrap();
-            for value in [&mut release_value, &mut catalog_value] {
-                if let Some(schema) = &schema {
-                    value["schema"] = schema.clone();
+            let valid = |value: Value| {
+                if gateway {
+                    serde_json::from_value::<AllowedIgvm>(value)
+                        .is_ok_and(|release| validate_release_shape(&release).is_ok())
                 } else {
-                    value.as_object_mut().unwrap().remove("schema");
+                    serde_json::from_value::<AllowedCatalog>(value)
+                        .is_ok_and(|release| validate_catalog_shape(&release).is_ok())
                 }
+            };
+            assert!(valid(document.clone()));
+            for field in ["schema", "manifest", "attested_builds"] {
+                let mut changed = document.clone();
+                changed[field] = Value::Null;
+                assert!(!valid(changed));
             }
-            assert!(
-                !serde_json::from_value::<AllowedIgvm>(release_value)
-                    .is_ok_and(|changed| validate_release_shape(&changed).is_ok())
-            );
-            assert!(
-                !serde_json::from_value::<AllowedCatalog>(catalog_value)
-                    .is_ok_and(|changed| validate_catalog_shape(&changed).is_ok())
-            );
+            for schema in [Value::Null, 1.into(), "".into(), "unsupported".into()] {
+                let mut changed = document.clone();
+                changed["document"]["schema"] = schema;
+                assert!(!valid(changed));
+            }
         }
     }
 
@@ -2377,17 +2313,17 @@ mod tests {
     fn staging_release_policy_is_fixed_by_the_compiled_artifact() {
         let mut release = release_fixture();
         let key = resign_release(&mut release);
-        let canonical = canonical_json(&serde_json::to_value(&release.manifest).unwrap()).unwrap();
+        let canonical = canonical_json(&serde_json::to_value(&release.document).unwrap()).unwrap();
         let manifest_digest = hex::encode(Sha256::digest(canonical.as_bytes()));
-        release.attested_builds = vec![serde_json::json!({
+        release.provenance = serde_json::json!({
             "_type": "https://in-toto.io/Statement/v1",
             "predicateType": "https://stogas.ai/attestations/staging-development/v1",
             "predicate": { "environment": "staging" },
             "subject": [
                 { "name": "release-manifest.json", "digest": { "sha256": manifest_digest } },
-                { "name": "gateway.igvm", "digest": { "sha256": release.manifest.artifacts.gateway_igvm.sha256 } }
+                { "name": "gateway.igvm", "digest": { "sha256": release.document.artifacts.gateway_igvm.sha256 } }
             ]
-        })];
+        });
 
         #[cfg(feature = "staging")]
         {
@@ -2397,15 +2333,12 @@ mod tests {
 
             for subject in 0..2 {
                 let mut changed = release.clone();
-                changed.attested_builds[0]["subject"][subject]["digest"]["sha256"] =
+                changed.provenance["subject"][subject]["digest"]["sha256"] =
                     Value::String("00".repeat(32));
                 assert!(verify_release_with_key(&changed, &key, 1_784_246_400_000).is_err());
             }
             let mut missing = release.clone();
-            missing.attested_builds[0]["subject"]
-                .as_array_mut()
-                .unwrap()
-                .pop();
+            missing.provenance["subject"].as_array_mut().unwrap().pop();
             assert!(verify_release_with_key(&missing, &key, 1_784_246_400_000).is_err());
         }
         #[cfg(not(feature = "staging"))]
@@ -2416,18 +2349,18 @@ mod tests {
     fn staging_catalog_policy_is_fixed_by_the_compiled_artifact() {
         let mut catalog = catalog_fixture();
         let key = resign_catalog(&mut catalog);
-        let canonical = canonical_json(&serde_json::to_value(&catalog.manifest).unwrap()).unwrap();
+        let canonical = canonical_json(&serde_json::to_value(&catalog.document).unwrap()).unwrap();
         let manifest_digest = hex::encode(Sha256::digest(canonical.as_bytes()));
-        catalog.attested_builds = vec![serde_json::json!({
+        catalog.provenance = serde_json::json!({
             "_type": "https://in-toto.io/Statement/v1",
             "predicateType": "https://stogas.ai/attestations/staging-development/v1",
             "predicate": { "environment": "staging" },
             "subject": [
                 { "name": "catalog-release.json", "digest": { "sha256": manifest_digest } },
-                { "name": "catalog.runtime.json", "digest": { "sha256": &catalog.manifest.runtime[7..] } },
-                { "name": "catalog.public.json", "digest": { "sha256": &catalog.manifest.public[7..] } }
+                { "name": "catalog.runtime.json", "digest": { "sha256": &catalog.document.artifacts.runtime.sha256 } },
+                { "name": "catalog.public.json", "digest": { "sha256": &catalog.document.artifacts.public.sha256 } }
             ]
-        })];
+        });
 
         #[cfg(feature = "staging")]
         {
@@ -2437,15 +2370,12 @@ mod tests {
 
             for subject in 0..3 {
                 let mut changed = catalog.clone();
-                changed.attested_builds[0]["subject"][subject]["digest"]["sha256"] =
+                changed.provenance["subject"][subject]["digest"]["sha256"] =
                     Value::String("00".repeat(32));
                 assert!(verify_catalog_with_key(&changed, &key, 1_784_246_400_000).is_err());
             }
             let mut missing = catalog.clone();
-            missing.attested_builds[0]["subject"]
-                .as_array_mut()
-                .unwrap()
-                .pop();
+            missing.provenance["subject"].as_array_mut().unwrap().pop();
             assert!(verify_catalog_with_key(&missing, &key, 1_784_246_400_000).is_err());
         }
         #[cfg(not(feature = "staging"))]
@@ -2458,21 +2388,21 @@ mod tests {
         let now = 1_784_246_400_000;
         let mut catalog = catalog_fixture();
         let key = resign_catalog(&mut catalog);
-        let canonical = canonical_json(&serde_json::to_value(&catalog.manifest).unwrap()).unwrap();
+        let canonical = canonical_json(&serde_json::to_value(&catalog.document).unwrap()).unwrap();
         let manifest_digest = hex::encode(Sha256::digest(canonical.as_bytes()));
-        catalog.attested_builds = vec![serde_json::json!({
+        catalog.provenance = serde_json::json!({
             "_type": "https://in-toto.io/Statement/v1",
             "predicateType": "https://stogas.ai/attestations/staging-development/v1",
             "predicate": { "environment": "staging" },
             "subject": [
                 { "name": "catalog-release.json", "digest": { "sha256": manifest_digest } },
-                { "name": "catalog.runtime.json", "digest": { "sha256": &catalog.manifest.runtime[7..] } },
-                { "name": "catalog.public.json", "digest": { "sha256": &catalog.manifest.public[7..] } }
+                { "name": "catalog.runtime.json", "digest": { "sha256": &catalog.document.artifacts.runtime.sha256 } },
+                { "name": "catalog.public.json", "digest": { "sha256": &catalog.document.artifacts.public.sha256 } }
             ]
-        })];
+        });
         verify_catalog_with_key(&catalog, &key, now).unwrap();
 
-        catalog.manifest.runtime = format!("sha256:{}", "99".repeat(32));
+        catalog.document.artifacts.runtime.sha256 = "99".repeat(32);
         assert!(verify_catalog_with_key(&catalog, &key, now).is_err());
 
         let key = resign_catalog(&mut catalog);
@@ -2483,12 +2413,11 @@ mod tests {
                 .contains("staging development provenance subjects differ")
         );
 
-        let canonical = canonical_json(&serde_json::to_value(&catalog.manifest).unwrap()).unwrap();
+        let canonical = canonical_json(&serde_json::to_value(&catalog.document).unwrap()).unwrap();
         let manifest_digest = hex::encode(Sha256::digest(canonical.as_bytes()));
-        catalog.attested_builds[0]["subject"][0]["digest"]["sha256"] =
-            Value::String(manifest_digest);
-        catalog.attested_builds[0]["subject"][1]["digest"]["sha256"] =
-            Value::String(catalog.manifest.runtime[7..].into());
+        catalog.provenance["subject"][0]["digest"]["sha256"] = Value::String(manifest_digest);
+        catalog.provenance["subject"][1]["digest"]["sha256"] =
+            Value::String(catalog.document.artifacts.runtime.sha256.clone());
         verify_catalog_with_key(&catalog, &key, now).unwrap();
     }
 
@@ -2497,21 +2426,21 @@ mod tests {
         let mutations: [fn(&mut AllowedIgvm); 3] = [
             |release: &mut AllowedIgvm| {
                 release
-                    .manifest
+                    .document
                     .sev_snp
                     .launch_measurement
                     .replace_range(..2, "aa");
             },
             |release: &mut AllowedIgvm| {
                 release
-                    .manifest
+                    .document
                     .artifacts
                     .gateway_igvm
                     .sha256
                     .replace_range(..2, "aa");
             },
             |release: &mut AllowedIgvm| {
-                release.manifest.git.tree.replace_range(..2, "aa");
+                release.document.source.tree.replace_range(..2, "aa");
             },
         ];
         for mutate in mutations {
@@ -2524,12 +2453,19 @@ mod tests {
     }
 
     #[test]
-    fn release_manifest_canonicalization_sorts_recursively_and_ends_with_newline() {
-        let value = serde_json::json!({"z": [2, {"b": true, "a": null}], "a": "x"});
-        assert_eq!(
-            canonical_json(&value).unwrap(),
-            "{\"a\":\"x\",\"z\":[2,{\"a\":null,\"b\":true}]}\n"
-        );
+    fn canonical_documents_follow_rfc8785_and_add_one_file_newline() {
+        let vectors: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/canonical-json-v1.json"
+        ))
+        .unwrap();
+        for vector in vectors {
+            assert_eq!(
+                canonical_json(&vector["input"]).unwrap(),
+                format!("{}\n", vector["canonical"].as_str().unwrap()),
+                "{}",
+                vector["name"]
+            );
+        }
     }
     #[test]
     fn raw_report_inspection_rejects_unknown_products_versions_and_sizes() {
@@ -2576,7 +2512,7 @@ mod tests {
     #[cfg(feature = "snp")]
     #[test]
     fn raw_report_binding_requires_hardened_launch_policy() {
-        let mut manifest = release_fixture().manifest;
+        let mut manifest = release_fixture().document;
         let expected = ExpectedSnpReport {
             node_id: "test",
             chip_id: &"00".repeat(64),

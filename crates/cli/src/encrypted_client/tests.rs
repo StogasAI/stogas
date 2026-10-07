@@ -42,7 +42,6 @@ fn fixture(maximum: usize) -> (Client, Arc<Owner>, [u8; 32], [u8; 32], Arc<Reque
         Url::parse("https://example.test/v1/session").unwrap(),
         Environment::Staging,
         NonZeroUsize::new(maximum).unwrap(),
-        channel::ratchet::ChunkSize::FULL,
     );
     let context = Arc::new(RequestContext {
         snapshot: Arc::clone(&snapshot),
@@ -73,10 +72,137 @@ fn ready(client: &Client) -> (Lease, ClientRequest) {
     }
 }
 
+async fn closing_peer(
+    root: [u8; 32],
+    id: [u8; 32],
+    closing: bool,
+) -> (Server, Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use zeroize::Zeroizing;
+    let peer = Arc::new(Mutex::new(channel::ServerSession::new(
+        Zeroizing::new(root),
+        id,
+        channel::ratchet::InitialKey::from_bytes(Zeroizing::new([3; 32])),
+    )));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&calls);
+    let server = Server::new(Router::new().route(
+        "/v1/session",
+        post(move |request: Request<Body>| {
+            let peer = Arc::clone(&peer);
+            let calls = Arc::clone(&observed);
+            async move {
+                let index = calls.fetch_add(1, Ordering::SeqCst);
+                let wire = to_bytes(request.into_body(), 65536).await.unwrap();
+                let number = u64::from_be_bytes(wire[38..46].try_into().unwrap());
+                let size = channel::record_size(&wire[46..50]).unwrap();
+                let (mut reader, mut writer, _) = peer
+                    .lock()
+                    .unwrap()
+                    .accept_start(number, &mut wire[46..46 + size].to_vec(), 0)
+                    .unwrap();
+                let mut rest = &wire[46 + size..];
+                while !rest.is_empty() {
+                    let size = channel::record_size(&rest[..4]).unwrap();
+                    reader.open(&mut rest[..size].to_vec()).unwrap();
+                    rest = &rest[size..];
+                }
+                reader.complete().unwrap();
+                let metadata = serde_json::to_vec(&serde_json::json!({
+                    "status": if index == 0 { 200 } else { 503 },
+                    "headers": {"retry-after": "1"},
+                    "closing": closing && index == 1,
+                }))
+                .unwrap();
+                let bytes = [
+                    writer.seal(Kind::Keepalive, &[]).unwrap(),
+                    writer.seal(Kind::Metadata, &metadata).unwrap(),
+                    writer
+                        .seal(
+                            Kind::Data,
+                            if index == 0 {
+                                b"admitted"
+                            } else {
+                                b"unavailable"
+                            },
+                        )
+                        .unwrap(),
+                    writer.seal(Kind::Finished, &[]).unwrap(),
+                ]
+                .concat();
+                Response::builder()
+                    .header(header::CONTENT_TYPE, encrypted_setup::CONTENT_TYPE)
+                    .body(Body::from(bytes))
+                    .unwrap()
+            }
+        }),
+    ))
+    .await;
+    (server, calls)
+}
+
+#[tokio::test]
+async fn authenticated_session_closing_preserves_inflight_bodies_and_only_replaces_future_work() {
+    use std::sync::atomic::Ordering;
+    for closing in [false, true] {
+        let (mut client, owner, root, id, context) = fixture(1);
+        let (server, calls) = closing_peer(root, id, closing).await;
+        Arc::get_mut(&mut client.inner).unwrap().endpoint = server.endpoint.clone();
+        let mut responses = Vec::new();
+        for _ in 0..2 {
+            let (lease, exchange) = ready(&client);
+            responses.push(
+                client
+                    .send_on_session(
+                        Request::post("/v1/responses")
+                            .body(Bytes::from_static(b"{}"))
+                            .unwrap(),
+                        Instant::now() + Duration::from_secs(5),
+                        (lease, exchange, Arc::clone(&context)),
+                        None,
+                    )
+                    .await
+                    .unwrap(),
+            );
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "inference must never be replayed"
+        );
+        assert_eq!(owner.state.lock().unwrap().retired, closing);
+        assert_eq!(owner.state.lock().unwrap().active, 2);
+        let future = client.select().unwrap();
+        if closing {
+            assert!(matches!(future, Selection::Opening(_)));
+        } else {
+            assert!(
+                matches!(future, Selection::Ready(_)),
+                "ordinary 503 must preserve the session"
+            );
+        }
+        drop(future);
+        let unavailable = responses.pop().unwrap();
+        assert_eq!(unavailable.status(), 503);
+        assert_eq!(unavailable.headers()[header::RETRY_AFTER], "1");
+        assert_eq!(
+            to_bytes(unavailable.into_body(), 1024).await.unwrap(),
+            "unavailable"
+        );
+        let admitted = responses.pop().unwrap();
+        assert_eq!(admitted.status(), 200);
+        assert_eq!(
+            to_bytes(admitted.into_body(), 1024).await.unwrap(),
+            "admitted"
+        );
+        assert_eq!(owner.state.lock().unwrap().active, 0);
+    }
+}
+
 #[tokio::test]
 async fn pool_respects_acknowledgement_capacity_idle_hints_and_setup_cancellation() {
     let (client, owner, root, id, _) = fixture(1);
-    let mut requests: Vec<_> = (0..4096).map(|_| ready(&client)).collect();
+    let mut requests: Vec<_> = (0..256).map(|_| ready(&client)).collect();
     assert!(matches!(client.select().unwrap(), Selection::Wait));
     // An authenticated response acknowledges the first start before inference ends.
     let mut peer = Records::new(&root, &id);
@@ -86,7 +212,7 @@ async fn pool_respects_acknowledgement_capacity_idle_hints_and_setup_cancellatio
         .open(&mut peer.seal(Kind::Keepalive, &[]), 0)
         .unwrap();
     let next = ready(&client);
-    assert_eq!(next.1.number(), 4096);
+    assert_eq!(next.1.number(), 256);
     {
         let mut state = owner.state.lock().unwrap();
         state.idle_since = Instant::now() - Duration::from_secs(601);
@@ -204,7 +330,7 @@ async fn cancelled_start_gap_renews_without_cutting_off_an_admitted_response() {
     active
         .open(&mut peer.seal(Kind::Keepalive, &[]), 0)
         .unwrap();
-    for number in 1..=4096 {
+    for number in 1..=256 {
         let request = ready(&client);
         assert_eq!(request.1.number(), number);
         drop(request);

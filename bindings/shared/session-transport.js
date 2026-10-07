@@ -1,4 +1,4 @@
-import { TransportError, readBoundedBody } from './http.js';
+import { TransportError, readBoundedBody, notifyRequestProgress } from './http.js';
 import {
 	MAX_SETUP_RESPONSE_BYTES,
 	SESSION_CONTENT_TYPE,
@@ -15,28 +15,19 @@ export class SessionTransport {
 	#endpoint;
 	#fetch;
 	#maximum;
-	#ratchetBytes;
 	#onMetadata;
 	#sessions = [];
 	#opening;
 	#closing;
 	#closed = false;
 	#shutdown = new AbortController();
+	#changed = {};
+	#waiters = new Set();
 
-	constructor({
-		Setup,
-		evidence,
-		environment,
-		endpoint,
-		fetch,
-		maxSessions = 1,
-		ratchetBytes,
-		onMetadata
-	}) {
+	constructor({ Setup, evidence, environment, endpoint, fetch, maxSessions = 1, onMetadata }) {
 		if (!Number.isSafeInteger(maxSessions) || maxSessions <= 0)
 			throw new RangeError('maxSessions must be a positive safe integer');
 
-		this.#ratchetBytes = ratchetBytes;
 		this.#Setup = Setup;
 		this.#evidence = evidence;
 		this.#environment = environment;
@@ -46,9 +37,10 @@ export class SessionTransport {
 		this.#onMetadata = onMetadata;
 	}
 
-	async send(request) {
+	async send(request, onProgress) {
 		let selected;
 		try {
+			notifyRequestProgress(onProgress, 'securing');
 			selected = await this.#select(
 				request.signal,
 				request.headers.get('Stogas-Metadata') === 'v1'
@@ -62,23 +54,20 @@ export class SessionTransport {
 			this.#release(owner);
 			throw new TransportError('Transport closed', 'not_sent');
 		}
-		try {
-			return await sendSessionRequest({
-				exchange,
-				nodeID: owner.core.node_id,
-				endpoint: this.#endpoint,
-				request,
-				fetch: this.#fetch,
-				release: () => this.#release(owner),
-				failed: () => this.#retire(owner),
-				onMetadata: this.#onMetadata
-			});
-		} catch (error) {
-			// A stale route/session or disconnect may lose this inference. Retire
-			// the owner for future work; never submit this request a second time.
-			if (error.submission !== 'not_sent') this.#retire(owner);
-			throw error;
-		}
+		return sendSessionRequest({
+			exchange,
+			nodeID: owner.core.node_id,
+			endpoint: this.#endpoint,
+			request,
+			fetch: this.#fetch,
+			release: () => this.#release(owner),
+			retire: () => this.#retire(owner),
+			onProgress: (phase) => {
+				if (phase === 'acknowledged') this.#notify();
+				notifyRequestProgress(onProgress, phase);
+			},
+			onMetadata: this.#onMetadata
+		});
 	}
 
 	async #select(signal, receipt) {
@@ -88,12 +77,12 @@ export class SessionTransport {
 		);
 		try {
 			for (;;) {
+				const changed = this.#changed;
 				deadline.signal.throwIfAborted();
 				if (this.#closed) throw new Error('Transport closed');
 				const eligible = this.#sessions
 					.filter((owner) => !owner.retired)
 					.sort((a, b) => a.active - b.active);
-				let pending = false;
 				for (const owner of eligible) {
 					if (
 						owner.active === 0 &&
@@ -117,10 +106,10 @@ export class SessionTransport {
 							throw new Error('Transport closed during setup');
 						}
 						owner.active++;
+						this.#notify();
 						return { owner, exchange };
 					} catch (error) {
 						if (error.name === 'EncryptedChannelError' && error.code === 'pending') {
-							pending = true;
 							continue;
 						}
 						this.#retire(owner);
@@ -136,11 +125,8 @@ export class SessionTransport {
 					this.#sessions.filter((owner) => !owner.retired).length >= this.#maximum ||
 					this.#sessions.length >= this.#maximum + 1
 				) {
-					throw new Error(
-						pending
-							? 'Encrypted sessions await request acknowledgements'
-							: 'Encrypted sessions are still draining'
-					);
+					await this.#wait(changed, deadline.signal);
+					continue;
 				}
 				// Setup belongs to the transport. Canceling one waiter must not
 				// cancel a shared handshake needed by another request.
@@ -148,6 +134,7 @@ export class SessionTransport {
 				const opening = this.#open(setupDeadline.signal).finally(() => {
 					setupDeadline.dispose();
 					if (this.#opening === opening) this.#opening = undefined;
+					this.#notify();
 				});
 				this.#opening = opening;
 				await waitWithSignal(opening, deadline.signal);
@@ -158,7 +145,7 @@ export class SessionTransport {
 	}
 
 	async #open(signal) {
-		const setup = new this.#Setup(this.#environment, this.#ratchetBytes);
+		const setup = new this.#Setup(this.#environment);
 		try {
 			// Initialize evidence before setup. Acquiring it does not release any
 			// application credentials and shares the same absolute setup deadline.
@@ -210,6 +197,7 @@ export class SessionTransport {
 		owner.retired = true;
 		owner.core.close();
 		if (owner.active === 0) this.#remove(owner);
+		this.#notify();
 	}
 	#remove(owner) {
 		const index = this.#sessions.indexOf(owner);
@@ -222,6 +210,35 @@ export class SessionTransport {
 		if (owner.active === 0) {
 			owner.idleSince = Date.now();
 			if (owner.retired) this.#remove(owner);
+		}
+		this.#notify();
+	}
+
+	#notify() {
+		this.#changed = {};
+		const next = this.#waiters.values().next().value;
+		if (next) {
+			this.#waiters.delete(next);
+			next();
+		}
+	}
+
+	async #wait(changed, signal) {
+		if (changed !== this.#changed) return;
+		let notify;
+		const available = new Promise((resolve) => {
+			notify = resolve;
+		});
+		this.#waiters.add(notify);
+		try {
+			await waitWithSignal(available, signal);
+		} catch (error) {
+			// A cancelled waiter must not consume another request's wakeup.
+			this.#waiters.delete(notify);
+			this.#notify();
+			throw error;
+		} finally {
+			this.#waiters.delete(notify);
 		}
 	}
 

@@ -131,10 +131,21 @@ impl EvidenceVerifier {
 
     /// # Errors
     /// Rejects an invalid candidate. Authenticated revocations still constrain retained snapshots.
-    pub fn refresh(&mut self, bundle: &[u8]) -> Result<EvidenceSnapshot, JsValue> {
+    pub fn refresh(
+        &mut self,
+        bundle: &[u8],
+        observer: Option<js_sys::Function>,
+    ) -> Result<EvidenceSnapshot, JsValue> {
         let now = super::wall_clock_ms()?;
         self.core
-            .refresh(bundle, now)
+            .refresh_observed(bundle, now, move |check| {
+                if let Some(observer) = &observer
+                    && let Ok(value) = super::to_js_value(&check)
+                {
+                    // Display/measurement callbacks cannot alter authenticated state.
+                    let _ = observer.call1(&JsValue::NULL, &value);
+                }
+            })
             .map(|core| EvidenceSnapshot { core })
             .map_err(|error| verification_error(&error))
     }

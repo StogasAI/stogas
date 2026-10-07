@@ -136,9 +136,16 @@ func TestOfflineReceiptUsesLoggedHardwareKeyAndExactContentHashes(t *testing.T) 
 	if err := json.Unmarshal(fixture.Bundle, &envelope); err != nil {
 		t.Fatal(err)
 	}
+	var proof struct {
+		Signature json.RawMessage `json:"signature"`
+		Inclusion json.RawMessage `json:"inclusion"`
+	}
+	if err := json.Unmarshal(inclusion, &proof); err != nil {
+		t.Fatal(err)
+	}
 	archive, err := json.Marshal(map[string]any{
-		"boot": json.RawMessage(boot), "inclusion": json.RawMessage(inclusion),
-		"evidence_sha256": envelope.Digest,
+		"document":  map[string]any{"schema": "stogas.node-registration.v1", "boot": json.RawMessage(boot), "evidence_sha256": envelope.Digest},
+		"signature": proof.Signature, "inclusion": proof.Inclusion,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -117,7 +117,7 @@ fn signed(mut body: Value) -> Vec<u8> {
     ))
     .unwrap();
     let digest =
-        stogas_verifier::approvals::payload_sha256(&body["approvals"]["manifest"]).unwrap();
+        stogas_verifier::approvals::payload_sha256(&body["approvals"]["document"]).unwrap();
     if let Some(approval) = variants["approvals"].get(&digest) {
         body["approvals"] = approval.clone();
     }
@@ -193,17 +193,17 @@ async fn stale_success_falls_through_to_replica_and_etags_never_cross_origins() 
             .unwrap()
             .last()
             .unwrap()
-            .get("manifest")
+            .get("document")
             .unwrap(),
     )
     .unwrap();
     let mut old = latest.clone();
     old["catalogs"].as_array_mut().unwrap().pop();
-    old["approvals"]["manifest"]["catalogs"]
+    old["approvals"]["document"]["catalogs"]
         .as_array_mut()
         .unwrap()
         .retain(|id| id != &target);
-    latest["approvals"]["manifest"]["revision"] = json!(2);
+    latest["approvals"]["document"]["revision"] = json!(2);
     let server = Server::new([
         reply(signed(old), "\"r2-old\""),
         reply(signed(latest), "\"aws-new\""),
@@ -674,9 +674,9 @@ async fn warm_rejection_preserves_cause_and_old_requests_without_reusing_stale_a
         Err(Error::Deadline)
     ));
     let mut body = fixture["bundle"]["body"].clone();
-    body["approvals"]["manifest"]["revision"] =
-        json!(body["approvals"]["manifest"]["revision"].as_u64().unwrap() + 1);
-    body["approvals"]["manifest"]["gateways"] = json!([]);
+    body["approvals"]["document"]["revision"] =
+        json!(body["approvals"]["document"]["revision"].as_u64().unwrap() + 1);
+    body["approvals"]["document"]["gateways"] = json!([]);
     body["allowed_igvms"] = json!([]);
     let withdrawn = client
         .verifier
@@ -741,7 +741,7 @@ async fn encrypted_setup_bounds_delivery_and_never_recovers_invalid_protocol_dat
                     .await
                     .unwrap();
                 assert_eq!(hello.len(), CLIENT_SETUP_BYTES);
-                assert_eq!(&hello[..6], b"STGS\x03\x01");
+                assert_eq!(&hello[..6], b"STGS\x01\x01");
                 let mut response = Response::builder().header("content-type", CONTENT_TYPE);
                 let body = match case.as_str() {
                     "status" => {
@@ -782,7 +782,6 @@ async fn encrypted_setup_bounds_delivery_and_never_recovers_invalid_protocol_dat
             &http,
             Url::parse(&format!("http://{address}/{case}")).unwrap(),
             Environment::Staging,
-            stogas_verifier::channel::ratchet::ChunkSize::FULL,
             Instant::now() + limit,
         )
         .await;
@@ -813,7 +812,6 @@ async fn encrypted_setup_bounds_delivery_and_never_recovers_invalid_protocol_dat
         &http,
         Url::parse(&format!("http://{address}/malformed")).unwrap(),
         Environment::Staging,
-        stogas_verifier::channel::ratchet::ChunkSize::FULL,
         Instant::now(),
     )
     .await;

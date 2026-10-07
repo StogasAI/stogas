@@ -43,15 +43,17 @@ export class EvidenceClient {
 	#current;
 	#pending;
 	#onSnapshot;
+	#onProgress;
 	#retryAt = 0;
 	#closed = new AbortController();
 
-	constructor(verifier, origins, fetch, onSnapshot = () => {}) {
+	constructor(verifier, origins, fetch, onSnapshot = () => {}, onProgress = () => {}) {
 		this.#verifier = verifier;
 		this.#fetch = fetch;
 		this.#origins = origins;
 		this.#representations = origins.map(() => undefined);
 		this.#onSnapshot = onSnapshot;
+		this.#onProgress = onProgress;
 	}
 
 	check(check) {
@@ -110,39 +112,44 @@ export class EvidenceClient {
 
 	async #load(signal, check) {
 		let failure;
+		let fetchDurationMs = 0;
+		let verificationDurationMs = 0;
 		for (let index = 0; index < this.#origins.length; index++) {
 			signal.throwIfAborted();
 			const attempt = deadlineSignal(signal, ORIGIN_TIMEOUT_MS);
 			try {
-				const cached = this.#representations[index];
-				const response = await this.#fetch(this.#origins[index], {
-					method: 'GET',
-					credentials: 'omit',
-					redirect: 'manual',
-					signal: attempt.signal,
-					headers: {
-						accept: 'application/json',
-						...(cached?.etag ? { 'if-none-match': cached.etag } : {})
-					}
-				});
-				let bytes;
-				let etag;
-				if (response.status === 304 && cached) {
-					await response.body?.cancel().catch(() => {});
-					({ bytes, etag } = cached);
-				} else if (response.status === 200) {
-					bytes = await readBoundedBody(response, MAX_BUNDLE_BYTES, attempt.signal);
-					etag = response.headers.get('etag');
-				} else {
-					await response.body?.cancel().catch(() => {});
-					throw new Error(`evidence origin returned HTTP ${response.status}`);
+				const fetching = performance.now();
+				let representation;
+				try {
+					representation = await this.#loadRepresentation(index, attempt.signal);
+				} finally {
+					fetchDurationMs += performance.now() - fetching;
 				}
 				attempt.signal.throwIfAborted();
 				// Rust retains authentic revocations even if another candidate object
 				// fails validation. A 304 must still recheck time and those decisions.
 				const started = performance.now();
-				const snapshot = this.#verifier.refresh(bytes);
-				this.#representations[index] = { bytes, etag };
+				let checkpoint = started;
+				let observerDurationMs = 0;
+				const verificationChecks = [];
+				const observe = (check) => {
+					const finished = performance.now();
+					verificationChecks.push({ ...check, durationMs: finished - checkpoint });
+					try {
+						this.#onProgress(verificationChecks.map((entry) => ({ ...entry })));
+					} catch {
+						/* Observers have no authority over verification. */
+					}
+					checkpoint = performance.now();
+					observerDurationMs += checkpoint - finished;
+				};
+				let snapshot;
+				try {
+					snapshot = this.#verifier.refresh(representation.bytes, observe);
+				} finally {
+					verificationDurationMs += performance.now() - started - observerDurationMs;
+				}
+				this.#representations[index] = representation;
 				const old = this.#current;
 				this.#current = snapshot;
 				old?.free(); // Requests own independent Arc-backed snapshot handles.
@@ -151,7 +158,9 @@ export class EvidenceClient {
 						bundle: snapshot.summary(),
 						bundleURL: this.#origins[index],
 						fetchedAtUnixMs: Date.now(),
-						verificationDurationMs: performance.now() - started
+						fetchDurationMs,
+						verificationDurationMs,
+						verificationChecks
 					});
 				} catch {
 					/* An observer cannot change authenticated state or delivery. */
@@ -161,6 +170,11 @@ export class EvidenceClient {
 				this.#retryAt = 0;
 				return result;
 			} catch (error) {
+				try {
+					this.#onProgress(null);
+				} catch {
+					/* An observer cannot replace the verification failure. */
+				}
 				failure = error;
 			} finally {
 				attempt.dispose();
@@ -169,6 +183,30 @@ export class EvidenceClient {
 		signal.throwIfAborted();
 		this.#retryAt = Date.now() + 4_500 + Math.floor(Math.random() * 1_001);
 		throw failure;
+	}
+
+	async #loadRepresentation(index, signal) {
+		const cached = this.#representations[index];
+		const response = await this.#fetch(this.#origins[index], {
+			method: 'GET',
+			credentials: 'omit',
+			redirect: 'manual',
+			signal,
+			headers: {
+				accept: 'application/json',
+				...(cached?.etag ? { 'if-none-match': cached.etag } : {})
+			}
+		});
+		if (response.status === 304 && cached) {
+			await response.body?.cancel().catch(() => {});
+			return cached;
+		}
+		if (response.status === 200) {
+			const bytes = await readBoundedBody(response, MAX_BUNDLE_BYTES, signal);
+			return { bytes, etag: response.headers.get('etag') };
+		}
+		await response.body?.cancel().catch(() => {});
+		throw new Error(`evidence origin returned HTTP ${response.status}`);
 	}
 
 	close() {

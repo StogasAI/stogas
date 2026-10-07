@@ -3,12 +3,15 @@ pub use request::EncryptedRequest;
 use std::sync::Arc;
 
 use stogas_verifier::{
-    channel::{ClientSession, Error, ratchet::ChunkSize, setup::PendingSetup},
+    channel::{ClientSession, Error, setup::PendingSetup},
     evidence::{Snapshot, VerifiedSession},
 };
 use wasm_bindgen::prelude::*;
 
 use crate::evidence::{EvidenceSnapshot, verification_error};
+
+#[cfg(all(test, target_arch = "wasm32", feature = "staging"))]
+mod tests;
 
 /// A fresh setup contains no application credentials or content.
 #[wasm_bindgen(js_name = EncryptedSetup)]
@@ -21,14 +24,11 @@ impl EncryptedSetup {
     /// # Errors
     /// Rejects unsupported environments or unavailable secure randomness.
     #[wasm_bindgen(constructor)]
-    pub fn new(environment: &str, ratchet_bytes: Option<u16>) -> Result<Self, JsError> {
+    pub fn new(environment: &str) -> Result<Self, JsError> {
         let environment = serde_json::from_value(serde_json::json!(environment))
             .map_err(|_| JsError::new("unsupported verification environment"))?;
         Ok(Self {
-            core: PendingSetup::with_chunk_size(
-                environment,
-                ChunkSize::new(ratchet_bytes.unwrap_or(ChunkSize::FULL.get()))?,
-            )?,
+            core: PendingSetup::new(environment)?,
         })
     }
 

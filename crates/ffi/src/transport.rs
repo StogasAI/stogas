@@ -14,7 +14,6 @@ struct AbiTransportOptions {
     environment: stogas_sdk::Environment,
     security: String,
     max_connections: usize,
-    ratchet_bytes: u16,
     base_url: Option<String>,
 }
 
@@ -23,8 +22,7 @@ impl Default for AbiTransportOptions {
         Self {
             environment: stogas_sdk::Environment::Production,
             security: "tls".into(),
-            max_connections: 4,
-            ratchet_bytes: 1152,
+            max_connections: TransportOptions::default().max_connections,
             base_url: None,
         }
     }
@@ -73,7 +71,6 @@ pub unsafe extern "C" fn stogas_transport_start(
                 _ => return Err("security must be tls or e2ee".into()),
             },
             max_connections: configuration.max_connections,
-            ratchet_bytes: configuration.ratchet_bytes,
             base_url: configuration.base_url,
         };
         let transport = ManagedTransport::start(&options).map_err(|error| AbiError {

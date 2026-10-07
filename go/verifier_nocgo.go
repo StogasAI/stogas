@@ -18,7 +18,6 @@ type TransportOptions struct {
 	Environment    string
 	Security       string
 	MaxConnections uint64
-	RatchetBytes   uint16
 	BaseURL        string
 }
 

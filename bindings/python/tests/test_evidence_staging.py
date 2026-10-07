@@ -1,7 +1,6 @@
 """Positive snapshot ownership through an explicitly staging-enabled wheel."""
 
 import gc
-import base64
 import hashlib
 import json
 import os
@@ -22,23 +21,20 @@ class StagingEvidenceTests(unittest.TestCase):
             root_key_id=fixture["root"]["key_id"],
             root_public_key=fixture["root"]["public_key"],
         )
-        # Extract fixed fixture fields; the packaged Rust core authenticates them below.
-        encoded = fixture["e2ee"]["response"]
-        evidence = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))[1198:]
-        start = 1186 + int.from_bytes(evidence[1184:1186], "big")
-        size = int.from_bytes(evidence[start:start + 4], "big")
-        boot_bytes = evidence[start + 4:start + 4 + size]
-        proof_start = start + 4 + size
+        registration = json.loads(
+            (Path(__file__).resolve().parents[3] / "tests/fixtures/hardware-registration-v1.json").read_bytes()
+        )
+        boot_bytes = (json.dumps(registration["boot"], sort_keys=True, separators=(",", ":")) + "\n").encode()
         archive = {
-            "boot": json.loads(boot_bytes),
-            "inclusion": json.loads(evidence[proof_start + 4:]),
-            "evidence_sha256": fixture["bundle"]["body_sha256"],
+            "document": {"schema": "stogas.node-registration.v1", "boot": registration["boot"], "evidence_sha256": registration["inclusion"]["evidence_sha256"]},
+            "signature": registration["inclusion"]["signature"],
+            "inclusion": registration["inclusion"]["inclusion"],
         }
         bundle = json.dumps(fixture["bundle"]).encode()
         summary = json.loads(verifier.verify_evidence_archive(bundle))
-        self.assertEqual(summary["body_sha256"], archive["evidence_sha256"])
+        self.assertEqual(summary["body_sha256"], archive["document"]["evidence_sha256"])
         verified = verifier.verify_boot_archive(json.dumps(archive).encode(), bundle)
-        archive["evidence_sha256"] = "0" * 64
+        archive["document"]["evidence_sha256"] = "0" * 64
         with self.assertRaises(VerificationError):
             verifier.verify_boot_archive(json.dumps(archive).encode(), bundle)
         del verifier

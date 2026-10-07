@@ -5,15 +5,6 @@ use serde_json::{Value, json};
 const ARTIFACT: &[u8] = b"exact document bytes, including its independent author signature\n";
 const NOW: i64 = 1_790_000_000_000;
 
-fn submission_key(seed: u8) -> Vec<u8> {
-    SigningKey::from_bytes(&[seed; 32])
-        .verifying_key()
-        .to_public_key_der()
-        .unwrap()
-        .as_bytes()
-        .to_vec()
-}
-
 fn log_key() -> SigningKey {
     SigningKey::from_bytes(&[33; 32])
 }
@@ -92,7 +83,7 @@ fn fixture(seed: u8) -> (Value, Value) {
 }
 
 #[test]
-fn proves_exact_publication_with_the_expected_key_but_never_trusts_a_supplied_log() {
+fn proves_exact_publication_by_any_submitter_but_never_trusts_a_supplied_log() {
     // Qualify the fuzz seed's independently generated Go submission signature.
     // A valid artifact binding still cannot authenticate its synthetic log proof.
     let seed: Value = serde_json::from_str(include_str!(
@@ -101,12 +92,11 @@ fn proves_exact_publication_with_the_expected_key_but_never_trusts_a_supplied_lo
     .unwrap();
     let artifact = seed["artifact"].as_str().unwrap().as_bytes();
     let parsed: Bundle = serde_json::from_value(seed["bundle"].clone()).unwrap();
-    verify_binding(&parsed, artifact, &submission_key(19)).unwrap();
+    verify_binding(&parsed, artifact).unwrap();
     assert!(
         crate::verify_rekor_document_inclusion(
             &serde_json::to_vec(&seed["bundle"]).unwrap(),
             artifact,
-            &submission_key(19),
             NOW
         )
         .is_err()
@@ -114,39 +104,15 @@ fn proves_exact_publication_with_the_expected_key_but_never_trusts_a_supplied_lo
     for seed in [8, 9] {
         let (bundle, _) = fixture(seed);
         assert_eq!(
-            verify_with_root(&bundle, ARTIFACT, &submission_key(seed), NOW, &root()).unwrap(),
+            verify_with_root(&bundle, ARTIFACT, NOW, &root()).unwrap(),
             NOW / 1000
         );
-        // Another valid log entry over the same public artifact cannot impersonate
-        // the submission identity authenticated by the caller's signing manifest.
-        assert!(
-            verify_with_root(&bundle, ARTIFACT, &submission_key(seed + 1), NOW, &root()).is_err()
-        );
-        assert!(
-            verify_with_root(
-                &bundle,
-                b"substituted document",
-                &submission_key(seed),
-                NOW,
-                &root()
-            )
-            .is_err()
-        );
-        assert!(
-            verify_with_root(
-                &bundle,
-                ARTIFACT,
-                &submission_key(seed),
-                NOW - 61_000,
-                &root()
-            )
-            .is_err()
-        );
+        assert!(verify_with_root(&bundle, b"substituted document", NOW, &root()).is_err());
+        assert!(verify_with_root(&bundle, ARTIFACT, NOW - 61_000, &root()).is_err());
         assert!(
             crate::verify_rekor_document_inclusion(
                 &serde_json::to_vec(&bundle).unwrap(),
                 ARTIFACT,
-                &submission_key(seed),
                 NOW
             )
             .is_err()
@@ -207,7 +173,7 @@ fn rejects_mutated_log_proofs_bundle_hints_and_ambiguous_formats() {
         let mut bundle = original.clone();
         *bundle.pointer_mut(pointer).unwrap() = replacement;
         assert!(
-            verify_with_root(&bundle, ARTIFACT, &submission_key(9), NOW, &root()).is_err(),
+            verify_with_root(&bundle, ARTIFACT, NOW, &root()).is_err(),
             "{pointer}"
         );
     }
@@ -216,10 +182,10 @@ fn rejects_mutated_log_proofs_bundle_hints_and_ambiguous_formats() {
         .as_array_mut()
         .unwrap()
         .push(original["verificationMaterial"]["tlogEntries"][0].clone());
-    assert!(verify_with_root(&bundle, ARTIFACT, &submission_key(9), NOW, &root()).is_err());
+    assert!(verify_with_root(&bundle, ARTIFACT, NOW, &root()).is_err());
     bundle = original;
     bundle["dsseEnvelope"] = json!({});
-    assert!(verify_with_root(&bundle, ARTIFACT, &submission_key(9), NOW, &root()).is_err());
+    assert!(verify_with_root(&bundle, ARTIFACT, NOW, &root()).is_err());
 }
 
 #[test]
@@ -241,7 +207,7 @@ fn even_a_valid_log_cannot_substitute_the_artifact_hash_key_or_signature() {
         let mut bundle = original.clone();
         seal_body(&mut bundle, &changed);
         assert!(
-            verify_with_root(&bundle, ARTIFACT, &submission_key(9), NOW, &root()).is_err(),
+            verify_with_root(&bundle, ARTIFACT, NOW, &root()).is_err(),
             "{pointer}"
         );
     }
@@ -253,27 +219,19 @@ fn even_a_valid_log_cannot_substitute_the_artifact_hash_key_or_signature() {
     let mut bundle = original;
     bundle["messageSignature"]["signature"] = json!(wrong);
     seal_body(&mut bundle, &changed);
-    assert!(verify_with_root(&bundle, ARTIFACT, &submission_key(9), NOW, &root()).is_err());
+    assert!(verify_with_root(&bundle, ARTIFACT, NOW, &root()).is_err());
 }
 
 #[test]
 fn bounds_outer_input_and_rejects_duplicate_fields() {
     assert!(matches!(
-        crate::verify_rekor_document_inclusion(
-            b"{}",
-            &vec![0; crate::MAX_DOCUMENT_BYTES + 1],
-            &submission_key(9),
-            NOW
-        ),
+        crate::verify_rekor_document_inclusion(b"{}", &vec![0; crate::MAX_DOCUMENT_BYTES + 1], NOW),
         Err(crate::Error::TooLarge)
     ));
     for input in [
         br#"{"mediaType":"x","mediaType":"y"}"#.as_slice(),
         &vec![b' '; crate::MAX_BUNDLE_BYTES + 1],
     ] {
-        assert!(
-            crate::verify_rekor_document_inclusion(input, ARTIFACT, &submission_key(9), NOW)
-                .is_err()
-        );
+        assert!(crate::verify_rekor_document_inclusion(input, ARTIFACT, NOW).is_err());
     }
 }

@@ -8,7 +8,7 @@ import Stogas
 let transport = try Transport()
 defer { transport.close() }
 let baseURL = transport.baseURL
-// Configure your HTTP client with baseURL and automatic retries and proxies disabled.
+// Configure your HTTP client with baseURL, your retry policy and loopback proxies disabled.
 ```
 
 Keep one transport for the application's lifetime. Startup and `refresh()` perform blocking setup work; run them off your UI event loop. The default is native attested TLS. `TransportOptions(security: "e2ee")` selects binary E2EE. Other options are `maxConnections` and `baseURL`; the latter changes the inference origin without changing trusted evidence authorities. Staging requires a separately built staging library.
