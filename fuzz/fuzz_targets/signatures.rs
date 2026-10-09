@@ -6,7 +6,6 @@ use stogas_verifier::signing;
 
 fuzz_target!(|data: &[u8]| {
     let _ = signing::public_key_from_spki(data);
-    let _ = signing::SigningKey::from_pkcs8(data);
 
     // Retain a valid starting point as well as arbitrary encodings. Shared
     // conformance vectors own the bytes; the corpus only needs a short marker.

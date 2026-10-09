@@ -11,26 +11,11 @@ use zeroize::Zeroizing;
 /// Platform AES-256-GCM execution. The record layer alone owns nonces, framing,
 /// ordering and limits. Implementations must never expose unauthenticated plaintext.
 pub trait Cipher: Sized {
-    /// Consume one directional key. No session root is passed to the backend.
+    /// Consume one record key. The backend never receives a chain or session root.
     ///
     /// # Errors
     /// Rejects an unavailable cryptographic implementation.
     fn from_key(key: Zeroizing<[u8; 32]>) -> Result<Self, Error>;
-
-    /// Authenticate the first record synchronously while the session transaction
-    /// is held, then retain this backend for subsequent independent records.
-    ///
-    /// # Errors
-    /// Authentication failure never creates a live backend or commits a session.
-    fn from_authenticated_start(
-        key: Zeroizing<[u8; 32]>,
-        nonce: [u8; 12],
-        aad: &[u8],
-        sealed: &mut [u8],
-    ) -> Result<Self, Error> {
-        SoftwareCipher::new(key.as_ref())?.decrypt_now(nonce, aad, sealed)?;
-        Self::from_key(key)
-    }
 
     /// Encrypt in place and return the full 128-bit authentication tag.
     fn encrypt<'a>(
@@ -91,17 +76,6 @@ impl SoftwareCipher {
 impl Cipher for SoftwareCipher {
     fn from_key(key: Zeroizing<[u8; 32]>) -> Result<Self, Error> {
         Self::new(key.as_ref())
-    }
-
-    fn from_authenticated_start(
-        key: Zeroizing<[u8; 32]>,
-        nonce: [u8; 12],
-        aad: &[u8],
-        sealed: &mut [u8],
-    ) -> Result<Self, Error> {
-        let cipher = Self::from_key(key)?;
-        cipher.decrypt_now(nonce, aad, sealed)?;
-        Ok(cipher)
     }
 
     async fn encrypt(

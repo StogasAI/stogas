@@ -1,105 +1,48 @@
 # Stogas SDK
 
-Verify Stogas confidential gateways before sending credentials or inference content.
-One Rust core powers native clients, WebAssembly and offline verification.
+Verify Stogas confidential gateways before sending credentials or inference content. One Rust core powers native clients, WebAssembly, and offline verification.
 
 [Documentation](https://stogas.ai/docs/sdk-overview) · [Examples](examples/) · [Security](SECURITY.md)
 
 ## What it does
 
-- Verifies hardware attestation, approved builds and session keys.
+- Verifies hardware attestation, approved builds, and session keys.
 - Connects through attested TLS or end-to-end encryption over HTTPS.
-- Verifies signed request receipts, including the final Stogas metadata.
-- Checks downloaded evidence and saved receipts offline.
+- Verifies signed request receipts and downloaded evidence, online or offline.
+- Encrypts provider credentials and plugin settings locally with your organization key.
 
-Use the verifier transport with your language's OpenAI-compatible client or HTTP library.
-It handles verification and transport; your client handles request types and API methods.
+Use the verifier transport with your language's OpenAI-compatible client or HTTP library. Bindings cover Rust, Python, Go, C, Java, .NET, Ruby, and Swift; JavaScript uses WebAssembly with Fetch-compatible runtimes. This project is pre-1.0, so APIs may change.
 
 ## Get started
 
-Choose a [language guide](https://stogas.ai/docs/sdk-overview) or a runnable [example](examples/).
-Native bindings include Rust, Python, Go, C, Java, .NET, Ruby and Swift. JavaScript uses
-WebAssembly with Fetch-compatible runtimes.
+Choose a [language guide](https://stogas.ai/docs/sdk-overview) or a runnable [example](examples/). Rust source builds require Rust 1.97.1 or later.
 
-The CLI can also provide a local endpoint for an existing client:
+The optional CLI provides a local verified endpoint for an existing client. Install it with `cargo install stogas --locked --features cli` or a native release archive, then run:
 
 ```console
 stogas serve --security tls
 ```
 
-Use the complete URL printed by the command as your client's base URL. Keep its capability
-private and configure retries in your OpenAI client. The transport never replays inference;
-a retry after interruption may execute again. Use `--security e2ee` for encrypted transport
-over HTTPS, and stop the process with Ctrl+C.
+Use the printed URL as your client's base URL and keep it private. The transport never replays inference, so a retry after an interruption may run the request again. Use `--security e2ee` for encrypted transport over HTTPS.
 
-Check a fresh verified connection and gateway admission without an API key or provider request:
+Other commands:
 
 ```console
-stogas probe --security tls
-stogas probe --security e2ee
-```
-
-Each command prints a JSON report and exits zero only when the verified gateway passes admission.
-This does not test provider health or database-backed authorization.
-
-For offline verification:
-
-```console
-stogas verify evidence.json --json
-stogas proof --help
-```
-
-## Customer encryption
-
-Generate a private organization key and encrypt a plugin configuration or provider credential locally:
-
-```console
+stogas probe --security tls          # check a fresh verified connection without an API key
+stogas verify evidence.json --json   # verify saved evidence offline
 stogas encryption-key --output org.key
-stogas encrypt --key-file org.key --organization ORGANIZATION_ID --purpose plugins --input plugins.json --output encrypted.json
+stogas verify-release ./release      # verify downloaded release assets offline
 ```
 
-Key generation prints only the public identifier. Back up the private key file; we cannot recover it.
-The `plugins` input is the inner plugin object. Provider purposes are `byok/openai`, `byok/anthropic`
-and `byok/chutes`; credential files contain the exact secret without a trailing newline.
-Follow the [encryption guide](https://stogas.ai/docs/cli#encrypt-credentials-and-plugins) to register
-ciphertext and supply roots by their registered labels in `encryption_keys` in the request body. The gateway accepts ordinary HTTPS;
-we recommend attested TLS or E2EE to keep the key private from TLS intermediaries.
-
-## Verification
-
-The verifier checks signed approvals, hardware policy, build provenance and vendor collateral.
-Live connections also require fresh attestation bound to their session keys. Stogas signatures
-use ML-DSA-65; external hardware and transparency services retain their own signature algorithms.
-
-A hardware policy can assign a chip to several configuration groups during a transition. A report
-must satisfy every requirement of one matching group; requirements are never combined across groups.
-Chip IDs are unique and sorted within each group. Groups are unique and sorted by their canonical
-JSON. Removing an alternative withdraws that configuration when the current policy is checked.
-
-Registration authorities can retain `VerifiedRegistration::registered_facts()` for policy previews
-through `Snapshot::appraise_registered_boot`. This method trusts previously verified stored facts;
-it does not authenticate supplied evidence or establish a live session. Use logged-boot verification
-for evidence supplied by a gateway.
-
-Streaming content can arrive before final verification. Applications must wait for verified
-completion before treating a response as complete.
-
-This project is pre-1.0. APIs and package interfaces may change.
+Streamed content can arrive before final verification. Treat a response as complete only after verified completion. See the [CLI guide](https://stogas.ai/docs/cli) for customer encryption and proofs.
 
 ## Contributing
 
 ```console
-cargo test --locked --workspace --all-targets
+cargo test --locked --workspace --all-targets --features stogas/cli
 ```
 
-[CI](.github/workflows/ci.yml) covers the core, transports and language bindings. Documented HTTP
-examples run against plain HTTP and real Rust encrypted-record fixtures. Python framework coverage
-includes LangChain, LlamaIndex, LiteLLM and Pydantic AI; Fetch coverage includes Node, Bun, Deno,
-Chromium, Firefox, WebKit and Workers. The fixture setup is synthetic; separate signed-evidence
-and hardware tests own attestation. This is a pinned compatibility matrix, not a guarantee for
-every third-party client or version.
-[Fuzzing](.github/workflows/fuzz.yml) exercises parsers and verification boundaries.
-Report vulnerabilities through the [security policy](SECURITY.md).
+[CI](.github/workflows/ci.yml) covers the core, transports, and language bindings; [fuzzing](.github/workflows/fuzz.yml) covers parsers and verification boundaries. Report vulnerabilities through the [security policy](SECURITY.md).
 
 ## License
 

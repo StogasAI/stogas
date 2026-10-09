@@ -106,14 +106,13 @@ impl Receipt {
             return Err(Error::Identity);
         }
         let signature = decode(&self.signature)?;
-        let mut message = Vec::with_capacity(SCHEMA.len() + 1 + 96);
-        message.extend_from_slice(SCHEMA.as_bytes());
-        message.push(0);
-        message.extend_from_slice(request);
-        message.extend_from_slice(response);
-        message.extend_from_slice(metadata);
-        crate::signing::verify(&key, &message, &[], &signature).map_err(|_| Error::Signature)
+        crate::signing::verify(&key, &message(request, response, metadata), &[], &signature)
+            .map_err(|_| Error::Signature)
     }
+}
+
+pub(crate) fn message(request: &[u8; 32], response: &[u8; 32], metadata: &[u8; 32]) -> Vec<u8> {
+    [SCHEMA.as_bytes(), b"\0", request, response, metadata].concat()
 }
 
 /// The complete metadata bag is authenticated, excluding the receipt itself.
@@ -207,7 +206,7 @@ pub fn verify_metadata(
     Ok(VerifiedMetadata { metadata, receipt })
 }
 
-fn metadata_digest(metadata: &serde_json::Value) -> Result<[u8; 32], Error> {
+pub(crate) fn metadata_digest(metadata: &serde_json::Value) -> Result<[u8; 32], Error> {
     use sha2::{Digest as _, Sha256};
     let mut object = metadata.as_object().ok_or(Error::Invalid)?.clone();
     object.remove("receipt");

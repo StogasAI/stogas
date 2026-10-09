@@ -1,0 +1,67 @@
+(* ProVerif 2.05. Symbolic abstraction of channel/setup.rs, not a proof of
+   HPKE, SNP appraisal, byte encoding, erasure, timing or computational bounds.
+   The trusted server signs only appraised boot/session transcripts. The network
+   is hostile; clients and servers have unbounded concurrent instances.
+   Hybrid KEM is abstracted as two independent encapsulations and a combiner.
+   Classical recipient secrets are disclosed: the PQ component must suffice.
+   run-models.py also breaks both components or attestation authentication,
+   aliases exporters, and removes transcript fields to check that secrecy and
+   agreement queries are live. PQ confidentiality alone cannot replace an
+   authentic hardware transcript against an active attacker. *)
+free net: channel.
+type sk.
+type pk.
+type coins.
+fun public(sk): pk.
+fun encaps(pk, coins): bitstring.
+fun shared(pk, coins): bitstring.
+reduc forall s:sk, r:coins; decaps(encaps(public(s),r),s) = shared(public(s),r).
+fun combine(bitstring,bitstring,bitstring): bitstring.
+fun root(bitstring,bitstring): bitstring.
+fun confirm(bitstring,bitstring): bitstring.
+fun signature(bitstring,sk): bitstring.
+reduc forall t:bitstring,s:sk; check(signature(t,s),public(s)) = t.
+fun seal(bitstring,bitstring): bitstring.
+reduc forall m:bitstring,k:bitstring; open(seal(m,k),k) = m.
+fun hello(bitstring,bitstring,pk,pk): bitstring.
+fun prefix(bitstring,bitstring,bitstring,bitstring,bitstring): bitstring.
+fun transcript(bitstring,bitstring,bitstring): bitstring.
+free environment, idle, boot: bitstring.
+free payload: bitstring [private].
+event issued(bitstring,bitstring).
+event accepted(bitstring,bitstring).
+query attacker(payload).
+query t:bitstring,k:bitstring; inj-event(accepted(t,k)) ==> inj-event(issued(t,k)).
+
+let client(attestation:pk) =
+  new classical:sk; new pq:sk; new challenge:bitstring;
+  let h = hello(environment,challenge,public(classical),public(pq)) in
+  out(net,(environment,challenge,public(classical),public(pq)));
+  out(net,classical);
+  (* BREAK_BOTH *)
+  in(net,(sid:bitstring,expiry:bitstring,ec:bitstring,ep:bitstring,
+          ratchet:bitstring,quote:bitstring,confirmation:bitstring));
+  let p = prefix(sid,expiry,ec,ep,ratchet) in
+  let t = transcript(h,p,boot) in
+  if check(quote,attestation) = t then
+  let exporter = combine(decaps(ec,classical),decaps(ep,pq),h) in
+  if confirmation = confirm(exporter,t) then
+  let key = root(exporter,t) in
+  event accepted((h,p,boot),key);
+  out(net,seal(payload,key)).
+
+let server(attestation:sk) =
+  in(net,(env:bitstring,challenge:bitstring,pc:pk,pp:pk));
+  if env = environment then
+  new rc:coins; new rp:coins; new sid:bitstring; new ratchet:bitstring;
+  let h = hello(env,challenge,pc,pp) in
+  let ec = encaps(pc,rc) in let ep = encaps(pp,rp) in
+  let p = prefix(sid,idle,ec,ep,ratchet) in
+  let t = transcript(h,p,boot) in
+  let exporter = combine(shared(pc,rc),shared(pp,rp),h) in
+  let key = root(exporter,t) in
+  event issued((h,p,boot),key);
+  out(net,(sid,idle,ec,ep,ratchet,signature(t,attestation),confirm(exporter,t))).
+
+process new attestation:sk; out(net,public(attestation));
+  ((!client(public(attestation))) | (!server(attestation)))

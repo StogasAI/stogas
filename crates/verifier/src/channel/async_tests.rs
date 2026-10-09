@@ -82,6 +82,74 @@ impl Cipher for SuspendedCipher {
     }
 }
 
+static LIVE_RECORD_CIPHERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+struct OwnedCipher(SoftwareCipher);
+
+impl Cipher for OwnedCipher {
+    fn from_key(key: Zeroizing<[u8; 32]>) -> Result<Self, Error> {
+        let cipher = SoftwareCipher::from_key(key)?;
+        LIVE_RECORD_CIPHERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(Self(cipher))
+    }
+    async fn encrypt(
+        &mut self,
+        nonce: [u8; 12],
+        aad: &[u8],
+        bytes: &mut [u8],
+    ) -> Result<[u8; 16], Error> {
+        self.0.encrypt(nonce, aad, bytes).await
+    }
+    async fn decrypt(&mut self, _: [u8; 12], _: &[u8], _: &mut [u8]) -> Result<(), Error> {
+        std::future::pending().await
+    }
+}
+
+impl Drop for OwnedCipher {
+    fn drop(&mut self) {
+        LIVE_RECORD_CIPHERS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn a_record_cipher_lives_only_until_completion_or_cancellation() {
+    let live = || LIVE_RECORD_CIPHERS.load(std::sync::atomic::Ordering::SeqCst);
+    let mut writer =
+        Records::<OwnedCipher>::new(&[1; 32], &[2; 32], 0, Direction::Request, super::header())
+            .unwrap();
+    assert_eq!(live(), 0);
+    let mut first = ready(writer.seal_async(Kind::Metadata, b"credentials")).unwrap();
+    assert_eq!(live(), 0, "used cipher retained while the stream is open");
+    let (mut reader, _, _) = Records::<OwnedCipher>::authenticate_start(
+        &[1; 32],
+        &[2; 32],
+        0,
+        Direction::Request,
+        &mut first,
+    )
+    .unwrap();
+    assert_eq!(
+        live(),
+        0,
+        "first incoming key retained after authentication"
+    );
+    let mut body = ready(writer.seal_async(Kind::Data, b"upload")).unwrap();
+    assert_eq!(live(), 0);
+    {
+        let mut future = std::pin::pin!(reader.open_async(&mut body));
+        assert!(
+            future
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        assert_eq!(live(), 1);
+    }
+    assert_eq!(live(), 0, "cancellation retained the unfinished cipher");
+    assert_eq!(ready(reader.open_async(&mut body)), Err(Error::Closed));
+    assert_eq!(live(), 0);
+}
+
 struct SuspendedDecryptCipher(SoftwareCipher);
 impl Cipher for SuspendedDecryptCipher {
     fn from_key(key: Zeroizing<[u8; 32]>) -> Result<Self, Error> {

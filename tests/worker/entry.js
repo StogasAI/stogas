@@ -2,58 +2,14 @@ import { EvidenceVerifier } from '../../bindings/worker/worker.js';
 import { EvidenceClient } from '../../bindings/shared/evidence-client.js';
 import { SessionTransport } from '../../bindings/shared/session-transport.js';
 import { sendSessionRequest } from '../../bindings/shared/channel-http.js';
-import {
-	sign_mldsa65,
-	verify_mldsa65,
-	rekor_public_key_from_seed,
-	prepare_rekor_submission_with_seed
-} from '../../pkg/browser/stogas_verifier.js';
 import root from './root.js';
-import signing from './signing.js';
 
 const fetchOrigin = (input, init) => globalThis.fetch(input, init);
 
-// Transport checks use network-boundary doubles. Signing uses the packaged Wasm
-// and the shared Go vector, including the runtime's randomness and key erasure.
+// Transport checks use network-boundary doubles around the packaged Wasm core.
 export default {
 	async fetch(request) {
 		const path = new URL(request.url).pathname;
-		if (path === '/sign') {
-			const bytes = (hex) => Uint8Array.from(hex.match(/../g), (part) => Number.parseInt(part, 16));
-			const message = bytes(signing.message);
-			const context = new TextEncoder().encode(signing.context);
-			const publicKey = bytes(signing.spki);
-			verify_mldsa65(publicKey, message, context, bytes(signing.context_signature));
-			const privateKey = bytes(signing.pkcs8);
-			const signature = sign_mldsa65(privateKey, message, context);
-			verify_mldsa65(publicKey, message, context, signature);
-			const submissionKey = bytes(signing.rekor_seed);
-			const submission = JSON.parse(prepare_rekor_submission_with_seed(submissionKey, message));
-			const publicInput = bytes(signing.rekor_seed);
-			const rekorPublicKey = rekor_public_key_from_seed(publicInput);
-			const retryKey = bytes(signing.rekor_seed);
-			const retry = JSON.parse(prepare_rekor_submission_with_seed(retryKey, message));
-			const badKey = new Uint8Array(31).fill(42);
-			let rejected = false;
-			try {
-				prepare_rekor_submission_with_seed(badKey, message);
-			} catch {
-				rejected = true;
-			}
-			return Response.json({
-				erased: [privateKey, submissionKey, publicInput, retryKey, badKey].every((key) =>
-					key.every((byte) => byte === 0)
-				),
-				rejected,
-				stable: JSON.stringify(submission) === JSON.stringify(retry),
-				rekorPublicKey: Array.from(rekorPublicKey, (byte) =>
-					byte.toString(16).padStart(2, '0')
-				).join(''),
-				rekorSignature: submission.spec.signature.content,
-				signatureBytes: signature.length,
-				hash: submission.spec.data.hash
-			});
-		}
 		if (path === '/core') {
 			const verifier = new EvidenceVerifier('prod', root.key_id, root.public_key);
 			try {

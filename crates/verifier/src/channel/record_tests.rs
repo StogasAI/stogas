@@ -135,7 +135,11 @@ fn authentic_invalid_grammar_and_usage_bounds_permanently_close_both_directions(
         let mut encoder = records(direction);
         let mut decoder = records(direction);
         for state in [&mut encoder, &mut decoder] {
-            state.started = started;
+            state.phase = if started {
+                Phase::Body
+            } else {
+                Phase::Metadata
+            };
             state.sequence = sequence;
             state.body_bytes = body;
         }
@@ -148,11 +152,10 @@ fn authentic_invalid_grammar_and_usage_bounds_permanently_close_both_directions(
         let size = prefix.len() + 1 + data.len() + 16;
         prefix[..4].copy_from_slice(&u32::try_from(size).unwrap().to_be_bytes());
         let mut plaintext = [vec![kind as u8], data.clone()].concat();
-        let tag = encoder
-            .cipher
-            .as_ref()
+        let (key, nonce) = encoder.next_key().unwrap();
+        let tag = SoftwareCipher::from_key(key)
             .unwrap()
-            .encrypt_now(encoder.record_nonce(), &prefix, &mut plaintext)
+            .encrypt_now(nonce, &prefix, &mut plaintext)
             .unwrap();
         let mut wire = [prefix, plaintext, tag.to_vec()].concat();
         assert_eq!(encoder.seal(kind, &data).as_ref(), Err(&expected));
@@ -162,8 +165,8 @@ fn authentic_invalid_grammar_and_usage_bounds_permanently_close_both_directions(
             expected
         };
         assert_eq!(decoder.open(&mut wire), Err(expected));
-        assert!(encoder.cipher.is_none());
-        assert!(decoder.cipher.is_none());
+        assert!(encoder.keys.is_none());
+        assert!(decoder.keys.is_none());
         assert_eq!(encoder.seal(Kind::Keepalive, &[]), Err(Error::Closed));
         assert_eq!(decoder.complete(), Err(Error::Truncated));
     }
@@ -195,8 +198,8 @@ fn response_keepalives_preserve_body_budget_and_completion_and_release_keys() {
     assert_eq!(decoder.body_bytes, 0);
     assert_eq!(decoder.sequence, 5);
     assert_eq!(decoder.complete(), Ok(()));
-    assert!(encoder.cipher.is_none());
-    assert!(decoder.cipher.is_none());
+    assert!(encoder.keys.is_none());
+    assert!(decoder.keys.is_none());
 }
 
 #[test]

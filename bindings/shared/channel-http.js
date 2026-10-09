@@ -3,7 +3,7 @@ import { verifyReceiptResponse } from './receipt-response.js';
 
 // HTTP owns delivery; the Rust core owns verification, record keys and counters.
 export const SESSION_CONTENT_TYPE = 'application/vnd.stogas.session';
-export const MAX_SETUP_RESPONSE_BYTES = 61_830;
+export const MAX_SETUP_RESPONSE_BYTES = 61_806;
 const MAX_RECORD_PAYLOAD = 65_515;
 const MAX_METADATA_BYTES = 16 * 1024;
 const MAX_REQUEST_BYTES = 128 * 1024 * 1024;
@@ -42,6 +42,13 @@ async function encodeRequest(exchange, request, signal) {
 	}
 	if (source) {
 		const reader = abortableReader(source, signal);
+		// Only the final data record may be short; the gateway rejects others.
+		const seal = async (bytes) => {
+			signal?.throwIfAborted();
+			parts.push(await exchange.seal(2, bytes));
+		};
+		let pending;
+		let filled = 0;
 		try {
 			if (Number(request.headers.get('content-length')) > MAX_REQUEST_BYTES) {
 				throw new Error('request exceeds its byte limit');
@@ -53,11 +60,25 @@ async function encodeRequest(exchange, request, signal) {
 					throw new Error('request exceeds its byte limit');
 				}
 				size += value.byteLength;
-				for (let offset = 0; offset < value.byteLength; offset += MAX_RECORD_PAYLOAD) {
-					signal?.throwIfAborted();
-					parts.push(await exchange.seal(2, value.subarray(offset, offset + MAX_RECORD_PAYLOAD)));
+				let offset = 0;
+				if (filled) {
+					offset = Math.min(MAX_RECORD_PAYLOAD - filled, value.byteLength);
+					pending.set(value.subarray(0, offset), filled);
+					filled += offset;
+					if (filled < MAX_RECORD_PAYLOAD) continue;
+					await seal(pending);
+					filled = 0;
+				}
+				for (; value.byteLength - offset >= MAX_RECORD_PAYLOAD; offset += MAX_RECORD_PAYLOAD) {
+					await seal(value.subarray(offset, offset + MAX_RECORD_PAYLOAD));
+				}
+				if (offset < value.byteLength) {
+					pending ??= new Uint8Array(MAX_RECORD_PAYLOAD);
+					pending.set(value.subarray(offset));
+					filled = value.byteLength - offset;
 				}
 			}
+			if (filled) await seal(pending.subarray(0, filled));
 		} catch (error) {
 			await reader.cancel(error);
 			throw error;

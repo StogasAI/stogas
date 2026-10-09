@@ -65,17 +65,38 @@ fn output_handles_are_cleared_and_inputs_bounded_before_reading() {
 #[test]
 fn compiled_authorities_never_substitute_another_environment() {
     let configuration = br#"{"environment":"prod"}"#;
+    let keys = include_bytes!("../../../../tests/fixtures/staging-key-manifest.json");
+    let value: serde_json::Value = serde_json::from_slice(keys).unwrap();
+    let now = value["inclusion"]["verificationMaterial"]["tlogEntries"][0]["integratedTime"]
+        .as_str()
+        .unwrap()
+        .parse::<i64>()
+        .unwrap()
+        * 1000
+        + 1000;
     let mut handle = ptr::null_mut();
-    // SAFETY: configuration is live, output writable, and failed construction returns no handle.
-    let failure = unsafe {
-        take_json(stogas_evidence_new(
+    // SAFETY: configuration is live and output writable. The successful owner
+    // is inspected exclusively and returned exactly once after the check.
+    unsafe {
+        let result = take_json(stogas_evidence_new(
             configuration.as_ptr(),
             configuration.len(),
             &raw mut handle,
-        ))
-    };
-    assert_eq!(failure["ok"], false);
-    assert!(handle.is_null());
+        ));
+        assert_eq!(result["ok"], true);
+        assert!(!handle.is_null());
+        // A genuine logged staging delegation cannot override the production
+        // authority selected through this ABI.
+        assert!(
+            (*handle)
+                .core
+                .lock()
+                .unwrap()
+                .verify_key_manifest(keys, now)
+                .is_err()
+        );
+        stogas_evidence_free(handle);
+    }
 }
 
 #[cfg(feature = "staging")]
@@ -96,13 +117,6 @@ fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
         .decode(fixture["certificate"].as_str().unwrap())
         .unwrap();
     let parsed = ParsedNativeCertificate::parse(&certificate).unwrap();
-    let boot: Value = serde_json::from_slice(parsed.evidence.boot_document).unwrap();
-    let challenge = hex::decode(
-        boot["report_data"]["registration_challenge"]
-            .as_str()
-            .unwrap(),
-    )
-    .unwrap();
     let mut handle = ptr::null_mut();
     let mut snapshot = ptr::null_mut();
     // SAFETY: every slice and handle remains live through the call; handles are freed once below.
@@ -130,15 +144,6 @@ fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
                 .is_empty()
         );
         let evidence = parsed.evidence;
-        let registered = take_json(stogas_evidence_verify_registration(
-            snapshot,
-            evidence.boot_document.as_ptr(),
-            evidence.boot_document.len(),
-            challenge.as_ptr(),
-            challenge.len(),
-            now,
-        ));
-        assert_eq!(registered["ok"], true, "{registered}");
         let mut rejected = ptr::dangling_mut();
         assert_eq!(
             take_json(stogas_evidence_refresh(
@@ -172,7 +177,6 @@ fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
             later,
         ));
         assert_eq!(archived["ok"], true, "{archived}");
-        assert_eq!(archived["value"]["node_id"], registered["value"]["node_id"]);
         assert!(Arc::ptr_eq(
             (*handle).core.lock().unwrap().current().unwrap(),
             &(*snapshot).core,
@@ -233,7 +237,7 @@ fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
             now,
         ));
         assert_eq!(logged["ok"], true, "{logged}");
-        assert_eq!(logged["value"]["node_id"], registered["value"]["node_id"]);
+        assert_eq!(logged["value"]["node_id"], archived["value"]["node_id"]);
         assert!(logged["value"]["integrated_time_unix_ms"].as_i64().unwrap() <= now);
         let expired = logged["value"]["valid_until_unix_ms"].as_i64().unwrap();
         assert_eq!(
@@ -247,17 +251,38 @@ fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
             ))["code"],
             "expired_collateral"
         );
-        assert_eq!(
-            take_json(stogas_evidence_verify_registration(
+        // A booting gateway checks its own registration quote.
+        #[cfg(feature = "gateway")]
+        {
+            let boot: Value = serde_json::from_slice(evidence.boot_document).unwrap();
+            let challenge = hex::decode(
+                boot["report_data"]["registration_challenge"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            let registered = take_json(stogas_evidence_verify_registration(
                 snapshot,
                 evidence.boot_document.as_ptr(),
                 evidence.boot_document.len(),
                 challenge.as_ptr(),
-                31,
-                now
-            ))["code"],
-            "invalid_operation"
-        );
+                challenge.len(),
+                now,
+            ));
+            assert_eq!(registered["ok"], true, "{registered}");
+            assert_eq!(registered["value"]["node_id"], logged["value"]["node_id"]);
+            assert_eq!(
+                take_json(stogas_evidence_verify_registration(
+                    snapshot,
+                    evidence.boot_document.as_ptr(),
+                    evidence.boot_document.len(),
+                    challenge.as_ptr(),
+                    31,
+                    now
+                ))["code"],
+                "invalid_operation"
+            );
+        }
         // Oversized lengths and short hashes fail before dereferencing their contents.
         for (receipt_len, hash_len) in [(stogas_verifier::receipt::MAX_BYTES + 1, 32), (0, 33)] {
             assert_eq!(

@@ -8,7 +8,6 @@ use stogas_verifier::{
     channel::{self, Kind},
     evidence,
 };
-use zeroize::Zeroizing;
 
 #[path = "../../../../tests/support/channel.rs"]
 mod channel_fixture;
@@ -54,12 +53,7 @@ pub struct TestChannel {
 impl TestChannel {
     #[wasm_bindgen(constructor)]
     pub fn create() -> Self {
-        let (client, root, id) = channel_fixture::session();
-        let server = channel::ServerSession::new(
-            Zeroizing::new(root),
-            id,
-            channel::ratchet::InitialKey::from_bytes(Zeroizing::new([3; 32])),
-        );
+        let (client, server) = channel_fixture::session();
         let (snapshot, appraisal) = appraisal();
         Self {
             client,

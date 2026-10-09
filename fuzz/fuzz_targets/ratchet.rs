@@ -1,61 +1,63 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use stogas_verifier::channel::{
-    Error,
-    ratchet::{InitialKey, Peer, SendKey},
-};
+use stogas_verifier::channel::{ClientRequest, Kind};
 
+#[path = "../../tests/support/channel.rs"]
+mod channel_fixture;
+
+// Reordered request starts and responses across repeated ratchet turns, through
+// the public sessions an attacker reaches. Forgery cannot prevent a later
+// authentic delivery or allow its replay.
 fuzz_target!(|input: &[u8]| {
-    let initial = InitialKey::generate().unwrap();
-    let mut peers = [
-        Peer::initiator(&[7; 32], initial.public_key()).unwrap(),
-        Peer::responder(&[7; 32], initial),
-    ];
-    let first = peers[0].send().unwrap();
-    peers[1]
-        .receive(&first.header, 0, |secret| {
-            assert_eq!(*secret, *first.secret);
-            Ok(())
-        })
-        .unwrap();
-    let mut packets: [Vec<SendKey>; 2] = [Vec::new(), Vec::new()];
-    // Bound the schedule and queued messages while exercising repeated turns.
+    let (mut client, mut server) = channel_fixture::session();
+    let mut starts: Vec<(ClientRequest, Vec<u8>)> = Vec::new();
+    let mut replies: Vec<(ClientRequest, Vec<u8>)> = Vec::new();
     for (round, command) in input.chunks(4).take(512).enumerate() {
-        let side = usize::from(command[0] & 1);
-        if command[0] & 2 == 0 || packets[side].is_empty() {
-            if packets[side].len() < 16 {
-                packets[side].push(peers[side].send().unwrap());
+        let now = round as u64;
+        let pick = |length: usize| usize::from(command.get(1).copied().unwrap_or(0)) % length;
+        match command[0] % 3 {
+            // Bound unanswered requests so honest allocation never waits.
+            0 if starts.len() + replies.len() < 16 => {
+                let mut request = client.request().unwrap();
+                let start = request.seal(Kind::Metadata, b"m").unwrap();
+                starts.push((request, start));
             }
-        } else {
-            let index = usize::from(command.get(1).copied().unwrap_or(0)) % packets[side].len();
-            let packet = packets[side].remove(index);
-            let receiver = &mut peers[1 - side];
-            let mut changed = packet.header.clone();
-            let offset = usize::from(u16::from_be_bytes([
-                command[0] >> 2,
-                command.get(2).copied().unwrap_or(0),
-            ])) % changed.len();
-            changed[offset] ^= command.get(3).copied().unwrap_or(1);
-            assert!(
-                receiver
-                    .receive::<()>(&changed, round as u64, |_| Err(Error::Authentication))
-                    .is_err()
-            );
-            // This schedule fits within both retention limits. Forgery cannot
-            // prevent a later authentic delivery or allow its replay.
-            receiver
-                .receive(&packet.header, round as u64, |secret| {
-                    assert_eq!(*secret, *packet.secret);
-                    Ok(())
-                })
-                .unwrap();
-            assert!(
-                receiver
-                    .receive::<()>(&packet.header, round as u64, |_| panic!("replay"))
-                    .is_err()
-            );
+            1 if !starts.is_empty() => {
+                let (request, start) = starts.remove(pick(starts.len()));
+                let mut changed = start.clone();
+                let offset = usize::from(u16::from_be_bytes([
+                    command[0] >> 2,
+                    command.get(2).copied().unwrap_or(0),
+                ])) % changed.len();
+                changed[offset] ^= command.get(3).copied().unwrap_or(1).max(1);
+                assert!(
+                    server
+                        .accept_start(request.number(), &mut changed, now)
+                        .is_err()
+                );
+                let mut accepted = start.clone();
+                let (_, mut writer, metadata) = server
+                    .accept_start(request.number(), &mut accepted, now)
+                    .unwrap();
+                assert_eq!(metadata, b"m");
+                assert!(
+                    server
+                        .accept_start(request.number(), &mut start.clone(), now)
+                        .is_err()
+                );
+                replies.push((request, writer.seal(Kind::Metadata, b"r").unwrap()));
+            }
+            2 if !replies.is_empty() => {
+                let (mut request, mut reply) = replies.remove(pick(replies.len()));
+                assert_eq!(
+                    request.open(&mut reply, now).unwrap(),
+                    (Kind::Metadata, &b"r"[..])
+                );
+            }
+            _ => {}
         }
     }
-    let _ = peers[0].receive::<()>(input, 0, |_| Err(Error::Authentication));
+    // Arbitrary bytes never authenticate as a request start.
+    assert!(server.accept_start(0, &mut input.to_vec(), 0).is_err());
 });

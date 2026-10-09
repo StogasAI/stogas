@@ -1,4 +1,4 @@
-//go:build cgo && !stogas_offline
+//go:build cgo && !stogas_gateway
 
 package verifier
 

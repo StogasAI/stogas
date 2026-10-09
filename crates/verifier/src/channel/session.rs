@@ -145,7 +145,7 @@ impl ClientSession {
         let shared = self.shared.as_ref().ok_or(Error::Closed)?;
         let mut state = shared.lock().map_err(|_| Error::Closed)?;
         let number = state.starts.allocate()?;
-        let allocated = state.peer.send();
+        let allocated = state.peer.send(number);
         if allocated.is_err() {
             state.starts.release(number);
         }
@@ -310,15 +310,18 @@ impl<C: Cipher> ResponseReader<C> {
         let pending = self.pending.take().ok_or(Error::Closed)?;
         let header = start_header(encoded)?.to_vec();
         let mut state = pending.shared.lock().map_err(|_| Error::Closed)?;
-        let (records, kind, content) = state.peer.receive(&header, now_ms, |secret| {
-            Records::<C>::authenticate_start(
-                secret,
-                &self.session_id,
-                pending.number,
-                Direction::Response,
-                encoded,
-            )
-        })?;
+        let (records, kind, content) =
+            state
+                .peer
+                .receive(&header, pending.number, now_ms, |secret| {
+                    Records::<C>::authenticate_start(
+                        secret,
+                        &self.session_id,
+                        pending.number,
+                        Direction::Response,
+                        encoded,
+                    )
+                })?;
         state.starts.confirmed_next = state.starts.confirmed_next.max(pending.number + 1);
         drop(state);
         self.records = Some(records);
@@ -330,7 +333,12 @@ impl<C: Cipher> ResponseReader<C> {
         if self.failed {
             return Err(Error::Closed);
         }
-        self.records.as_mut().ok_or(Error::Truncated)?.complete()
+        let Some(records) = self.records.as_mut() else {
+            self.failed = true;
+            self.pending = None;
+            return Err(Error::Truncated);
+        };
+        records.complete()
     }
 }
 

@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
@@ -7,7 +6,7 @@ import { Miniflare, Response } from 'miniflare';
 
 const root = resolve(import.meta.dirname, '../..');
 
-test('packaged Worker signs locally and never follows evidence, setup or inference redirects', async () => {
+test('packaged Worker never follows evidence, setup or inference redirects', async () => {
 	const names = [
 		'tests/worker/entry.js',
 		'bindings/worker/worker.js',
@@ -35,13 +34,6 @@ test('packaged Worker signs locally and never follows evidence, setup or inferen
 	modules['tests/worker/root.js'] = {
 		type: 'esm',
 		contents: `export default ${JSON.stringify(fixture.root)};`
-	};
-	const signing = JSON.parse(
-		await readFile(resolve(root, 'tests/fixtures/mldsa65-v1.json'), 'utf8')
-	);
-	modules['tests/worker/signing.js'] = {
-		type: 'esm',
-		contents: `export default ${JSON.stringify(signing)};`
 	};
 	const calls = [];
 	const runtime = new Miniflare({
@@ -87,18 +79,6 @@ test('packaged Worker signs locally and never follows evidence, setup or inferen
 			return response.json();
 		}
 		assert.equal((await get('/core')).code, 'invalid_evidence');
-		assert.deepEqual(await get('/sign'), {
-			erased: true,
-			rejected: true,
-			stable: true,
-			rekorPublicKey: signing.rekor_spki,
-			rekorSignature: Buffer.from(signing.rekor_signature, 'hex').toString('base64'),
-			signatureBytes: 3309,
-			hash: {
-				algorithm: 'sha512',
-				value: createHash('sha512').update(Buffer.from(signing.message, 'hex')).digest('hex')
-			}
-		});
 		assert.deepEqual(await get('/evidence'), [{ revision: 1 }, { revision: 1 }]);
 		assert.deepEqual(
 			calls.map((call) => call.url),

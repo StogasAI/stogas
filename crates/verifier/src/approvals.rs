@@ -73,10 +73,12 @@ impl Environment {
     /// Compiled Stogas trust seed; evidence cannot select or replace this authority.
     ///
     /// # Errors
-    /// Production remains unavailable until its independent root is provisioned.
+    /// Returns an error if the compiled root is malformed.
     pub fn stogas_root(self) -> Result<RootKey, Error> {
         match self {
-            Self::Production => Err(invalid("production evidence root is not provisioned")),
+            Self::Production => {
+                serde_json::from_str(include_str!("prod-root.json")).map_err(invalid)
+            }
             #[cfg(feature = "staging")]
             Self::Staging => {
                 serde_json::from_str(include_str!("staging-root.json")).map_err(invalid)

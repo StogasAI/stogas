@@ -1,7 +1,8 @@
 //! Narrow stateful C ABI for the deterministic Stogas verifier.
 //!
-//! Evidence uses bounded JSON and byte slices. The channel server uses opaque
-//! cipher owners and bounded binary records; it exposes no per-message secrets.
+//! Evidence uses bounded JSON and byte slices. Customer packages build the
+//! transport; only the gateway build enables the `gateway` feature, whose channel
+//! server uses opaque cipher owners and exposes no per-message secrets.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -14,8 +15,10 @@ use std::{
 
 mod evidence;
 pub use evidence::*;
-mod channel;
-pub use channel::*;
+#[cfg(feature = "gateway")]
+mod gateway;
+#[cfg(feature = "gateway")]
+pub use gateway::*;
 
 #[cfg(feature = "transport")]
 mod transport;

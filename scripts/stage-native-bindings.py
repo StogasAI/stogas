@@ -4,17 +4,13 @@
 import argparse
 import json
 import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 
-# Rust release archive name -> (.NET RID, JNA resource prefix, Swift triple).
-PLATFORMS = {
-    "linux-amd64": ("linux-x64", "linux-x86-64", "x86_64-unknown-linux-gnu"),
-    "linux-arm64": ("linux-arm64", "linux-aarch64", "aarch64-unknown-linux-gnu"),
-    "darwin-amd64": ("osx-x64", "darwin-x86-64", "x86_64-apple-macosx"),
-    "darwin-arm64": ("osx-arm64", "darwin-aarch64", "arm64-apple-macosx"),
-    "windows-amd64": ("win-x64", "win32-x86-64", None),
-}
+ROOT = Path(__file__).resolve().parents[1]
+PLATFORMS = json.loads((ROOT / "release/targets.json").read_text())["targets"]
 
 
 def copy(source, destination):
@@ -24,15 +20,35 @@ def copy(source, destination):
     shutil.copyfile(source, destination)
 
 
-def stage(platform, native, bindings, version):
-    rid, jna, swift = PLATFORMS[platform]
+def stage(platform, native, bindings, version, *, apple_swift=True):
+    target = PLATFORMS[platform]
     extension = "dll" if platform.startswith("windows") else "dylib" if platform.startswith("darwin") else "so"
     name = ("" if extension == "dll" else "lib") + "stogas_verifier_ffi." + extension
-    copy(native / name, bindings / "dotnet/Stogas/runtimes" / rid / "native" / name)
-    copy(native / name, bindings / "java/src/main/resources" / jna / name)
-    copy(native / name, bindings / "ruby/lib/stogas/native" / name)
+    if "dotnet" in target:
+        copy(native / name, bindings / "dotnet/Stogas/runtimes" / target["dotnet"] / "native" / name)
+    if "jna" in target:
+        copy(native / name, bindings / "java/src/main/resources" / target["jna"] / name)
+    if "ruby" in target:
+        copy(native / name, bindings / "ruby/lib/stogas/native" / name)
+    if "android_abi" in target:
+        copy(native / name, bindings / "android/src/main/jniLibs" / target["android_abi"] / name)
 
-    if swift:
+    if "swift" in target and target["os"] in {"macos", "ios"} and apple_swift:
+        # Development staging needs only the running platform. Release builds
+        # assemble all Apple architectures with release/build_apple.py.
+        with tempfile.TemporaryDirectory(prefix="stogas-swift-") as temporary:
+            temporary = Path(temporary)
+            headers = temporary / "include"
+            copy(ROOT / "include/stogas_verifier.h", headers / "stogas_verifier.h")
+            (headers / "module.modulemap").write_text('module CStogas { header "stogas_verifier.h" export * }\n')
+            bundle = temporary / "CStogas.xcframework"
+            subprocess.run(["xcodebuild", "-create-xcframework", "-library", str((native / "libstogas_verifier_ffi.a").resolve()), "-headers", str(headers), "-output", str(bundle)], check=True)
+            destination = bindings / "swift/CStogas.xcframework"
+            if destination.exists():
+                shutil.rmtree(destination)
+            shutil.copytree(bundle, destination)
+
+    if "swift" in target and target["os"] == "linux":
         bundle = bindings / "swift/CStogas.artifactbundle"
         static = "libstogas_verifier_ffi.a"
         copy(native / static, bundle / platform / static)
@@ -48,7 +64,7 @@ def stage(platform, native, bindings, version):
         variants = [v for v in artifact["variants"] if v["path"] != path]
         variants.append({
             "path": path,
-            "supportedTriples": [swift],
+            "supportedTriples": [target["swift"]],
             "staticLibraryMetadata": {"headerPaths": ["include"], "moduleMapPath": "include/module.modulemap"},
         })
         artifact["variants"] = sorted(variants, key=lambda v: v["path"])

@@ -404,9 +404,9 @@ test('close aborts a pending setup and never releases application bytes', async 
 });
 
 test('setup carriage accepts the full hybrid evidence bound and rejects one extra byte before verification', async () => {
-	// 2402-byte server prefix, 32-byte confirmation, 4-byte evidence length,
+	// 2378-byte server prefix, 32-byte confirmation, 4-byte evidence length,
 	// and the shared 58-KiB evidence maximum. The core tests validate contents.
-	const maximum = 2402 + 32 + 4 + 58 * 1024;
+	const maximum = 2378 + 32 + 4 + 58 * 1024;
 	for (const size of [maximum, maximum + 1]) {
 		let checked = 0;
 		const state = fixture({

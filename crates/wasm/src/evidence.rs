@@ -7,29 +7,6 @@ use stogas_verifier::{
 };
 use wasm_bindgen::prelude::*;
 
-/// Authenticate a request with the key from already verified boot evidence.
-///
-/// # Errors
-/// Rejects malformed requests, changed identities, signatures or stale timestamps.
-#[wasm_bindgen]
-pub fn verify_boot_request(
-    request: &[u8],
-    node_id: &str,
-    public_key: &[u8],
-    purpose: &str,
-) -> Result<(), JsValue> {
-    let purpose = serde_json::from_value(json!(purpose))
-        .map_err(|_| js_sys::Error::new("invalid boot request purpose"))?;
-    evidence::boot::verify_boot_request(
-        request,
-        node_id,
-        public_key,
-        super::wall_clock_ms()?,
-        purpose,
-    )
-    .map_err(|error| verification_error(&error))
-}
-
 /// Environment endpoints compiled into this artifact. Unsupported environments fail closed.
 ///
 /// # Errors
@@ -99,16 +76,6 @@ impl EvidenceVerifier {
     }
 
     /// # Errors
-    /// Rejects invalid root signatures/inclusion and conflicting or retired key decisions.
-    pub fn verify_key_manifest(&self, bytes: &[u8]) -> Result<JsValue, JsValue> {
-        let keys = self
-            .core
-            .verify_key_manifest(bytes, super::wall_clock_ms()?)
-            .map_err(|error| verification_error(&error))?;
-        Ok(super::to_js_value(&keys)?)
-    }
-
-    /// # Errors
     /// Rejects unsupported environments and malformed locally configured root keys.
     #[wasm_bindgen(constructor)]
     pub fn new(
@@ -165,19 +132,6 @@ impl EvidenceSnapshot {
         super::to_js_value(&self.core.summary())
     }
 
-    /// Highest approved catalog this approved gateway can run, or null when none is compatible.
-    ///
-    /// # Errors
-    /// Returns an error if output conversion fails.
-    pub fn compatible_catalog(&self, gateway_release_id: &str) -> Result<JsValue, JsError> {
-        super::to_js_value(
-            &self
-                .core
-                .compatible_catalog(gateway_release_id)
-                .map(|(release_id, release)| json!({"release_id": release_id, "release": release})),
-        )
-    }
-
     /// # Errors
     /// Rejects an expired root decision or one superseded by an authenticated refresh.
     pub fn require_current_keys(&self) -> Result<(), JsValue> {
@@ -189,6 +143,53 @@ impl EvidenceSnapshot {
             .valid_until(super::wall_clock_ms()?)
             .map_err(|error| verification_error(&evidence::Error::from(error)))?;
         Ok(())
+    }
+
+    /// # Errors
+    /// Rejects unknown log signers, wrong inclusion or failed current hardware appraisal.
+    pub fn verify_logged_boot(
+        &self,
+        document: &[u8],
+        inclusion: &[u8],
+    ) -> Result<JsValue, JsValue> {
+        let verified = self
+            .core
+            .verify_logged_boot(document, inclusion, super::wall_clock_ms()?)
+            .map_err(|error| verification_error(&error))?;
+        Ok(super::to_js_value(&verified.summary())?)
+    }
+}
+
+// Registration, issuance and publication checks for the operator build used by
+// Stogas's own services and CLI. Customer packages never enable this feature.
+#[cfg(feature = "operator")]
+#[wasm_bindgen(js_class = EvidenceVerifier)]
+impl EvidenceVerifier {
+    /// # Errors
+    /// Rejects invalid root signatures/inclusion and conflicting or retired key decisions.
+    pub fn verify_key_manifest(&self, bytes: &[u8]) -> Result<JsValue, JsValue> {
+        let keys = self
+            .core
+            .verify_key_manifest(bytes, super::wall_clock_ms()?)
+            .map_err(|error| verification_error(&error))?;
+        Ok(super::to_js_value(&keys)?)
+    }
+}
+
+#[cfg(feature = "operator")]
+#[wasm_bindgen(js_class = EvidenceSnapshot)]
+impl EvidenceSnapshot {
+    /// Highest approved catalog this approved gateway can run, or null when none is compatible.
+    ///
+    /// # Errors
+    /// Returns an error if output conversion fails.
+    pub fn compatible_catalog(&self, gateway_release_id: &str) -> Result<JsValue, JsError> {
+        super::to_js_value(
+            &self
+                .core
+                .compatible_catalog(gateway_release_id)
+                .map(|(release_id, release)| json!({"release_id": release_id, "release": release})),
+        )
     }
 
     /// # Errors
@@ -274,39 +275,6 @@ impl EvidenceSnapshot {
         Ok(super::to_js_value(&verified.registration_summary())?)
     }
 
-    /// Reappraise the exact boot already retained by the registration authority.
-    ///
-    /// # Errors
-    /// Rejects changed registration bytes or failed current hardware/release appraisal.
-    pub fn verify_registered_boot(
-        &self,
-        document: &[u8],
-        registered_sha256: &[u8],
-    ) -> Result<JsValue, JsValue> {
-        let digest = registered_sha256
-            .try_into()
-            .map_err(|_| js_sys::Error::new("registered digest must be 32 bytes"))?;
-        let verified = self
-            .core
-            .verify_registered_boot(document, digest, super::wall_clock_ms()?)
-            .map_err(|error| verification_error(&error))?;
-        Ok(super::to_js_value(&verified.summary())?)
-    }
-
-    /// # Errors
-    /// Rejects unknown log signers, wrong inclusion or failed current hardware appraisal.
-    pub fn verify_logged_boot(
-        &self,
-        document: &[u8],
-        inclusion: &[u8],
-    ) -> Result<JsValue, JsValue> {
-        let verified = self
-            .core
-            .verify_logged_boot(document, inclusion, super::wall_clock_ms()?)
-            .map_err(|error| verification_error(&error))?;
-        Ok(super::to_js_value(&verified.summary())?)
-    }
-
     /// Verify supplied boot history and possession of its exact TLS key.
     ///
     /// # Errors
@@ -342,6 +310,30 @@ impl EvidenceSnapshot {
             .appraise_registered_boot(&facts, super::wall_clock_ms()?)
             .map_err(|error| verification_error(&error))
     }
+}
+
+/// Authenticate a request with the key from already verified boot evidence.
+///
+/// # Errors
+/// Rejects malformed requests, changed identities, signatures or stale timestamps.
+#[cfg(feature = "operator")]
+#[wasm_bindgen]
+pub fn verify_boot_request(
+    request: &[u8],
+    node_id: &str,
+    public_key: &[u8],
+    purpose: &str,
+) -> Result<(), JsValue> {
+    let purpose = serde_json::from_value(json!(purpose))
+        .map_err(|_| js_sys::Error::new("invalid boot request purpose"))?;
+    evidence::boot::verify_boot_request(
+        request,
+        node_id,
+        public_key,
+        super::wall_clock_ms()?,
+        purpose,
+    )
+    .map_err(|error| verification_error(&error))
 }
 
 pub fn verification_error(error: &evidence::Error) -> JsValue {

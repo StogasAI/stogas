@@ -1,0 +1,50 @@
+name: StogasConsumer
+options:
+  minimumXcodeGenVersion: 2.46.0
+  bundleIdPrefix: ${STOGAS_CONSUMER_ID}
+  deploymentTarget:
+    iOS: '15.0'
+settings:
+  SWIFT_VERSION: '6.0'
+  GENERATE_INFOPLIST_FILE: YES
+packages:
+  Stogas:
+    path: Vendor/Stogas
+targets:
+  Host:
+    type: application
+    platform: iOS
+    sources: [Host]
+    settings:
+      INFOPLIST_KEY_UILaunchScreen_Generation: YES
+  NativeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - NativeTests
+      - path: Native/native.c
+        compilerFlags: -Dmain=stogas_native_contract
+    dependencies:
+      - target: Host
+      - sdk: Security.framework
+      - sdk: CoreFoundation.framework
+    settings:
+      HEADER_SEARCH_PATHS: $(SRCROOT)/Native
+      SWIFT_OBJC_BRIDGING_HEADER: NativeTests/Bridge.h
+      OTHER_LDFLAGS:
+        - $(inherited)
+        - $(SRCROOT)/Native/libstogas_verifier_ffi.a
+  SwiftTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [SwiftTests]
+    dependencies:
+      - target: Host
+      - package: Stogas
+schemes:
+  StogasConsumer:
+    build:
+      targets:
+        Host: all
+    test:
+      targets: [NativeTests, SwiftTests]

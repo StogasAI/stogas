@@ -286,9 +286,19 @@ mod staging {
             *bad.pointer_mut(pointer).unwrap() = json!(99);
             assert!(verifier.refresh(&encode(&bad), now).is_err());
         }
-        let mut bad = body.clone();
-        bad["nodes"] = json!([]);
-        assert!(verifier.refresh(&encode(&bad), now).is_err());
+        for (field, value) in [
+            ("nodes", json!([])),
+            ("sequence", json!(99)),
+            ("node_id", json!("attacker-controlled")),
+            ("region", json!("attacker-controlled")),
+        ] {
+            let mut bad = body.clone();
+            bad[field] = value;
+            assert!(
+                verifier.refresh(&encode(&bad), now).is_err(),
+                "accepted unsigned {field}"
+            );
+        }
         let mut envelope: Value = serde_json::from_slice(&encode(&body)).unwrap();
         envelope["body_sha256"] = json!("0".repeat(64));
         assert!(

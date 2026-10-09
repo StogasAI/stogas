@@ -2,8 +2,9 @@ use super::{
     Direction, Error, Kind,
     cipher::{Cipher, SoftwareCipher},
 };
-use hkdf::Hkdf;
-use sha2_v11::Sha256;
+mod keys;
+use core::marker::PhantomData;
+use keys::Keys;
 use zeroize::{Zeroize as _, Zeroizing};
 
 pub const MAX_RECORD_BYTES: usize = 64 * 1024;
@@ -12,10 +13,13 @@ pub const MAX_RECORD_PLAINTEXT: usize = MAX_RECORD_BYTES - RECORD_OVERHEAD;
 pub(super) const MAX_RECORDS: u64 = 1 << 24;
 pub(super) const MAX_REQUEST_BODY: u64 = 128 * 1024 * 1024;
 pub(super) const MAX_RESPONSE_BODY: u64 = 64 * 1024 * 1024;
+// Only the final request data record may be short, so uploads cannot multiply
+// per-record key work with tiny records: metadata, full data and completion.
+const MAX_REQUEST_RECORDS: u64 = MAX_REQUEST_BODY.div_ceil(MAX_RECORD_PLAINTEXT as u64) + 2;
 pub const MAX_REQUEST_WIRE_BYTES: u64 = super::session::REQUEST_PREFIX_BYTES as u64
     + MAX_REQUEST_BODY
     + MAX_RECORD_PLAINTEXT as u64
-    + MAX_RECORDS * RECORD_OVERHEAD as u64
+    + MAX_REQUEST_RECORDS * RECORD_OVERHEAD as u64
     + 2
     + super::ratchet::HEADER_BYTES as u64;
 pub const MAX_RESPONSE_WIRE_BYTES: u64 = MAX_RESPONSE_BODY
@@ -23,20 +27,28 @@ pub const MAX_RESPONSE_WIRE_BYTES: u64 = MAX_RESPONSE_BODY
     + MAX_RECORDS * RECORD_OVERHEAD as u64
     + 2
     + super::ratchet::HEADER_BYTES as u64;
-const KEY_DOMAIN: &[u8] = b"stogas.e2ee.record.v1\0";
 
-// One owner per direction. No Clone implementation: recreating encryption
-// counters under the same request key would reuse GCM nonces.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Phase {
+    /// Before the single metadata record; a response may first send keepalives.
+    Metadata,
+    Body,
+    /// After a short request data record; only completion may follow.
+    Tail,
+    Finished,
+    Failed,
+}
+
+// One owner per direction. No Clone implementation: replaying a chain state
+// would reuse its record key and nonce.
 pub(super) struct Records<C: Cipher = SoftwareCipher> {
-    cipher: Option<C>,
+    keys: Option<Keys>,
+    cipher: PhantomData<C>,
     header: Option<Vec<u8>>,
-    nonce: [u8; 12],
     pub(super) sequence: u64,
     pub(super) body_bytes: u64,
     direction: Direction,
-    pub(super) started: bool,
-    finished: bool,
-    failed: bool,
+    pub(super) phase: Phase,
 }
 
 impl<C: Cipher> Records<C> {
@@ -47,32 +59,27 @@ impl<C: Cipher> Records<C> {
         direction: Direction,
         header: Vec<u8>,
     ) -> Result<Self, Error> {
-        let (key, nonce) = key_material(secret, session_id, number, direction)?;
-        Ok(Self::from_cipher(
-            C::from_key(key)?,
-            nonce,
+        Ok(Self::from_keys(
+            Keys::new(secret, session_id, number, direction)?,
             direction,
             Some(header),
         ))
     }
 
-    const fn from_cipher(
-        cipher: C,
-        nonce: [u8; 12],
-        direction: Direction,
-        header: Option<Vec<u8>>,
-    ) -> Self {
+    const fn from_keys(keys: Keys, direction: Direction, header: Option<Vec<u8>>) -> Self {
         Self {
-            cipher: Some(cipher),
+            keys: Some(keys),
+            cipher: PhantomData,
             header,
-            nonce,
             sequence: 0,
             body_bytes: 0,
             direction,
-            started: false,
-            finished: false,
-            failed: false,
+            phase: Phase::Metadata,
         }
+    }
+
+    fn next_key(&mut self) -> Result<(Zeroizing<[u8; 32]>, [u8; 12]), Error> {
+        self.keys.as_mut().ok_or(Error::Closed)?.next(self.sequence)
     }
 
     pub(super) fn authenticate_start<'a>(
@@ -83,16 +90,19 @@ impl<C: Cipher> Records<C> {
         encoded: &'a mut [u8],
     ) -> Result<(Self, Kind, &'a [u8]), Error> {
         let offset = start_header(encoded)?.len() + 6;
-        let (key, nonce) = key_material(secret, session_id, number, direction)?;
+        let mut records = Self::from_keys(
+            Keys::new(secret, session_id, number, direction)?,
+            direction,
+            None,
+        );
+        let (key, nonce) = records.next_key()?;
         let (aad, sealed) = encoded.split_at_mut(offset);
-        let cipher = match C::from_authenticated_start(key, nonce, aad, sealed) {
-            Ok(cipher) => cipher,
-            Err(error) => {
-                sealed.zeroize();
-                return Err(error);
-            }
-        };
-        let mut records = Self::from_cipher(cipher, nonce, direction, None);
+        // Authenticate synchronously before committing the shared ratchet.
+        // This first key is consumed here, never imported into the async backend.
+        if let Err(error) = SoftwareCipher::from_key(key)?.decrypt_now(nonce, aad, sealed) {
+            sealed.zeroize();
+            return Err(error);
+        }
         let (kind, plaintext) = records.accept_open(sealed)?;
         Ok((records, kind, plaintext))
     }
@@ -105,15 +115,9 @@ impl<C: Cipher> Records<C> {
         let mut operation = Operation::new(self);
         let mut encoded = Zeroizing::new(operation.records.encode(kind, content)?);
         let offset = operation.records.prefix_size(&encoded)?;
-        let nonce = operation.records.record_nonce();
+        let (key, nonce) = operation.records.next_key()?;
         let (prefix, plaintext) = encoded.split_at_mut(offset);
-        let tag = operation
-            .records
-            .cipher
-            .as_mut()
-            .ok_or(Error::Closed)?
-            .encrypt(nonce, prefix, plaintext)
-            .await?;
+        let tag = C::from_key(key)?.encrypt(nonce, prefix, plaintext).await?;
         encoded.extend_from_slice(&tag);
         operation.records.advance(kind, content.len());
         operation.completed = true;
@@ -126,16 +130,9 @@ impl<C: Cipher> Records<C> {
     ) -> Result<(Kind, &'a [u8]), Error> {
         let mut operation = Operation::new(self);
         let offset = operation.records.check_encoded(encoded)?;
-        let nonce = operation.records.record_nonce();
+        let (key, nonce) = operation.records.next_key()?;
         let (prefix, sealed) = encoded.split_at_mut(offset);
-        if let Err(error) = operation
-            .records
-            .cipher
-            .as_mut()
-            .ok_or(Error::Closed)?
-            .decrypt(nonce, prefix, sealed)
-            .await
-        {
+        if let Err(error) = C::from_key(key)?.decrypt(nonce, prefix, sealed).await {
             sealed.zeroize();
             return Err(error);
         }
@@ -187,7 +184,7 @@ impl<C: Cipher> Records<C> {
     }
 
     fn check_encoded(&self, encoded: &[u8]) -> Result<usize, Error> {
-        if self.failed || self.finished || self.cipher.is_none() {
+        if matches!(self.phase, Phase::Finished | Phase::Failed) {
             return Err(Error::Closed);
         }
         if self.sequence >= MAX_RECORDS {
@@ -223,7 +220,7 @@ impl<C: Cipher> Records<C> {
     }
 
     pub(super) fn complete(&mut self) -> Result<(), Error> {
-        if self.finished && !self.failed {
+        if self.phase == Phase::Finished {
             Ok(())
         } else {
             Err(self.fail(Error::Truncated))
@@ -231,9 +228,8 @@ impl<C: Cipher> Records<C> {
     }
 
     pub(super) fn close(&mut self) {
-        self.failed = true;
-        self.cipher = None;
-        self.nonce.zeroize();
+        self.phase = Phase::Failed;
+        self.keys = None;
     }
 
     fn fail(&mut self, error: Error) -> Error {
@@ -242,16 +238,16 @@ impl<C: Cipher> Records<C> {
     }
 
     fn check(&self, kind: Kind, size: usize) -> Result<(), Error> {
-        if self.failed || self.finished || self.cipher.is_none() {
+        if matches!(self.phase, Phase::Finished | Phase::Failed) {
             return Err(Error::Closed);
         }
         if self.sequence >= MAX_RECORDS || size > MAX_RECORD_PLAINTEXT {
             return Err(Error::Limit);
         }
         match kind {
-            Kind::Metadata if self.started || size == 0 => Err(Error::Record),
+            Kind::Metadata if self.phase != Phase::Metadata || size == 0 => Err(Error::Record),
             Kind::Data => {
-                if !self.started || size == 0 {
+                if self.phase != Phase::Body || size == 0 {
                     return Err(Error::Record);
                 }
                 let max_body = match self.direction {
@@ -263,7 +259,7 @@ impl<C: Cipher> Records<C> {
                 }
                 Ok(())
             }
-            Kind::Finished if !self.started || size != 0 => Err(Error::Record),
+            Kind::Finished if self.phase == Phase::Metadata || size != 0 => Err(Error::Record),
             Kind::Keepalive if self.direction != Direction::Response || size != 0 => {
                 Err(Error::Record)
             }
@@ -275,23 +271,19 @@ impl<C: Cipher> Records<C> {
         self.header = None;
         self.sequence += 1;
         match kind {
-            Kind::Metadata => self.started = true,
-            Kind::Data => self.body_bytes += size as u64,
+            Kind::Metadata => self.phase = Phase::Body,
+            Kind::Data => {
+                self.body_bytes += size as u64;
+                if self.direction == Direction::Request && size < MAX_RECORD_PLAINTEXT {
+                    self.phase = Phase::Tail;
+                }
+            }
             Kind::Finished => {
-                self.finished = true;
-                self.cipher = None;
-                self.nonce.zeroize();
+                self.phase = Phase::Finished;
+                self.keys = None;
             }
             Kind::Keepalive => (),
         }
-    }
-
-    fn record_nonce(&self) -> [u8; 12] {
-        let mut nonce = self.nonce;
-        for (target, value) in nonce[4..].iter_mut().zip(self.sequence.to_be_bytes()) {
-            *target ^= value;
-        }
-        nonce
     }
 }
 
@@ -300,14 +292,9 @@ impl Records<SoftwareCipher> {
         let mut operation = Operation::new(self);
         let mut encoded = Zeroizing::new(operation.records.encode(kind, content)?);
         let offset = operation.records.prefix_size(&encoded)?;
-        let nonce = operation.records.record_nonce();
+        let (key, nonce) = operation.records.next_key()?;
         let (prefix, plaintext) = encoded.split_at_mut(offset);
-        let tag = operation
-            .records
-            .cipher
-            .as_ref()
-            .ok_or(Error::Closed)?
-            .encrypt_now(nonce, prefix, plaintext)?;
+        let tag = SoftwareCipher::from_key(key)?.encrypt_now(nonce, prefix, plaintext)?;
         encoded.extend_from_slice(&tag);
         operation.records.advance(kind, content.len());
         operation.completed = true;
@@ -317,15 +304,9 @@ impl Records<SoftwareCipher> {
     pub(super) fn open<'a>(&mut self, encoded: &'a mut [u8]) -> Result<(Kind, &'a [u8]), Error> {
         let mut operation = Operation::new(self);
         let offset = operation.records.check_encoded(encoded)?;
-        let nonce = operation.records.record_nonce();
+        let (key, nonce) = operation.records.next_key()?;
         let (prefix, sealed) = encoded.split_at_mut(offset);
-        if let Err(error) = operation
-            .records
-            .cipher
-            .as_ref()
-            .ok_or(Error::Closed)?
-            .decrypt_now(nonce, prefix, sealed)
-        {
+        if let Err(error) = SoftwareCipher::from_key(key)?.decrypt_now(nonce, prefix, sealed) {
             sealed.zeroize();
             return Err(error);
         }
@@ -375,32 +356,6 @@ pub fn record_size(prefix: &[u8]) -> Result<usize, Error> {
         return Err(Error::Record);
     }
     Ok(value)
-}
-
-fn key_material(
-    secret: &[u8; 32],
-    session_id: &[u8; 32],
-    number: u64,
-    direction: Direction,
-) -> Result<(Zeroizing<[u8; 32]>, [u8; 12]), Error> {
-    let mut material = Zeroizing::new([0_u8; 44]);
-    Hkdf::<Sha256>::from_prk(secret)
-        .map_err(|_| Error::Crypto)?
-        .expand_multi_info(
-            &[
-                KEY_DOMAIN,
-                session_id,
-                &number.to_be_bytes(),
-                &[direction as u8],
-            ],
-            material.as_mut(),
-        )
-        .map_err(|_| Error::Crypto)?;
-    let mut key = Zeroizing::new([0_u8; 32]);
-    key.copy_from_slice(&material[..32]);
-    let mut nonce = [0_u8; 12];
-    nonce.copy_from_slice(&material[32..]);
-    Ok((key, nonce))
 }
 
 pub(super) fn start_header(encoded: &[u8]) -> Result<&[u8], Error> {

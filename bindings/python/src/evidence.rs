@@ -64,19 +64,6 @@ impl EvidenceVerifier {
             .map_err(|error| evidence_error(py, &error))
     }
 
-    fn verify_key_manifest<'py>(
-        &self,
-        py: Python<'py>,
-        document: &Bound<'_, PyBytes>,
-    ) -> PyResult<Bound<'py, PyBytes>> {
-        let bytes = document.as_bytes();
-        let now = super::wall_clock_ms()?;
-        let keys = py
-            .detach(|| self.core.verify_key_manifest(bytes, now))
-            .map_err(|error| evidence_error(py, &error))?;
-        super::json_bytes(py, &keys)
-    }
-
     /// Authenticate archived approvals without installing them as current permission.
     fn verify_evidence_archive<'py>(
         &self,
@@ -122,40 +109,6 @@ impl EvidenceSnapshot {
             .valid_until(super::wall_clock_ms()?)
             .map_err(|error| evidence_error(py, &evidence::Error::from(error)))?;
         Ok(())
-    }
-
-    fn collateral_validity<'py>(
-        &self,
-        py: Python<'py>,
-        chip_id: &str,
-        reported_tcb: &str,
-    ) -> PyResult<Bound<'py, PyBytes>> {
-        let validity = self
-            .core
-            .collateral_validity(chip_id, reported_tcb, super::wall_clock_ms()?)
-            .map_err(|error| evidence_error(py, &error))?;
-        super::json_bytes(
-            py,
-            &serde_json::json!({
-                "valid_from_unix_ms": validity.not_before_unix_ms,
-                "valid_until_unix_ms": validity.not_after_unix_ms
-            }),
-        )
-    }
-
-    fn verify_registration<'py>(
-        &self,
-        py: Python<'py>,
-        document: &Bound<'_, PyBytes>,
-        challenge: &Bound<'_, PyBytes>,
-    ) -> PyResult<Bound<'py, PyBytes>> {
-        let document = document.as_bytes();
-        let challenge = digest(challenge.as_bytes(), "registration challenge")?;
-        let now = super::wall_clock_ms()?;
-        let verified = py
-            .detach(|| self.core.verify_registration(document, challenge, now))
-            .map_err(|error| evidence_error(py, &error))?;
-        super::json_bytes(py, &verified.summary())
     }
 
     fn verify_logged_boot(

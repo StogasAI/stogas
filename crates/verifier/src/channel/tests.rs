@@ -66,7 +66,8 @@ fn response_records(
         .1
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn records_match_independent_vectors() {
     let fixture = fixture();
     let root: [u8; 32] = hex::decode(fixture.root_hex).unwrap().try_into().unwrap();
@@ -131,9 +132,12 @@ fn record_body_count_and_size_boundaries_close_exhausted_state() {
             decoder.open(&mut largest).unwrap().1.len(),
             MAX_RECORD_PLAINTEXT
         );
-        encoder.body_bytes = limit - 1;
-        decoder.body_bytes = limit - 1;
-        let mut last = encoder.seal(Kind::Data, &[1]).unwrap();
+        let full = MAX_RECORD_PLAINTEXT as u64;
+        encoder.body_bytes = limit - full;
+        decoder.body_bytes = limit - full;
+        let mut last = encoder
+            .seal(Kind::Data, &vec![1; MAX_RECORD_PLAINTEXT])
+            .unwrap();
         decoder.open(&mut last).unwrap();
         // A peer ignoring its body bound can still emit an authentic record.
         encoder.body_bytes = 0;
@@ -153,6 +157,63 @@ fn record_body_count_and_size_boundaries_close_exhausted_state() {
         assert_eq!(record_size(&size.to_be_bytes()), Err(Error::Record));
     }
     assert_eq!(record_size(&[0; 3]), Err(Error::Record));
+}
+
+#[test]
+fn only_the_final_request_data_record_may_be_short() {
+    use super::record::MAX_RECORD_PLAINTEXT;
+    let full = vec![1; MAX_RECORD_PLAINTEXT];
+    let pair = |direction| {
+        (
+            Records::new(&[1; 32], &[2; 32], 0, direction, header()).unwrap(),
+            Records::new(&[1; 32], &[2; 32], 0, direction, header()).unwrap(),
+        )
+    };
+    let (mut encoder, mut decoder) = pair(Direction::Request);
+    for (kind, content) in [
+        (Kind::Metadata, b"headers".as_slice()),
+        (Kind::Data, &full),
+        (Kind::Data, b"tail"),
+        (Kind::Finished, b""),
+    ] {
+        decoder
+            .open(&mut encoder.seal(kind, content).unwrap())
+            .unwrap();
+    }
+    decoder.complete().unwrap();
+
+    let (mut encoder, mut decoder) = pair(Direction::Request);
+    for (kind, content) in [
+        (Kind::Metadata, b"headers".as_slice()),
+        (Kind::Data, b"short"),
+    ] {
+        decoder
+            .open(&mut encoder.seal(kind, content).unwrap())
+            .unwrap();
+    }
+    assert_eq!(encoder.seal(Kind::Data, b"more"), Err(Error::Record));
+    // An authentic record from a peer that ignores the rule is rejected too.
+    let (mut peer, _) = pair(Direction::Request);
+    for (kind, content) in [(Kind::Metadata, b"headers".as_slice()), (Kind::Data, &full)] {
+        peer.seal(kind, content).unwrap();
+    }
+    let mut excess = peer.seal(Kind::Data, b"more").unwrap();
+    assert_eq!(decoder.open(&mut excess), Err(Error::Record));
+    assert_eq!(decoder.complete(), Err(Error::Truncated));
+
+    // Responses stream short records.
+    let (mut encoder, mut decoder) = pair(Direction::Response);
+    for (kind, content) in [
+        (Kind::Metadata, b"headers".as_slice()),
+        (Kind::Data, b"one"),
+        (Kind::Data, b"two"),
+        (Kind::Finished, b""),
+    ] {
+        decoder
+            .open(&mut encoder.seal(kind, content).unwrap())
+            .unwrap();
+    }
+    decoder.complete().unwrap();
 }
 
 #[test]
@@ -237,6 +298,29 @@ fn invalid_response_cannot_acknowledge_and_active_keys_survive_close() {
     let mut end = response.seal(Kind::Finished, &[]).unwrap();
     admitted.open(&mut end, 0).unwrap();
     assert_eq!(admitted.complete(), Ok(()));
+}
+
+#[test]
+fn eof_before_first_response_closes_the_reader_and_releases_pending_capacity() {
+    let (mut session, mut server) = sessions([1; 32], [2; 32]);
+    let mut abandoned = session.request().unwrap();
+    let mut late = response_records(&mut server, &mut abandoned);
+    let mut pending: Vec<_> = (1..256).map(|_| session.request().unwrap()).collect();
+    let mut last = response_records(&mut server, pending.last_mut().unwrap());
+    pending
+        .last_mut()
+        .unwrap()
+        .open(&mut last.seal(Kind::Keepalive, &[]).unwrap(), 0)
+        .unwrap();
+    assert!(matches!(session.request(), Err(Error::Pending)));
+
+    assert_eq!(abandoned.complete(), Err(Error::Truncated));
+    assert_eq!(session.request().unwrap().number(), 256);
+    assert_eq!(
+        abandoned.open(&mut late.seal(Kind::Metadata, b"late").unwrap(), 0),
+        Err(Error::Closed),
+    );
+    assert_eq!(abandoned.complete(), Err(Error::Closed));
 }
 
 #[test]

@@ -59,9 +59,9 @@ func TestEvidenceSnapshotsRetainOwnershipAcrossRefreshAndClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	var failure *VerificationError
-	_, err = snapshot.registrationAt([]byte("{}"), [32]byte{}, fixture.Now)
+	_, err = snapshot.VerifyLoggedBootAt([]byte("{}"), []byte("{}"), time.UnixMilli(fixture.Now))
 	if !errors.As(err, &failure) || failure.Code != "invalid_attestation" {
-		t.Fatalf("registration error lost reason: %v", err)
+		t.Fatalf("logged boot error lost reason: %v", err)
 	}
 	var group sync.WaitGroup
 	for range 12 {

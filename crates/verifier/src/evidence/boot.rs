@@ -1,7 +1,8 @@
 //! Immutable boot identity. Registration freshness and public log inclusion are separate checks.
 
+use crate::kem::XWing;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use hpke::{Deserializable as _, kem::XWing};
+use hpke::Deserializable as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 
@@ -51,18 +52,26 @@ pub fn verify_boot_request(
         return Err(invalid("boot request identity or time differs"));
     }
     let signature = decode(&request.signature, crate::signing::SIGNATURE_BYTES)?;
+    let message = request_message(purpose, &request.node_id, request.issued_at_ms);
+    crate::signing::verify(public_key, &message, &[], &signature).map_err(invalid)
+}
+
+pub(crate) fn request_message(
+    purpose: BootRequestPurpose,
+    node_id: &str,
+    issued_at_ms: i64,
+) -> Vec<u8> {
     let domain: &[u8] = match purpose {
         BootRequestPurpose::Certificate => b"stogas.certificate-renewal.v1\0",
         BootRequestPurpose::Complete => b"stogas.registration-complete.v1\0",
     };
-    let message = [
+    [
         domain,
-        request.node_id.as_bytes(),
+        node_id.as_bytes(),
         b"\0",
-        &request.issued_at_ms.to_be_bytes(),
+        &issued_at_ms.to_be_bytes(),
     ]
-    .concat();
-    crate::signing::verify(public_key, &message, &[], &signature).map_err(invalid)
+    .concat()
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -29,13 +29,7 @@ func (*Evidence) VerifyReceiptArchive([]byte, []byte, []byte, [32]byte, [32]byte
 }
 func (*Evidence) Close() error                              { return nil }
 func (*EvidenceSnapshot) Summary() (json.RawMessage, error) { return nil, ErrNativeLibraryUnavailable }
-func (*EvidenceSnapshot) VerifyRegistration([]byte, [32]byte) (BootIdentity, error) {
-	return BootIdentity{}, ErrNativeLibraryUnavailable
-}
 func (*EvidenceSnapshot) VerifyLoggedBoot([]byte, []byte) (BootIdentity, error) {
-	return BootIdentity{}, ErrNativeLibraryUnavailable
-}
-func (*EvidenceSnapshot) VerifyRegistrationAt([]byte, [32]byte, time.Time) (BootIdentity, error) {
 	return BootIdentity{}, ErrNativeLibraryUnavailable
 }
 func (*EvidenceSnapshot) VerifyLoggedBootAt([]byte, []byte, time.Time) (BootIdentity, error) {

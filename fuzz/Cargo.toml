@@ -11,9 +11,10 @@ cargo-fuzz = true
 hex = "0.4"
 serde_json = "1"
 libfuzzer-sys = "0.4.13"
+sha2 = "0.10.9"
 stogas-offline-sigstore = { path = "../crates/offline-sigstore" }
 stogas-verifier = { path = "../crates/verifier", features = ["staging"] }
-stogas-verifier-ffi = { path = "../crates/ffi" }
+stogas-verifier-ffi = { path = "../crates/ffi", features = ["gateway"] }
 
 [[bin]]
 name = "sigstore"
@@ -60,6 +61,13 @@ bench = false
 [[bin]]
 name = "ratchet"
 path = "fuzz_targets/ratchet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "records"
+path = "fuzz_targets/records.rs"
 test = false
 doc = false
 bench = false

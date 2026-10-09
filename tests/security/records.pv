@@ -1,0 +1,23 @@
+(* Ideal HKDF record-chain composition. Capture the live chain immediately
+   after the first record: earlier data stays secret, but remaining records
+   are exposed until fresh hybrid entropy reaches a later message chain.
+   This assumes erased earlier chain/key material; it does not model physical
+   erasure, browser GC, concrete HKDF, AES, parsing or concurrency. *)
+free net:channel.
+fun nextchain(bitstring):bitstring.
+fun recordkey(bitstring):bitstring.
+fun seal(bitstring,bitstring):bitstring.
+reduc forall m:bitstring,k:bitstring; open(seal(m,k),k) = m.
+free past,current,future:bitstring [private].
+query attacker(past).
+query attacker(current).
+query attacker(future).
+
+process
+  new initial:bitstring;
+  out(net,seal(past,recordkey(initial)));
+  let active = nextchain(initial) in
+  out(net,active);
+  (* RETAIN_INITIAL *)
+  out(net,seal(current,recordkey(active)));
+  out(net,seal(future,recordkey(nextchain(active))))
