@@ -10,7 +10,7 @@ fn cases(name: &str) -> Vec<serde_json::Value> {
             include_str!("../../../../../../tests/fixtures/wycheproof/mlkem_768_encaps_test.json")
         }
         "decap" => include_str!("../../../../../../tests/fixtures/wycheproof/mlkem_768_test.json"),
-        "x448" => include_str!("../../../../../../tests/fixtures/wycheproof/x448_test.json"),
+        "x25519" => include_str!("../../../../../../tests/fixtures/wycheproof/x25519_test.json"),
         _ => unreachable!(),
     };
     let value: serde_json::Value = serde_json::from_str(source).unwrap();
@@ -32,11 +32,11 @@ fn full_mlkem_matches_independent_rustcrypto_and_every_ciphertext_mutation() {
         let seed = Zeroizing::new([counter; 32]);
         let coins = [counter.wrapping_add(1); 32];
         let key = KeyPair::from_seed(&seed);
-        let material = expand::<120>(None, seed.as_ref(), b":KeyGeneration");
-        let kem_seed: [u8; 64] = material[56..].try_into().unwrap();
+        let material = expand::<96>(None, seed.as_ref(), b":KeyGeneration");
+        let kem_seed: [u8; 64] = material[32..].try_into().unwrap();
         let reference = ml_kem::DecapsulationKey::<MlKem768>::from_seed(kem_seed.into());
         assert_eq!(
-            &key.public.0[56..],
+            &key.public.0[32..],
             reference.encapsulation_key().to_bytes().as_slice()
         );
         let (ciphertext, secret) = key.public.encapsulate(coins).unwrap();
@@ -76,7 +76,7 @@ fn wycheproof_full_mlkem_seed_encapsulation_decapsulation_and_implicit_rejection
             continue;
         }
         let mut public = valid_dh.clone();
-        public.0[56..].copy_from_slice(&ek);
+        public.0[32..].copy_from_slice(&ek);
         if case["result"] == "invalid" {
             assert!(public.validate().is_err(), "{}", case["tcId"]);
             continue;
@@ -111,28 +111,19 @@ fn wycheproof_full_mlkem_seed_encapsulation_decapsulation_and_implicit_rejection
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn wycheproof_x448_including_twists_noncanonical_and_low_order_points() {
+fn wycheproof_x25519_including_twists_noncanonical_and_low_order_points() {
     let mut key = KeyPair::from_seed(&Zeroizing::new([3; 32]));
-    for case in cases("x448") {
-        let private = <[u8; 56]>::try_from(bytes(&case, "private"));
-        let public = <[u8; 56]>::try_from(bytes(&case, "public"));
-        let (Ok(private), Ok(public)) = (private, public) else {
-            assert_eq!(case["result"], "invalid");
-            assert!(PublicKey::from_bytes(&bytes(&case, "public")).is_none());
-            continue;
-        };
-        let expected = bytes(&case, "shared");
-        assert_eq!(
-            x448::x448_unchecked(private, public).as_slice(),
-            expected,
-            "{}",
-            case["tcId"]
-        );
-        key.dh = StaticSecret::from(private);
+    for case in cases("x25519") {
+        let mut private: [u8; 32] = bytes(&case, "private").try_into().unwrap();
+        libcrux_curve25519::clamp(&mut private);
+        key.dh = Zeroizing::new(private);
         let mut remote = key.public.clone();
-        remote.0[..56].copy_from_slice(&public);
+        remote.0[..32].copy_from_slice(&bytes(&case, "public"));
+        let expected = bytes(&case, "shared");
         let result = key.agree(&remote);
-        if expected == [0; 56] {
+        // RFC 7748 accepts twists and noncanonical encodings; a turn also
+        // requires contributory agreement, so every all-zero result fails.
+        if expected == [0; 32] {
             assert!(
                 matches!(result, Err(Error::Authentication)),
                 "{}",

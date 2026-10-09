@@ -1,0 +1,64 @@
+{
+  "name": "stogas-upload-fixture",
+  "vers": "1.2.3",
+  "deps": [
+    {
+      "optional": true,
+      "default_features": false,
+      "name": "serde",
+      "features": [
+        "alloc"
+      ],
+      "version_req": "^1",
+      "target": null,
+      "kind": "normal",
+      "registry": "https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "optional": false,
+      "default_features": true,
+      "name": "memchr",
+      "features": [],
+      "version_req": "^2",
+      "target": null,
+      "kind": "dev",
+      "registry": "https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "optional": false,
+      "default_features": true,
+      "name": "itoa",
+      "features": [],
+      "version_req": "^1",
+      "target": "cfg(windows)",
+      "kind": "build",
+      "registry": "https://github.com/rust-lang/crates.io-index",
+      "explicit_name_in_toml": "renamed"
+    }
+  ],
+  "features": {
+    "extra": [
+      "dep:serde"
+    ]
+  },
+  "authors": [
+    "Stogas"
+  ],
+  "description": "Cargo registry metadata reference",
+  "documentation": null,
+  "homepage": null,
+  "readme": "Cargo upload metadata regression fixture.\n",
+  "readme_file": "README.md",
+  "keywords": [
+    "verification"
+  ],
+  "categories": [
+    "cryptography"
+  ],
+  "license": "Apache-2.0",
+  "license_file": null,
+  "repository": "https://github.com/StogasAI/verifier",
+  "badges": {},
+  "links": null,
+  "rust_version": "1.97.1"
+}

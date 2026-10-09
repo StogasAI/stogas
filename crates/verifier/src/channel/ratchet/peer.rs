@@ -1,5 +1,5 @@
 use super::{
-    Error, HeapSecret, MAX_SKIPPED_KEYS, Retention, Secret, expand,
+    Error, HeapSecret, MAX_CHAIN_MESSAGES, MAX_SKIPPED_KEYS, Retention, Secret, expand,
     header::{HEADER_BYTES, Header, HeaderCipher},
     heap_secret,
     keys::{KeyPair, PUBLIC_KEY_BYTES, PublicKeys},
@@ -8,14 +8,9 @@ use super::{
 use std::{collections::BTreeMap, sync::Arc};
 use zeroize::Zeroizing;
 
-// A 128-bit pseudorandom nonce and at most 2^32 headers per key keep the nonce
-// collision probability below 2^-65. Exhaustion requires a fresh session.
-const MAX_CHAIN_MESSAGES: u64 = 1 << 32;
-
-/// The responder's ephemeral setup key. The seed is only exported to transfer
-/// ownership across a binding; establishing the peer consumes and erases it.
+/// The responder's ephemeral setup key. Establishing the peer consumes it; the
+/// private key never leaves this owner.
 pub struct InitialKey {
-    seed: Secret,
     keys: Arc<KeyPair>,
 }
 
@@ -31,17 +26,14 @@ impl InitialKey {
     #[must_use]
     pub fn from_bytes(seed: Secret) -> Self {
         let keys = Arc::new(KeyPair::from_seed(&seed));
-        Self { seed, keys }
+        // Taking ownership erases the caller's seed once the key pair exists.
+        drop(seed);
+        Self { keys }
     }
 
     #[must_use]
     pub fn public_key(&self) -> &[u8; PUBLIC_KEY_BYTES] {
         &self.keys.public.0
-    }
-
-    #[must_use]
-    pub fn secret_bytes(&self) -> &[u8; 32] {
-        &self.seed
     }
 }
 
@@ -57,17 +49,14 @@ struct Chain {
 }
 
 impl Chain {
-    fn step(&mut self) -> Result<(Secret, [u8; 16]), Error> {
+    fn step(&mut self) -> Result<Secret, Error> {
         if self.count >= MAX_CHAIN_MESSAGES {
             return Err(Error::Limit);
         }
-        let material = expand::<80>(None, self.secret.as_ref(), b":Chain");
+        let material = expand::<64>(None, self.secret.as_ref(), b":Chain");
         self.secret.copy_from_slice(&material[..32]);
         self.count += 1;
-        Ok((
-            secret(&material[32..64]),
-            material[64..].try_into().expect("fixed nonce width"),
-        ))
+        Ok(secret(&material[32..]))
     }
 }
 
@@ -130,10 +119,10 @@ impl Active {
         Ok(count)
     }
 
-    fn advance(&mut self, dh: &[u8; 56], kem: &Secret) -> (Chain, Arc<HeaderCipher>) {
-        let mut input = Zeroizing::new([0; 88]);
-        input[..56].copy_from_slice(dh);
-        input[56..].copy_from_slice(kem.as_ref());
+    fn advance(&mut self, dh: &Secret, kem: &Secret) -> (Chain, Arc<HeaderCipher>) {
+        let mut input = Zeroizing::new([0; 64]);
+        input[..32].copy_from_slice(dh.as_ref());
+        input[32..].copy_from_slice(kem.as_ref());
         let material = expand::<96>(Some(self.root.as_ref()), input.as_ref(), b":Root");
         self.root.copy_from_slice(&material[..32]);
         let chain = Chain {
@@ -161,7 +150,7 @@ impl Active {
         pending.reserve_exact(usize::try_from(count).map_err(|_| Error::Limit)?);
         while receive.chain.count < until {
             let number = receive.chain.count;
-            let (key, _) = receive.chain.step()?;
+            let key = receive.chain.step()?;
             pending.push((
                 (receive.epoch, number),
                 Arc::clone(&receive.header),
@@ -207,12 +196,7 @@ impl Active {
             self.send = None;
         }
         self.skip(header.number, pending)?;
-        self.receive
-            .as_mut()
-            .ok_or(Error::Record)?
-            .chain
-            .step()
-            .map(|(key, _)| key)
+        self.receive.as_mut().ok_or(Error::Record)?.chain.step()
     }
 }
 
@@ -244,7 +228,7 @@ pub struct Peer {
 
 impl Peer {
     /// # Errors
-    /// Rejects invalid initial X448 or ML-KEM public keys.
+    /// Rejects an invalid initial ML-KEM public key.
     pub fn initiator(root: &[u8; 32], responder: &[u8; PUBLIC_KEY_BYTES]) -> Result<Self, Error> {
         let remote = PublicKeys(*responder);
         remote.validate()?;
@@ -289,15 +273,21 @@ impl Peer {
         }
     }
 
+    /// Seal the next header for an outer request number. The caller must never
+    /// reuse that number in this direction; it is the header nonce.
+    ///
     /// # Errors
     /// Rejects exhausted counters, failed randomness, or a responder send before
     /// the first authenticated client message.
-    pub fn send(&mut self) -> Result<SendKey, Error> {
-        self.send_with(&mut |bytes| getrandom::fill(bytes).map_err(|_| Error::Crypto))
+    pub fn send(&mut self, request: u64) -> Result<SendKey, Error> {
+        self.send_with(request, &mut |bytes| {
+            getrandom::fill(bytes).map_err(|_| Error::Crypto)
+        })
     }
 
     fn send_with(
         &mut self,
+        request: u64,
         random: &mut impl FnMut(&mut [u8]) -> Result<(), Error>,
     ) -> Result<SendKey, Error> {
         let mut active = self.active.clone();
@@ -326,25 +316,25 @@ impl Peer {
         }
         let sending = active.send.as_mut().ok_or(Error::Pending)?;
         sending.header.number = sending.chain.count;
-        let (secret, nonce) = sending.chain.step()?;
-        let header = sending.cipher.seal(&sending.header, nonce)?;
+        let secret = sending.chain.step()?;
+        let header = sending.cipher.seal(&sending.header, request)?;
         self.active = active;
         Ok(SendKey { header, secret })
     }
 
-    fn open_header(&self, bytes: &[u8]) -> Result<Opened, Error> {
+    fn open_header(&self, bytes: &[u8], request: u64) -> Result<Opened, Error> {
         if bytes.len() != HEADER_BYTES {
             return Err(Error::Record);
         }
         if let Some(receive) = &self.active.receive
-            && let Ok(header) = receive.header.cipher.open(bytes)
+            && let Ok(header) = receive.header.cipher.open(bytes, request)
         {
             if header.turn() != receive.header.turn {
                 return Err(Error::Record);
             }
             return Ok(Opened::Current(header));
         }
-        if let Ok(header) = self.active.next_receive.open(bytes) {
+        if let Ok(header) = self.active.next_receive.open(bytes, request) {
             return Ok(Opened::Next(header));
         }
         for (&epoch, group) in &self.skipped {
@@ -356,7 +346,7 @@ impl Peer {
             {
                 continue;
             }
-            if let Ok(header) = group.header.cipher.open(bytes) {
+            if let Ok(header) = group.header.cipher.open(bytes, request) {
                 if header.turn() != group.header.turn {
                     return Err(Error::Record);
                 }
@@ -374,17 +364,20 @@ impl Peer {
             .filter(|key| key.expires.is_none_or(|end| end > now))
     }
 
+    /// Open a header sealed for the outer request number.
+    ///
     /// # Errors
     /// Rejects malformed, replayed, expired, too-distant or unauthenticated input.
     /// Only successful body authentication commits a candidate or consumes a key.
     pub fn receive<T>(
         &mut self,
         bytes: &[u8],
+        request: u64,
         now_ms: u64,
         authenticate: impl FnOnce(&[u8; 32]) -> Result<T, Error>,
     ) -> Result<T, Error> {
         self.expire(now_ms);
-        let opened = self.open_header(bytes)?;
+        let opened = self.open_header(bytes, request)?;
         let (header, next) = match opened {
             Opened::Skipped(epoch, header) => {
                 return self.receive_stored(epoch, header.number, authenticate);
@@ -398,7 +391,7 @@ impl Peer {
             }
             Opened::Next(header) => (header, true),
         };
-        // Validate both gaps before allocating keys or doing X448/ML-KEM work.
+        // Validate both gaps before allocating keys or doing X25519/ML-KEM work.
         self.active.skipped_count(&header, next)?;
         let mut active = self.active.clone();
         let mut pending = Vec::new();

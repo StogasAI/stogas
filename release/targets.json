@@ -1,0 +1,137 @@
+{
+	"schema": "stogas.sdk-targets.v1",
+	"targets": {
+		"linux-amd64": {
+			"triple": "x86_64-unknown-linux-gnu",
+			"os": "linux",
+			"arch": "amd64",
+			"libc": "glibc",
+			"minimum": "2.17",
+			"packages": ["native", "cli", "python", "go", "java", "dotnet", "ruby", "swift"],
+			"dotnet": "linux-x64",
+			"jna": "linux-x86-64",
+			"ruby": "x86_64-linux-gnu",
+			"swift": "x86_64-unknown-linux-gnu"
+		},
+		"linux-arm64": {
+			"triple": "aarch64-unknown-linux-gnu",
+			"os": "linux",
+			"arch": "arm64",
+			"libc": "glibc",
+			"minimum": "2.17",
+			"packages": ["native", "cli", "python", "go", "java", "dotnet", "ruby", "swift"],
+			"dotnet": "linux-arm64",
+			"jna": "linux-aarch64",
+			"ruby": "aarch64-linux-gnu",
+			"swift": "aarch64-unknown-linux-gnu"
+		},
+		"linux-musl-amd64": {
+			"triple": "x86_64-unknown-linux-musl",
+			"os": "linux",
+			"arch": "amd64",
+			"libc": "musl",
+			"minimum": "1.2",
+			"packages": ["native", "cli", "python", "go", "java", "dotnet", "ruby"],
+			"dotnet": "linux-musl-x64",
+			"jna": "linux-musl-x86-64",
+			"ruby": "x86_64-linux-musl"
+		},
+		"linux-musl-arm64": {
+			"triple": "aarch64-unknown-linux-musl",
+			"os": "linux",
+			"arch": "arm64",
+			"libc": "musl",
+			"minimum": "1.2",
+			"packages": ["native", "cli", "python", "go", "java", "dotnet", "ruby"],
+			"dotnet": "linux-musl-arm64",
+			"jna": "linux-musl-aarch64",
+			"ruby": "aarch64-linux-musl"
+		},
+		"darwin-amd64": {
+			"triple": "x86_64-apple-darwin",
+			"os": "macos",
+			"arch": "amd64",
+			"minimum": "13.0",
+			"packages": ["native", "cli", "python", "go", "java", "dotnet", "ruby", "swift"],
+			"dotnet": "osx-x64",
+			"jna": "darwin-x86-64",
+			"ruby": "x86_64-darwin",
+			"swift": "x86_64-apple-macosx"
+		},
+		"darwin-arm64": {
+			"triple": "aarch64-apple-darwin",
+			"os": "macos",
+			"arch": "arm64",
+			"minimum": "13.0",
+			"packages": ["native", "cli", "python", "go", "java", "dotnet", "ruby", "swift"],
+			"dotnet": "osx-arm64",
+			"jna": "darwin-aarch64",
+			"ruby": "arm64-darwin",
+			"swift": "arm64-apple-macosx"
+		},
+		"windows-amd64": {
+			"triple": "x86_64-pc-windows-msvc",
+			"os": "windows",
+			"arch": "amd64",
+			"minimum": "10",
+			"packages": ["native", "cli", "python", "go", "java", "dotnet", "ruby"],
+			"dotnet": "win-x64",
+			"jna": "win32-x86-64",
+			"ruby": "x64-mingw-ucrt",
+			"go_triple": "x86_64-pc-windows-gnullvm"
+		},
+		"windows-arm64": {
+			"triple": "aarch64-pc-windows-msvc",
+			"os": "windows",
+			"arch": "arm64",
+			"minimum": "11",
+			"packages": ["native", "cli", "python", "go", "java", "dotnet", "ruby"],
+			"dotnet": "win-arm64",
+			"jna": "win32-aarch64",
+			"ruby": "aarch64-mingw-ucrt",
+			"go_triple": "aarch64-pc-windows-gnullvm"
+		},
+		"ios-arm64": {
+			"triple": "aarch64-apple-ios",
+			"os": "ios",
+			"arch": "arm64",
+			"minimum": "15.0",
+			"packages": ["native", "swift"],
+			"swift": "arm64-apple-ios"
+		},
+		"ios-simulator-arm64": {
+			"triple": "aarch64-apple-ios-sim",
+			"os": "ios",
+			"arch": "arm64",
+			"minimum": "15.0",
+			"packages": ["native", "swift"],
+			"swift": "arm64-apple-ios-simulator",
+			"simulator": true
+		},
+		"ios-simulator-amd64": {
+			"triple": "x86_64-apple-ios",
+			"os": "ios",
+			"arch": "amd64",
+			"minimum": "15.0",
+			"packages": ["native", "swift"],
+			"swift": "x86_64-apple-ios-simulator",
+			"simulator": true
+		},
+		"android-arm64": {
+			"triple": "aarch64-linux-android",
+			"os": "android",
+			"arch": "arm64",
+			"minimum": "33",
+			"packages": ["native", "android"],
+			"android_abi": "arm64-v8a"
+		},
+		"android-amd64": {
+			"triple": "x86_64-linux-android",
+			"os": "android",
+			"arch": "amd64",
+			"minimum": "33",
+			"packages": ["native", "android"],
+			"android_abi": "x86_64"
+		}
+	}
+}

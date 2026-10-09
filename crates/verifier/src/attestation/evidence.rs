@@ -5,7 +5,7 @@ use super::BatchProof;
 use thiserror::Error;
 
 pub const MAX_EVIDENCE_BYTES: usize = 58 * 1024;
-pub(super) const REPORT_BYTES: usize = 1184;
+pub(crate) const REPORT_BYTES: usize = 1184;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -49,6 +49,47 @@ impl<'a> SessionEvidence<'a> {
             boot_document,
             boot_inclusion,
         })
+    }
+}
+
+impl SessionEvidence<'_> {
+    /// The framing read by `from_bytes`.
+    ///
+    /// # Errors
+    /// Rejects reports of another size, empty boot fields and oversized evidence.
+    #[cfg(feature = "gateway")]
+    pub fn encode(
+        report: &[u8],
+        proof: &BatchProof,
+        boot_document: &[u8],
+        boot_inclusion: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let proof = proof.to_bytes();
+        if report.len() != REPORT_BYTES || boot_document.is_empty() || boot_inclusion.is_empty() {
+            return Err(Error::Framing);
+        }
+        let size =
+            REPORT_BYTES + 2 + proof.len() + 4 + boot_document.len() + 4 + boot_inclusion.len();
+        if size > MAX_EVIDENCE_BYTES {
+            return Err(Error::TooLarge);
+        }
+        let mut payload = Vec::with_capacity(size);
+        payload.extend_from_slice(report);
+        payload.extend_from_slice(
+            &u16::try_from(proof.len())
+                .map_err(|_| Error::Framing)?
+                .to_be_bytes(),
+        );
+        payload.extend_from_slice(&proof);
+        for field in [boot_document, boot_inclusion] {
+            payload.extend_from_slice(
+                &u32::try_from(field.len())
+                    .map_err(|_| Error::Framing)?
+                    .to_be_bytes(),
+            );
+            payload.extend_from_slice(field);
+        }
+        Ok(payload)
     }
 }
 

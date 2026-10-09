@@ -11,7 +11,6 @@ char *stogas_evidence_new(const uint8_t *configuration, size_t configuration_len
 void stogas_evidence_free(StogasEvidence *handle);
 char *stogas_evidence_refresh(const StogasEvidence *handle, const uint8_t *bundle, size_t bundle_len, int64_t now_unix_ms, StogasEvidenceSnapshot **output);
 void stogas_evidence_snapshot_free(StogasEvidenceSnapshot *handle);
-char *stogas_evidence_verify_registration(const StogasEvidenceSnapshot *handle, const uint8_t *document, size_t document_len, const uint8_t *challenge, size_t challenge_len, int64_t now_unix_ms);
 char *stogas_evidence_verify_logged_boot(const StogasEvidenceSnapshot *handle, const uint8_t *document, size_t document_len, const uint8_t *inclusion, size_t inclusion_len, int64_t now_unix_ms);
 char *stogas_evidence_verify_receipt(const StogasEvidenceSnapshot *handle, const uint8_t *document, size_t document_len, const uint8_t *inclusion, size_t inclusion_len, const uint8_t *receipt, size_t receipt_len, const uint8_t *request_hash, size_t request_hash_len, const uint8_t *response_hash, size_t response_hash_len, int64_t now_unix_ms);
 
@@ -164,29 +163,6 @@ func (s *EvidenceSnapshot) Summary() (json.RawMessage, error) {
 		return nil, ErrClosed
 	}
 	return append(json.RawMessage(nil), s.summary...), nil
-}
-
-// VerifyRegistration checks hardware and the caller's one-use registration challenge.
-// The authority must still atomically consume its challenge before secret release.
-func (s *EvidenceSnapshot) VerifyRegistration(document []byte, challenge [32]byte) (BootIdentity, error) {
-	return s.registrationAt(document, challenge, time.Now().UnixMilli())
-}
-
-// VerifyRegistrationAt uses the registration authority's captured clock.
-func (s *EvidenceSnapshot) VerifyRegistrationAt(document []byte, challenge [32]byte, now time.Time) (BootIdentity, error) {
-	return s.registrationAt(document, challenge, now.UnixMilli())
-}
-
-func (s *EvidenceSnapshot) registrationAt(document []byte, challenge [32]byte, now int64) (BootIdentity, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var identity BootIdentity
-	if s.handle == nil {
-		return identity, ErrClosed
-	}
-	response := C.stogas_evidence_verify_registration(s.handle, bytePointer(document), C.size_t(len(document)), bytePointer(challenge[:]), 32, C.int64_t(now))
-	err := decodeResponse(response, &identity)
-	return identity, err
 }
 
 // VerifyLoggedBoot checks exact logged boot bytes against current hardware and release approvals.

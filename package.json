@@ -48,7 +48,7 @@
 	},
 	"devDependencies": {
 		"@playwright/test": "1.62.1",
-		"miniflare": "5.20260921.0-alpha",
+		"miniflare": "5.20261006.1-alpha",
 		"openai": "7.5.0"
 	}
 }

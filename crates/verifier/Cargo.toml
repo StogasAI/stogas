@@ -15,22 +15,33 @@ repository.workspace = true
 [features]
 default = ["snp"]
 staging = []
+# Gateway-side producers; only the gateway's native build enables them, with
+# AVX2 ML-DSA for its per-connection and receipt signatures.
+gateway = ["libcrux-ml-dsa/simd256"]
 snp = ["dep:p384", "dep:rsa", "dep:sev", "dep:signature"]
 
 [dependencies]
+# These existing transitive dependencies do not inherit aes-gcm/hpke erasure features.
+aes = { version = "=0.9.1", features = ["zeroize"] }
 aes-gcm = { version = "=0.11.0", default-features = false, features = ["aes", "alloc", "zeroize"] }
 base64.workspace = true
 chrono.workspace = true
 ed25519-dalek = { workspace = true, features = ["digest"] }
 getrandom = "0.4.3"
+ghash = { version = "=0.6.0", default-features = false, features = ["zeroize"] }
 hex.workspace = true
 hkdf = "0.13.0"
 # Enable erasure for HKDF's HMAC state through Cargo feature unification.
 hmac = { version = "0.13.0", features = ["zeroize"] }
-hpke = { version = "=0.14.0", default-features = false, features = ["alloc", "getrandom", "aes", "x25519", "mlkem"] }
+# hpke requires one built-in KEM feature; kem.rs supplies X-Wing and setup uses libcrux X25519.
+hpke = { version = "=0.14.0", default-features = false, features = ["alloc", "getrandom", "aes", "x25519"] }
+hybrid-array = { version = "=0.4.13", features = ["extra-sizes"] }
+libcrux-curve25519 = "=0.0.9"
+libcrux-kem = { version = "=0.0.10", default-features = false }
 libcrux-ml-dsa = { version = "=0.0.10", default-features = false, features = ["mldsa65"] }
-libcrux-ml-kem = { version = "=0.0.10", default-features = false, features = ["mlkem768"] }
-libcrux-sha3 = { version = "=0.0.10", default-features = false }
+libcrux-ml-kem = { version = "=0.0.11", default-features = false, features = ["mlkem768"] }
+libcrux-sha3 = { version = "=0.0.11", default-features = false }
+libcrux-traits = { version = "=0.0.9", default-features = false }
 p256 = { version = "0.13.2", default-features = false, features = ["ecdsa", "pkcs8"] }
 p384 = { version = "0.13.1", default-features = false, features = ["ecdsa", "pkcs8"], optional = true }
 pkcs8 = { version = "0.10.2", features = ["alloc"] }
@@ -47,19 +58,20 @@ stogas-offline-sigstore = { path = "../offline-sigstore", version = "0.1.0-alpha
 subtle = { version = "2.6.1", default-features = false }
 thiserror.workspace = true
 x509-parser = { version = "0.18.0" }
-x448 = { version = "=0.14.0-pre.12", default-features = false, features = ["static_secrets"] }
 zeroize.workspace = true
 
 [dev-dependencies]
 ml-kem = { version = "=0.3.2", default-features = false, features = ["zeroize"] }
+stogas-alloc-probe = { path = "../alloc-probe" }
+x-wing = { version = "=0.1.1", default-features = false, features = ["zeroize"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 getrandom-02 = { package = "getrandom", version = "0.2.17", features = ["js"] }
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
-wasm-bindgen-test = "=0.3.76"
+wasm-bindgen-test = "=0.3.79"
 
 [package.metadata.cargo-machete]
-ignored = ["getrandom-02"]
+ignored = ["getrandom-02", "aes", "ghash"]
 
 [lints]
 workspace = true

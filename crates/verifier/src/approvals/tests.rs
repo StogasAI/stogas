@@ -8,7 +8,12 @@ fn key(seed: u8) -> (OnlineKey, SigningKey) {
         OnlineKey {
             key_id: format!("key-{seed}"),
             public_key: STANDARD.encode(signer.public_key_spki().unwrap()),
-            rekor_public_key: STANDARD.encode(signer.rekor_public_key_spki().unwrap()),
+            rekor_public_key: STANDARD.encode(
+                crate::signing::RekorSubmissionKey::from_seed(&[seed; 32])
+                    .unwrap()
+                    .public_key_spki()
+                    .unwrap(),
+            ),
         },
         signer,
     )
@@ -683,5 +688,10 @@ fn compiled_staging_root_verifies_actual_logged_operational_delegation() {
             .verify_key_manifest(&serde_json::to_vec(&changed).unwrap(), now)
             .is_err()
     );
-    assert!(crate::evidence::Verifier::stogas(Environment::Production).is_err());
+    assert!(
+        crate::evidence::Verifier::stogas(Environment::Production)
+            .unwrap()
+            .verify_key_manifest(bytes, now)
+            .is_err()
+    );
 }

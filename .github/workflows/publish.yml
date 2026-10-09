@@ -1,193 +1,116 @@
-name: Publish reviewed release
+name: Publish approved SDK bytes
 
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published SDK release tag to resume
+        required: true
+        type: string
 
 permissions:
   contents: read
 
-env:
-  RELEASE_TAG: ${{ github.event.release.tag_name }}
+concurrency:
+  group: sdk-registry-publication
+  cancel-in-progress: false
 
 jobs:
-  metadata:
-    name: Validate published release
+  publish:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.release.tag_name }}
-          persist-credentials: false
-      - id: version
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag="$RELEASE_TAG"
-          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
-          version="${tag#v}"
-          python3 scripts/check-package-versions.py "$version"
-          test "$(git rev-list -n1 "$tag")" = "$(git rev-parse HEAD)"
-          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
-
-  npm:
-    name: npm
-    needs: metadata
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 90
     environment: release
     permissions:
-      attestations: read
-      contents: read
+      contents: write
       id-token: write
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          ref: ${{ github.event.release.tag_name }}
-          persist-credentials: false
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
-        with:
-          node-version: 24.14.1
-          registry-url: https://registry.npmjs.org
-      - name: Download and verify the reviewed npm artifact
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir dist
-          gh release download "$RELEASE_TAG" --dir dist \
-            --pattern 'stogas-*.tgz' --pattern SHA256SUMS
-          mapfile -t packages < <(find dist -maxdepth 1 -type f -name 'stogas-*.tgz' -printf '%p\n' | LC_ALL=C sort)
-          test "${#packages[@]}" = 2
-          release_commit="$(git rev-parse HEAD)"
-          for package in "${packages[@]}"; do
-            name="${package#dist/}"
-            awk -v name="$name" '$2 == name { print; count++ } END { exit count == 1 ? 0 : 1 }' \
-              dist/SHA256SUMS | (cd dist && sha256sum -c -)
-            gh attestation verify "$package" --repo "$GITHUB_REPOSITORY" \
-              --source-ref "refs/tags/$RELEASE_TAG" --source-digest "$release_commit"
-          done
-      - name: Publish both reviewed npm packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          for package in dist/stogas-*.tgz; do
-            npm publish "$package" --access public --provenance
-          done
-
-  pypi:
-    name: PyPI
-    needs: metadata
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    environment: release
-    permissions:
-      attestations: read
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          ref: ${{ github.event.release.tag_name }}
-          persist-credentials: false
-      - name: Download and verify every reviewed wheel
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir dist
-          gh release download "$RELEASE_TAG" --dir dist \
-            --pattern '*.whl' --pattern SHA256SUMS
-          mapfile -t wheels < <(find dist -maxdepth 1 -type f -name '*.whl' -printf '%p\n' | LC_ALL=C sort)
-          test "${#wheels[@]}" = 5
-          release_commit="$(git rev-parse HEAD)"
-          for wheel in "${wheels[@]}"; do
-            name="${wheel#dist/}"
-            awk -v name="$name" '$2 == name { print; count++ } END { exit count == 1 ? 0 : 1 }' \
-              dist/SHA256SUMS | (cd dist && sha256sum -c -)
-            gh attestation verify "$wheel" --repo "$GITHUB_REPOSITORY" \
-              --source-ref "refs/tags/$RELEASE_TAG" --source-digest "$release_commit"
-          done
-          rm dist/SHA256SUMS
-      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
-        with:
-          packages-dir: dist
-          print-hash: true
-
-  crates-io:
-    name: crates.io
-    needs: metadata
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    environment: release
-    permissions:
-      attestations: read
-      contents: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
           toolchain: 1.97.1
-      - name: Verify reviewed crate archives
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.14.1
+          registry-url: https://registry.npmjs.org
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14.7'
+      - name: Download and authenticate the complete published release
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
           set -euo pipefail
-          mkdir dist
-          gh release download "$RELEASE_TAG" --dir dist \
-            --pattern '*.crate' --pattern SHA256SUMS
-          mapfile -t packages < <(find dist -maxdepth 1 -type f -name '*.crate' -printf '%p\n' | LC_ALL=C sort)
-          test "${#packages[@]}" = 3
-          release_commit="$(git rev-parse HEAD)"
-          for package in "${packages[@]}"; do
-            name="${package#dist/}"
-            awk -v name="$name" '$2 == name { print; count++ } END { exit count == 1 ? 0 : 1 }' \
-              dist/SHA256SUMS | (cd dist && sha256sum -c -)
-            gh attestation verify "$package" --repo "$GITHUB_REPOSITORY" \
-              --source-ref "refs/tags/$RELEASE_TAG" --source-digest "$release_commit"
-          done
-      - name: Publish the dependency before the branded verifier
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false
+          python3 scripts/check-package-versions.py "${RELEASE_TAG#v}"
+          mkdir "$RUNNER_TEMP/approved"
+          gh release download "$RELEASE_TAG" --dir "$RUNNER_TEMP/approved"
+          git archive --format=tar.gz --output="$RUNNER_TEMP/source.tar.gz" HEAD
+          python3 -B - <<'PY'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'release')
+          from artifacts import unpack
+          root = Path(os.environ['RUNNER_TEMP'])
+          unpack(root / 'source.tar.gz', root / 'source')
+          PY
+          python3 -B release/release.py gate "$RUNNER_TEMP/approved" --source "$RUNNER_TEMP/source"
+          cargo build --locked --release -p stogas --features cli --bin stogas
+          target/release/stogas verify-release "$RUNNER_TEMP/approved"
+          python3 -B - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          manifest = json.loads((Path(os.environ['RUNNER_TEMP']) / 'approved/release-manifest.json').read_text())
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          if manifest['source']['commit'] != commit or 'v' + manifest['version'] != os.environ['RELEASE_TAG']:
+              raise SystemExit('Published source identity differs from the checked-out release')
+          PY
+      - name: Publish the exact crate archives in dependency order
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
-        shell: bash
+        run: python3 -B release/publish.py crates "$RUNNER_TEMP/approved" --source "$RUNNER_TEMP/source" --verifier target/release/stogas
+      - name: Publish the exact npm archives with trusted publishing
+        run: python3 -B release/publish.py npm "$RUNNER_TEMP/approved" --source "$RUNNER_TEMP/source" --verifier target/release/stogas
+      - name: Stage approved wheels
         run: |
-          set -euo pipefail
-          version="$RELEASE_VERSION"
-          publish_if_absent() {
-            local package="$1"
-            if cargo info "$package@$version" --registry crates-io >/dev/null 2>&1; then
-              echo "$package $version is already published"
-              return
-            fi
-            cargo publish --locked --package "$package"
-          }
-          publish_if_absent stogas-offline-sigstore
-          for attempt in $(seq 1 30); do
-            cargo info "stogas-offline-sigstore@$version" --registry crates-io >/dev/null 2>&1 && break
-            if [ "$attempt" = 30 ]; then
-              echo 'stogas-offline-sigstore did not become visible on crates.io' >&2
-              exit 1
-            fi
-            sleep 10
-          done
-          publish_if_absent stogas-verifier
-          for attempt in $(seq 1 30); do
-            cargo info "stogas-verifier@$version" --registry crates-io >/dev/null 2>&1 && break
-            if [ "$attempt" = 30 ]; then
-              echo 'stogas-verifier did not become visible on crates.io' >&2
-              exit 1
-            fi
-            sleep 10
-          done
-          publish_if_absent stogas
+          mkdir "$RUNNER_TEMP/wheels"
+          cp "$RUNNER_TEMP/approved/"*.whl "$RUNNER_TEMP/wheels/"
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
+        with:
+          packages-dir: ${{ runner.temp }}/wheels
+          skip-existing: true
+      - name: Verify all PyPI wheel bytes
+        run: python3 -B release/publish.py pypi "$RUNNER_TEMP/approved" --source "$RUNNER_TEMP/source" --verifier target/release/stogas
+      - name: Install the pinned Maven Central publisher
+        run: |
+          curl --fail --location --silent --show-error https://github.com/jreleaser/jreleaser/releases/download/v1.26.0/jreleaser-1.26.0.zip --output "$RUNNER_TEMP/jreleaser.zip"
+          printf '%s  %s\n' c821df22b1715a841024ba17c4b5233375c868e6c9dcc81612c38329c8dec628 "$RUNNER_TEMP/jreleaser.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/jreleaser.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/jreleaser-1.26.0/bin" >> "$GITHUB_PATH"
+      - name: Publish the exact Java and Android packages
+        env:
+          JRELEASER_MAVENCENTRAL_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          JRELEASER_MAVENCENTRAL_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          JRELEASER_GPG_PUBLIC_KEY: ${{ secrets.MAVEN_GPG_PUBLIC_KEY }}
+          JRELEASER_GPG_SECRET_KEY: ${{ secrets.MAVEN_GPG_SECRET_KEY }}
+          JRELEASER_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: python3 -B release/publish.py maven "$RUNNER_TEMP/approved" --source "$RUNNER_TEMP/source" --verifier target/release/stogas
+      - name: Publish and verify NuGet package contents and repository signature
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: python3 -B release/publish.py nuget "$RUNNER_TEMP/approved" --source "$RUNNER_TEMP/source" --verifier target/release/stogas
+      - name: Publish the exact platform gems
+        env:
+          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
+        run: python3 -B release/publish.py ruby "$RUNNER_TEMP/approved" --source "$RUNNER_TEMP/source" --verifier target/release/stogas
+      - name: Publish the approved Go module as an immutable module tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B release/publish.py go "$RUNNER_TEMP/approved" --source "$RUNNER_TEMP/source" --verifier target/release/stogas

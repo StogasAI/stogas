@@ -74,6 +74,31 @@ impl<'a> SessionEvidence<'a> {
         Ok(Self::from_bytes(&cmw[prefix_len..])?)
     }
 
+    /// Wrap an encoded payload in the extension value read by `from_extension`.
+    ///
+    /// # Errors
+    /// Rejects payloads beyond `MAX_EVIDENCE_BYTES`.
+    #[cfg(feature = "gateway")]
+    pub fn extension(payload: &[u8]) -> Result<Vec<u8>, Error> {
+        if payload.len() > MAX_EVIDENCE_BYTES {
+            return Err(Error::TooLarge);
+        }
+        let size = |length: usize| u16::try_from(length).map_err(|_| Error::TooLarge);
+        let mut cmw = vec![
+            0x82,
+            0x78,
+            u8::try_from(MEDIA_TYPE.len()).map_err(|_| Error::Framing)?,
+        ];
+        cmw.extend_from_slice(MEDIA_TYPE);
+        cmw.push(0x59);
+        cmw.extend_from_slice(&size(payload.len())?.to_be_bytes());
+        cmw.extend_from_slice(payload);
+        let mut extension = vec![0x04, 0x82];
+        extension.extend_from_slice(&size(cmw.len())?.to_be_bytes());
+        extension.extend_from_slice(&cmw);
+        Ok(extension)
+    }
+
     /// Check the local challenge, certificate key and exact immutable boot object
     /// against report data. Hardware signatures and boot/current policy verification
     /// are separate required checks; success here alone must never authorize TLS.

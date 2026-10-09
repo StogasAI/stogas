@@ -5,13 +5,16 @@
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ed25519_dalek::pkcs8::EncodePublicKey as _;
-use libcrux_ml_dsa::ml_dsa_65::{MLDSA65Signature, MLDSA65VerificationKey, portable};
+// libcrux dispatches at run time; only builds enabling `simd256` (the gateway) include AVX2.
+use libcrux_ml_dsa::ml_dsa_65::{
+    self as ml_dsa, MLDSA65Signature, MLDSA65SigningKey, MLDSA65VerificationKey,
+};
 use sha2::{Digest as _, Sha512};
 use spki::{
     AlgorithmIdentifierRef, ObjectIdentifier, SubjectPublicKeyInfoRef,
     der::{Decode as _, Encode as _, asn1::BitStringRef},
 };
-use zeroize::Zeroizing;
+use zeroize::{Zeroize as _, Zeroizing};
 
 /// FIPS 204 ML-DSA-65 public key length.
 pub const PUBLIC_KEY_BYTES: usize = 1952;
@@ -19,7 +22,6 @@ pub const PUBLIC_KEY_BYTES: usize = 1952;
 pub const SIGNATURE_BYTES: usize = 3309;
 /// FIPS 204 key-generation seed length.
 pub const SEED_BYTES: usize = 32;
-const PRIVATE_KEY_BYTES: usize = 4032;
 const ML_DSA_65_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.18");
 
 /// Signature errors contain no key or document material.
@@ -34,9 +36,6 @@ pub enum Error {
     /// The SPKI is malformed, uses another algorithm, or has parameters.
     #[error("invalid ML-DSA-65 public key encoding")]
     PublicKey,
-    /// Private keys use the RFC 9881 seed-only PKCS #8 representation.
-    #[error("invalid ML-DSA-65 seed private key encoding")]
-    PrivateKey,
     /// Rekor compatibility keys use a separate 32-byte Ed25519 seed.
     #[error("invalid Rekor submission key seed")]
     SubmissionKey,
@@ -56,43 +55,35 @@ pub enum Error {
 
 /// An expanded signing key, erased on drop and never implicitly cloned or formatted.
 pub struct SigningKey {
-    seed: Zeroizing<[u8; SEED_BYTES]>,
-    secret: Zeroizing<[u8; PRIVATE_KEY_BYTES]>,
+    secret: MLDSA65SigningKey,
     public: [u8; PUBLIC_KEY_BYTES],
 }
 
-impl SigningKey {
-    /// Read an RFC 9881 seed-only PKCS #8 key. Expanded or duplicate representations
-    /// are deliberately excluded; callers retain responsibility for erasing their input.
-    ///
-    /// # Errors
-    /// Rejects other algorithms, parameters, malformed DER and non-seed key forms.
-    pub fn from_pkcs8(der: &[u8]) -> Result<Self, Error> {
-        let info = pkcs8::PrivateKeyInfo::from_der(der).map_err(|_| Error::PrivateKey)?;
-        if info.algorithm.oid != ML_DSA_65_OID
-            || info.algorithm.parameters.is_some()
-            || info.public_key.is_some()
-        {
-            return Err(Error::PrivateKey);
-        }
-        let Some(seed) = info.private_key.strip_prefix(&[0x80, 0x20]) else {
-            return Err(Error::PrivateKey);
-        };
-        Ok(Self::from_seed(
-            seed.try_into().map_err(|_| Error::PrivateKey)?,
-        ))
+impl Drop for SigningKey {
+    fn drop(&mut self) {
+        self.secret.as_ref_mut().zeroize();
     }
+}
 
+impl SigningKey {
     /// Derive a key from a cryptographically random seed; the caller owns seed erasure.
     #[must_use]
     pub fn from_seed(seed: &[u8; SEED_BYTES]) -> Self {
-        let mut key = Self {
-            seed: Zeroizing::new(*seed),
-            secret: Zeroizing::new([0; PRIVATE_KEY_BYTES]),
-            public: [0; PUBLIC_KEY_BYTES],
-        };
-        portable::generate_key_pair_mut(*seed, &mut key.secret, &mut key.public);
-        key
+        let pair = ml_dsa::generate_key_pair(*seed);
+        Self {
+            public: *pair.verification_key.as_ref(),
+            secret: pair.signing_key,
+        }
+    }
+
+    /// Generate a key from fresh operating-system randomness.
+    ///
+    /// # Errors
+    /// Fails only when randomness is unavailable.
+    pub fn generate() -> Result<Self, Error> {
+        let mut seed = Zeroizing::new([0; SEED_BYTES]);
+        getrandom::fill(seed.as_mut()).map_err(|_| Error::Randomness)?;
+        Ok(Self::from_seed(&seed))
     }
 
     /// The FIPS 204 public key encoding, without an ASN.1 wrapper.
@@ -118,37 +109,6 @@ impl SigningKey {
         .map_err(|_| Error::PublicKey)
     }
 
-    /// The stable Rekor submission public key associated with this signing key.
-    /// Publish this association in authenticated signing metadata before using it
-    /// to discover entries. It does not grant document-signing authority.
-    ///
-    /// # Errors
-    /// Returns an error if derivation or DER encoding fails.
-    pub fn rekor_public_key_spki(&self) -> Result<Vec<u8>, Error> {
-        self.rekor_key()?.public_key_spki()
-    }
-
-    /// Prepare an exact Rekor v1 submission over SHA-512 of a complete signed document.
-    ///
-    /// Derives a purpose-separated Ed25519ph key for this operation and erases it
-    /// on drop. The same signing key and document yield the same submission.
-    /// Persist the signed document and submission before the first POST: ML-DSA
-    /// signing uses randomness, so signing the document again changes its digest.
-    ///
-    /// # Errors
-    /// Rejects oversized documents and derivation, encoding or signing failures.
-    pub fn prepare_rekor_submission(&self, signed_document: &[u8]) -> Result<String, Error> {
-        self.rekor_key()?.prepare_submission(signed_document)
-    }
-
-    fn rekor_key(&self) -> Result<RekorSubmissionKey, Error> {
-        let mut seed = Zeroizing::new([0; 32]);
-        hkdf::Hkdf::<sha2_v11::Sha512>::new(None, self.seed.as_ref())
-            .expand(b"stogas.rekor.ed25519ph.v1", seed.as_mut())
-            .map_err(|_| Error::Signing)?;
-        RekorSubmissionKey::from_seed(seed.as_ref())
-    }
-
     /// Sign using fresh per-signature randomness and the supplied protocol context.
     ///
     /// # Errors
@@ -167,10 +127,9 @@ impl SigningKey {
         randomness: &[u8; 32],
     ) -> Result<[u8; SIGNATURE_BYTES], Error> {
         check_context(context)?;
-        let mut signature = [0; SIGNATURE_BYTES];
-        portable::sign_mut(&self.secret, message, context, *randomness, &mut signature)
-            .map_err(|_| Error::Signing)?;
-        Ok(signature)
+        ml_dsa::sign(&self.secret, message, context, *randomness)
+            .map(|signature| *signature.as_ref())
+            .map_err(|_| Error::Signing)
     }
 }
 
@@ -245,7 +204,7 @@ pub fn verify(
     check_context(context)?;
     let public_key = MLDSA65VerificationKey::new(public_key.try_into().map_err(|_| Error::Length)?);
     let signature = MLDSA65Signature::new(signature.try_into().map_err(|_| Error::Length)?);
-    portable::verify(&public_key, message, context, &signature).map_err(|_| Error::Verification)
+    ml_dsa::verify(&public_key, message, context, &signature).map_err(|_| Error::Verification)
 }
 
 /// FIPS 204's external message representative for a remote pure ML-DSA signer.

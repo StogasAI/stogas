@@ -142,9 +142,11 @@ unsafe fn snapshot<'a>(
 }
 
 /// Verify a boot report against the caller's one-use challenge; returns authenticated identity.
+/// Gateway builds only: a booting gateway checks its own registration quote.
 ///
 /// # Safety
 /// Snapshot must be live. Every input must address its declared readable length.
+#[cfg(feature = "gateway")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stogas_evidence_verify_registration(
     handle: *const StogasEvidenceSnapshot,

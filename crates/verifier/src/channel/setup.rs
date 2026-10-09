@@ -1,14 +1,18 @@
-use super::{ClientSession, Error, ratchet::PUBLIC_KEY_BYTES};
+use super::{
+    ClientSession, Error, ServerSession,
+    ratchet::{InitialKey, PUBLIC_KEY_BYTES},
+};
 use crate::{
     approvals::Environment,
     attestation::{
         Binding,
         evidence::{MAX_EVIDENCE_BYTES, SessionEvidence},
     },
+    kem::XWing,
 };
 use hpke::{
-    Deserializable as _, Kem as _, OpModeR, Serializable as _, aead::ExportOnlyAead,
-    kdf::HkdfSha256, kem::XWing, setup_receiver,
+    Deserializable as _, Kem as _, OpModeR, OpModeS, Serializable as _, aead::ExportOnlyAead,
+    kdf::HkdfSha256, setup_receiver, setup_sender,
 };
 use sha2::{Digest as _, Sha256};
 use subtle::ConstantTimeEq as _;
@@ -24,6 +28,94 @@ const INFO_DOMAIN: &[u8] = b"stogas.e2ee.setup.v1\0";
 const TRANSCRIPT_DOMAIN: &[u8] = b"stogas.e2ee.transcript.v1\0";
 const ROOT_DOMAIN: &[u8] = b"stogas.e2ee.root.v1\0";
 const CONFIRMATION_DOMAIN: &[u8] = b"stogas.e2ee.confirmation.v1\0";
+
+/// A locally prepared exchange with one opaque secret owner.
+///
+/// Quote `transcript` together with the environment and boot-document hash before
+/// publishing the session or response. Drop this value if that fails.
+pub struct PreparedServerSetup {
+    pub session: ServerSession,
+    pub session_id: [u8; 32],
+    pub transcript: [u8; 32],
+    /// Server prefix and possession confirmation, before the evidence length/body.
+    pub response_prefix: Vec<u8>,
+}
+
+/// Prepare the server's HPKE exchange without exporting secrets to an embedding
+/// runtime. This performs no attestation or I/O; the caller owns those steps.
+///
+/// # Errors
+/// Rejects a malformed hello, mismatched environment, zero idle lifetime, or
+/// failure of the random generator or cryptographic operations.
+pub fn prepare_server_setup(
+    environment: Environment,
+    hello: &[u8],
+    idle_seconds: u32,
+    boot_hash: &[u8; 32],
+) -> Result<PreparedServerSetup, Error> {
+    if hello.len() != CLIENT_SETUP_BYTES
+        || &hello[..CLIENT_HEADER.len()] != CLIENT_HEADER
+        || hello[CLIENT_HEADER.len()] != crate::attestation::environment_byte(environment)
+        || idle_seconds == 0
+    {
+        return Err(Error::Record);
+    }
+    // Preserve the server's contributory-X25519 policy. X-Wing permits either
+    // RFC 7748 behavior, and its encapsulator does not expose the DH result.
+    // A fixed public scalar validates low-order inputs without creating secrets.
+    let classical = hello[CLIENT_SETUP_BYTES - 32..]
+        .try_into()
+        .map_err(|_| Error::Record)?;
+    if libcrux_curve25519::ecdh(&mut [0; 32], classical, &[0; 32]).is_err() {
+        return Err(Error::Record);
+    }
+    let public_key =
+        <XWing as hpke::Kem>::PublicKey::from_bytes(&hello[CLIENT_HEADER.len() + 1 + 32..])
+            .map_err(|_| Error::Record)?;
+    // Info can bind only the client hello: including enc would be circular.
+    // Both exports and the quote also bind the complete server prefix.
+    let info = [INFO_DOMAIN, &Sha256::digest(hello)].concat();
+    let (enc, sender) =
+        setup_sender::<ExportOnlyAead, HkdfSha256, XWing>(&OpModeS::Base, &public_key, &info)
+            .map_err(|_| Error::Crypto)?;
+    let mut session_id = [0; 32];
+    getrandom::fill(&mut session_id).map_err(|_| Error::Crypto)?;
+    let initial = InitialKey::generate()?;
+    let mut response_prefix = Vec::with_capacity(SERVER_PREFIX_BYTES + 32);
+    response_prefix.extend_from_slice(SERVER_HEADER);
+    response_prefix.extend_from_slice(&session_id);
+    response_prefix.extend_from_slice(&idle_seconds.to_be_bytes());
+    response_prefix.extend_from_slice(&enc.to_bytes());
+    response_prefix.extend_from_slice(initial.public_key());
+    let transcript = transcript_hash(hello, &response_prefix, boot_hash);
+    let mut root = Zeroizing::new([0; 32]);
+    sender
+        .export(&[ROOT_DOMAIN, &transcript].concat(), root.as_mut())
+        .map_err(|_| Error::Crypto)?;
+    let mut confirmation = [0; 32];
+    sender
+        .export(
+            &[CONFIRMATION_DOMAIN, &transcript].concat(),
+            &mut confirmation,
+        )
+        .map_err(|_| Error::Crypto)?;
+    response_prefix.extend_from_slice(&confirmation);
+    Ok(PreparedServerSetup {
+        session: ServerSession::new(root, session_id, initial),
+        session_id,
+        transcript,
+        response_prefix,
+    })
+}
+
+fn transcript_hash(hello: &[u8], prefix: &[u8], boot_hash: &[u8; 32]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(TRANSCRIPT_DOMAIN);
+    hash.update(hello);
+    hash.update(prefix);
+    hash.update(boot_hash);
+    hash.finalize().into()
+}
 
 #[derive(Debug, ThisError)]
 pub enum SetupError {
@@ -203,12 +295,11 @@ impl PendingSetup {
     }
 
     fn transcript(&self, parsed: &SetupEvidence<'_>) -> [u8; 32] {
-        let mut hash = Sha256::new();
-        hash.update(TRANSCRIPT_DOMAIN);
-        hash.update(&self.hello);
-        hash.update(parsed.prefix);
-        hash.update(Sha256::digest(parsed.evidence.boot_document));
-        hash.finalize().into()
+        transcript_hash(
+            &self.hello,
+            parsed.prefix,
+            &Sha256::digest(parsed.evidence.boot_document).into(),
+        )
     }
 }
 

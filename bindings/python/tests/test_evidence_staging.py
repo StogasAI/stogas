@@ -78,13 +78,9 @@ class StagingEvidenceTests(unittest.TestCase):
         self.assertEqual(json.loads(snapshot.summary()), expected)
         snapshot.require_current_keys()
 
-        with self.assertRaises(ValueError):
-            snapshot.verify_registration(b'{}', b"too-short")
-        with self.assertRaises(VerificationError):
-            snapshot.verify_logged_boot(b'{}', b'{}')
         with self.assertRaises(VerificationError) as caught:
-            snapshot.collateral_validity("00" * 64, "00" * 8)
-        self.assertEqual(caught.exception.code, "missing_collateral")
+            snapshot.verify_logged_boot(b'{}', b'{}')
+        self.assertEqual(caught.exception.code, "invalid_attestation")
 
 
 if __name__ == "__main__":

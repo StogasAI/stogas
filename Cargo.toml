@@ -2,7 +2,8 @@
 exclude = ["fuzz"]
 members = [
   "bindings/python",
-  "crates/cli",
+  "crates/alloc-probe",
+  "crates/sdk",
   "crates/ffi",
   "crates/offline-sigstore",
   "crates/offline-sigstore-wasm",
@@ -14,7 +15,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0-alpha.1"
 edition = "2024"
-rust-version = "1.93"
+rust-version = "1.97.1"
 license-file = "LICENSE"
 repository = "https://github.com/StogasAI/verifier"
 
@@ -43,3 +44,9 @@ codegen-units = 1
 lto = "thin"
 panic = "abort"
 strip = "symbols"
+
+# Package diagnostics separately; release processing retains ordinary symbol names.
+[profile.dist]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"

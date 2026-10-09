@@ -14,6 +14,11 @@ use wasm_bindgen::JsCast as _;
 use web_sys::{AesGcmParams, CryptoKey, SubtleCrypto};
 use zeroize::Zeroizing;
 
+// Every record has a fresh key. Up to this size, Rust is no slower than a
+// WebCrypto key import plus operation in Node, Chromium, Firefox or WebKit;
+// WebCrypto wins on larger records. The key is already in Wasm memory.
+const RUST_RECORD_BYTES: usize = 256;
+
 thread_local! {
     // Capabilities are stable for this Wasm instance; never switch after a failed
     // encryption or authentication operation.
@@ -46,13 +51,17 @@ pub struct HostCipher {
 }
 
 impl HostCipher {
-    async fn import(&mut self) -> Result<(), Error> {
+    async fn import(&mut self, length: usize) -> Result<(), Error> {
         if !matches!(self.key, Key::Pending(_)) {
             return Ok(());
         }
         let Key::Pending(key) = std::mem::replace(&mut self.key, Key::Closed) else {
             return Err(Error::Closed);
         };
+        if length <= RUST_RECORD_BYTES {
+            self.key = Key::Rust(Box::new(SoftwareCipher::from_key(key)?));
+            return Ok(());
+        }
         let subtle = self.subtle.as_ref().ok_or(Error::Closed)?;
         let bytes = Uint8Array::from(key.as_slice());
         let usages = Array::of2(&"encrypt".into(), &"decrypt".into());
@@ -110,7 +119,7 @@ impl Cipher for HostCipher {
         aad: &[u8],
         plaintext: &mut [u8],
     ) -> Result<[u8; 16], Error> {
-        self.import().await?;
+        self.import(plaintext.len()).await?;
         match &self.key {
             Key::Rust(cipher) => cipher.encrypt_now(nonce, aad, plaintext),
             Key::Web(key) => {
@@ -142,7 +151,7 @@ impl Cipher for HostCipher {
         aad: &[u8],
         sealed: &mut [u8],
     ) -> Result<(), Error> {
-        self.import().await?;
+        self.import(sealed.len().saturating_sub(16)).await?;
         match &self.key {
             Key::Rust(cipher) => cipher.decrypt_now(nonce, aad, sealed),
             Key::Web(key) => {

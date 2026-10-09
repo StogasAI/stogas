@@ -21,10 +21,10 @@ fn mock_cipher(body: &str) -> HostCipher {
 }
 
 #[wasm_bindgen_test]
-async fn webcrypto_matches_rust_and_imports_a_nonextractable_key_once() {
-    let mut cipher = browser_cipher();
-    let mut rust = SoftwareCipher::from_key(Zeroizing::new([42; 32])).unwrap();
-    for length in [0, 1, 15, 16, 17, 255, 4096, 65_516] {
+async fn records_match_rust_and_only_large_records_use_nonextractable_webcrypto_keys() {
+    for length in [0, 1, 15, 16, 17, 255, 256, 257, 4096, 65_516] {
+        let mut cipher = browser_cipher();
+        let mut rust = SoftwareCipher::from_key(Zeroizing::new([42; 32])).unwrap();
         let mut plaintext = vec![7; length];
         let mut expected = plaintext.clone();
         let mut nonce = [1; 12];
@@ -39,31 +39,24 @@ async fn webcrypto_matches_rust_and_imports_a_nonextractable_key_once() {
             .unwrap();
         assert_eq!(plaintext, expected);
         assert_eq!(tag, expected_tag);
-        let Key::Web(key) = &cipher.key else {
-            panic!("unexpected software fallback");
-        };
-        assert!(!key.extractable());
-        let imported = key.clone();
+        match &cipher.key {
+            Key::Rust(_) => assert!(length <= RUST_RECORD_BYTES),
+            Key::Web(key) => assert!(length > RUST_RECORD_BYTES && !key.extractable()),
+            _ => panic!("unexpected cipher state"),
+        }
         plaintext.extend_from_slice(&tag);
         cipher
             .decrypt(nonce, b"authenticated header", &mut plaintext)
             .await
             .unwrap();
         assert_eq!(&plaintext[..length], &vec![7; length]);
-        let Key::Web(key) = &cipher.key else {
-            panic!("unexpected software fallback");
-        };
-        assert!(
-            js_sys::Object::is(&imported, key),
-            "directional key must be reused"
-        );
     }
 }
 
 #[wasm_bindgen_test]
 async fn authentication_failure_never_selects_the_software_fallback_or_releases_plaintext() {
     let mut cipher = browser_cipher();
-    let mut sealed = b"private content".to_vec();
+    let mut sealed = vec![7; RUST_RECORD_BYTES + 1];
     let tag = cipher
         .encrypt([1; 12], b"header", &mut sealed)
         .await
@@ -101,7 +94,9 @@ async fn only_an_unavailable_algorithm_allows_import_fallback() {
         let mut cipher = mock_cipher(&format!(
             "return {{ importKey() {{ return Promise.reject({{ name: '{name}' }}); }} }};"
         ));
-        let result = cipher.encrypt([1; 12], b"header", &mut [1; 16]).await;
+        let result = cipher
+            .encrypt([1; 12], b"header", &mut [1; RUST_RECORD_BYTES + 1])
+            .await;
         if name == "NotSupportedError" {
             assert!(result.is_ok());
             assert!(matches!(cipher.key, Key::Rust(_)));
@@ -114,7 +109,7 @@ async fn only_an_unavailable_algorithm_allows_import_fallback() {
         mock_cipher("return { importKey() { throw { name: 'NotSupportedError' }; } };");
     assert!(
         cipher
-            .encrypt([1; 12], b"header", &mut [1; 16])
+            .encrypt([1; 12], b"header", &mut [1; RUST_RECORD_BYTES + 1])
             .await
             .is_ok()
     );
@@ -133,7 +128,9 @@ async fn imported_raw_bytes_are_cleared_and_record_failure_is_terminal() {
         encrypt() { return Promise.reject({ name: 'NotSupportedError' }); }
     };");
     assert_eq!(
-        cipher.encrypt([1; 12], b"header", &mut [1; 16]).await,
+        cipher
+            .encrypt([1; 12], b"header", &mut [1; RUST_RECORD_BYTES + 1])
+            .await,
         Err(Error::Crypto)
     );
     assert!(

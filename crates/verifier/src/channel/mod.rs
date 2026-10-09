@@ -2,7 +2,7 @@
 //! record layer; application credentials are released only after verified setup.
 
 pub mod cipher;
-pub mod ratchet;
+mod ratchet;
 mod record;
 mod server;
 mod session;

@@ -15,7 +15,7 @@
       "tests": [
         "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
         "crates/verifier/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors"
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors"
       ]
     },
     {
@@ -190,7 +190,7 @@
       "tests": [
         "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
         "crates/verifier/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors"
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors"
       ]
     },
     {
@@ -200,7 +200,7 @@
       "tests": [
         "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
         "crates/verifier/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors"
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors"
       ]
     },
     {
@@ -252,7 +252,7 @@
       "status": "covered_behavior",
       "tests": [
         "crates/verifier/src/channel/setup/tests.rs::incompatible_setup_is_rejected_even_with_genuine_hardware_evidence",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors",
         "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing"
       ]
     },
@@ -268,7 +268,7 @@
       "status": "covered_behavior",
       "tests": [
         "crates/verifier/src/channel/setup/tests.rs::incompatible_setup_is_rejected_even_with_genuine_hardware_evidence",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors",
         "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing"
       ]
     },
@@ -277,11 +277,11 @@
       "name": "hybrid_ratchet",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors",
+        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors",
         "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
         "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
       ],
-      "scope": "Both full X448 and ML-KEM secrets enter each alternating root step. Independent Go/CIRCL vectors check this distinct encoding and KDF profile."
+      "scope": "Both full X25519 and ML-KEM secrets enter each alternating root step. Independent Go standard-library vectors check this distinct encoding and KDF profile."
     },
     {
       "path": "src/test/messaging_scka.rs",
@@ -335,39 +335,39 @@
       "path": "src/test/x25519_scka/states.rs",
       "name": "balanced_healing",
       "status": "not_applicable",
-      "reason": "The experimental SCKA state machine is absent; the fixed X448/ML-KEM protocol has separate turn, agreement, mutation and retention tests.",
+      "reason": "The experimental SCKA state machine is absent; the fixed X25519/ML-KEM protocol has separate turn, agreement, mutation and retention tests.",
       "scope": "Empirical capture, fresh-entropy and delivery checks for the fixed PQ2HE profile; no claim of equivalence to upstream symbolic compromise analysis or proof."
     },
     {
       "path": "src/test/x25519_scka/states.rs",
       "name": "random_balanced",
       "status": "not_applicable",
-      "reason": "The experimental SCKA state machine is absent; the fixed X448/ML-KEM protocol has separate turn, agreement, mutation and retention tests."
+      "reason": "The experimental SCKA state machine is absent; the fixed X25519/ML-KEM protocol has separate turn, agreement, mutation and retention tests."
     },
     {
       "path": "src/test/x25519_scka/states.rs",
       "name": "chaos",
       "status": "not_applicable",
-      "reason": "The experimental SCKA state machine is absent; the fixed X448/ML-KEM protocol has separate turn, agreement, mutation and retention tests."
+      "reason": "The experimental SCKA state machine is absent; the fixed X25519/ML-KEM protocol has separate turn, agreement, mutation and retention tests."
     },
     {
       "path": "src/test/x25519_scka/states.rs",
       "name": "onlineoffline_healing",
       "status": "not_applicable",
-      "reason": "The experimental SCKA state machine is absent; the fixed X448/ML-KEM protocol has separate turn, agreement, mutation and retention tests.",
+      "reason": "The experimental SCKA state machine is absent; the fixed X25519/ML-KEM protocol has separate turn, agreement, mutation and retention tests.",
       "scope": "Empirical capture, fresh-entropy and delivery checks for the fixed PQ2HE profile; no claim of equivalence to upstream symbolic compromise analysis or proof."
     },
     {
       "path": "src/test/x25519_scka/states.rs",
       "name": "random_balanced_out_of_order",
       "status": "not_applicable",
-      "reason": "The experimental SCKA state machine is absent; the fixed X448/ML-KEM protocol has separate turn, agreement, mutation and retention tests."
+      "reason": "The experimental SCKA state machine is absent; the fixed X25519/ML-KEM protocol has separate turn, agreement, mutation and retention tests."
     },
     {
       "path": "src/test/x25519_scka/states.rs",
       "name": "random_slow_alex_healing",
       "status": "not_applicable",
-      "reason": "The experimental SCKA state machine is absent; the fixed X448/ML-KEM protocol has separate turn, agreement, mutation and retention tests.",
+      "reason": "The experimental SCKA state machine is absent; the fixed X25519/ML-KEM protocol has separate turn, agreement, mutation and retention tests.",
       "scope": "Empirical capture, fresh-entropy and delivery checks for the fixed PQ2HE profile; no claim of equivalence to upstream symbolic compromise analysis or proof."
     },
     {
@@ -679,20 +679,20 @@
           "path": "rust/protocol/tests/ratchet.rs",
           "name": "test_bob_rejects_torsioned_basekey",
           "status": "not_applicable",
-          "reason": "This upstream check authenticates a PQXDH base key. Our setup authenticates every initial DH-key byte in its quote/transcript; every record authenticates the exact encrypted X448/ML-KEM header encoding."
+          "reason": "This upstream check authenticates a PQXDH base key. Our setup authenticates every initial DH-key byte in its quote/transcript; every record authenticates the exact encrypted X25519/ML-KEM header encoding."
         },
         {
           "path": "rust/protocol/tests/ratchet.rs",
           "name": "test_bob_rejects_highbit_basekey",
           "status": "not_applicable",
-          "reason": "This upstream check authenticates a PQXDH base key. Our setup authenticates every initial DH-key byte in its quote/transcript; every record authenticates the exact encrypted X448/ML-KEM header encoding."
+          "reason": "This upstream check authenticates a PQXDH base key. Our setup authenticates every initial DH-key byte in its quote/transcript; every record authenticates the exact encrypted X25519/ML-KEM header encoding."
         },
         {
           "path": "rust/protocol/src/ratchet/keys.rs",
           "name": "test_chain_key_derivation",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors"
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors"
           ]
         },
         {
@@ -844,7 +844,7 @@
             "advance_with_non_contributory_key_fails"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/keys/tests.rs::wycheproof_x448_including_twists_noncanonical_and_low_order_points"
+            "crates/verifier/src/channel/ratchet/keys/tests.rs::wycheproof_x25519_including_twists_noncanonical_and_low_order_points"
           ]
         },
         {
@@ -853,7 +853,7 @@
             "advancing_remote_chain_key_increments_index"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors"
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors"
           ]
         }
       ],
@@ -945,7 +945,7 @@
         "src/Simplex/Messaging/Crypto/Ratchet.hs",
         "protocol/pqdr.md"
       ],
-      "scope": "PQ2HE state transitions, encrypted headers, root/chain derivation and all named DoubleRatchetTests schedules. X448 and full ML-KEM are mandatory here; SNTRUP negotiation, X3DH and persisted/versioned states are absent.",
+      "scope": "PQ2HE state transitions, encrypted headers, root/chain derivation and all named DoubleRatchetTests schedules. X25519 and full ML-KEM are mandatory here; SNTRUP negotiation, X3DH and persisted/versioned states are absent.",
       "behavior_comparisons": [
         {
           "upstream_cases": [
@@ -957,7 +957,7 @@
           "local_tests": [
             "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
           ],
-          "scope": "The local profile fixes X448/ML-KEM-768 and includes asymmetric bursts, cross-turn retention, replay, rollback and loss."
+          "scope": "The local profile fixes X25519/ML-KEM-768 and includes asymmetric bursts, cross-turn retention, replay, rollback and loss."
         },
         {
           "upstream_cases": [
@@ -965,7 +965,7 @@
             "should serialize and parse message header (KEM)"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors",
             "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing",
             "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
           ],
@@ -980,7 +980,7 @@
           "name": "should serialize and parse message header",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors",
             "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing",
             "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
           ]
@@ -989,85 +989,85 @@
           "path": "tests/AgentTests/DoubleRatchetTests.hs",
           "name": "should encode/decode ratchet as JSON",
           "status": "not_applicable",
-          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X25519/ML-KEM-768 profile."
         },
         {
           "path": "tests/AgentTests/DoubleRatchetTests.hs",
           "name": "should decode v2 Ratchet with default field values",
           "status": "not_applicable",
-          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X25519/ML-KEM-768 profile."
         },
         {
           "path": "tests/AgentTests/DoubleRatchetTests.hs",
           "name": "should agree the same ratchet parameters",
           "status": "not_applicable",
-          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X25519/ML-KEM-768 profile."
         },
         {
           "path": "tests/AgentTests/DoubleRatchetTests.hs",
           "name": "should agree the same ratchet parameters with version 1",
           "status": "not_applicable",
-          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X25519/ML-KEM-768 profile."
         },
         {
           "path": "tests/AgentTests/DoubleRatchetTests.hs",
           "name": "should propose KEM during agreement, but no shared secret",
           "status": "not_applicable",
-          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X25519/ML-KEM-768 profile."
         },
         {
           "path": "tests/AgentTests/DoubleRatchetTests.hs",
           "name": "should agree shared secret using KEM",
           "status": "not_applicable",
-          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X25519/ML-KEM-768 profile."
         },
         {
           "path": "tests/AgentTests/DoubleRatchetTests.hs",
           "name": "should reject proposed KEM in reply",
           "status": "not_applicable",
-          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X25519/ML-KEM-768 profile."
         },
         {
           "path": "tests/AgentTests/DoubleRatchetTests.hs",
           "name": "should allow second proposal in reply",
           "status": "not_applicable",
-          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X25519/ML-KEM-768 profile."
         },
         {
           "path": "tests/AgentTests/DoubleRatchetTests.hs",
           "name": "should fail if reply contains acceptance without proposal",
           "status": "not_applicable",
-          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X25519/ML-KEM-768 profile."
         },
         {
           "path": "tests/AgentTests/DoubleRatchetTests.hs",
           "name": "should serialize and parse public KEM params",
           "status": "not_applicable",
-          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X25519/ML-KEM-768 profile."
         },
         {
           "path": "tests/AgentTests/DoubleRatchetTests.hs",
           "name": "should disable and re-enable KEM",
           "status": "not_applicable",
-          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X25519/ML-KEM-768 profile."
         },
         {
           "path": "tests/AgentTests/DoubleRatchetTests.hs",
           "name": "should disable and re-enable KEM (always set PQEncryption)",
           "status": "not_applicable",
-          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X25519/ML-KEM-768 profile."
         },
         {
           "path": "tests/AgentTests/DoubleRatchetTests.hs",
           "name": "should enable KEM when it was not enabled in handshake",
           "status": "not_applicable",
-          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X25519/ML-KEM-768 profile."
         },
         {
           "path": "tests/AgentTests/DoubleRatchetTests.hs",
           "name": "should enable KEM when it was not enabled in handshake (always set PQEncryption)",
           "status": "not_applicable",
-          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X448/ML-KEM-768 profile."
+          "reason": "Negotiated SNTRUP/X3DH parameters, persistence and version migrations are outside the fixed ephemeral X-Wing setup and mandatory X25519/ML-KEM-768 profile."
         },
         {
           "path": "tests/AgentTests/DoubleRatchetTests.hs",
@@ -1149,7 +1149,7 @@
             "test_kdf_separate_hmacs"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_circl_vectors",
+            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors",
             "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
           ],
           "scope": "Independent vectors cover the selected KDFs; algorithms and labels are not interchangeable."

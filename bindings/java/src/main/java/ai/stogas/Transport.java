@@ -9,6 +9,8 @@ import java.lang.ref.Cleaner;
 import java.lang.ref.Reference;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 
 /** Reusable confidential transport. Configure your HTTP/OpenAI client with baseUrl(); the caller owns retry policy. */
@@ -104,9 +106,13 @@ public final class Transport implements AutoCloseable {
     private static final class Loaded {
         static final Api API = load();
         static Api load() {
-            if (Native.POINTER_SIZE != 8) throw new UnsupportedOperationException("A 64-bit JVM is required.");
             try {
-                var library = Native.extractFromResourcePath("/" + Platform.RESOURCE_PREFIX + "/" + System.mapLibraryName("stogas_verifier_ffi"), Transport.class.getClassLoader());
+                // Android installs ABI-selected AAR libraries in its native search path.
+                if (Platform.isAndroid()) return Native.load("stogas_verifier_ffi", Api.class);
+                String resource = Platform.RESOURCE_PREFIX;
+                if (Platform.isLinux() && new String(Files.readAllBytes(Path.of("/proc/self/maps")), StandardCharsets.US_ASCII).contains("ld-musl-"))
+                    resource = resource.replace("linux-", "linux-musl-");
+                var library = Native.extractFromResourcePath("/" + resource + "/" + System.mapLibraryName("stogas_verifier_ffi"), Transport.class.getClassLoader());
                 return Native.load(library.getAbsolutePath(), Api.class);
             } catch (IOException error) { throw new IllegalStateException("No Stogas native library for this platform.", error); }
         }

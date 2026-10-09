@@ -1,4 +1,5 @@
 /target
+/tests/security/probe/target
 /examples/*/target
 /examples/*/vendor
 /pkg
@@ -38,3 +39,7 @@ __pycache__/
 /bindings/java/target
 /bindings/swift/.build
 /bindings/swift/CStogas.artifactbundle
+/bindings/swift/CStogas.xcframework
+/bindings/android/.gradle
+/bindings/android/build
+/release/out

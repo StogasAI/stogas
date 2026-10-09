@@ -14,6 +14,7 @@ export async function runLoad(
 		requests = 128,
 		requestBytes = 4096,
 		responseBytes = 4096,
+		recordBytes = 65_515,
 		ackDelayMs = 0,
 		providerDelayMs = 0,
 		slowReaderMs = 0,
@@ -23,7 +24,9 @@ export async function runLoad(
 	} = {}
 ) {
 	const peers = new Map();
-	const recordBytes = 65_515; // Wire record ceiling minus length, type and authentication tag.
+	// Vary server fragmentation without changing the real client record codec.
+	if (!Number.isInteger(recordBytes) || recordBytes < 1 || recordBytes > 65_515)
+		throw new RangeError('recordBytes exceeds the encrypted record bound');
 	const counts = {
 		setups: 0,
 		freed: 0,

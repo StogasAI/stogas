@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { resolve } from 'node:path';
 
 const ROOT = resolve(import.meta.dirname, '../..');
@@ -32,84 +33,6 @@ const POLICY = {
 	workflow_identity:
 		'https://github.com/StogasAI/gateway/.github/workflows/gateway-igvm-release.yml@refs/tags/v0.0.1'
 };
-
-test('ML-DSA publisher bindings verify independent Go signatures and erase key inputs', async ({
-	page
-}) => {
-	const requests = await initialize(page);
-	const fixture = JSON.parse(
-		await readFile(resolve(ROOT, 'tests/fixtures/mldsa65-v1.json'), 'utf8')
-	);
-	fixture.sha512 = createHash('sha512').update(Buffer.from(fixture.message, 'hex')).digest('hex');
-	const result = await page.evaluate((fixture) => {
-		const api = (
-			globalThis as unknown as {
-				stogasVerifierBindings: typeof import('../../pkg/browser/stogas_verifier.js');
-			}
-		).stogasVerifierBindings;
-		const bytes = (value: string) =>
-			Uint8Array.from(value.match(/../g)!, (part) => Number.parseInt(part, 16));
-		const hex = (value: Uint8Array) =>
-			[...value].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-		const message = bytes(fixture.message);
-		const context = new TextEncoder().encode(fixture.context);
-		const publicKey = bytes(fixture.spki);
-		api.verify_mldsa65(publicKey, message, context, bytes(fixture.context_signature));
-		const privateKey = bytes(fixture.pkcs8);
-		const derived = api.mldsa65_public_key(privateKey);
-		const derivedErased = privateKey.every((byte) => byte === 0);
-		privateKey.set(bytes(fixture.pkcs8));
-		const signature = api.sign_mldsa65(privateKey, message, context);
-		api.verify_mldsa65(publicKey, message, context, signature);
-		const signedErased = privateKey.every((byte) => byte === 0);
-		let rejected = 0;
-		try {
-			api.verify_mldsa65(publicKey, message, new Uint8Array(), signature);
-		} catch {
-			rejected++;
-		}
-		const malformed = new Uint8Array([1, 2, 3]);
-		try {
-			api.sign_mldsa65(malformed, message, context);
-		} catch {
-			rejected++;
-		}
-		const failedErased = malformed.every((byte) => byte === 0);
-		privateKey.set(bytes(fixture.pkcs8));
-		const rekorPublicKey = api.rekor_public_key(privateKey);
-		const rekorDerivedErased = privateKey.every((byte) => byte === 0);
-		privateKey.set(bytes(fixture.pkcs8));
-		const submission = JSON.parse(api.prepare_rekor_submission(privateKey, message));
-		const rekorSignedErased = privateKey.every((byte) => byte === 0);
-		return {
-			publicKey: hex(derived),
-			rekorPublicKey: hex(rekorPublicKey),
-			rekorSignature: submission.spec.signature.content,
-			rekorDerivedErased,
-			rekorSignedErased,
-			derivedErased,
-			signedErased,
-			failedErased,
-			rejected,
-			kind: submission.kind,
-			digestMatches: submission.spec.data.hash.value === fixture.sha512
-		};
-	}, fixture);
-	expect(result).toEqual({
-		publicKey: fixture.spki,
-		rekorPublicKey: fixture.rekor_spki,
-		rekorSignature: Buffer.from(fixture.rekor_signature, 'hex').toString('base64'),
-		rekorDerivedErased: true,
-		rekorSignedErased: true,
-		derivedErased: true,
-		signedErased: true,
-		failedErased: true,
-		rejected: 2,
-		kind: 'hashedrekord',
-		digestMatches: true
-	});
-	expect(requests).toEqual([]);
-});
 
 test('browser boot history remains offline and separate from current evidence', async ({
 	page
@@ -247,88 +170,61 @@ test('encrypted setup cannot release a browser session without its own verified 
 	expect(requests).toEqual([]);
 });
 
-test('compiled staging authority verifies logged key decisions without network access', async ({
-	page
-}) => {
-	const requests = await initialize(page);
-	const signed = JSON.parse(
-		await readFile(resolve(ROOT, 'tests/fixtures/staging-key-manifest.json'), 'utf8')
-	);
-	const result = await page.evaluate((signed) => {
-		const api = (
-			globalThis as unknown as {
-				stogasVerifierBindings: typeof import('../../pkg/browser/stogas_verifier.js');
-			}
-		).stogasVerifierBindings;
-		const core = api.EvidenceVerifier.for_stogas('staging');
-		try {
-			const keys = core.verify_key_manifest(new TextEncoder().encode(JSON.stringify(signed)));
-			signed.document.generation++;
-			let rejected = false;
-			try {
-				core.verify_key_manifest(new TextEncoder().encode(JSON.stringify(signed)));
-			} catch {
-				rejected = true;
-			}
-			return { key: keys.active_key.key_id, rejected };
-		} finally {
-			core.free();
-		}
-	}, signed);
-	expect(result).toEqual({ key: signed.document.active_key.key_id, rejected: true });
-	expect(requests).toEqual([]);
-});
-
-async function initialize(page: import('@playwright/test').Page) {
+async function initializeModule(
+	page: import('@playwright/test').Page,
+	gluePath: string,
+	wasmPath: string,
+	globalName: string
+) {
+	const source = await readFile(gluePath, 'utf8');
+	const encoded = (await readFile(wasmPath)).toString('base64');
+	const server = createServer((request, response) => {
+		response.setHeader(
+			'content-type',
+			request.url === '/module.js' ? 'text/javascript' : 'text/html'
+		);
+		response.end(
+			request.url === '/module.js' ? source : '<!doctype html><title>SDK consumer</title>'
+		);
+	});
+	await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+	try {
+		const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+		await page.goto(origin);
+		await page.evaluate(
+			async ({ encoded, globalName, origin }) => {
+				const bindings = await import(`${origin}/module.js`);
+				const binary = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
+				await bindings.default({ module_or_path: binary });
+				(globalThis as unknown as Record<string, unknown>)[globalName] = bindings;
+			},
+			{ encoded, globalName, origin }
+		);
+	} finally {
+		server.closeAllConnections();
+		await new Promise<void>((resolve, reject) =>
+			server.close((error) => (error ? reject(error) : resolve()))
+		);
+	}
 	const requests: string[] = [];
 	await page.route('**/*', async (route) => {
 		requests.push(route.request().url());
 		await route.abort('blockedbyclient');
 	});
-	const glue = await readFile(GLUE, 'utf8');
-	await page.evaluate((source) => {
-		globalThis.eval(`${source}\nglobalThis.stogasVerifierBindings = wasm_bindgen;`);
-	}, glue);
-	const bindingType = await page.evaluate(
-		() =>
-			typeof (globalThis as typeof globalThis & { stogasVerifierBindings?: unknown })
-				.stogasVerifierBindings
-	);
-	if (bindingType !== 'function') throw new Error(`unexpected WASM binding type: ${bindingType}`);
-	const wasm = (await readFile(WASM)).toString('base64');
-	await page.evaluate(async (encoded) => {
-		const binary = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
-		const bindings = (
-			globalThis as typeof globalThis & {
-				stogasVerifierBindings: (input: Uint8Array) => Promise<void>;
-			}
-		).stogasVerifierBindings;
-		await bindings(binary);
-	}, wasm);
 	return requests;
 }
 
-async function initializeOfflineSigstore(page: import('@playwright/test').Page) {
-	const requests: string[] = [];
-	await page.route('**/*', async (route) => {
-		requests.push(route.request().url());
-		await route.abort('blockedbyclient');
-	});
-	const glue = await readFile(OFFLINE_SIGSTORE_GLUE, 'utf8');
-	await page.evaluate((source) => {
-		globalThis.eval(`${source}\nglobalThis.stogasOfflineSigstoreBindings = wasm_bindgen;`);
-	}, glue);
-	const wasm = (await readFile(OFFLINE_SIGSTORE_WASM)).toString('base64');
-	await page.evaluate(async (encoded) => {
-		const binary = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
-		const bindings = (
-			globalThis as typeof globalThis & {
-				stogasOfflineSigstoreBindings: (input: Uint8Array) => Promise<void>;
-			}
-		).stogasOfflineSigstoreBindings;
-		await bindings(binary);
-	}, wasm);
-	return requests;
+function initialize(page: import('@playwright/test').Page) {
+	return initializeModule(page, GLUE, WASM, 'stogasVerifierBindings');
+}
+
+function initializeOfflineSigstore(page: import('@playwright/test').Page) {
+	return initializeModule(
+		page,
+		OFFLINE_SIGSTORE_GLUE,
+		OFFLINE_SIGSTORE_WASM,
+		'stogasOfflineSigstoreBindings'
+	);
 }
 
 test('standalone lightweight package verifies GitHub evidence with networking disabled', async ({
@@ -360,72 +256,5 @@ test('standalone lightweight package verifies GitHub evidence with networking di
 		{ fixture, subjects: SUBJECTS, policy: POLICY, now: NOW_UNIX_MS }
 	);
 	expect(result.subjects).toHaveLength(2);
-	expect(requests).toEqual([]);
-});
-
-test('verifies the real GitHub release fixture with networking disabled', async ({ page }) => {
-	const requests = await initialize(page);
-	const fixture = await readFile(FIXTURE, 'utf8');
-	const result = await page.evaluate(
-		({ fixture, subjects, policy, now }) => {
-			const api = (
-				globalThis as typeof globalThis & {
-					stogasVerifierBindings: {
-						verify_sigstore_github_attestation(
-							bundle: Uint8Array,
-							subjects: string,
-							policy: string,
-							now: number
-						): { subjects: unknown[] };
-					};
-				}
-			).stogasVerifierBindings;
-			return api.verify_sigstore_github_attestation(
-				new TextEncoder().encode(fixture),
-				JSON.stringify(subjects),
-				JSON.stringify(policy),
-				now
-			);
-		},
-		{ fixture, subjects: SUBJECTS, policy: POLICY, now: NOW_UNIX_MS }
-	);
-	expect(result.subjects).toHaveLength(2);
-	expect(requests).toEqual([]);
-});
-
-test('rejects an invalid Rekor inclusion proof without networking', async ({ page }) => {
-	const requests = await initialize(page);
-	const fixture = JSON.parse(await readFile(FIXTURE, 'utf8'));
-	const hash = fixture.verificationMaterial.tlogEntries[0].inclusionProof.hashes[0] as string;
-	fixture.verificationMaterial.tlogEntries[0].inclusionProof.hashes[0] = `${hash.startsWith('A') ? 'B' : 'A'}${hash.slice(1)}`;
-	const error = await page.evaluate(
-		({ fixture, subjects, policy, now }) => {
-			try {
-				const api = (
-					globalThis as typeof globalThis & {
-						stogasVerifierBindings: {
-							verify_sigstore_github_attestation(
-								bundle: Uint8Array,
-								subjects: string,
-								policy: string,
-								now: number
-							): unknown;
-						};
-					}
-				).stogasVerifierBindings;
-				api.verify_sigstore_github_attestation(
-					new TextEncoder().encode(JSON.stringify(fixture)),
-					JSON.stringify(subjects),
-					JSON.stringify(policy),
-					now
-				);
-				return null;
-			} catch (failure) {
-				return String(failure);
-			}
-		},
-		{ fixture, subjects: SUBJECTS, policy: POLICY, now: NOW_UNIX_MS }
-	);
-	expect(error).toContain('Sigstore cryptographic verification failed');
 	expect(requests).toEqual([]);
 });

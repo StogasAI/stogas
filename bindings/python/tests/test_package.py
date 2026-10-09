@@ -20,7 +20,7 @@ ROOT = {"root_key_id": _root["key_id"], "root_public_key": _root["public_key"]}
 class PackageTests(unittest.TestCase):
     def test_malformed_evidence_fails_closed(self):
         verifier = EvidenceVerifier(**ROOT)
-        for method in (verifier.refresh, verifier.verify_key_manifest, verifier.verify_evidence_archive):
+        for method in (verifier.refresh, verifier.verify_evidence_archive):
             with self.subTest(method=method.__name__):
                 with self.assertRaises(VerificationError) as caught:
                     method(b'{"body":')

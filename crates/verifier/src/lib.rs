@@ -1,14 +1,18 @@
 //! Deterministic, networkless verification for Stogas confidential bundles.
 
 pub(crate) use stogas_offline_sigstore::strict_json;
+mod kem;
 mod types;
 
 pub mod approvals;
 pub mod attestation;
 pub mod channel;
 pub mod evidence;
+#[cfg(feature = "gateway")]
+pub mod gateway;
 #[cfg(feature = "snp")]
 pub mod receipt;
+pub mod sdk_release;
 pub mod secret_release;
 pub mod signing;
 pub use types::*;

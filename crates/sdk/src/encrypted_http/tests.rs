@@ -1,0 +1,709 @@
+use super::*;
+use axum::{Router, body::to_bytes, routing::post};
+use sha2::{Digest as _, Sha256};
+use std::time::Duration;
+use stogas_verifier::{approvals::Environment, channel::setup::PendingSetup};
+
+mod clients;
+
+#[path = "../../../../tests/support/channel.rs"]
+mod channel_fixture;
+pub use channel_fixture::session;
+
+// These tests exercise HTTP carriage against the real server implementation.
+// Independent primitive and wire interoperability lives in the core/Go suites.
+pub type SharedServer = Arc<std::sync::Mutex<channel::ServerSession>>;
+
+pub fn shared(server: channel::ServerSession) -> SharedServer {
+    Arc::new(std::sync::Mutex::new(server))
+}
+
+pub struct Records {
+    session: SharedServer,
+    number: u64,
+    reader: Option<channel::ServerReader>,
+    writer: Option<channel::ServerWriter>,
+}
+impl Records {
+    pub(crate) fn new(session: &SharedServer, number: u64) -> Self {
+        Self {
+            session: Arc::clone(session),
+            number,
+            reader: None,
+            writer: None,
+        }
+    }
+    pub(crate) fn seal(&mut self, kind: Kind, content: &[u8]) -> Vec<u8> {
+        self.writer.as_mut().unwrap().seal(kind, content).unwrap()
+    }
+    pub(crate) fn open(&mut self, record: &[u8]) -> (Kind, Vec<u8>) {
+        let mut encoded = record.to_vec();
+        if let Some(reader) = self.reader.as_mut() {
+            let (kind, plain) = reader.open(&mut encoded).unwrap();
+            (kind, plain.to_vec())
+        } else {
+            let (reader, writer, plain) = self
+                .session
+                .lock()
+                .unwrap()
+                .accept_start(self.number, &mut encoded, 0)
+                .unwrap();
+            self.reader = Some(reader);
+            self.writer = Some(writer);
+            (Kind::Metadata, plain.to_vec())
+        }
+    }
+    fn from_request(session: &SharedServer, wire: &[u8]) -> Self {
+        let mut records = Self::new(
+            session,
+            u64::from_be_bytes(wire[38..46].try_into().unwrap()),
+        );
+        let size = channel::record_size(&wire[46..50]).unwrap();
+        records.open(&wire[46..46 + size]);
+        records
+    }
+}
+
+fn http() -> Client {
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(rustls::RootCertStore::empty())
+    .with_no_client_auth();
+    Client::builder()
+        .use_preconfigured_tls(config)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+}
+fn deadline() -> Instant {
+    Instant::now() + Duration::from_secs(10)
+}
+pub struct Server {
+    pub(crate) endpoint: Url,
+    task: tokio::task::JoinHandle<()>,
+}
+impl Server {
+    pub(crate) async fn new(app: Router) -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = Url::parse(&format!(
+            "http://{}/v1/session",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        Self {
+            endpoint,
+            task: tokio::spawn(async move { axum::serve(listener, app).await.unwrap() }),
+        }
+    }
+}
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+#[tokio::test]
+async fn acknowledged_response_waits_for_provider_status_and_preserves_retry_headers() {
+    for (status, closing) in [(200, false), (429, false), (503, false), (503, true)] {
+        let (mut session, server) = session();
+        let server = shared(server);
+        let provider = Arc::new(Notify::new());
+        let waiting = Arc::clone(&provider);
+        let server = Server::new(Router::new().route(
+            "/v1/session",
+            post(move |request: Request<Body>| {
+                let waiting = Arc::clone(&waiting);
+                async move {
+                    let wire = to_bytes(request.into_body(), 1024 * 1024).await.unwrap();
+                    let mut records = Records::from_request(&server, &wire);
+                    let ack = records.seal(Kind::Keepalive, &[]);
+                    let metadata = serde_json::to_vec(&json!({
+                        "status": status,
+                        "closing": closing,
+                        "headers": {"content-type": "application/json", "retry-after": "7", "cache-control": "no-store"}
+                    })).unwrap();
+                    let (output, receiver) = tokio::sync::mpsc::channel(1);
+                    tokio::spawn(async move {
+                        output.send(Ok::<_, std::io::Error>(ack)).await.unwrap();
+                        waiting.notified().await;
+                        for (kind, bytes) in [
+                            (Kind::Keepalive, &[][..]),
+                            (Kind::Metadata, metadata.as_slice()),
+                            (Kind::Data, br#"{"message":"provider result"}"#.as_slice()),
+                            (Kind::Finished, &[][..]),
+                        ] {
+                            output.send(Ok(records.seal(kind, bytes))).await.unwrap();
+                        }
+                    });
+                    Response::builder().header(header::CONTENT_TYPE, CONTENT_TYPE)
+                        .body(Body::from_stream(stream::unfold(receiver, |mut receiver| async {
+                            receiver.recv().await.map(|item| (item, receiver))
+                        }))).unwrap()
+                }
+            }),
+        )).await;
+        let acknowledged = Arc::new(Notify::new());
+        let ack = Arc::clone(&acknowledged);
+        let endpoint = server.endpoint.clone();
+        let exchange = session.request().unwrap();
+        let sending = tokio::spawn(async move {
+            send(
+                &http(),
+                endpoint,
+                "owner",
+                exchange,
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .body(Bytes::from_static(br#"{"stream":true}"#))
+                    .unwrap(),
+                deadline(),
+                Some(ack),
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), acknowledged.notified())
+            .await
+            .unwrap();
+        assert!(
+            !sending.is_finished(),
+            "an ACK must not expose an HTTP status"
+        );
+        provider.notify_one();
+        let response = sending.await.unwrap().unwrap();
+        assert_eq!(response.status().as_u16(), status);
+        assert_eq!(
+            response.extensions().get::<SessionClosing>().is_some(),
+            closing
+        );
+        assert_eq!(response.headers()[header::RETRY_AFTER], "7");
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(
+            to_bytes(response.into_body(), 1024).await.unwrap(),
+            br#"{"message":"provider result"}"#.as_slice()
+        );
+    }
+}
+
+#[tokio::test]
+async fn binary_upload_streams_bounded_records_and_authenticates_fragmented_response() {
+    let (mut session, server) = session();
+    let id = *session.id();
+    let server = shared(server);
+    let request_body = Bytes::from(vec![33; 3 * MAX_RECORD_PLAINTEXT + 13]);
+    let expected = request_body.clone();
+    let app = Router::new().route(
+        "/v1/session",
+        post(move |request: Request<Body>| {
+            let expected = expected.clone();
+            async move {
+                assert_eq!(request.headers()["stogas-node-id"], "owner");
+                assert!(!request.headers().contains_key("authorization"));
+                let wire = to_bytes(request.into_body(), 1024 * 1024).await.unwrap();
+                assert_eq!(&wire[..6], b"STGS\x01\x03");
+                assert_eq!(&wire[6..38], &id);
+                assert_eq!(&wire[38..46], &0_u64.to_be_bytes());
+                let mut records = Records::new(&server, 0);
+                let mut input = &wire[46..];
+                let mut data = Vec::new();
+                let mut kinds = Vec::new();
+                while !input.is_empty() {
+                    let length = channel::record_size(&input[..4]).unwrap();
+                    let (kind, bytes) = records.open(&input[..length]);
+                    kinds.push(kind);
+                    match kind {
+                        Kind::Metadata => {
+                            let value: Value = serde_json::from_slice(&bytes).unwrap();
+                            assert_eq!(value["headers"]["authorization"], "Bearer inside");
+                            assert_eq!(value["path"], "/v1/chat/completions");
+                            assert!(value["headers"].get("content-length").is_none());
+                        }
+                        Kind::Data => data.extend_from_slice(&bytes),
+                        Kind::Finished => assert!(bytes.is_empty()),
+                        Kind::Keepalive => panic!("unexpected upload keepalive"),
+                    }
+                    input = &input[length..];
+                }
+                assert_eq!(data, expected);
+                assert_eq!(
+                    kinds,
+                    [
+                        Kind::Metadata,
+                        Kind::Data,
+                        Kind::Data,
+                        Kind::Data,
+                        Kind::Data,
+                        Kind::Finished
+                    ]
+                );
+                let wire = [
+                    records.seal(Kind::Keepalive, &[]),
+                    records.seal(
+                        Kind::Metadata,
+                        br#"{"status":200,"headers":{"Content-Type":"text/plain"}}"#,
+                    ),
+                    records.seal(Kind::Data, b"verified content"),
+                    records.seal(Kind::Finished, &[]),
+                ]
+                .concat();
+                Response::builder()
+                    .header(header::CONTENT_TYPE, CONTENT_TYPE)
+                    .body(Body::from_stream(stream::iter(wire.into_iter().map(
+                        |byte| Ok::<_, std::io::Error>(Bytes::from(vec![byte])),
+                    ))))
+                    .unwrap()
+            }
+        }),
+    );
+    let server = Server::new(app).await;
+    let request = Request::post("/v1/chat/completions")
+        .header("authorization", "Bearer inside")
+        .header("content-length", request_body.len())
+        .body(request_body)
+        .unwrap();
+    let response = send(
+        &http(),
+        server.endpoint.clone(),
+        "owner",
+        session.request().unwrap(),
+        request,
+        deadline(),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "text/plain");
+    assert_eq!(
+        to_bytes(response.into_body(), 1024).await.unwrap(),
+        "verified content"
+    );
+}
+
+#[tokio::test]
+async fn failures_never_return_successful_eof_or_repeat_submission() {
+    for case in [
+        "truncated",
+        "trailing",
+        "tag",
+        "metadata",
+        "empty-body",
+        "outer-429",
+        "outer-503",
+        "outer-type",
+        "stall",
+    ] {
+        let (mut session, server) = session();
+        let server = shared(server);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let app = Router::new().route(
+            "/v1/session",
+            post(move |request: Request<Body>| {
+                let observed = Arc::clone(&observed);
+                async move {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    let incoming = to_bytes(request.into_body(), 65536).await.unwrap();
+                    let mut records = Records::from_request(&server, &incoming);
+                    let metadata: &[u8] = match case {
+                        "metadata" => br#"{"status":200,"headers":{"set-cookie":"unsafe"}}"#,
+                        "empty-body" => br#"{"status":204,"headers":{}}"#,
+                        _ => br#"{"status":200,"headers":{}}"#,
+                    };
+                    let mut wire = records.seal(Kind::Metadata, metadata);
+                    wire.extend(records.seal(Kind::Data, b"content"));
+                    if case != "truncated" {
+                        wire.extend(records.seal(Kind::Finished, &[]));
+                    }
+                    if case == "trailing" {
+                        wire.push(0);
+                    }
+                    if case == "tag" {
+                        *wire.last_mut().unwrap() ^= 1;
+                    }
+                    let body = if case == "stall" {
+                        use futures_util::StreamExt as _;
+                        Body::from_stream(
+                            stream::once(async { Ok::<_, std::io::Error>(Bytes::from(wire)) })
+                                .chain(stream::pending()),
+                        )
+                    } else {
+                        Body::from(wire)
+                    };
+                    Response::builder()
+                        .status(match case {
+                            "outer-429" => 429,
+                            "outer-503" => 503,
+                            _ => 200,
+                        })
+                        .header(
+                            header::CONTENT_TYPE,
+                            if case == "outer-type" {
+                                "text/html"
+                            } else {
+                                CONTENT_TYPE
+                            },
+                        )
+                        .body(body)
+                        .unwrap()
+                }
+            }),
+        );
+        let server = Server::new(app).await;
+        let request = Request::post("/v1/responses")
+            .body(Bytes::from_static(b"{}"))
+            .unwrap();
+        let limit = deadline();
+        let result = send(
+            &http(),
+            server.endpoint.clone(),
+            "owner",
+            session.request().unwrap(),
+            request,
+            limit,
+            None,
+        )
+        .await;
+        if case == "stall" {
+            let response = result.expect("stalled body must return metadata before the deadline");
+            // Start the deadline check only after TCP submission and metadata arrive.
+            tokio::time::pause();
+            tokio::time::advance(limit - Instant::now() + Duration::from_millis(1)).await;
+            assert!(to_bytes(response.into_body(), 1024).await.is_err());
+            tokio::time::resume();
+        } else if matches!(case, "outer-429" | "outer-503") {
+            assert!(matches!(result, Err(Error::Response)), "case {case}");
+        } else if let Ok(response) = result {
+            assert!(
+                to_bytes(response.into_body(), 1024).await.is_err(),
+                "case {case}"
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "case {case}");
+    }
+}
+
+#[test]
+fn metadata_rejects_transport_overrides_and_unsupported_paths_before_submission() {
+    for (method, path, headers) in [
+        ("GET", "/v1/responses", vec![]),
+        ("POST", "/v1/responses?query=x", vec![]),
+        ("POST", "/v1/files", vec![]),
+        ("POST", "/v1/responses", vec![("stogas-node-id", "forged")]),
+        (
+            "POST",
+            "/v1/responses",
+            vec![("authorization", "a"), ("authorization", "b")],
+        ),
+    ] {
+        let mut request = Request::builder().method(method).uri(path);
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+        assert!(request_metadata(&request.body(Bytes::new()).unwrap()).is_err());
+    }
+    for metadata in [
+        br#"{"status":100,"headers":{}}"#.as_slice(),
+        br#"{"status":200,"headers":{"Content-Type":"a","content-type":"b"}}"#,
+        br#"{"status":200,"headers":{},"extra":true}"#,
+        br#"{"status":503,"headers":{},"closing":"true"}"#,
+        br#"{"status":503,"headers":{},"closing":null}"#,
+    ] {
+        assert!(response_metadata(metadata).is_err());
+    }
+}
+
+// External client serializers use this test-only HTTP bridge. Production clients
+// always call complete_verified; this fixture pins synthetic boot bytes instead.
+async fn client_fixture_proxy<F, Fut>(acquire: F, endpoint: Url, node_id: String) -> Server
+where
+    F: Fn() -> Fut + Clone + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<channel::ClientRequest, Response<Body>>> + Send,
+{
+    let http = http();
+    let prefix = format!("/{}", hex::encode(rand::random::<[u8; 32]>()));
+    let route = format!("{prefix}/{{*path}}");
+    let app = Router::new().route(
+        &route,
+        axum::routing::any(move |request: Request<Body>| {
+            let acquire = acquire.clone();
+            let endpoint = endpoint.clone();
+            let node_id = node_id.clone();
+            let http = http.clone();
+            let prefix = prefix.clone();
+            async move {
+                let (mut parts, body) = request.into_parts();
+                parts.uri = parts
+                    .uri
+                    .path()
+                    .strip_prefix(&prefix)
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                for name in [header::HOST, header::CONNECTION, header::TRANSFER_ENCODING] {
+                    parts.headers.remove(name);
+                }
+                let bytes = to_bytes(body, MAX_REQUEST_BYTES).await.unwrap();
+                let exchange = match acquire().await {
+                    Ok(exchange) => exchange,
+                    Err(response) => return response,
+                };
+                send(
+                    &http,
+                    endpoint,
+                    &node_id,
+                    exchange,
+                    Request::from_parts(parts, bytes),
+                    Instant::now() + Duration::from_mins(1),
+                    None,
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    Response::builder()
+                        .status(StatusCode::BAD_GATEWAY)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(r#"{"error":{"message":"encrypted transport failed","type":"transport_error"}}"#))
+                        .unwrap()
+                })
+            }
+        }),
+    );
+    let mut server = Server::new(app).await;
+    server
+        .endpoint
+        .set_path(&format!("{}/v1", route.trim_end_matches("/{*path}")));
+    server
+}
+
+async fn client_fixture_request(
+    endpoint: Url,
+    fixture: Value,
+) -> Result<channel::ClientRequest, Response<Body>> {
+    let mut pending = PendingSetup::new(Environment::Production).unwrap();
+    let response = http()
+        .post(endpoint.clone())
+        .header(header::CONTENT_TYPE, CONTENT_TYPE)
+        .body(pending.hello().to_vec())
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .unwrap();
+    if response.status() != StatusCode::OK {
+        let status = response.status();
+        let content_type = response.headers().get(header::CONTENT_TYPE).cloned();
+        let body = response.bytes().await.unwrap();
+        let mut response = Response::builder().status(status);
+        if let Some(content_type) = content_type {
+            response = response.header(header::CONTENT_TYPE, content_type);
+        }
+        return Err(response.body(Body::from(body)).unwrap());
+    }
+    let response = response.bytes().await.unwrap();
+    assert!(response.len() <= stogas_verifier::channel::setup::MAX_SERVER_SETUP_BYTES);
+    let mut session = pending
+        .complete(&response, |evidence| {
+            assert_eq!(
+                hex::encode(Sha256::digest(evidence.boot_document)),
+                fixture["document_sha256"]
+            );
+            assert_eq!(evidence.boot_inclusion, b"{}");
+            Ok(())
+        })
+        .unwrap();
+    Ok(session.request().unwrap())
+}
+
+#[tokio::test]
+async fn open_source_client_compatibility_proxy() {
+    use base64::Engine as _;
+    if let Ok(upstream) = std::env::var("STOGAS_E2EE_TEST_UPSTREAM") {
+        let endpoint = Url::parse(&upstream).unwrap().join("/v1/session").unwrap();
+        assert_eq!(endpoint.scheme(), "http");
+        assert_eq!(endpoint.host_str(), Some("127.0.0.1"));
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../../../tests/fixtures/node-boot-v1.json"))
+                .unwrap();
+        let report = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(fixture["record"]["report"].as_str().unwrap())
+            .unwrap();
+        let node_id =
+            stogas_verifier::attestation::snp_node_id(report[0x140..0x160].try_into().unwrap());
+        // Serializer conformance does not own session reuse. Acquire for each request
+        // so an idle test bridge cannot retain a server session between long suites.
+        let acquire = {
+            let endpoint = endpoint.clone();
+            move || client_fixture_request(endpoint.clone(), fixture.clone())
+        };
+        let proxy = client_fixture_proxy(acquire, endpoint, node_id).await;
+        println!("STOGAS_E2EE_TEST_BASE_URL={}", proxy.endpoint);
+        tokio::task::spawn_blocking(|| {
+            use std::io::Read as _;
+            std::io::stdin().read_to_end(&mut Vec::new()).unwrap();
+        })
+        .await
+        .unwrap();
+        drop(proxy);
+        return;
+    }
+
+    // Exercise real encrypted carriage and capability routing without the external
+    // Go fixture; an ordinary test run must not silently skip this test.
+    let (session, server) = session();
+    let server = shared(server);
+    let peer = Server::new(Router::new().route(
+        "/v1/session",
+        post(move |request: Request<Body>| async move {
+            let wire = to_bytes(request.into_body(), 65536).await.unwrap();
+            let mut request_records = Records::new(
+                &server,
+                u64::from_be_bytes(wire[38..46].try_into().unwrap()),
+            );
+            let size = channel::record_size(&wire[46..50]).unwrap();
+            let (kind, metadata) = request_records.open(&wire[46..46 + size]);
+            assert_eq!(kind, Kind::Metadata);
+            let metadata: Value = serde_json::from_slice(&metadata).unwrap();
+            assert_eq!(metadata["path"], "/v1/chat/completions");
+            assert_eq!(metadata["headers"]["authorization"], "Bearer fixture");
+            assert!(metadata["headers"].get("host").is_none());
+            let mut records = request_records;
+            Response::builder()
+                .header(header::CONTENT_TYPE, CONTENT_TYPE)
+                .body(Body::from(
+                    [
+                        records.seal(
+                            Kind::Metadata,
+                            br#"{"status":200,"headers":{"Content-Type":"application/json"}}"#,
+                        ),
+                        records.seal(Kind::Data, b"{\"ok\":true}"),
+                        records.seal(Kind::Finished, &[]),
+                    ]
+                    .concat(),
+                ))
+                .unwrap()
+        }),
+    ))
+    .await;
+    let session = Arc::new(std::sync::Mutex::new(session));
+    let proxy = client_fixture_proxy(
+        move || std::future::ready(Ok(session.lock().unwrap().request().unwrap())),
+        peer.endpoint.clone(),
+        "owner".into(),
+    )
+    .await;
+    let response = http()
+        .post(format!("{}/chat/completions", proxy.endpoint))
+        .header(header::AUTHORIZATION, "Bearer fixture")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.text().await.unwrap(), "{\"ok\":true}");
+    assert_eq!(
+        http()
+            .post(proxy.endpoint.join("/v1/chat/completions").unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn sse_terminal_waits_for_authenticated_completion_without_receipt_opt_in() {
+    use http_body_util::BodyExt as _;
+    for fault in ["none", "truncated", "tag", "trailing", "stall"] {
+        let (mut session, server) = session();
+        let server = shared(server);
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let gate = Arc::clone(&release);
+        let app = Router::new().route(
+            "/v1/session",
+            post(move |request: Request<Body>| {
+                let gate = Arc::clone(&gate);
+                async move {
+                    let incoming = to_bytes(request.into_body(), 4096).await.unwrap();
+                    let mut records = Records::from_request(&server, &incoming);
+                    let initial = [
+                        records.seal(
+                            Kind::Metadata,
+                            br#"{"status":200,"headers":{"Content-Type":"text/event-stream"}}"#,
+                        ),
+                        records.seal(Kind::Data, b"data: hello\n\ndata: [DONE]\n\n"),
+                    ]
+                    .concat();
+                    let mut terminal = records.seal(Kind::Finished, &[]);
+                    if fault == "tag" {
+                        *terminal.last_mut().unwrap() ^= 1;
+                    }
+                    if fault == "truncated" {
+                        terminal.clear();
+                    }
+                    if fault == "trailing" {
+                        terminal.push(0);
+                    }
+                    let body = stream::unfold(Some((initial, terminal, gate)), |state| async {
+                        let (initial, terminal, gate) = state?;
+                        if !initial.is_empty() {
+                            return Some((
+                                Ok::<_, std::io::Error>(Bytes::from(initial)),
+                                Some((Vec::new(), terminal, gate)),
+                            ));
+                        }
+                        let _permit = gate.acquire().await.unwrap();
+                        if terminal.is_empty() {
+                            return None;
+                        }
+                        Some((Ok(Bytes::from(terminal)), None))
+                    });
+                    Response::builder()
+                        .header(header::CONTENT_TYPE, CONTENT_TYPE)
+                        .body(Body::from_stream(body))
+                        .unwrap()
+                }
+            }),
+        );
+        let server = Server::new(app).await;
+        let response = send(
+            &http(),
+            server.endpoint.clone(),
+            "owner",
+            session.request().unwrap(),
+            Request::post("/v1/chat/completions")
+                .body(Bytes::from_static(b"{}"))
+                .unwrap(),
+            Instant::now() + Duration::from_secs(1),
+            None,
+        )
+        .await
+        .unwrap();
+        let mut body = response.into_body();
+        let mut before = Vec::new();
+        while !before.ends_with(b"[DONE]") {
+            before.extend_from_slice(&body.frame().await.unwrap().unwrap().into_data().unwrap());
+        }
+        assert_eq!(before, b"data: hello\n\ndata: [DONE]");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), body.frame())
+                .await
+                .is_err()
+        );
+        if fault != "stall" {
+            release.add_permits(1);
+        }
+        let completion = body.frame().await.unwrap();
+        if fault == "none" {
+            assert_eq!(completion.unwrap().into_data().unwrap(), b"\n\n".as_slice());
+            assert!(body.frame().await.is_none());
+        } else {
+            assert!(
+                completion.is_err(),
+                "{fault} released a successful terminal event"
+            );
+        }
+    }
+}

@@ -1,50 +1,61 @@
-//! Post-quantum secret release sealing shared by Control adapters.
+//! Post-quantum boot provisioning: Control seals one envelope to a quote-bound
+//! node key, and only the gateway holding that key opens it.
 
+use crate::kem::XWing;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use hpke::{
-    Deserializable as _, OpModeS, Serializable as _, aead::AesGcm256, kdf::HkdfSha256, kem::XWing,
-    setup_sender,
+    Deserializable as _, OpModeS, Serializable as _, aead::AesGcm256, kdf::HkdfSha256, setup_sender,
 };
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub const PROVISIONING_SCHEMA: &str = "stogas.boot-provisioning.v1";
 const HPKE_INFO: &[u8] = b"stogas.secret-release.v1";
 const XWING_PUBLIC_KEY_BYTES: usize = 1_216;
-const MAX_AAD_BYTES: usize = 64 * 1024;
+#[cfg(feature = "gateway")]
+const ENCAPSULATED_KEY_BYTES: usize = 1_120;
 const MAX_SECRET_BYTES: usize = 64 * 1024;
 
-/// One X-Wing HPKE ciphertext for a quote-bound node key.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SealedSecret {
-    /// Serialized X-Wing encapsulated key.
-    pub encapsulated_key: Vec<u8>,
-    /// AES-256-GCM ciphertext and authentication tag.
-    pub ciphertext: Vec<u8>,
+/// One X-Wing HPKE delivery bound to an exact boot document digest.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Provisioning {
+    pub schema: String,
+    pub boot_sha256: String,
+    /// Unpadded base64url X-Wing encapsulated key.
+    pub encapsulated_key: String,
+    /// Unpadded base64url AES-256-GCM ciphertext and tag.
+    pub ciphertext: String,
 }
 
-/// Secret release sealing failure.
+/// Provisioning failure. Messages contain no key or plaintext material.
 #[derive(Debug, Error)]
 pub enum Error {
-    /// The quote-bound recipient key, associated data, or secret is invalid.
-    #[error("invalid secret release input: {0}")]
+    /// The recipient key, envelope or secret is invalid.
+    #[error("invalid boot provisioning: {0}")]
     InvalidInput(&'static str),
-    /// HPKE setup or encryption failed.
-    #[error("secret release encryption failed")]
+    /// HPKE encryption failed.
+    #[error("boot provisioning encryption failed")]
     Crypto,
+    /// The envelope does not authenticate for this recipient and boot.
+    #[error("boot provisioning authentication failed")]
+    Authentication,
 }
 
-/// Seal one secret with X-Wing, HKDF-SHA-256, and AES-256-GCM.
+/// Seal one boot's provisioning with X-Wing, HKDF-SHA-256 and AES-256-GCM.
 ///
 /// # Errors
-///
-/// Returns an error for an invalid X-Wing key, an empty or oversized input, or a cryptographic
-/// failure.
-pub fn seal(public_key: &[u8], aad: &[u8], plaintext: &[u8]) -> Result<SealedSecret, Error> {
+/// Rejects an invalid X-Wing key or an empty or oversized secret, and reports
+/// cryptographic failure.
+pub fn seal_provisioning(
+    public_key: &[u8],
+    boot_sha256: &[u8; 32],
+    plaintext: &[u8],
+) -> Result<Provisioning, Error> {
     if public_key.len() != XWING_PUBLIC_KEY_BYTES {
         return Err(Error::InvalidInput(
             "X-Wing public key must contain 1216 bytes",
         ));
-    }
-    if aad.is_empty() || aad.len() > MAX_AAD_BYTES {
-        return Err(Error::InvalidInput("associated data has an invalid size"));
     }
     if plaintext.is_empty() || plaintext.len() > MAX_SECRET_BYTES {
         return Err(Error::InvalidInput("secret has an invalid size"));
@@ -54,11 +65,74 @@ pub fn seal(public_key: &[u8], aad: &[u8], plaintext: &[u8]) -> Result<SealedSec
     let (encapsulated_key, mut sender) =
         setup_sender::<AesGcm256, HkdfSha256, XWing>(&OpModeS::Base, &public_key, HPKE_INFO)
             .map_err(|_| Error::Crypto)?;
-    let ciphertext = sender.seal(plaintext, aad).map_err(|_| Error::Crypto)?;
-    Ok(SealedSecret {
-        encapsulated_key: encapsulated_key.to_bytes().to_vec(),
-        ciphertext,
+    let ciphertext = sender
+        .seal(plaintext, &associated_data(boot_sha256))
+        .map_err(|_| Error::Crypto)?;
+    Ok(Provisioning {
+        schema: PROVISIONING_SCHEMA.into(),
+        boot_sha256: hex::encode(boot_sha256),
+        encapsulated_key: URL_SAFE_NO_PAD.encode(encapsulated_key.to_bytes()),
+        ciphertext: URL_SAFE_NO_PAD.encode(ciphertext),
     })
+}
+
+/// Open the envelope for this boot. The caller validates the plaintext's contents.
+#[cfg(feature = "gateway")]
+pub(crate) fn open_provisioning(
+    private_key: &crate::kem::PrivateKey,
+    boot_sha256: &[u8; 32],
+    envelope: &[u8],
+) -> Result<zeroize::Zeroizing<Vec<u8>>, Error> {
+    use hpke::{OpModeR, setup_receiver};
+    let envelope: Provisioning = serde_json::from_value(
+        crate::strict_json::from_slice(envelope)
+            .map_err(|_| Error::InvalidInput("envelope encoding"))?,
+    )
+    .map_err(|_| Error::InvalidInput("envelope fields"))?;
+    if envelope.schema != PROVISIONING_SCHEMA || envelope.boot_sha256 != hex::encode(boot_sha256) {
+        return Err(Error::InvalidInput("envelope belongs to another boot"));
+    }
+    let encapsulated_key = decode(&envelope.encapsulated_key, ENCAPSULATED_KEY_BYTES)?;
+    let ciphertext = decode(&envelope.ciphertext, MAX_SECRET_BYTES + 16)?;
+    if encapsulated_key.len() != ENCAPSULATED_KEY_BYTES || ciphertext.len() <= 16 {
+        return Err(Error::InvalidInput("envelope field size"));
+    }
+    let encapsulated_key = <XWing as hpke::Kem>::EncappedKey::from_bytes(&encapsulated_key)
+        .map_err(|_| Error::InvalidInput("encapsulated key"))?;
+    let mut recipient = setup_receiver::<AesGcm256, HkdfSha256, XWing>(
+        &OpModeR::Base,
+        private_key,
+        &encapsulated_key,
+        HPKE_INFO,
+    )
+    .map_err(|_| Error::Authentication)?;
+    recipient
+        .open(&ciphertext, &associated_data(boot_sha256))
+        .map(zeroize::Zeroizing::new)
+        .map_err(|_| Error::Authentication)
+}
+
+// Canonical JSON of the envelope's public binding, with a final newline.
+fn associated_data(boot_sha256: &[u8; 32]) -> Vec<u8> {
+    format!(
+        "{{\"boot_sha256\":\"{}\",\"schema\":\"{PROVISIONING_SCHEMA}\"}}\n",
+        hex::encode(boot_sha256)
+    )
+    .into_bytes()
+}
+
+#[cfg(feature = "gateway")]
+fn decode(value: &str, limit: usize) -> Result<Vec<u8>, Error> {
+    if value.len() > limit.div_ceil(3) * 4 {
+        return Err(Error::InvalidInput("envelope field size"));
+    }
+    let bytes = URL_SAFE_NO_PAD
+        .decode(value)
+        .map_err(|_| Error::InvalidInput("envelope field encoding"))?;
+    if URL_SAFE_NO_PAD.encode(&bytes) != value {
+        return Err(Error::InvalidInput("envelope field encoding"));
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -67,34 +141,44 @@ mod tests {
     use hpke::{Kem as _, OpModeR, setup_receiver};
 
     #[test]
-    fn seals_for_the_exact_quote_bound_recipient_and_aad() {
+    fn seals_for_the_exact_recipient_and_boot() {
         let (private_key, public_key) = XWing::gen_keypair();
-        let aad = br#"{"schema":"stogas.confidential-secret-release.v1"}"#;
-        let sealed = seal(&public_key.to_bytes(), aad, b"provider-secret").unwrap();
-        let encapsulated =
-            <XWing as hpke::Kem>::EncappedKey::from_bytes(&sealed.encapsulated_key).unwrap();
-        let mut wrong_aad_recipient = setup_receiver::<AesGcm256, HkdfSha256, XWing>(
-            &OpModeR::Base,
-            &private_key,
-            &encapsulated,
-            HPKE_INFO,
+        let sealed =
+            seal_provisioning(&public_key.to_bytes(), &[7; 32], b"provider-secret").unwrap();
+        assert_eq!(sealed.boot_sha256, hex::encode([7; 32]));
+        let encapsulated = <XWing as hpke::Kem>::EncappedKey::from_bytes(
+            &URL_SAFE_NO_PAD.decode(&sealed.encapsulated_key).unwrap(),
         )
         .unwrap();
+        let ciphertext = URL_SAFE_NO_PAD.decode(&sealed.ciphertext).unwrap();
+        let receiver = || {
+            setup_receiver::<AesGcm256, HkdfSha256, XWing>(
+                &OpModeR::Base,
+                &private_key,
+                &encapsulated,
+                HPKE_INFO,
+            )
+            .unwrap()
+        };
         assert!(
-            wrong_aad_recipient
-                .open(&sealed.ciphertext, b"different")
+            receiver()
+                .open(&ciphertext, &associated_data(&[8; 32]))
                 .is_err()
         );
-        let mut recipient = setup_receiver::<AesGcm256, HkdfSha256, XWing>(
-            &OpModeR::Base,
-            &private_key,
-            &encapsulated,
-            HPKE_INFO,
-        )
-        .unwrap();
         assert_eq!(
-            recipient.open(&sealed.ciphertext, aad).unwrap(),
+            receiver()
+                .open(&ciphertext, &associated_data(&[7; 32]))
+                .unwrap(),
             b"provider-secret"
         );
+        // The binding is the canonical JSON Control publishes beside the ciphertext.
+        let binding =
+            serde_json::json!({"schema": PROVISIONING_SCHEMA, "boot_sha256": hex::encode([7; 32])});
+        assert_eq!(
+            crate::canonical_json(&binding).unwrap().into_bytes(),
+            associated_data(&[7; 32])
+        );
+        assert!(seal_provisioning(&public_key.to_bytes()[1..], &[7; 32], b"x").is_err());
+        assert!(seal_provisioning(&public_key.to_bytes(), &[7; 32], b"").is_err());
     }
 }

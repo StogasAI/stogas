@@ -13,18 +13,22 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [features]
 default = ["transport"]
 transport = ["dep:stogas-sdk"]
+# The gateway's embedding: channel server, boot keys, quote batches and its
+# own registration check.
+gateway = ["stogas-verifier/gateway", "dep:zeroize"]
 staging = ["stogas-verifier/staging", "stogas-sdk?/staging"]
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-stogas-sdk = { package = "stogas", path = "../cli", optional = true }
+stogas-sdk = { package = "stogas", path = "../sdk", optional = true }
 stogas-verifier = { path = "../verifier" }
-zeroize.workspace = true
+zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]
 base64.workspace = true
 hex.workspace = true
+sha2.workspace = true
 
 [lints.rust]
 missing_docs = "allow"

@@ -1,4 +1,4 @@
-//! Double Ratchet with encrypted headers and full X448 + ML-KEM-768 turns.
+//! Double Ratchet with encrypted headers and full X25519 + ML-KEM-768 turns.
 //!
 //! State transitions follow PQ2HE; the wire encoding and domain-separated KDFs
 //! are Stogas-specific. No sparse KEM fragments or protocol negotiation.
@@ -14,12 +14,15 @@ mod peer;
 
 pub use header::HEADER_BYTES;
 pub use keys::PUBLIC_KEY_BYTES;
-pub use peer::{InitialKey, Peer, SendKey};
+pub use peer::{InitialKey, Peer};
 
 // These are one bound: outstanding starts, replay distance, and retained keys.
 pub const MAX_SKIPPED_KEYS: usize = 256;
 pub const SKIPPED_KEY_LIFETIME_MS: u64 = 60_000;
-const PROTOCOL: &[u8] = b"stogas.e2ee.pqdr.v1_X448_MLKEM768_HKDFSHA512_AES256GCM";
+// Caps encryption usage per header key; ServerSession also caps cumulative
+// authentication work. Both enter the tested GCM usage bound.
+pub(super) const MAX_CHAIN_MESSAGES: u64 = 1 << 24;
+pub(super) const PROTOCOL: &[u8] = b"stogas.e2ee.pqdr.v1_X25519_MLKEM768_HKDFSHA512_AES256GCM";
 type Secret = Zeroizing<[u8; 32]>;
 
 fn expand<const N: usize>(salt: Option<&[u8]>, input: &[u8], label: &[u8]) -> Zeroizing<[u8; N]> {

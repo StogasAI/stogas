@@ -5,11 +5,14 @@
 package verifier
 
 /*
-#cgo linux,amd64 LDFLAGS: -L${SRCDIR}/native/linux-amd64 -l:libstogas_verifier_ffi.a -ldl -lpthread -lm
-#cgo linux,arm64 LDFLAGS: -L${SRCDIR}/native/linux-arm64 -l:libstogas_verifier_ffi.a -ldl -lpthread -lm
+#cgo linux,amd64,!musl LDFLAGS: -L${SRCDIR}/native/linux-amd64 -l:libstogas_verifier_ffi.a -ldl -lpthread -lm
+#cgo linux,arm64,!musl LDFLAGS: -L${SRCDIR}/native/linux-arm64 -l:libstogas_verifier_ffi.a -ldl -lpthread -lm
+#cgo linux,amd64,musl LDFLAGS: -L${SRCDIR}/native/linux-musl-amd64 -l:libstogas_verifier_ffi.a -ldl -lpthread -lm
+#cgo linux,arm64,musl LDFLAGS: -L${SRCDIR}/native/linux-musl-arm64 -l:libstogas_verifier_ffi.a -ldl -lpthread -lm
 #cgo darwin,amd64 LDFLAGS: -L${SRCDIR}/native/darwin-amd64 -lstogas_verifier_ffi -framework Security -framework CoreFoundation
 #cgo darwin,arm64 LDFLAGS: -L${SRCDIR}/native/darwin-arm64 -lstogas_verifier_ffi -framework Security -framework CoreFoundation
-#cgo windows,amd64 LDFLAGS: -L${SRCDIR}/native/windows-amd64 -lstogas_verifier_ffi -lws2_32 -lbcrypt -luserenv -lntdll
+#cgo windows,amd64 LDFLAGS: -static-libgcc -L${SRCDIR}/native/windows-amd64 -lstogas_verifier_ffi -lws2_32 -lbcrypt -luserenv -lntdll
+#cgo windows,arm64 LDFLAGS: -static-libgcc -L${SRCDIR}/native/windows-arm64 -lstogas_verifier_ffi -lws2_32 -lbcrypt -luserenv -lntdll
 #include <stddef.h>
 #include <stdint.h>
 uint32_t stogas_verifier_abi_version(void);

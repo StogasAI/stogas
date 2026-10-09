@@ -12,10 +12,12 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 staging = ["stogas-verifier/staging"]
+# Stogas's own services and CLI; customer packages never enable it.
+operator = []
 
 [dependencies]
 base64.workspace = true
-js-sys = "0.3.78"
+js-sys = "0.3.106"
 getrandom-02 = { package = "getrandom", version = "0.2.17", features = ["js"] }
 getrandom-04 = { package = "getrandom", version = "0.4.3", features = ["wasm_js"] }
 hex.workspace = true
@@ -25,12 +27,12 @@ serde_json.workspace = true
 sha2.workspace = true
 stogas-offline-sigstore = { path = "../offline-sigstore" }
 stogas-verifier = { path = "../verifier" }
-wasm-bindgen = "0.2.101"
-web-sys = { version = "0.3.103", features = ["AesGcmParams", "CryptoKey", "SubtleCrypto"] }
+wasm-bindgen = "0.2.129"
+web-sys = { version = "0.3.106", features = ["AesGcmParams", "CryptoKey", "SubtleCrypto"] }
 zeroize.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = "=0.3.76"
+wasm-bindgen-test = "=0.3.79"
 hpke = { version = "=0.14.0", default-features = false, features = ["alloc", "getrandom", "aes", "x25519", "mlkem"] }
 
 [lints]

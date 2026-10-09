@@ -34,6 +34,61 @@ fn pending(vector: &Fixture) -> PendingSetup {
     }
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn setup_recipient_policy_matches_wycheproof_x25519_points() {
+    let cases: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../tests/fixtures/wycheproof/x25519_test.json"
+    ))
+    .unwrap();
+    let mut hello = hex::decode(fixture().hello).unwrap();
+    for group in cases["testGroups"].as_array().unwrap() {
+        for case in group["tests"].as_array().unwrap() {
+            let public = hex::decode(case["public"].as_str().unwrap()).unwrap();
+            let shared = hex::decode(case["shared"].as_str().unwrap()).unwrap();
+            hello[CLIENT_SETUP_BYTES - 32..].copy_from_slice(&public);
+            let result = prepare_server_setup(Environment::Production, &hello, 600, &[0; 32]);
+            // RFC 7748 accepts twists and alternate encodings. This protocol
+            // additionally requires contributory agreement; reject every low-order
+            // point even though X-Wing itself permits accepting that component.
+            if shared == [0; 32] {
+                assert!(matches!(result, Err(Error::Record)), "{}", case["tcId"]);
+            } else {
+                assert!(result.is_ok(), "{}", case["tcId"]);
+            }
+        }
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn setup_recipient_policy_matches_wycheproof_mlkem_encapsulation_keys() {
+    let cases: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../tests/fixtures/wycheproof/mlkem_768_encaps_test.json"
+    ))
+    .unwrap();
+    let original = hex::decode(fixture().hello).unwrap();
+    for group in cases["testGroups"].as_array().unwrap() {
+        for case in group["tests"].as_array().unwrap() {
+            let public = hex::decode(case["ek"].as_str().unwrap()).unwrap();
+            let hello = [
+                &original[..CLIENT_HEADER.len() + 1 + 32],
+                &public,
+                &original[CLIENT_SETUP_BYTES - 32..],
+            ]
+            .concat();
+            // Exercise setup's parsing/encapsulation boundary separately from
+            // the ratchet, including coefficient overflow and bad lengths.
+            let result = prepare_server_setup(Environment::Production, &hello, 600, &[0; 32]);
+            if case["result"] == "invalid" {
+                assert!(matches!(result, Err(Error::Record)), "{}", case["tcId"]);
+            } else {
+                assert!(result.is_ok(), "{}", case["tcId"]);
+            }
+        }
+    }
+}
+
 #[cfg(feature = "staging")]
 #[test]
 fn incompatible_setup_is_rejected_even_with_genuine_hardware_evidence() {

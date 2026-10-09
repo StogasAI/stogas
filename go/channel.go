@@ -1,4 +1,4 @@
-//go:build cgo
+//go:build cgo && stogas_gateway
 
 package verifier
 
@@ -8,15 +8,14 @@ package verifier
 typedef struct StogasChannelSession StogasChannelSession;
 typedef struct StogasChannelReader StogasChannelReader;
 typedef struct StogasChannelWriter StogasChannelWriter;
-typedef struct { uint8_t *data; size_t len; } StogasChannelBuffer;
-uint32_t stogas_channel_key_generate(uint8_t *, uint8_t *);
-uint32_t stogas_channel_session_new(const uint8_t *, const uint8_t *, const uint8_t *, StogasChannelSession **);
+typedef struct StogasBuffer { uint8_t *data; size_t len; } StogasBuffer;
+uint32_t stogas_channel_setup(uint8_t, uint32_t, const uint8_t *, size_t, const uint8_t *, StogasChannelSession **, uint8_t *, uint8_t *, StogasBuffer *);
 uint32_t stogas_channel_accept(StogasChannelSession *, uint64_t, uint8_t *, size_t, uint64_t, StogasChannelReader **, StogasChannelWriter **, size_t *, size_t *);
 uint32_t stogas_channel_session_expire(StogasChannelSession *, uint64_t);
 uint32_t stogas_channel_open(StogasChannelReader *, uint8_t *, size_t, uint8_t *, size_t *, size_t *);
 uint32_t stogas_channel_complete(StogasChannelReader *);
-uint32_t stogas_channel_seal(StogasChannelWriter *, uint8_t, const uint8_t *, size_t, StogasChannelBuffer *);
-void stogas_channel_buffer_free(StogasChannelBuffer);
+uint32_t stogas_channel_seal(StogasChannelWriter *, uint8_t, const uint8_t *, size_t, StogasBuffer *);
+void stogas_buffer_free(StogasBuffer);
 void stogas_channel_session_free(StogasChannelSession *);
 void stogas_channel_reader_free(StogasChannelReader *);
 void stogas_channel_writer_free(StogasChannelWriter *);
@@ -50,16 +49,6 @@ func channelStatus(status C.uint32_t) error {
 	}
 }
 
-// GenerateChannelKey creates the initial responder key in Rust. Bind public into
-// the authenticated setup and clear private after session creation or failure.
-func GenerateChannelKey() (private [32]byte, public [ChannelPublicKeyBytes]byte, err error) {
-	if err = checkNativeABI(); err != nil {
-		return
-	}
-	err = channelStatus(C.stogas_channel_key_generate(bytePointer(private[:]), bytePointer(public[:])))
-	return
-}
-
 // ChannelSession embeds the Rust server admission and hybrid ratchet.
 // It performs no I/O. Accepted streams have independent reader/writer owners.
 type ChannelSession struct {
@@ -68,21 +57,27 @@ type ChannelSession struct {
 	started time.Time
 }
 
-// NewChannelSession consumes a copy of the authenticated setup root and initial key seed.
-func NewChannelSession(root, id, initialPrivate [32]byte) (*ChannelSession, error) {
-	defer clear(root[:])
-	defer clear(initialPrivate[:])
+// PrepareChannelSetup performs the server exchange without returning private
+// keys or exporter secrets to Go. Environment is 1 (production) or 2 (staging,
+// requiring a staging build).
+func PrepareChannelSetup(environment byte, idleSeconds uint32, bootHash [32]byte, hello []byte) (*ChannelSetup, error) {
 	if err := checkNativeABI(); err != nil {
 		return nil, err
 	}
+	var result ChannelSetup
 	var handle *C.StogasChannelSession
-	if err := channelStatus(C.stogas_channel_session_new(bytePointer(root[:]), bytePointer(id[:]), bytePointer(initialPrivate[:]), &handle)); err != nil {
+	var response C.StogasBuffer
+	if err := channelStatus(C.stogas_channel_setup(C.uint8_t(environment), C.uint32_t(idleSeconds), bytePointer(hello), C.size_t(len(hello)), bytePointer(bootHash[:]), &handle, bytePointer(result.ID[:]), bytePointer(result.Transcript[:]), &response)); err != nil {
 		return nil, err
 	}
-	if handle == nil {
+	defer C.stogas_buffer_free(response)
+	if handle == nil || response.data == nil || response.len != 6+32+4+1120+ChannelPublicKeyBytes+32 {
+		C.stogas_channel_session_free(handle)
 		return nil, ErrChannelCrypto
 	}
-	return &ChannelSession{handle: handle, started: time.Now()}, nil
+	result.Session = &ChannelSession{handle: handle, started: time.Now()}
+	result.ResponsePrefix = C.GoBytes(unsafe.Pointer(response.data), C.int(response.len))
+	return &result, nil
 }
 
 func (s *ChannelSession) elapsed(now time.Time) C.uint64_t {
@@ -206,7 +201,7 @@ func (w *ChannelWriter) Seal(kind byte, plaintext []byte) ([]byte, error) {
 	if w.handle == nil {
 		return nil, ErrClosed
 	}
-	var output C.StogasChannelBuffer
+	var output C.StogasBuffer
 	status := C.stogas_channel_seal(w.handle, C.uint8_t(kind), bytePointer(plaintext), C.size_t(len(plaintext)), &output)
 	if status == 255 {
 		C.stogas_channel_writer_free(w.handle)
@@ -215,7 +210,7 @@ func (w *ChannelWriter) Seal(kind byte, plaintext []byte) ([]byte, error) {
 	if err := channelStatus(status); err != nil {
 		return nil, err
 	}
-	defer C.stogas_channel_buffer_free(output)
+	defer C.stogas_buffer_free(output)
 	if output.data == nil || output.len > 65536 {
 		return nil, ErrChannelCrypto
 	}

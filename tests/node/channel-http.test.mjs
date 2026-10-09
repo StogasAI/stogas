@@ -250,23 +250,38 @@ test('response-body abort interrupts a stalled read and retains execution ambigu
 	assert.equal(state.releases, 1);
 });
 
-test('large source chunks split into bounded records without base64', async () => {
-	const state = fixture({
-		fetch: async () =>
-			response([record(1, JSON.stringify({ status: 204, headers: {} })), record(3)])
-	});
+test('source chunks fill every upload record except the last, without base64', async () => {
 	const body = Uint8Array.from({ length: 200_000 }, (_, index) => index % 251);
-	const request = new Request('https://e2ee.example/v1/chat/completions', {
-		method: 'POST',
-		body
-	});
-	const result = await state.send({ request });
-	assert.equal(result.status, 204);
-	assert.equal(result.body, null);
-	const data = state.exchange.sealed.filter((entry) => entry.kind === 2);
-	assert.ok(data.every((entry) => entry.bytes.length > 0 && entry.bytes.length <= 65_515));
-	assert.deepEqual(new Uint8Array(Buffer.concat(data.map((entry) => entry.bytes))), body);
-	assert.equal(state.releases, 1);
+	const irregular = () => {
+		const sizes = [1, 70_000, 3, 65_515, 10, 64_471];
+		let offset = 0;
+		return new ReadableStream({
+			pull(controller) {
+				const size = sizes.shift();
+				if (size === undefined) controller.close();
+				else controller.enqueue(body.slice(offset, (offset += size)));
+			}
+		});
+	};
+	for (const source of [() => body, irregular]) {
+		const state = fixture({
+			fetch: async () =>
+				response([record(1, JSON.stringify({ status: 204, headers: {} })), record(3)])
+		});
+		const request = new Request('https://e2ee.example/v1/chat/completions', {
+			method: 'POST',
+			duplex: 'half',
+			body: source()
+		});
+		const result = await state.send({ request });
+		assert.equal(result.status, 204);
+		assert.equal(result.body, null);
+		const data = state.exchange.sealed.filter((entry) => entry.kind === 2);
+		assert.ok(data.slice(0, -1).every((entry) => entry.bytes.length === 65_515));
+		assert.ok(data.at(-1).bytes.length > 0 && data.at(-1).bytes.length <= 65_515);
+		assert.deepEqual(new Uint8Array(Buffer.concat(data.map((entry) => entry.bytes))), body);
+		assert.equal(state.releases, 1);
+	}
 });
 
 test('bodyless statuses still require authenticated completion and reject body data', async () => {

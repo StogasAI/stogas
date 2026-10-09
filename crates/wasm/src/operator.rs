@@ -1,0 +1,95 @@
+//! Registration, sealing, release and publication checks for the operator build
+//! used by Stogas's own services and CLI. Customer packages never enable it.
+use serde::Deserialize;
+use stogas_offline_sigstore::{GithubPolicy, Subject, verify_github_attestation};
+use stogas_verifier::secret_release;
+use wasm_bindgen::prelude::*;
+
+use super::{parse_unix_ms, to_js_value};
+
+/// Report whether this artifact contains the private staging provenance policy.
+#[wasm_bindgen(js_name = verifierSupportsStagingProvenance)]
+#[must_use]
+#[expect(
+    clippy::missing_const_for_fn,
+    reason = "wasm-bindgen rejects const exported functions"
+)]
+pub fn verifier_supports_staging_provenance() -> bool {
+    cfg!(feature = "staging")
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnedSubject {
+    name: String,
+    sha256: String,
+}
+
+/// Verify an immutable production SDK release and its root-authorized approval.
+///
+/// # Errors
+/// Rejects invalid release identity, build provenance, signing authority or publication time.
+#[wasm_bindgen]
+pub fn verify_sdk_release(
+    manifest: &[u8],
+    github_attestation: &[u8],
+    proof: &[u8],
+    now_unix_ms: f64,
+) -> Result<JsValue, JsError> {
+    let approval = stogas_verifier::sdk_release::verify(
+        manifest,
+        github_attestation,
+        proof,
+        parse_unix_ms(now_unix_ms, "current time")?,
+    )
+    .map_err(|error| JsError::new(&error.to_string()))?;
+    to_js_value(&approval)
+}
+
+/// Seal one boot's provisioning envelope to its attested X-Wing public key.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for an invalid key, digest or secret, or an encryption failure.
+#[wasm_bindgen]
+pub fn seal_boot_provisioning(
+    public_key: &[u8],
+    boot_sha256: &[u8],
+    plaintext: &[u8],
+) -> Result<JsValue, JsError> {
+    let boot_sha256 = boot_sha256
+        .try_into()
+        .map_err(|_| JsError::new("boot digest must contain 32 bytes"))?;
+    let sealed = secret_release::seal_provisioning(public_key, boot_sha256, plaintext)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    to_js_value(&sealed)
+}
+
+/// Verify the networkless Sigstore profile directly. This is also the browser conformance seam.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for malformed policy, time, or untrusted evidence.
+#[wasm_bindgen]
+pub fn verify_sigstore_github_attestation(
+    bundle: &[u8],
+    expected_subjects_json: &str,
+    policy_json: &str,
+    now_unix_ms: f64,
+) -> Result<JsValue, JsError> {
+    let now_unix_ms = parse_unix_ms(now_unix_ms, "now_unix_ms")?;
+    let owned: Vec<OwnedSubject> = serde_json::from_str(expected_subjects_json)
+        .map_err(|error| JsError::new(&format!("invalid subjects: {error}")))?;
+    let subjects = owned
+        .iter()
+        .map(|subject| Subject {
+            name: &subject.name,
+            sha256: &subject.sha256,
+        })
+        .collect::<Vec<_>>();
+    let policy: GithubPolicy = serde_json::from_str(policy_json)
+        .map_err(|error| JsError::new(&format!("invalid policy: {error}")))?;
+    let output = verify_github_attestation(bundle, &subjects, &policy, now_unix_ms)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    to_js_value(&output)
+}

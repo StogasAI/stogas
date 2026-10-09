@@ -1,58 +1,63 @@
-//! Fixed-width encrypted headers. Padding is canonical and every turn carries
-//! both complete public keys and the complete KEM ciphertext.
+//! Fixed-width encrypted headers. Every message carries both complete public
+//! keys and the complete KEM ciphertext, so no padding is needed. The visible
+//! request number is the standard 96-bit GCM nonce: each header key belongs to
+//! one direction, which uses each request number at most once.
 
 use super::{
     Error, Secret,
     keys::{CIPHERTEXT_BYTES, PUBLIC_KEY_BYTES, PublicKeys},
 };
 use aes_gcm::{
-    AesGcm,
-    aead::{AeadInOut as _, KeyInit as _, consts::U16},
-    aes::Aes256,
+    Aes256Gcm,
+    aead::{AeadInOut as _, KeyInit as _},
 };
 use sha2_v11::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 const FIELDS_BYTES: usize = PUBLIC_KEY_BYTES + CIPHERTEXT_BYTES + 16;
-const PADDED_BYTES: usize = FIELDS_BYTES.next_multiple_of(16);
-pub const HEADER_BYTES: usize = 16 + PADDED_BYTES + 16;
+pub const HEADER_BYTES: usize = FIELDS_BYTES + 16;
 
-pub(super) struct HeaderCipher(AesGcm<Aes256, U16>);
+fn nonce(request: u64) -> [u8; 12] {
+    let mut nonce = [0; 12];
+    nonce[4..].copy_from_slice(&request.to_be_bytes());
+    nonce
+}
+
+pub(super) struct HeaderCipher(Aes256Gcm);
 
 impl HeaderCipher {
     pub fn new(key: &Secret) -> Self {
-        Self(AesGcm::new_from_slice(key.as_ref()).expect("fixed AES-256 key size"))
+        Self(Aes256Gcm::new_from_slice(key.as_ref()).expect("fixed AES-256 key size"))
     }
 
-    pub fn seal(&self, header: &Header, nonce: [u8; 16]) -> Result<Vec<u8>, Error> {
+    pub fn seal(&self, header: &Header, request: u64) -> Result<Vec<u8>, Error> {
         let mut plaintext = header.encode();
         let tag = self
             .0
             .encrypt_inout_detached(
-                &nonce.into(),
+                &nonce(request).into(),
                 super::PROTOCOL,
                 plaintext.as_mut_slice().into(),
             )
             .map_err(|_| Error::Crypto)?;
         let mut output = Vec::with_capacity(HEADER_BYTES);
-        output.extend_from_slice(&nonce);
         output.extend_from_slice(plaintext.as_ref());
         output.extend_from_slice(&tag);
         Ok(output)
     }
 
-    pub fn open(&self, encoded: &[u8]) -> Result<Header, Error> {
+    pub fn open(&self, encoded: &[u8], request: u64) -> Result<Header, Error> {
         if encoded.len() != HEADER_BYTES {
             return Err(Error::Record);
         }
-        let mut plaintext = Zeroizing::new([0; PADDED_BYTES]);
-        plaintext.copy_from_slice(&encoded[16..16 + PADDED_BYTES]);
+        let mut plaintext = Zeroizing::new([0; FIELDS_BYTES]);
+        plaintext.copy_from_slice(&encoded[..FIELDS_BYTES]);
         self.0
             .decrypt_inout_detached(
-                encoded[..16].try_into().map_err(|_| Error::Record)?,
+                &nonce(request).into(),
                 super::PROTOCOL,
                 plaintext.as_mut_slice().into(),
-                encoded[16 + PADDED_BYTES..]
+                encoded[FIELDS_BYTES..]
                     .try_into()
                     .map_err(|_| Error::Record)?,
             )
@@ -70,8 +75,8 @@ pub(super) struct Header {
 }
 
 impl Header {
-    fn encode(&self) -> Zeroizing<[u8; PADDED_BYTES]> {
-        let mut bytes = Zeroizing::new([0; PADDED_BYTES]);
+    fn encode(&self) -> Zeroizing<[u8; FIELDS_BYTES]> {
+        let mut bytes = Zeroizing::new([0; FIELDS_BYTES]);
         bytes[..PUBLIC_KEY_BYTES].copy_from_slice(&self.public.0);
         bytes[PUBLIC_KEY_BYTES..FIELDS_BYTES - 16].copy_from_slice(&self.ciphertext);
         bytes[FIELDS_BYTES - 16..FIELDS_BYTES - 8].copy_from_slice(&self.previous.to_be_bytes());
@@ -79,10 +84,7 @@ impl Header {
         bytes
     }
 
-    fn decode(bytes: &[u8; PADDED_BYTES]) -> Result<Self, Error> {
-        if bytes[FIELDS_BYTES..].iter().any(|byte| *byte != 0) {
-            return Err(Error::Record);
-        }
+    fn decode(bytes: &[u8; FIELDS_BYTES]) -> Result<Self, Error> {
         Ok(Self {
             public: PublicKeys(
                 bytes[..PUBLIC_KEY_BYTES]
@@ -111,31 +113,5 @@ impl Header {
         hash.update(self.ciphertext);
         hash.update(self.previous.to_be_bytes());
         hash.finalize().into()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-    fn noncanonical_authenticated_padding_is_rejected() {
-        let cipher = HeaderCipher::new(&Zeroizing::new([1; 32]));
-        for index in FIELDS_BYTES..PADDED_BYTES {
-            let mut plain = [0; PADDED_BYTES];
-            plain[index] = 1;
-            let nonce = [2; 16];
-            let tag = cipher
-                .0
-                .encrypt_inout_detached(
-                    &nonce.into(),
-                    super::super::PROTOCOL,
-                    plain.as_mut_slice().into(),
-                )
-                .unwrap();
-            let encoded = [nonce.as_slice(), plain.as_slice(), tag.as_slice()].concat();
-            assert!(matches!(cipher.open(&encoded), Err(Error::Record)));
-        }
     }
 }

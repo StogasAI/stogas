@@ -32,6 +32,7 @@ test('real encrypted Fetch requests wait for capacity, stream, cancel and releas
 						requests: 96,
 						stream: true,
 						responseBytes: 131072,
+						recordBytes: 256,
 						slowReaderMs: 1
 					},
 					{ maxConnections: 1, concurrency: 16, requests: 64, providerDelayMs: 2, cancelEvery: 3 },

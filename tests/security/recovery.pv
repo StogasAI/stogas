@@ -1,0 +1,52 @@
+(* Symbolic post-capture root/chain composition from ratchet/peer.rs.
+   The old root and initial recipient are captured. First outgoing fresh DH
+   and KEM to that stolen recipient cannot heal; the reply to the new recipient
+   can. This checks confidentiality after an honest authenticated reply, not
+   authentication against a still-active state thief. Hybrid primitives, HKDF
+   and AEAD are ideal; queues, rollback, erasure and wire parsing are outside
+   this model and covered by executable tests. *)
+free net:channel.
+type sk.
+type pk.
+type coins.
+fun public(sk):pk.
+fun dh(sk,pk):bitstring.
+equation forall a:sk,b:sk; dh(a,public(b)) = dh(b,public(a)).
+fun encaps(pk,coins):bitstring.
+fun shared(pk,coins):bitstring.
+reduc forall s:sk,r:coins; decaps(encaps(public(s),r),s) = shared(public(s),r).
+fun nextroot(bitstring,bitstring,bitstring):bitstring.
+fun chain(bitstring,bitstring,bitstring):bitstring.
+fun message(bitstring):bitstring.
+fun nextchain(bitstring):bitstring.
+fun record(bitstring,bitstring,bitstring,bitstring):bitstring.
+fun seal(bitstring,bitstring):bitstring.
+reduc forall m:bitstring,k:bitstring; open(seal(m,k),k) = m.
+free request,response,session,number:bitstring.
+free first_payload,recovered_payload,earlier_payload:bitstring [private].
+query attacker(first_payload).
+query attacker(recovered_payload).
+query attacker(earlier_payload).
+
+process
+  new oldroot:bitstring; new olddh:sk; new oldkem:sk;
+  new clientdh:sk; new clientkem:sk; new r1:coins;
+  out(net,(oldroot,olddh,oldkem,public(clientdh),public(clientkem)));
+  let dh1 = dh(clientdh,public(olddh)) in
+  let kem1 = shared(public(oldkem),r1) in
+  out(net,encaps(public(oldkem),r1));
+  let root1 = nextroot(oldroot,dh1,kem1) in
+  let chain1 = chain(oldroot,dh1,kem1) in
+  out(net,seal(first_payload,record(message(chain1),session,number,request)));
+  new serverdh:sk; new serverkem:sk; new r2:coins;
+  out(net,(public(serverdh),public(serverkem),encaps(public(clientkem),r2)));
+  (* BREAK_CLASSICAL *)
+  (* BREAK_PQ *)
+  let dh2 = dh(serverdh,public(clientdh)) in
+  let kem2 = shared(public(clientkem),r2) in
+  let root2 = nextroot(root1,dh2,kem2) in
+  let chain2 = chain(root1,dh2,kem2) in
+  out(net,seal(recovered_payload,record(message(chain2),session,number,response)));
+  (* A later symmetric-chain capture cannot derive an erased earlier key. *)
+  out(net,seal(earlier_payload,message(chain2)));
+  out(net,nextchain(chain2))

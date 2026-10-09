@@ -1,0 +1,33 @@
+project:
+  name: stogas
+  description: Verified confidential HTTP transport backed by Rust.
+  links:
+    homepage: https://stogas.ai
+  authors: [Stogas]
+  license: Apache-2.0
+  languages:
+    java:
+      groupId: ai.stogas
+      artifactId: stogas
+
+release:
+  github:
+    owner: StogasAI
+    name: verifier
+    skipRelease: true
+
+signing:
+  active: ALWAYS
+  pgp:
+    active: ALWAYS
+    armored: true
+    mode: MEMORY
+
+deploy:
+  maven:
+    mavenCentral:
+      central:
+        active: ALWAYS
+        url: https://central.sonatype.com/api/v1/publisher
+        applyMavenCentralRules: true
+        stagingRepositories: [release-staging/maven]

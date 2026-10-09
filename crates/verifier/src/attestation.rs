@@ -31,7 +31,7 @@ pub enum Binding {
 }
 
 impl Binding {
-    fn leaf_hash(&self) -> [u8; 64] {
+    pub(crate) fn leaf_hash(&self) -> [u8; 64] {
         let mut hash = Sha512::new();
         hash.update([0]);
         match self {
@@ -139,7 +139,11 @@ impl BatchProof {
     /// # Errors
     /// Rejects substituted bindings, paths, counts or report data.
     pub fn verify(&self, binding: &Binding, report_data: &[u8; 64]) -> Result<(), Error> {
-        let mut root = binding.leaf_hash();
+        self.verify_leaf(&binding.leaf_hash(), report_data)
+    }
+
+    pub(crate) fn verify_leaf(&self, leaf: &[u8; 64], report_data: &[u8; 64]) -> Result<(), Error> {
+        let mut root = *leaf;
         let (mut index, mut last) = (self.leaf_index, self.leaf_count - 1);
         for sibling in &self.siblings {
             if index & 1 != 0 || index == last {
@@ -154,16 +158,56 @@ impl BatchProof {
             index >>= 1;
             last >>= 1;
         }
-        let mut hash = Sha512::new();
-        hash.update(BATCH_DOMAIN);
-        hash.update(self.leaf_count.to_be_bytes());
-        hash.update(root);
-        let actual: [u8; 64] = hash.finalize().into();
-        if last != 0 || actual != *report_data {
+        if last != 0 || batch_report_data(self.leaf_count, &root) != *report_data {
             return Err(Error::Binding);
         }
         Ok(())
     }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) const fn new(leaf_count: u16, leaf_index: u16, siblings: Vec<[u8; 64]>) -> Self {
+        Self {
+            leaf_count,
+            leaf_index,
+            siblings,
+        }
+    }
+
+    /// The encoding read by `from_bytes`.
+    #[cfg(feature = "gateway")]
+    #[must_use]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(4 + 64 * self.siblings.len());
+        bytes.extend_from_slice(&self.leaf_count.to_be_bytes());
+        bytes.extend_from_slice(&self.leaf_index.to_be_bytes());
+        for sibling in &self.siblings {
+            bytes.extend_from_slice(sibling);
+        }
+        bytes
+    }
+}
+
+/// RFC 9162 tree hash over `leaves`. Each leaf's path receives its siblings,
+/// deepest first, which is the order `verify` consumes.
+#[cfg(feature = "gateway")]
+pub(crate) fn subtree(leaves: &[[u8; 64]], paths: &mut [Vec<[u8; 64]>]) -> [u8; 64] {
+    if let [leaf] = leaves {
+        return *leaf;
+    }
+    let split = 1 << (leaves.len() - 1).ilog2();
+    let left = subtree(&leaves[..split], &mut paths[..split]);
+    let right = subtree(&leaves[split..], &mut paths[split..]);
+    paths[..split].iter_mut().for_each(|path| path.push(right));
+    paths[split..].iter_mut().for_each(|path| path.push(left));
+    parent_hash(&left, &right)
+}
+
+pub(crate) fn batch_report_data(leaf_count: u16, root: &[u8; 64]) -> [u8; 64] {
+    let mut hash = Sha512::new();
+    hash.update(BATCH_DOMAIN);
+    hash.update(leaf_count.to_be_bytes());
+    hash.update(root);
+    hash.finalize().into()
 }
 
 fn parent_hash(left: &[u8; 64], right: &[u8; 64]) -> [u8; 64] {
