@@ -44,17 +44,17 @@ fn boot() -> Boot {
     let mut document = StogasBuffer::EMPTY;
     // SAFETY: every pointer addresses live storage of the documented size.
     unsafe {
-        let mut seeds = [[7; 32], [8; 32]];
-        let [signing, provisioning] = &mut seeds;
+        let mut seeds = [[7; 32], [8; 32], [9; 32]];
+        let (signing, provisioning) = seeds.split_at_mut(2);
         assert_eq!(
             stogas_node_keys_new(
-                signing.as_mut_ptr(),
-                provisioning.as_mut_ptr(),
+                signing.as_flattened_mut().as_mut_ptr(),
+                provisioning.as_flattened_mut().as_mut_ptr(),
                 &raw mut keys
             ),
             0
         );
-        assert_eq!(seeds, [[0; 32]; 2]);
+        assert_eq!(seeds, [[0; 32]; 3]);
         let data = report[0x50..].as_mut_ptr();
         assert_eq!(
             stogas_node_report_data(keys, 3, spki.as_ptr(), challenge.as_ptr(), data),
@@ -126,7 +126,7 @@ fn boot_requests_and_receipts_sign_under_the_logged_boot_key() {
     ]
     .concat();
     let public = boot.public("signing_public_key");
-    assert!(signing::verify(&public, &message, &[], &signature).is_ok());
+    assert!(signing::verify(&public, &message, &signature).is_ok());
     let receipt: serde_json::Value = serde_json::from_slice(&take(receipt)).unwrap();
     assert_eq!(receipt["boot_sha256"], hex::encode(boot.sha256));
 }
@@ -241,8 +241,8 @@ fn quote_batches_frame_each_proof_for_session_evidence() {
 
 #[test]
 fn native_tls_keys_sign_only_through_a_live_owner() {
-    let (mut key, mut public) = (ptr::null_mut(), [0; PUBLIC_KEY_BYTES]);
-    let mut signature = [0; SIGNATURE_BYTES];
+    let (mut key, mut public) = (ptr::null_mut(), [0; mldsa::PUBLIC_KEY_BYTES]);
+    let mut signature = [0; mldsa::SIGNATURE_BYTES];
     // SAFETY: outputs address their documented sizes; the key is freed once.
     unsafe {
         assert_eq!(
@@ -259,5 +259,5 @@ fn native_tls_keys_sign_only_through_a_live_owner() {
         );
         stogas_tls_key_free(key);
     }
-    assert!(signing::verify(&public, b"hello", &[], &signature).is_ok());
+    assert!(mldsa::verify(&public, b"hello", &[], &signature).is_ok());
 }

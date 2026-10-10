@@ -147,7 +147,7 @@ impl<'a> ParsedNativeCertificate<'a> {
             return Err(Error::Certificate);
         }
         let key = certificate.public_key();
-        crate::signing::public_key_from_spki(key.raw).map_err(|_| Error::Certificate)?;
+        crate::signing::mldsa::public_key_from_spki(key.raw).map_err(|_| Error::Certificate)?;
         let mut extensions = certificate
             .extensions()
             .iter()

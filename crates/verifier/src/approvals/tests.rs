@@ -3,7 +3,7 @@ use crate::signing::SigningKey;
 use serde_json::json;
 
 fn key(seed: u8) -> (OnlineKey, SigningKey) {
-    let signer = SigningKey::from_seed(&[seed; 32]);
+    let signer = SigningKey::from_seeds(&[[seed; 32]; 2]);
     (
         OnlineKey {
             key_id: format!("key-{seed}"),
@@ -64,12 +64,12 @@ fn sign(document: &Value, seed: u8) -> StogasSignature {
     payload.extend_from_slice(&canonical_payload(document).unwrap());
     StogasSignature {
         key_id: key.key_id,
-        signature: URL_SAFE_NO_PAD.encode(signer.sign(&payload, &[]).unwrap()),
+        signature: URL_SAFE_NO_PAD.encode(signer.sign(&payload).unwrap()),
     }
 }
 
 // Exercises decision installation independently of Rekor's existing cryptographic test suite.
-// Production candidates can only be constructed after verify_candidate checks root ML-DSA signature + inclusion.
+// Production candidates can only be constructed after verify_candidate checks the root signature and inclusion.
 fn candidate(
     verifier: &ApprovalVerifier,
     generation: u64,
@@ -374,10 +374,7 @@ fn signatures_are_bound_to_active_key_payload_purpose_and_delegation() {
     wrong_purpose.signature.signature = URL_SAFE_NO_PAD.encode(
         key(3)
             .1
-            .sign(
-                &canonical_payload(&serde_json::to_value(&valid.document).unwrap()).unwrap(),
-                &[],
-            )
+            .sign(&canonical_payload(&serde_json::to_value(&valid.document).unwrap()).unwrap())
             .unwrap(),
     );
     assert_eq!(
@@ -677,7 +674,7 @@ fn compiled_staging_root_verifies_actual_logged_operational_delegation() {
     let keys = verifier.verify_key_manifest(bytes, now).unwrap();
     assert_eq!(
         keys.active_key.key_id,
-        "staging-stogas-online-2026-09-26-01"
+        "staging-stogas-online-2026-10-10-01"
     );
     assert_eq!(keys.generation, 1);
     assert!(keys.retired_keys.is_empty());

@@ -15,9 +15,8 @@ repository.workspace = true
 [features]
 default = ["snp"]
 staging = []
-# Gateway-side producers; only the gateway's native build enables them, with
-# AVX2 ML-DSA for its per-connection and receipt signatures.
-gateway = ["libcrux-ml-dsa/simd256"]
+# Gateway-side producers; only the gateway's native build enables them.
+gateway = []
 snp = ["dep:p384", "dep:rsa", "dep:sev", "dep:signature"]
 
 [dependencies]

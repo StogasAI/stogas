@@ -98,7 +98,7 @@ pub struct RootKey {
 #[serde(deny_unknown_fields)]
 pub struct OnlineKey {
     pub key_id: String,
-    /// Canonical standard-base64 ML-DSA-65 `SubjectPublicKeyInfo` DER.
+    /// Canonical standard-base64 composite ML-DSA-65 and Ed25519 `SubjectPublicKeyInfo` DER.
     pub public_key: String,
     /// Root-authenticated Ed25519 publisher association for Rekor searches, not approval authority.
     pub rekor_public_key: String,
@@ -277,7 +277,7 @@ impl VerifiedApprovals {
         Ok(verified)
     }
 
-    /// Verify the selected hardware policy, its active-key ML-DSA signature and Rekor inclusion.
+    /// Verify the selected hardware policy, its active-key signature and Rekor inclusion.
     ///
     /// # Errors
     /// Rejects a different policy, invalid hardware rules, untrusted signer or invalid log proof.
@@ -588,7 +588,8 @@ pub(crate) fn verify_signature(
     decode_key(key_id, public_key)?;
     let mut payload = STOGAS_SIGNATURE_DOMAIN.to_vec();
     payload.extend_from_slice(&canonical_payload(document)?);
-    crate::verify_mldsa65(public_key, &payload, &signature.signature).map_err(|_| Error::Signature)
+    crate::verify_stogas_signature(public_key, &payload, &signature.signature)
+        .map_err(|_| Error::Signature)
 }
 
 pub(crate) fn verify_document_inclusion(

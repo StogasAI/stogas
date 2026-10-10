@@ -18,10 +18,10 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: 1.97.1
+          toolchain: 1.94.1
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - run: cargo +1.97.1 check --locked --workspace --all-targets --features stogas/cli
-      - run: cargo +1.97.1 test --locked --package stogas-verifier --package stogas-verifier-ffi --no-default-features --features staging,stogas-verifier-ffi/gateway
+      - run: cargo +1.94.1 check --locked --workspace --all-targets --features stogas/cli
+      - run: cargo +1.94.1 test --locked --tests --package stogas-verifier --package stogas-verifier-ffi --no-default-features --features staging,stogas-verifier-ffi/gateway
 
   security:
     name: Dependency security

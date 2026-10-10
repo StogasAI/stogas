@@ -5,12 +5,10 @@ use serde_json::json;
 use sha2::{Digest as _, Sha256};
 
 fn node_keys() -> NodeKeys {
-    let mut seeds = [0; 64];
-    getrandom::fill(&mut seeds).unwrap();
-    NodeKeys::from_seeds(
-        seeds[..32].try_into().unwrap(),
-        seeds[32..].try_into().unwrap(),
-    )
+    let mut seeds = [[0; 32]; 3];
+    getrandom::fill(seeds.as_flattened_mut()).unwrap();
+    let [mldsa, ed25519, provisioning] = seeds;
+    NodeKeys::from_seeds(&[mldsa, ed25519], &provisioning)
 }
 
 #[derive(Deserialize)]
@@ -158,8 +156,8 @@ fn boot_documents_commit_the_quote_and_requests_and_receipts_verify_under_the_bo
     let digest = receipt::metadata_digest(&serde_json::from_slice(metadata).unwrap()).unwrap();
     let signature = URL_SAFE_NO_PAD.decode(&receipt.signature).unwrap();
     let message = |response| receipt::message(&[7; 32], response, &digest);
-    assert!(signing::verify(&public, &message(&[8; 32]), &[], &signature).is_ok());
-    assert!(signing::verify(&public, &message(&[9; 32]), &[], &signature).is_err());
+    assert!(signing::verify(&public, &message(&[8; 32]), &signature).is_ok());
+    assert!(signing::verify(&public, &message(&[9; 32]), &signature).is_err());
     assert!(keys.sign_receipt(&boot, &[7; 32], &[8; 32], b"[]").is_err());
     assert!(
         keys.sign_receipt(&boot, &[7; 32], &[8; 32], br#"{"a":1,"a":2}"#)
@@ -207,8 +205,8 @@ fn native_tls_keys_are_fresh_context_free_signers() {
     let (first, second) = (TlsKey::generate().unwrap(), TlsKey::generate().unwrap());
     assert_ne!(first.public_key(), second.public_key());
     let signature = first.sign(b"transcript").unwrap();
-    assert!(signing::verify(first.public_key(), b"transcript", &[], &signature).is_ok());
-    assert!(signing::verify(second.public_key(), b"transcript", &[], &signature).is_err());
+    assert!(mldsa::verify(first.public_key(), b"transcript", &[], &signature).is_ok());
+    assert!(mldsa::verify(second.public_key(), b"transcript", &[], &signature).is_err());
 }
 
 #[test]
@@ -225,7 +223,7 @@ fn provisioning_opens_the_committed_control_vector_and_rejects_malformed_envelop
     };
     let sealed = &vector["sealed"];
     let (seed, boot) = (digest(&vector["seed_hex"]), digest(&sealed["boot_sha256"]));
-    let keys = NodeKeys::from_seeds(&[42; 32], &seed);
+    let keys = NodeKeys::from_seeds(&[[42; 32]; 2], &seed);
     let ciphertext = sealed["ciphertext"].as_str().unwrap();
     let encapsulated = sealed["encapsulated_key"].as_str().unwrap();
     let mut flipped = URL_SAFE_NO_PAD.decode(ciphertext).unwrap();
