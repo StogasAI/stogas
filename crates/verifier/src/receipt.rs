@@ -106,7 +106,7 @@ impl Receipt {
             return Err(Error::Identity);
         }
         let signature = decode(&self.signature)?;
-        crate::signing::verify(&key, &message(request, response, metadata), &[], &signature)
+        crate::signing::verify(&key, &message(request, response, metadata), &signature)
             .map_err(|_| Error::Signature)
     }
 }
@@ -381,7 +381,7 @@ mod http_tests {
         let digest = metadata_digest(&json!({"billed_cost_usd":"0.01"})).unwrap();
         let message = [SCHEMA.as_bytes(), b"\0", &request, &response, &digest].concat();
         // Public deterministic key used only by the isolated diagnostic fixture.
-        let key = SigningKey::from_seed(&[42; 32]);
+        let key = SigningKey::from_seeds(&[[42; 32]; 2]);
         assert_eq!(
             URL_SAFE_NO_PAD.encode(key.public_key()),
             boot.record().report_data.signing_public_key
@@ -389,7 +389,7 @@ mod http_tests {
         json!({"receipt": {
             "schema":SCHEMA, "boot_sha256":hex::encode(boot.document_sha256()),
             "request_sha256":hex::encode(request), "response_sha256":hex::encode(response),
-            "signature":URL_SAFE_NO_PAD.encode(key.sign(&message, &[]).unwrap())
+            "signature":URL_SAFE_NO_PAD.encode(key.sign(&message).unwrap())
         }, "billed_cost_usd":"0.01"})
     }
     #[test]
@@ -446,7 +446,7 @@ mod http_tests {
                 let mut returned = stream.push(&wire[..split]).unwrap().concat();
                 returned.extend(stream.push(&wire[split..]).unwrap().concat());
                 assert_eq!(returned, wire[..wire.len() - 2]);
-                // Every split must produce the same signed bytes. Repeating ML-DSA
+                // Every split must produce the same signed bytes. Repeating signature
                 // verification for each byte boundary adds no cryptographic coverage.
                 let (actual_metadata, actual_response) = stream.body.finish().unwrap();
                 assert_eq!(actual_metadata, metadata_bytes);

@@ -944,7 +944,7 @@ fn verify_catalog_with_key(
     let manifest_digest = hex::encode(Sha256::digest(canonical.as_bytes()));
     let mut payload = STOGAS_SIGNATURE_DOMAIN.to_vec();
     payload.extend_from_slice(signed_canonical.as_bytes());
-    verify_mldsa65(key, &payload, &signed.signature.signature).map_err(Error::Release)?;
+    verify_stogas_signature(key, &payload, &signed.signature.signature).map_err(Error::Release)?;
 
     let attestation = &catalog.provenance;
     let attestation_bytes =
@@ -1034,7 +1034,7 @@ fn verify_release_with_key(
     let canonical = canonical_json(&manifest_value)?;
     let mut payload = STOGAS_SIGNATURE_DOMAIN.to_vec();
     payload.extend_from_slice(canonical.trim_end_matches('\n').as_bytes());
-    verify_mldsa65(key, &payload, &signature.signature).map_err(Error::Release)?;
+    verify_stogas_signature(key, &payload, &signature.signature).map_err(Error::Release)?;
 
     let attestation_value = &release.provenance;
     let attestation_bytes =
@@ -1842,7 +1842,7 @@ fn parse_time(value: &str) -> Result<i64, Error> {
         .map_err(|_| Error::InvalidBundle(format!("invalid timestamp: {value}")))
 }
 
-fn verify_mldsa65(
+fn verify_stogas_signature(
     public_der_b64: &str,
     payload: &[u8],
     signature_b64url: &str,
@@ -1851,7 +1851,7 @@ fn verify_mldsa65(
         .decode(public_der_b64)
         .map_err(|error| error.to_string())?;
     if STANDARD.encode(&der) != public_der_b64 {
-        return Err("non-canonical ML-DSA public key".into());
+        return Err("non-canonical Stogas public key".into());
     }
     let key = signing::public_key_from_spki(&der).map_err(|error| error.to_string())?;
     let signature = URL_SAFE_NO_PAD
@@ -1860,9 +1860,9 @@ fn verify_mldsa65(
     if signature.len() != signing::SIGNATURE_BYTES
         || URL_SAFE_NO_PAD.encode(&signature) != signature_b64url
     {
-        return Err("invalid ML-DSA signature encoding".into());
+        return Err("invalid Stogas signature encoding".into());
     }
-    signing::verify(key, payload, &[], &signature).map_err(|error| error.to_string())
+    signing::verify(key, payload, &signature).map_err(|error| error.to_string())
 }
 
 fn canonical_json(value: &Value) -> Result<String, Error> {
@@ -2244,27 +2244,25 @@ mod tests {
     fn resign_release(release: &mut AllowedIgvm) -> String {
         use crate::signing::SigningKey;
 
-        let signing_key = SigningKey::from_seed(&[0x42; 32]);
+        let signing_key = SigningKey::from_seeds(&[[0x42; 32], [0x43; 32]]);
         let canonical = canonical_json(&serde_json::to_value(&release.document).unwrap()).unwrap();
         let mut payload = STOGAS_SIGNATURE_DOMAIN.to_vec();
         payload.extend_from_slice(canonical.trim_end_matches('\n').as_bytes());
         release.signature.key_id = "test-release-key".into();
-        release.signature.signature =
-            URL_SAFE_NO_PAD.encode(signing_key.sign(&payload, &[]).unwrap());
+        release.signature.signature = URL_SAFE_NO_PAD.encode(signing_key.sign(&payload).unwrap());
         STANDARD.encode(signing_key.public_key_spki().unwrap())
     }
 
     fn resign_catalog(catalog: &mut AllowedCatalog) -> String {
         use crate::signing::SigningKey;
 
-        let signing_key = SigningKey::from_seed(&[0x42; 32]);
+        let signing_key = SigningKey::from_seeds(&[[0x42; 32], [0x43; 32]]);
         let canonical = canonical_json(&serde_json::to_value(&catalog.document).unwrap()).unwrap();
         let canonical = canonical.strip_suffix('\n').unwrap();
         let mut payload = STOGAS_SIGNATURE_DOMAIN.to_vec();
         payload.extend_from_slice(canonical.trim_end_matches('\n').as_bytes());
         catalog.signature.key_id = "test-release-key".into();
-        catalog.signature.signature =
-            URL_SAFE_NO_PAD.encode(signing_key.sign(&payload, &[]).unwrap());
+        catalog.signature.signature = URL_SAFE_NO_PAD.encode(signing_key.sign(&payload).unwrap());
         STANDARD.encode(signing_key.public_key_spki().unwrap())
     }
 

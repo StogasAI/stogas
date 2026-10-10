@@ -2,8 +2,8 @@ import wasmModule from '../../target/operator/stogas_verifier_bg.wasm';
 import {
 	initSync,
 	EvidenceVerifier,
-	verify_mldsa65,
-	mldsa65_message_representative,
+	verify_mldsa65_ed25519,
+	mldsa65_ed25519_signing_input,
 	rekor_public_key_from_seed,
 	prepare_rekor_submission_with_seed,
 	verify_sigstore_github_attestation
@@ -25,28 +25,26 @@ const rejects = (operation) => {
 };
 
 // Operator primitives in the Workers runtime that runs them. Signatures come
-// from independent Go vectors; nothing here holds an ML-DSA private key.
+// from OpenBao Transit vectors; nothing here holds a signing private key.
 export default {
 	async fetch() {
 		const { signing, remote, manifest, attestation } = fixtures;
 		const message = bytes(signing.message);
-		const context = new TextEncoder().encode(signing.context);
-		const publicKey = bytes(signing.spki);
-		verify_mldsa65(publicKey, message, context, bytes(signing.context_signature));
 		const remoteKey = base64(remote.public_key);
 		const representatives = remote.vectors.map((vector) => {
-			const [message, context, signature] = [vector.message, vector.context, vector.signature].map(
-				base64
-			);
-			verify_mldsa65(remoteKey, message, context, signature);
+			const [message, signature] = [vector.message, vector.signature].map(base64);
+			verify_mldsa65_ed25519(remoteKey, message, signature);
+			const input = mldsa65_ed25519_signing_input(remoteKey, message);
 			return (
-				hex(mldsa65_message_representative(remoteKey, message, context)) === hex(base64(vector.mu))
+				hex(input.mldsa_mu) === hex(base64(vector.mldsa_mu)) &&
+				hex(input.ed25519_message) === hex(base64(vector.ed25519_message))
 			);
 		});
-		const seeds = [0, 1, 2].map(() => bytes(signing.rekor_seed));
-		const rekorPublicKey = rekor_public_key_from_seed(seeds[0]);
-		const submission = JSON.parse(prepare_rekor_submission_with_seed(seeds[1], message));
-		const retry = JSON.parse(prepare_rekor_submission_with_seed(seeds[2], message));
+		// One caller-owned seed must stay usable across calls.
+		const seed = bytes(signing.rekor_seed);
+		const rekorPublicKey = rekor_public_key_from_seed(seed);
+		const submission = JSON.parse(prepare_rekor_submission_with_seed(seed, message));
+		const retry = JSON.parse(prepare_rekor_submission_with_seed(seed, message));
 		const badSeed = new Uint8Array(31).fill(42);
 		const rejectedSeed = rejects(() => prepare_rekor_submission_with_seed(badSeed, message));
 		const verifier = EvidenceVerifier.for_stogas('staging');
@@ -65,15 +63,15 @@ export default {
 			);
 		try {
 			return Response.json({
-				wrongContext: rejects(() =>
-					verify_mldsa65(publicKey, message, new Uint8Array(), bytes(signing.context_signature))
+				wrongMessage: rejects(() =>
+					verify_mldsa65_ed25519(remoteKey, message, base64(remote.vectors[0].signature))
 				),
 				representatives,
 				rekorPublicKey: hex(rekorPublicKey),
 				rekorSignature: submission.spec.signature.content,
 				hash: submission.spec.data.hash,
 				stable: JSON.stringify(submission) === JSON.stringify(retry),
-				erased: [...seeds, badSeed].every((seed) => seed.every((byte) => byte === 0)),
+				seedUnchanged: hex(seed) === signing.rekor_seed,
 				badSeed: rejectedSeed,
 				manifestKey: verifier.verify_key_manifest(encoded(manifest)).active_key.key_id,
 				alteredManifest: rejects(() => verifier.verify_key_manifest(encoded(altered))),

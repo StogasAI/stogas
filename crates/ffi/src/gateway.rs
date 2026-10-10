@@ -10,7 +10,7 @@ use stogas_verifier::{
     approvals::Environment,
     evidence::boot::BootRequestPurpose,
     gateway::{self, Error, NodeKeys, TlsKey},
-    signing::{PUBLIC_KEY_BYTES, SIGNATURE_BYTES},
+    signing::{SIGNATURE_BYTES, mldsa},
 };
 use zeroize::Zeroize as _;
 
@@ -128,11 +128,12 @@ unsafe fn array<'a, const N: usize>(data: *const u8) -> Result<&'a [u8; N], Stat
     unsafe { data.cast::<[u8; N]>().as_ref() }.ok_or(Status::Input)
 }
 
-/// Derive one boot's keys from two independent 32-byte random seeds, erasing both.
+/// Derive one boot's keys from independent random seeds, erasing them: 64 bytes
+/// for the composite signing key (ML-DSA-65, then Ed25519) and 32 for provisioning.
 ///
 /// # Safety
-/// Each seed addresses 32 writable bytes; the output pointer is writable and
-/// receives one owner to free exactly once.
+/// The signing seed addresses 64 writable bytes and the provisioning seed 32; the
+/// output pointer is writable and receives one owner to free exactly once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stogas_node_keys_new(
     signing_seed: *mut u8,
@@ -147,7 +148,7 @@ pub unsafe extern "C" fn stogas_node_keys_new(
         let (signing, provisioning) = unsafe {
             keys.write(ptr::null_mut());
             (
-                &mut *signing_seed.cast::<[u8; 32]>(),
+                &mut *signing_seed.cast::<[[u8; 32]; 2]>(),
                 &mut *provisioning_seed.cast::<[u8; 32]>(),
             )
         };
@@ -233,7 +234,7 @@ pub unsafe extern "C" fn stogas_node_boot_document(
 ///
 /// # Safety
 /// Keys are live; the node ID addresses its readable length; the signature
-/// output addresses 3,309 writable bytes.
+/// output addresses 3,373 writable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stogas_node_sign_boot_request(
     keys: *const StogasNodeKeys,
@@ -261,7 +262,7 @@ pub unsafe extern "C" fn stogas_node_sign_boot_request(
         };
         let node_id = std::str::from_utf8(node_id).map_err(|_| Status::Input)?;
         let bytes = keys.0.sign_boot_request(purpose, node_id, issued_at_ms)?;
-        // SAFETY: the output addresses 3,309 writable bytes.
+        // SAFETY: the output addresses 3,373 writable bytes.
         unsafe { signature.copy_from_nonoverlapping(bytes.as_ptr(), SIGNATURE_BYTES) };
         Ok(())
     })
@@ -369,7 +370,8 @@ pub unsafe extern "C" fn stogas_tls_key_generate(
         let owner = Box::new(StogasTlsKey(TlsKey::generate()?));
         // SAFETY: the outputs are writable and disjoint.
         unsafe {
-            public_key.copy_from_nonoverlapping(owner.0.public_key().as_ptr(), PUBLIC_KEY_BYTES);
+            public_key
+                .copy_from_nonoverlapping(owner.0.public_key().as_ptr(), mldsa::PUBLIC_KEY_BYTES);
             key.write(Box::into_raw(owner));
         }
         Ok(())
@@ -398,7 +400,7 @@ pub unsafe extern "C" fn stogas_tls_key_sign(
                 .sign(input(message, message_len)?)?
         };
         // SAFETY: the output addresses 3,309 writable bytes.
-        unsafe { signature.copy_from_nonoverlapping(bytes.as_ptr(), SIGNATURE_BYTES) };
+        unsafe { signature.copy_from_nonoverlapping(bytes.as_ptr(), mldsa::SIGNATURE_BYTES) };
         Ok(())
     })
 }

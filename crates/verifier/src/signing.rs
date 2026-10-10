@@ -1,28 +1,31 @@
-//! The fixed ML-DSA-65 signature profile used for Stogas-controlled signatures.
+//! Composite MLDSA65-Ed25519-SHA512 for every Stogas-controlled signature.
 //!
-//! Pure ML-DSA signs the complete purpose-separated message. No implicit prehash or
-//! algorithm fallback is accepted. Artifact, receipt and log formats own their encodings.
+//! Per draft-ietf-lamps-pq-composite-sigs, ML-DSA-65 and Ed25519 both sign one
+//! message representative and both must verify, so forging a signature requires
+//! breaking both algorithms. Formats own their purpose separation and encodings,
+//! so the composite application context is always empty.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use ed25519_dalek::pkcs8::EncodePublicKey as _;
-// libcrux dispatches at run time; only builds enabling `simd256` (the gateway) include AVX2.
-use libcrux_ml_dsa::ml_dsa_65::{
-    self as ml_dsa, MLDSA65Signature, MLDSA65SigningKey, MLDSA65VerificationKey,
-};
+use ed25519_dalek::{Signature, Signer as _, VerifyingKey, pkcs8::EncodePublicKey as _};
 use sha2::{Digest as _, Sha512};
 use spki::{
     AlgorithmIdentifierRef, ObjectIdentifier, SubjectPublicKeyInfoRef,
     der::{Decode as _, Encode as _, asn1::BitStringRef},
 };
-use zeroize::{Zeroize as _, Zeroizing};
 
-/// FIPS 204 ML-DSA-65 public key length.
-pub const PUBLIC_KEY_BYTES: usize = 1952;
-/// FIPS 204 ML-DSA-65 signature length.
-pub const SIGNATURE_BYTES: usize = 3309;
-/// FIPS 204 key-generation seed length.
+pub mod mldsa;
+
+/// The ML-DSA-65 public key, then the Ed25519 public key.
+pub const PUBLIC_KEY_BYTES: usize = mldsa::PUBLIC_KEY_BYTES + 32;
+/// The ML-DSA-65 signature, then the Ed25519 signature.
+pub const SIGNATURE_BYTES: usize = mldsa::SIGNATURE_BYTES + 64;
+/// Each component's private key: an ML-DSA-65 key-generation seed or an Ed25519 secret.
 pub const SEED_BYTES: usize = 32;
-const ML_DSA_65_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.18");
+/// The message representative each component signs.
+pub const REPRESENTATIVE_BYTES: usize = PREFIX.len() + LABEL.len() + 1 + 64;
+const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.6.48");
+const PREFIX: &[u8] = b"CompositeAlgorithmSignatures2025";
+const LABEL: &[u8] = b"COMPSIG-MLDSA65-Ed25519-SHA512";
 
 /// Signature errors contain no key or document material.
 #[derive(Clone, Copy, Debug, thiserror::Error)]
@@ -31,10 +34,10 @@ pub enum Error {
     #[error("signed document exceeds the input limit")]
     TooLarge,
     /// The fixed profile's public key or signature length differs.
-    #[error("invalid ML-DSA-65 key or signature length")]
+    #[error("invalid signature key or signature length")]
     Length,
     /// The SPKI is malformed, uses another algorithm, or has parameters.
-    #[error("invalid ML-DSA-65 public key encoding")]
+    #[error("invalid signature public key encoding")]
     PublicKey,
     /// Rekor compatibility keys use a separate 32-byte Ed25519 seed.
     #[error("invalid Rekor submission key seed")]
@@ -42,64 +45,57 @@ pub enum Error {
     /// FIPS 204 limits the signing context to 255 bytes.
     #[error("ML-DSA signing context exceeds 255 bytes")]
     Context,
-    /// The signature is malformed or does not authenticate this message and context.
-    #[error("ML-DSA-65 signature verification failed")]
+    /// The signature is malformed or does not authenticate this message.
+    #[error("signature verification failed")]
     Verification,
     /// Signature generation failed.
-    #[error("ML-DSA-65 signing failed")]
+    #[error("signing failed")]
     Signing,
     /// The platform could not supply cryptographic randomness.
     #[error("cryptographic randomness is unavailable")]
     Randomness,
 }
 
-/// An expanded signing key, erased on drop and never implicitly cloned or formatted.
+/// A composite signing key whose components are erased on drop and never
+/// implicitly cloned or formatted.
 pub struct SigningKey {
-    secret: MLDSA65SigningKey,
+    mldsa: mldsa::SigningKey,
+    ed25519: ed25519_dalek::SigningKey,
     public: [u8; PUBLIC_KEY_BYTES],
 }
 
-impl Drop for SigningKey {
-    fn drop(&mut self) {
-        self.secret.as_ref_mut().zeroize();
-    }
-}
-
 impl SigningKey {
-    /// Derive a key from a cryptographically random seed; the caller owns seed erasure.
+    /// Derive a key from two independent random component seeds, ML-DSA-65 first;
+    /// the caller owns seed erasure.
     #[must_use]
-    pub fn from_seed(seed: &[u8; SEED_BYTES]) -> Self {
-        let pair = ml_dsa::generate_key_pair(*seed);
+    pub fn from_seeds([mldsa_seed, ed25519_secret]: &[[u8; SEED_BYTES]; 2]) -> Self {
+        let mldsa = mldsa::SigningKey::from_seed(mldsa_seed);
+        let ed25519 = ed25519_dalek::SigningKey::from_bytes(ed25519_secret);
+        let mut public = [0; PUBLIC_KEY_BYTES];
+        let (mldsa_public, ed25519_public) = public.split_at_mut(mldsa::PUBLIC_KEY_BYTES);
+        mldsa_public.copy_from_slice(mldsa.public_key());
+        ed25519_public.copy_from_slice(ed25519.verifying_key().as_bytes());
         Self {
-            public: *pair.verification_key.as_ref(),
-            secret: pair.signing_key,
+            mldsa,
+            ed25519,
+            public,
         }
     }
 
-    /// Generate a key from fresh operating-system randomness.
-    ///
-    /// # Errors
-    /// Fails only when randomness is unavailable.
-    pub fn generate() -> Result<Self, Error> {
-        let mut seed = Zeroizing::new([0; SEED_BYTES]);
-        getrandom::fill(seed.as_mut()).map_err(|_| Error::Randomness)?;
-        Ok(Self::from_seed(&seed))
-    }
-
-    /// The FIPS 204 public key encoding, without an ASN.1 wrapper.
+    /// The raw composite public key, without an ASN.1 wrapper.
     #[must_use]
     pub const fn public_key(&self) -> &[u8; PUBLIC_KEY_BYTES] {
         &self.public
     }
 
-    /// Encode the public key as RFC 9881 DER `SubjectPublicKeyInfo`.
+    /// Encode the public key as DER `SubjectPublicKeyInfo`.
     ///
     /// # Errors
     /// Returns an error if DER encoding fails.
     pub fn public_key_spki(&self) -> Result<Vec<u8>, Error> {
         SubjectPublicKeyInfoRef {
             algorithm: AlgorithmIdentifierRef {
-                oid: ML_DSA_65_OID,
+                oid: OID,
                 parameters: None,
             },
             subject_public_key: BitStringRef::from_bytes(&self.public)
@@ -109,33 +105,86 @@ impl SigningKey {
         .map_err(|_| Error::PublicKey)
     }
 
-    /// Sign using fresh per-signature randomness and the supplied protocol context.
+    /// Sign with hedged ML-DSA-65 and deterministic Ed25519.
     ///
     /// # Errors
-    /// Rejects overlong contexts, unavailable randomness and signing failures.
-    pub fn sign(&self, message: &[u8], context: &[u8]) -> Result<[u8; SIGNATURE_BYTES], Error> {
-        check_context(context)?;
-        let mut randomness = Zeroizing::new([0; 32]);
-        getrandom::fill(&mut *randomness).map_err(|_| Error::Randomness)?;
-        self.sign_with_randomness(message, context, &randomness)
-    }
-
-    fn sign_with_randomness(
-        &self,
-        message: &[u8],
-        context: &[u8],
-        randomness: &[u8; 32],
-    ) -> Result<[u8; SIGNATURE_BYTES], Error> {
-        check_context(context)?;
-        ml_dsa::sign(&self.secret, message, context, *randomness)
-            .map(|signature| *signature.as_ref())
-            .map_err(|_| Error::Signing)
+    /// Fails when randomness is unavailable or either component fails.
+    pub fn sign(&self, message: &[u8]) -> Result<[u8; SIGNATURE_BYTES], Error> {
+        let representative = representative(message);
+        let mut signature = [0; SIGNATURE_BYTES];
+        let (mldsa_signature, ed25519_signature) = signature.split_at_mut(mldsa::SIGNATURE_BYTES);
+        mldsa_signature.copy_from_slice(&self.mldsa.sign(&representative, LABEL)?);
+        ed25519_signature.copy_from_slice(&self.ed25519.sign(&representative).to_bytes());
+        Ok(signature)
     }
 }
 
-/// A Rekor compatibility key for a publisher whose ML-DSA key cannot be exported.
+/// Verify a composite signature using a raw composite public key and the exact message.
+/// Ed25519 verification is strict: it rejects weak keys and non-canonical encodings.
 ///
-/// It grants no Stogas approval authority. Bind its public key to the ML-DSA key
+/// # Errors
+/// Rejects wrong lengths and any component that does not verify.
+pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<(), Error> {
+    if public_key.len() != PUBLIC_KEY_BYTES || signature.len() != SIGNATURE_BYTES {
+        return Err(Error::Length);
+    }
+    let (mldsa_key, ed25519_key) = public_key.split_at(mldsa::PUBLIC_KEY_BYTES);
+    let (mldsa_signature, ed25519_signature) = signature.split_at(mldsa::SIGNATURE_BYTES);
+    let representative = representative(message);
+    mldsa::verify(mldsa_key, &representative, LABEL, mldsa_signature)?;
+    VerifyingKey::try_from(ed25519_key)
+        .and_then(|key| {
+            key.verify_strict(&representative, &Signature::from_slice(ed25519_signature)?)
+        })
+        .map_err(|_| Error::Verification)
+}
+
+/// What each component key signs when the two keys are remote, such as two Transit keys.
+///
+/// ML-DSA-65 signs `mldsa_mu` as FIPS 204's external message representative;
+/// Ed25519 signs `ed25519_message`. Join the signatures in that order and verify
+/// the result before use.
+pub struct RemoteSigningInput {
+    pub mldsa_mu: [u8; 64],
+    pub ed25519_message: [u8; REPRESENTATIVE_BYTES],
+}
+
+/// Prepare remote component signing for a raw composite public key.
+///
+/// # Errors
+/// Rejects invalid public-key lengths and oversized messages.
+pub fn remote_signing_input(
+    public_key: &[u8],
+    message: &[u8],
+) -> Result<RemoteSigningInput, Error> {
+    if public_key.len() != PUBLIC_KEY_BYTES {
+        return Err(Error::Length);
+    }
+    if message.len() > crate::MAX_INPUT_BYTES {
+        return Err(Error::TooLarge);
+    }
+    let ed25519_message = representative(message);
+    Ok(RemoteSigningInput {
+        mldsa_mu: mldsa::message_representative(
+            &public_key[..mldsa::PUBLIC_KEY_BYTES],
+            &ed25519_message,
+            LABEL,
+        )?,
+        ed25519_message,
+    })
+}
+
+/// Extract a composite public key from its strict DER `SubjectPublicKeyInfo` encoding.
+///
+/// # Errors
+/// Rejects trailing bytes, algorithm parameters, other algorithms and wrong key lengths.
+pub fn public_key_from_spki(der: &[u8]) -> Result<&[u8; PUBLIC_KEY_BYTES], Error> {
+    spki_key(der, OID)
+}
+
+/// A Rekor compatibility key for a publisher whose signing key cannot be exported.
+///
+/// It grants no Stogas approval authority. Bind its public key to the composite key
 /// in authenticated metadata; document verification must require both proofs.
 pub struct RekorSubmissionKey(ed25519_dalek::SigningKey);
 
@@ -191,58 +240,22 @@ impl RekorSubmissionKey {
     }
 }
 
-/// Verify pure ML-DSA-65 using a raw public key and the exact signed message/context.
-///
-/// # Errors
-/// Rejects wrong lengths, overlong contexts and invalid signatures.
-pub fn verify(
-    public_key: &[u8],
-    message: &[u8],
-    context: &[u8],
-    signature: &[u8],
-) -> Result<(), Error> {
-    check_context(context)?;
-    let public_key = MLDSA65VerificationKey::new(public_key.try_into().map_err(|_| Error::Length)?);
-    let signature = MLDSA65Signature::new(signature.try_into().map_err(|_| Error::Length)?);
-    ml_dsa::verify(&public_key, message, context, &signature).map_err(|_| Error::Verification)
+/// `M' = Prefix || Label || len(ctx) || ctx || SHA-512(M)` with an empty context.
+fn representative(message: &[u8]) -> [u8; REPRESENTATIVE_BYTES] {
+    let digest = Sha512::digest(message);
+    let mut output = [0; REPRESENTATIVE_BYTES];
+    for (byte, value) in output
+        .iter_mut()
+        .zip(PREFIX.iter().chain(LABEL).chain(&[0]).chain(&digest))
+    {
+        *byte = *value;
+    }
+    output
 }
 
-/// FIPS 204's external message representative for a remote pure ML-DSA signer.
-/// This is not HashML-DSA: it preserves the exact message and protocol context.
-///
-/// # Errors
-/// Rejects invalid public-key lengths and oversized messages or contexts.
-pub fn message_representative(
-    public_key: &[u8],
-    message: &[u8],
-    context: &[u8],
-) -> Result<[u8; 64], Error> {
-    use libcrux_sha3::portable::incremental::{Shake256Xof, Xof as _};
-    check_context(context)?;
-    if public_key.len() != PUBLIC_KEY_BYTES {
-        return Err(Error::Length);
-    }
-    if message.len() > crate::MAX_INPUT_BYTES {
-        return Err(Error::TooLarge);
-    }
-    let tr = libcrux_sha3::shake256::<64>(public_key);
-    let mut hash = Shake256Xof::new();
-    hash.absorb(&tr);
-    hash.absorb(&[0, u8::try_from(context.len()).map_err(|_| Error::Context)?]);
-    hash.absorb(context);
-    hash.absorb_final(message);
-    let mut mu = [0; 64];
-    hash.squeeze(&mut mu);
-    Ok(mu)
-}
-
-/// Extract an ML-DSA-65 public key from its strict DER `SubjectPublicKeyInfo` encoding.
-///
-/// # Errors
-/// Rejects trailing bytes, algorithm parameters, other algorithms and wrong key lengths.
-pub fn public_key_from_spki(der: &[u8]) -> Result<&[u8; PUBLIC_KEY_BYTES], Error> {
+fn spki_key<const N: usize>(der: &[u8], oid: ObjectIdentifier) -> Result<&[u8; N], Error> {
     let spki = SubjectPublicKeyInfoRef::from_der(der).map_err(|_| Error::PublicKey)?;
-    if spki.algorithm.oid != ML_DSA_65_OID || spki.algorithm.parameters.is_some() {
+    if spki.algorithm.oid != oid || spki.algorithm.parameters.is_some() {
         return Err(Error::PublicKey);
     }
     spki.subject_public_key
@@ -250,13 +263,6 @@ pub fn public_key_from_spki(der: &[u8]) -> Result<&[u8; PUBLIC_KEY_BYTES], Error
         .ok_or(Error::PublicKey)?
         .try_into()
         .map_err(|_| Error::Length)
-}
-
-const fn check_context(context: &[u8]) -> Result<(), Error> {
-    if context.len() > 255 {
-        return Err(Error::Context);
-    }
-    Ok(())
 }
 
 #[cfg(test)]

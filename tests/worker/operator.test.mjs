@@ -14,7 +14,7 @@ test('operator Worker verifies remote signatures, Rekor submissions, key manifes
 	const signing = await json('tests/fixtures/mldsa65-v1.json');
 	const fixtures = {
 		signing,
-		remote: await json('tests/fixtures/mldsa65-remote-v1.json'),
+		remote: await json('tests/fixtures/mldsa65-ed25519-remote-v1.json'),
 		manifest: await json('tests/fixtures/staging-key-manifest.json'),
 		attestation: {
 			bundle: await readFile(
@@ -79,7 +79,7 @@ test('operator Worker verifies remote signatures, Rekor submissions, key manifes
 		const response = await runtime.dispatchFetch('http://operator/');
 		assert.equal(response.status, 200, await response.clone().text());
 		assert.deepEqual(await response.json(), {
-			wrongContext: true,
+			wrongMessage: true,
 			representatives: [true, true, true],
 			rekorPublicKey: signing.rekor_spki,
 			rekorSignature: Buffer.from(signing.rekor_signature, 'hex').toString('base64'),
@@ -88,7 +88,7 @@ test('operator Worker verifies remote signatures, Rekor submissions, key manifes
 				value: createHash('sha512').update(Buffer.from(signing.message, 'hex')).digest('hex')
 			},
 			stable: true,
-			erased: true,
+			seedUnchanged: true,
 			badSeed: true,
 			manifestKey: fixtures.manifest.document.active_key.key_id,
 			alteredManifest: true,

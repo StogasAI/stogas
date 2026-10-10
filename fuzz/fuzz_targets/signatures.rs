@@ -1,11 +1,13 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::sync::OnceLock;
 use stogas_verifier::signing;
 
 fuzz_target!(|data: &[u8]| {
     let _ = signing::public_key_from_spki(data);
+    let _ = signing::mldsa::public_key_from_spki(data);
 
     // Retain a valid starting point as well as arbitrary encodings. Shared
     // conformance vectors own the bytes; the corpus only needs a short marker.
@@ -14,12 +16,13 @@ fuzz_target!(|data: &[u8]| {
     let data = if data.first() == Some(&b'S') {
         candidate = VALID
             .get_or_init(|| {
-                let vector: serde_json::Value =
-                    serde_json::from_str(include_str!("../../tests/fixtures/mldsa65-v1.json"))
-                        .unwrap();
-                ["public_key", "signature", "message"]
+                let vector: serde_json::Value = serde_json::from_str(include_str!(
+                    "../../tests/fixtures/mldsa65-ed25519-ietf.json"
+                ))
+                .unwrap();
+                ["pk", "s", "m"]
                     .into_iter()
-                    .flat_map(|field| hex::decode(vector[field].as_str().unwrap()).unwrap())
+                    .flat_map(|field| STANDARD.decode(vector[field].as_str().unwrap()).unwrap())
                     .collect()
             })
             .clone();
@@ -41,5 +44,5 @@ fuzz_target!(|data: &[u8]| {
     let rest = &data[key_len..];
     let signature_len = rest.len().min(signature.len());
     signature[..signature_len].copy_from_slice(&rest[..signature_len]);
-    let _ = signing::verify(&public, &rest[signature_len..], b"", &signature);
+    let _ = signing::verify(&public, &rest[signature_len..], &signature);
 });

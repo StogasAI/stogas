@@ -57,7 +57,7 @@ mod staging {
         let mut signed = crate::STOGAS_SIGNATURE_DOMAIN.to_vec();
         let canonical = crate::canonical_json(value).unwrap();
         signed.extend_from_slice(canonical.strip_suffix('\n').unwrap().as_bytes());
-        json!({"key_id":key_id, "signature":URL_SAFE_NO_PAD.encode(SigningKey::from_seed(&[seed;32]).sign(&signed, &[]).unwrap())})
+        json!({"key_id":key_id, "signature":URL_SAFE_NO_PAD.encode(SigningKey::from_seeds(&[[seed; 32]; 2]).sign(&signed).unwrap())})
     }
 
     fn placeholder(subjects: Vec<(&str, String)>) -> Value {

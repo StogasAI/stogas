@@ -34,8 +34,11 @@ import (
 )
 
 const (
-	signatureBytes    = 3309
+	// Composite ML-DSA-65 and Ed25519 signatures for boot requests and receipts.
+	signatureBytes = 3373
+	// Pure ML-DSA-65 for per-connection TLS keys.
 	tlsPublicKeyBytes = 1952
+	tlsSignatureBytes = 3309
 )
 
 var (
@@ -77,8 +80,9 @@ type NodeKeys struct {
 	handle *C.StogasNodeKeys
 }
 
-// GenerateNodeKeys derives one boot's keys from 64 bytes of random, which defaults
-// to crypto/rand. Rust erases the seeds after deriving the keys.
+// GenerateNodeKeys derives one boot's keys from 96 bytes of random, which defaults
+// to crypto/rand: 64 for the composite signing key and 32 for provisioning. Rust
+// erases the seeds after deriving the keys.
 func GenerateNodeKeys(random io.Reader) (*NodeKeys, error) {
 	if err := checkNativeABI(); err != nil {
 		return nil, err
@@ -86,13 +90,13 @@ func GenerateNodeKeys(random io.Reader) (*NodeKeys, error) {
 	if random == nil {
 		random = rand.Reader
 	}
-	seeds := make([]byte, 64)
+	seeds := make([]byte, 96)
 	defer clear(seeds)
 	if _, err := io.ReadFull(random, seeds); err != nil {
 		return nil, err
 	}
 	var handle *C.StogasNodeKeys
-	if err := gatewayStatus(C.stogas_node_keys_new(bytePointer(seeds[:32]), bytePointer(seeds[32:]), &handle)); err != nil {
+	if err := gatewayStatus(C.stogas_node_keys_new(bytePointer(seeds[:64]), bytePointer(seeds[64:]), &handle)); err != nil {
 		return nil, err
 	}
 	return &NodeKeys{handle: handle}, nil
@@ -205,7 +209,7 @@ func (k *TLSKey) PublicKey() []byte { return append([]byte(nil), k.public...) }
 
 // Sign signs a message with pure ML-DSA-65 and an empty context, as TLS 1.3 and X.509 require.
 func (k *TLSKey) Sign(message []byte) ([]byte, error) {
-	signature := make([]byte, signatureBytes)
+	signature := make([]byte, tlsSignatureBytes)
 	err := gatewayStatus(C.stogas_tls_key_sign(k.handle, bytePointer(message), C.size_t(len(message)), bytePointer(signature)))
 	runtime.KeepAlive(k)
 	if err != nil {

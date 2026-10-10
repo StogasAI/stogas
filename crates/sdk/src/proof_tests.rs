@@ -77,7 +77,7 @@ impl Files {
             "boot_sha256": self.boot_hash,
             "request_sha256": hex::encode(request),
             "response_sha256": hex::encode(response),
-            "signature": URL_SAFE_NO_PAD.encode(SigningKey::from_seed(&[42; 32]).sign(&message, &[]).unwrap())
+            "signature": URL_SAFE_NO_PAD.encode(SigningKey::from_seeds(&[[42; 32]; 2]).sign(&message).unwrap())
         })
     }
 

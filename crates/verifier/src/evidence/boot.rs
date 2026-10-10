@@ -53,7 +53,7 @@ pub fn verify_boot_request(
     }
     let signature = decode(&request.signature, crate::signing::SIGNATURE_BYTES)?;
     let message = request_message(purpose, &request.node_id, request.issued_at_ms);
-    crate::signing::verify(public_key, &message, &[], &signature).map_err(invalid)
+    crate::signing::verify(public_key, &message, &signature).map_err(invalid)
 }
 
 pub(crate) fn request_message(

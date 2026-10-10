@@ -463,8 +463,8 @@ fn learned_release_withdrawal_blocks_warm_reappraisal_but_keeps_owned_request_ev
         request_sha256: hex::encode(request),
         response_sha256: hex::encode(response),
         signature: URL_SAFE_NO_PAD.encode(
-            SigningKey::from_seed(&[42; 32])
-                .sign(&message, &[])
+            SigningKey::from_seeds(&[[42; 32]; 2])
+                .sign(&message)
                 .unwrap(),
         ),
     };

@@ -12,7 +12,7 @@ use crate::{
     kem::{PrivateKey, XWing},
     receipt::{self, Receipt},
     secret_release,
-    signing::{self, SIGNATURE_BYTES, SigningKey},
+    signing::{self, SIGNATURE_BYTES, SigningKey, mldsa},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use hpke::{Kem as _, Serializable as _};
@@ -55,13 +55,13 @@ pub struct NodeKeys {
 }
 
 impl NodeKeys {
-    /// Derive both keys from independent random seeds: FIPS 204 for signing and
-    /// X-Wing for provisioning. The caller erases its seed copies.
+    /// Derive both keys from independent random seeds: composite ML-DSA-65 and
+    /// Ed25519 for signing and X-Wing for provisioning. The caller erases its seed copies.
     #[must_use]
-    pub fn from_seeds(signing: &[u8; 32], provisioning: &[u8; 32]) -> Self {
+    pub fn from_seeds(signing: &[[u8; signing::SEED_BYTES]; 2], provisioning: &[u8; 32]) -> Self {
         let recipient = PrivateKey::from_seed(Zeroizing::new(*provisioning));
         Self {
-            signing: SigningKey::from_seed(signing),
+            signing: SigningKey::from_seeds(signing),
             recipient_public: URL_SAFE_NO_PAD.encode(XWing::sk_to_pk(&recipient).to_bytes()),
             recipient: Mutex::new(Some(recipient)),
         }
@@ -127,7 +127,7 @@ impl NodeKeys {
     ) -> Result<[u8; SIGNATURE_BYTES], Error> {
         Ok(self
             .signing
-            .sign(&boot::request_message(purpose, node_id, issued_at_ms), &[])?)
+            .sign(&boot::request_message(purpose, node_id, issued_at_ms))?)
     }
 
     /// Sign exact content hashes and the metadata bag, excluding any `receipt` member.
@@ -150,7 +150,7 @@ impl NodeKeys {
             receipt::metadata_digest(&metadata).map_err(|_| Error::Input("receipt metadata"))?;
         let signature = self
             .signing
-            .sign(&receipt::message(request, response, &digest), &[])?;
+            .sign(&receipt::message(request, response, &digest))?;
         Ok(Receipt {
             schema: receipt::SCHEMA.into(),
             boot_sha256: hex::encode(boot_sha256),
@@ -204,18 +204,19 @@ impl NodeKeys {
     }
 }
 
-/// Fresh per-connection native TLS signer. Its SPKI digest enters the quote batch.
-pub struct TlsKey(SigningKey);
+/// Fresh per-connection native TLS signer using pure ML-DSA-65. Its SPKI digest
+/// enters the quote batch.
+pub struct TlsKey(mldsa::SigningKey);
 
 impl TlsKey {
     /// # Errors
     /// Fails only when randomness is unavailable.
     pub fn generate() -> Result<Self, Error> {
-        Ok(Self(SigningKey::generate()?))
+        Ok(Self(mldsa::SigningKey::generate()?))
     }
 
     #[must_use]
-    pub const fn public_key(&self) -> &[u8; signing::PUBLIC_KEY_BYTES] {
+    pub const fn public_key(&self) -> &[u8; mldsa::PUBLIC_KEY_BYTES] {
         self.0.public_key()
     }
 
@@ -223,7 +224,7 @@ impl TlsKey {
     ///
     /// # Errors
     /// Fails only when signing fails.
-    pub fn sign(&self, message: &[u8]) -> Result<[u8; SIGNATURE_BYTES], Error> {
+    pub fn sign(&self, message: &[u8]) -> Result<[u8; mldsa::SIGNATURE_BYTES], Error> {
         Ok(self.0.sign(message, &[])?)
     }
 }
