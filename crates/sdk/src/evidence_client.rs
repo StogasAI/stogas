@@ -88,20 +88,7 @@ impl EvidenceClient {
     /// Rejects a malformed root or unavailable maintained HTTPS configuration.
     pub fn new(environment: Environment, root: RootKey) -> Result<Self, Error> {
         let origins = environment.evidence_origins();
-        let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::aws_lc_rs::default_provider(),
-        ))
-        .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])?
-        .with_root_certificates(rustls::RootCertStore {
-            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-        })
-        .with_no_client_auth();
-        tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-        let client = Client::builder()
-            .use_preconfigured_tls(tls)
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(ORIGIN_BUDGET)
-            .build()?;
+        let client = https_client()?;
         let origins = [
             Url::parse(origins[0]).map_err(|_| Error::State)?,
             Url::parse(origins[1]).map_err(|_| Error::State)?,
@@ -329,6 +316,24 @@ impl EvidenceClient {
             etag,
         })
     }
+}
+
+/// Evidence origins are fixed, so the client follows no redirects.
+pub(crate) fn https_client() -> Result<Client, Error> {
+    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])?
+    .with_root_certificates(rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    })
+    .with_no_client_auth();
+    tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    Ok(Client::builder()
+        .use_preconfigured_tls(tls)
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(ORIGIN_BUDGET)
+        .build()?)
 }
 
 async fn run_cpu<T: Send + 'static>(
