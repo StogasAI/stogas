@@ -1,14 +1,24 @@
-"""Exercise installed release packages and record the exact tested artifact set."""
+"""Exercise installed release packages with this release's own test code.
 
+Run through `release.py qualify`, which unpacks and authenticates the source
+snapshot recorded by the release before starting this file from it.
+"""
+
+import argparse
 import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
-from artifacts import digest, unpack, verify_inventory, verify_source, write_json
+sys.dont_write_bytecode = True
+from artifacts import unpack, verify_inventory, verify_source, wheel, write_json
+from gate import CASES, METADATA, attempt, read_document
 from package_bindings import MAVEN, DOTNET, RUBY
+
+ROOT = Path(__file__).resolve().parents[1]
 
 GO = "golang:1.26.5-bookworm@sha256:53eeac89074db483fdf0ab3be1df32bf6e47562263d2d0d6baa7f26acb4957dd"
 PYTHON = "quay.io/pypa/manylinux2014_x86_64@sha256:ffd6d1f11237599748657996b750db6b3a5b724fea5a81cd9ea65add4f45b6c9"
@@ -25,45 +35,41 @@ PYTHON_IMAGES = {
 }
 
 
-def qualify(build, platform, output, requested=(), device=None, python=None):
-    metadata = json.loads((build / "build.json").read_text())
-    source, packages = build / "source", build / "packages"
-    manifest = json.loads((packages / "release-manifest.json").read_text())
-    manifest_sha256 = verify_inventory(packages, manifest)
-    if metadata["source"] != manifest["source"]:
-        raise ValueError("Build and release source identities differ")
+def qualify(packages, platform, output, requested=(), device=None, device_farm=None):
+    manifest = read_document(packages / "release-manifest.json")
+    version = manifest["version"]
 
     def verify_inputs():
-        if verify_inventory(packages, manifest) != manifest_sha256:
-            raise ValueError("Packages changed during qualification")
-        version = manifest["version"]
-        verify_source(source, packages / f"stogas-source-v{version}.tar.gz", manifest["source"]["sha256"], f"stogas-v{version}")
+        manifest_sha256 = verify_inventory(packages, manifest, METADATA & {path.name for path in packages.iterdir()})
+        verify_source(ROOT, packages / f"stogas-source-v{version}.tar.gz", manifest["source"]["sha256"], f"stogas-v{version}")
+        return manifest_sha256
 
-    verify_inputs()
-    if platform not in metadata["platforms"] or platform not in manifest["targets"]:
+    manifest_sha256 = verify_inputs()
+    if platform not in manifest["targets"]:
         raise ValueError("Requested qualification platform was not built")
     if output.exists():
         raise ValueError("Qualification output already exists")
-    targets = json.loads((source / "release/targets.json").read_text())["targets"]
+    targets = json.loads((ROOT / "release/targets.json").read_text())["targets"]
     target = targets.get(platform)
-    version = manifest["version"]
     if platform == "portable":
         from qualify_portable import qualify as runner
-        checks = runner(source, packages, version, requested)
-    elif target and target["os"] in {"windows", "macos"}:
+        checks = runner(ROOT, packages, version, requested)
+    elif target["os"] in {"windows", "macos"}:
         from qualify_desktop import qualify as runner
-        checks = runner(source, packages, version, platform, target, requested, python)
-    elif target and target["os"] == "android":
+        checks = runner(ROOT, packages, version, platform, target, requested)
+    elif target["os"] == "android":
         from qualify_android import qualify as runner
-        checks = runner(source, packages, version, platform, target, requested, device)
-    elif target and target["os"] == "ios":
+        checks = runner(ROOT, packages, version, platform, target, requested, device, device_farm)
+    elif target["os"] == "ios":
         from qualify_ios import qualify as runner
-        checks = runner(source, packages, version, platform, target, requested, device)
-    elif target and target["os"] == "linux":
-        checks = qualify_linux(source, packages, version, platform, target, requested)
+        checks = runner(ROOT, packages, version, platform, target, requested, device, device_farm)
     else:
-        raise ValueError(f"No installed-package runner is configured for {platform}")
-    verify_inputs()
+        checks = qualify_linux(ROOT, packages, version, platform, target, requested)
+    if verify_inputs() != manifest_sha256:
+        raise ValueError("Packages changed during qualification")
+    failed = [f"{check['package']}/{check['case']}" for check in checks if check["outcome"] != "passed"]
+    if failed:
+        raise SystemExit("Qualification failed: " + ", ".join(failed))
     write_json(output, {"schema": "stogas.sdk-qualification.v1", "environment": "prod", "manifest_sha256": manifest_sha256, "checks": checks})
 
 
@@ -71,7 +77,6 @@ def qualify_linux(source, packages, version, platform, target, requested):
     selected = set(requested or target["packages"])
     if not selected <= set(target["packages"]):
         raise ValueError("Requested package is not supported on this platform")
-    machine = {"amd64": "x86_64", "arm64": "aarch64"}[target["arch"]]
     musl = target["libc"] == "musl"
     python_image = PYTHON_IMAGES[(target["libc"], target["arch"])]
     maven_image, dotnet_image, ruby_image = (MAVEN_MUSL, DOTNET_MUSL, RUBY_MUSL) if musl else (MAVEN, DOTNET, RUBY)
@@ -92,53 +97,59 @@ def qualify_linux(source, packages, version, platform, target, requested):
         native = next((work / "native").iterdir())
         shutil.copyfile(source / "release/consumers/native.c", native / "native.c")
 
-        def run(image, arguments, *, directory="/work", network=True, environment=()):
+        # Setup steps use the network. Offline cases have none; live cases use
+        # the production gateways.
+        def run(image, arguments, *, directory="/work", case=None, environment=()):
             subprocess.run([
                 "docker", "run", "--rm", "--init", "--memory", "4g", "--cpus", "4",
                 "--platform", "linux/" + target["arch"], "--user", f"{os.getuid()}:{os.getgid()}",
                 "--mount", f"type=bind,source={work},target=/work", "--workdir", directory,
                 "--env", "HOME=/work", "--env", "MAVEN_OPTS=-Duser.home=/work",
                 "--env", "DOTNET_CLI_HOME=/work", "--env", "GEM_HOME=/work/.gem",
-                *([] if network else ["--network", "none"]),
-                *[part for entry in environment for part in ("--env", entry)], image, *arguments,
+                *(["--network", "none"] if case == "offline" else []),
+                *[part for entry in (*environment, *(["STOGAS_LIVE=prod"] if case == "live" else [])) for part in ("--env", entry)],
+                image, *arguments,
             ], check=True)
 
-        def passed(package, image):
-            checks.append({"platform": platform, "package": package, "case": "installed-contract", "runtime": image, "outcome": "passed"})
+        def qualify_case(package, image, arguments, case, **options):
+            outcome = attempt(f"{package}/{case}", lambda: run(image, arguments, case=case, **options))
+            checks.append({"platform": platform, "package": package, "case": case, "runtime": image, "outcome": outcome})
 
         relative_native = "/work/" + native.relative_to(work).as_posix()
         if "native" in selected:
-            run(python_image, ["cc", "-Wall", "-Wextra", "-Werror", "native.c", "-L.", "-lstogas_verifier_ffi", "-o", "native-consumer"], directory=relative_native, network=False)
-            run(python_image, ["./native-consumer"], directory=relative_native, network=False, environment=["LD_LIBRARY_PATH=."])
-            passed("native", python_image)
+            run(python_image, ["cc", "-Wall", "-Wextra", "-Werror", "native.c", "-L.", "-lstogas_verifier_ffi", "-o", "native-consumer"], directory=relative_native, case="offline")
+            for case in CASES:
+                qualify_case("native", python_image, ["./native-consumer"], case, directory=relative_native, environment=["LD_LIBRARY_PATH=."])
         if "cli" in selected:
-            run(python_image, ["./stogas", "--help"], directory=relative_native, network=False)
-            passed("cli", python_image)
+            shutil.copyfile(source / "release/consumers/cli.py", work / "cli.py")
+            for case in CASES:
+                qualify_case("cli", python_image, ["/opt/python/cp310-cp310/bin/python", "-I", "/work/cli.py", relative_native + "/stogas", version, "/work/tests/fixtures"], case)
         if "python" in selected:
             python = "/opt/python/cp310-cp310/bin/python"
-            tag = "musllinux_1_2_" if musl else "manylinux_2_17_"
-            wheel = next((work / "packages").glob("*" + tag + machine + "*.whl"))
-            run(python_image, [python, "-m", "pip", "install", "--no-index", "--target", "/work/python", "/work/packages/" + wheel.name], network=False)
-            run(python_image, [python, "-m", "unittest", "discover", "-s", "bindings/python/tests", "-p", "test_package.py", "-v"], network=False, environment=["PYTHONPATH=/work/python"])
-            passed("python", python_image)
+            name = wheel([path.name for path in packages.iterdir()], target)
+            run(python_image, [python, "-m", "pip", "install", "--no-index", "--target", "/work/python", "/work/packages/" + name], case="offline")
+            for case in CASES:
+                qualify_case("python", python_image, [python, "-m", "unittest", "discover", "-s", "bindings/python/tests", "-p", "test_package.py", "-v"], case, environment=["PYTHONPATH=/work/python"])
         if "java" in selected:
             run(maven_image, ["mvn", "-B", "-ntp", "org.apache.maven.plugins:maven-install-plugin:3.1.4:install-file", f"-Dfile=/work/packages/stogas-{version}.jar", f"-DpomFile=/work/packages/stogas-{version}.pom"])
-            run(maven_image, ["mvn", "-B", "-ntp", "-f", "java/pom.xml", f"-Dstogas.version={version}", "-Dtest=TransportTest#rejectsInvalidConfigurationWithNativeCodes", "test"])
-            passed("java", maven_image)
+            test = ["mvn", "-B", "-ntp", "-f", "java/pom.xml", f"-Dstogas.version={version}", "test"]
+            # The live run also downloads the test plugins that the offline run uses.
+            qualify_case("java", maven_image, test, "live")
+            qualify_case("java", maven_image, ["mvn", "-o", *test[1:]], "offline")
         if "dotnet" in selected:
             run(dotnet_image, ["dotnet", "restore", "dotnet/Consumer.csproj", "--configfile", "dotnet/NuGet.Config"])
-            run(dotnet_image, ["dotnet", "run", "--no-restore", "--project", "dotnet/Consumer.csproj"], network=False)
-            passed("dotnet", dotnet_image)
+            for case in CASES:
+                qualify_case("dotnet", dotnet_image, ["dotnet", "run", "--no-restore", "--project", "dotnet/Consumer.csproj"], case)
         if "ruby" in selected:
             gem = f"stogas-{version.replace('-', '.')}-{target['ruby']}.gem"
             run(ruby_image, ["gem", "install", "--no-document", "/work/packages/" + gem])
             run(ruby_image, ["gem", "install", "--no-document", "minitest", "--version", "6.0.6"])
-            run(ruby_image, ["ruby", "ruby/transport_test.rb", "--name", "test_invalid_options_preserve_native_error_codes"], network=False)
-            passed("ruby", ruby_image)
+            for case in CASES:
+                qualify_case("ruby", ruby_image, ["ruby", "ruby/transport_test.rb"], case)
         if "swift" in selected:
             unpack(packages / f"stogas-swift-v{version}.tar.gz", work / "swift")
-            run(SWIFT, ["swift", "test", "--package-path", "swift/Stogas", "-j", "4", "--filter", "TransportTests.testNativeErrors"], network=False)
-            passed("swift", SWIFT)
+            for case in CASES:
+                qualify_case("swift", SWIFT, ["swift", "test", "--package-path", "swift/Stogas", "-j", "4"], case)
         if "go" in selected:
             unpack(packages / f"stogas-go-v{version}.tar.gz", work / "go-package")
             shutil.copytree(source / "tests/fixtures", work / "go-package/tests/fixtures")
@@ -150,6 +161,18 @@ def qualify_linux(source, packages, version, platform, target, requested):
                 (work / "Dockerfile").write_text(f"FROM {GO_MUSL} AS go\nFROM {python_image}\nCOPY --from=go /usr/local/go /usr/local/go\nENV PATH=/usr/local/go/bin:$PATH\n")
                 subprocess.run(["docker", "build", "--platform", "linux/" + target["arch"], "--iidfile", str(identity), str(work)], check=True)
                 go_image = identity.read_text().strip()
-            run(go_image, ["go", "test", *(["-tags", "musl"] if musl else []), "./..."], directory="/work/go-package/go", environment=["CGO_ENABLED=1", "GOWORK=off"])
-            passed("go", go_image)
+            for case in CASES:
+                qualify_case("go", go_image, ["go", "test", "-count=1", *(["-tags", "musl"] if musl else []), "./..."], case, directory="/work/go-package/go", environment=["CGO_ENABLED=1", "GOWORK=off"])
     return checks
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("packages", type=Path)
+    parser.add_argument("--platform", required=True)
+    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--package", action="append", default=[])
+    parser.add_argument("--device")
+    parser.add_argument("--device-farm")
+    args = parser.parse_args()
+    qualify(args.packages.resolve(), args.platform, args.out.resolve(), args.package, args.device, args.device_farm)

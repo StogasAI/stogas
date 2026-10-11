@@ -6,7 +6,6 @@ match without this shim. Object bytes and linker options are left intact.
 """
 
 import hashlib
-import os
 from pathlib import Path
 import re
 import shutil

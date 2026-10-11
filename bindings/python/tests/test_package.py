@@ -1,7 +1,12 @@
-"""Tests against the installed wheel, with no service or network dependency."""
+"""Tests against the installed wheel. Only STOGAS_LIVE tests use the network."""
 
-import unittest
 import json
+import os
+import unittest
+import urllib.error
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from stogas import (
@@ -72,6 +77,30 @@ class PackageTests(unittest.TestCase):
         ):
             with self.subTest(options=options), self.assertRaises(TypeError):
                 Transport(**options)
+
+    @unittest.skipUnless(os.environ.get("STOGAS_LIVE"), "set STOGAS_LIVE to staging or prod")
+    def test_live_gateway_rejects_an_invalid_key_through_each_security_mode(self):
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        body = b'{"model":"stogas-status-monitor","messages":[{"role":"user","content":"ping"}]}'
+        headers = {"Authorization": "Bearer stogas-status-monitor-uncredentialed", "Content-Type": "application/json"}
+        for security in ("tls", "e2ee"):
+            with self.subTest(security=security):
+                transport = Transport(environment=os.environ["STOGAS_LIVE"], security=security)
+                try:
+                    self.assertEqual(urllib.parse.urlsplit(transport.base_url).hostname, "127.0.0.1")
+                    request = urllib.request.Request(transport.base_url + "/chat/completions", data=body, headers=headers, method="POST")
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        opener.open(request, timeout=30)
+                    with caught.exception as response:
+                        self.assertEqual(response.code, 401)
+                        self.assertEqual(json.loads(response.read())["error"]["type"], "authentication_error")
+                    with ThreadPoolExecutor(3) as pool:
+                        list(pool.map(lambda _: transport.refresh_bundle(), range(3)))
+                finally:
+                    transport.close()
+                transport.close()
+                with self.assertRaises(ValueError):
+                    transport.refresh_bundle()
 
 
 if __name__ == "__main__":

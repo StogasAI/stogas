@@ -3,16 +3,21 @@
 import copy
 import unittest
 
-from gate import check_qualification
+from gate import CASES, NPM_RUNTIMES, check_qualification
 
 
 class QualificationTests(unittest.TestCase):
     def setUp(self):
-        self.targets = {"linux-amd64": {"packages": ["native"]}}
-        identities = [("linux-amd64", "native", name) for name in ("installed-contract", "transport-tls", "transport-e2ee")]
-        identities.extend(("portable", "rust", case) for case in ("installed-contract", "transport-tls", "transport-e2ee"))
-        for runtime in ("node", "node-minimum", "bun", "deno", "worker", "chromium", "firefox", "webkit"):
-            identities.extend(("portable", "npm", f"{runtime}-{case}") for case in ("contract", "e2ee"))
+        self.targets = {
+            "linux-amd64": {"os": "linux", "packages": ["native"]},
+            "android-arm64": {"os": "android", "packages": ["android"]},
+            "ios-arm64": {"os": "ios", "packages": ["swift"]},
+        }
+        identities = [(platform, package, name) for platform, package in (("linux-amd64", "native"), ("ios-arm64", "swift")) for name in CASES]
+        identities.extend(("android-arm64", "android", name) for name in ("offline", "16k", "live"))
+        identities.extend(("portable", "rust", case) for case in CASES)
+        for runtime in NPM_RUNTIMES:
+            identities.extend(("portable", "npm", f"{runtime}-{case}") for case in CASES)
         self.report = {
             "schema": "stogas.sdk-qualification.v1", "environment": "prod", "manifest_sha256": "a" * 64,
             "checks": [{"platform": platform, "package": package, "case": case, "runtime": "test-runtime", "outcome": "passed"} for platform, package, case in identities],
@@ -34,6 +39,7 @@ class QualificationTests(unittest.TestCase):
             lambda r: r["checks"][0].update(runtime=""),
             lambda r: r["checks"].append(r["checks"][0].copy()),
             lambda r: r["checks"][0].update(platform="windows-amd64"),
+            lambda r: r["checks"].append({**r["checks"][0], "platform": "ios-arm64", "package": "swift"}),
         ]
         for change in changes:
             report = copy.deepcopy(self.report)

@@ -11,14 +11,16 @@ mod tsa;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 /// Maximum accepted serialized Sigstore bundle size.
 pub const MAX_BUNDLE_BYTES: usize = 1_048_576;
 /// Maximum document bytes hashed by the public document-inclusion verifier.
 pub const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
-const MAX_SUBJECTS: usize = 16;
+// GitHub's attestation action accepts at most 1,024 subjects per statement.
+const MAX_SUBJECTS: usize = 1024;
+const MAX_BUNDLES: usize = 16;
 const DSSE_PAYLOAD_TYPE: &str = "application/vnd.in-toto+json";
 const SIGSTORE_BUNDLE_MEDIA_TYPE: &str = "application/vnd.dev.sigstore.bundle.v0.3+json";
 
@@ -265,7 +267,7 @@ fn parse_bundle_documents(bundle_bytes: &[u8]) -> Result<Vec<Value>, Error> {
                 .lines()
                 .filter(|line| !line.trim().is_empty())
                 .collect();
-            if lines.len() <= 1 || lines.len() > MAX_SUBJECTS {
+            if lines.len() <= 1 || lines.len() > MAX_BUNDLES {
                 return Err(Error::InvalidBundle(single_error.to_string()));
             }
             lines
@@ -402,25 +404,18 @@ fn check_subjects(statement: &Statement, expected_subjects: &[Subject<'_>]) -> R
             ));
         }
     }
-    let actual_names: HashSet<_> = statement
+    let actual: HashMap<_, _> = statement
         .subject
         .iter()
-        .map(|subject| subject.name.as_str())
+        .map(|subject| (subject.name.as_str(), subject.digest.sha256.as_str()))
         .collect();
-    if actual_names.len() != statement.subject.len() {
+    if actual.len() != statement.subject.len() {
         return Err(Error::Policy(
             "attestation has duplicate subject names".into(),
         ));
     }
     for expected in expected_subjects {
-        let matches = statement
-            .subject
-            .iter()
-            .filter(|subject| {
-                subject.name == expected.name && subject.digest.sha256 == expected.sha256
-            })
-            .count();
-        if matches != 1 {
+        if actual.get(expected.name) != Some(&expected.sha256) {
             return Err(Error::Policy(format!(
                 "expected exactly one subject {} with digest {}",
                 expected.name, expected.sha256

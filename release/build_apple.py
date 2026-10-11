@@ -9,7 +9,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from artifacts import digest, inventory, unpack, write_json, zip_archive
+from apple_metadata import normalize_xcframework
+from artifacts import digest, inventory, source_digest, unpack, write_json, zip_archive
 
 
 def build(directory):
@@ -17,7 +18,6 @@ def build(directory):
         raise ValueError("Apple bundles require macOS with Xcode 26.3 (17C529)")
     metadata = json.loads((directory / "build.json").read_text())
     source = directory / "source"
-    from release import source_digest
     if source_digest(source) != metadata["source"]["sha256"]:
         raise ValueError("Apple bundle source differs from the native build")
     targets = json.loads((source / "release/targets.json").read_text())["targets"]
@@ -54,7 +54,6 @@ def build(directory):
             arguments += ["-library", str(library), "-headers", str(headers)]
         framework = work / "CStogas.xcframework"
         subprocess.run([*arguments, "-output", str(framework)], check=True)
-        from apple_metadata import normalize_xcframework
         normalize_xcframework(framework)
         destination.mkdir()
         archive = destination / f"stogas-xcframework-v{version}.zip"

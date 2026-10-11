@@ -69,7 +69,7 @@ fn security_parser() -> impl TypedValueParser<Value = SecurityMode> {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Verify downloaded SDK release artifacts, build provenance and Stogas approval offline.
+    /// Verify downloaded SDK release artifacts, build provenance and the Stogas signature offline.
     VerifyRelease { directory: PathBuf },
     /// Check fresh session verification and gateway admission without a provider call.
     Probe {

@@ -2,7 +2,6 @@
 """Build npm/WASM and verified Rust archives in the pinned portable compiler."""
 
 import argparse
-import json
 import os
 import shutil
 import subprocess

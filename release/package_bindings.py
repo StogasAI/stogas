@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from artifacts import digest, unpack, write_json
+from artifacts import MANIFEST, digest, regular_files, source_digest, unpack, write_json
 
 MAVEN = "maven:3.9.11-eclipse-temurin-17@sha256:e4a7ace3dc0d645ed97f8d9ad0b0d3f0b14fa8d150138f27f116d7105a639b82"
 DOTNET = "mcr.microsoft.com/dotnet/sdk:10.0@sha256:35d40304542c8689331f8cab17c65926cdf48fe711e289321d71924b230a7d29"
@@ -21,7 +21,7 @@ def container(image, source, arguments, epoch, environment=()):
         "docker", "run", "--rm", "--init", "--memory", "4g", "--cpus", "4",
         "--user", f"{os.getuid()}:{os.getgid()}",
         "--mount", f"type=bind,source={source},target=/build", "--workdir", "/build",
-        "--env", f"SOURCE_DATE_EPOCH={epoch}", "--env", "TZ=UTC",
+        "--env", f"SOURCE_DATE_EPOCH={epoch}", "--env", "TZ=UTC", "--env", "HOME=/build",
         "--env", "MAVEN_OPTS=-Duser.home=/build", "--env", "MAVEN_CONFIG=/build/.m2",
         "--env", "DOTNET_CLI_HOME=/build/.dotnet", "--env", "GEM_HOME=/build/.gem",
         *[part for entry in environment for part in ("--env", entry)],
@@ -43,7 +43,6 @@ def package(build_directory):
 def assemble(build_directory, output):
     metadata = json.loads((build_directory / "build.json").read_text())
     source = build_directory / "source"
-    from release import source_digest
     if metadata["source"]["sha256"] != source_digest(source):
         raise ValueError("Build source has changed")
     version = json.loads((source / "package.json").read_text())["version"]
@@ -92,6 +91,10 @@ def assemble(build_directory, output):
             suffix = "zip" if target["os"] == "windows" else "tar.gz"
             unpack(shard / f"{name}.{suffix}", work / platform)
             native = work / platform / name
+            # Each Ruby gem holds only its own platform's library.
+            ruby = work / "bindings/ruby/lib/stogas/native"
+            if ruby.exists():
+                shutil.rmtree(ruby)
             stage.stage(platform, native, work / "bindings", version, apple_swift=False)
             if "go" in target["packages"]:
                 archive = native / ("go/libstogas_verifier_ffi.a" if target["os"] == "windows" else "libstogas_verifier_ffi.a")
@@ -137,13 +140,12 @@ def assemble(build_directory, output):
         if "go" in packages:
             # The Go proxy accepts at most 500 MiB both compressed and expanded.
             # Keep the complete self-contained module below that public limit.
-            from artifacts import regular_files
             if sum(path.stat().st_size for path in regular_files(work / "go")) > 500 * 1024**2:
                 raise ValueError("The Go module exceeds the Go proxy's expanded archive limit")
             pack_archive(work, work / "go", output / f"stogas-go-v{version}.tar.gz", epoch, "go")
         shutil.copytree(source, work / "source")
         pack_archive(work, work / "source", output / f"stogas-source-v{version}.tar.gz", epoch, f"stogas-v{version}")
-        write_json(output / "release-manifest.json", {
+        write_json(output / MANIFEST, {
             "schema": "stogas.sdk-release.v1", "environment": "prod", "version": version,
             "source": metadata["source"], "targets": platforms,
             "artifacts": [{"name": path.name, "sha256": digest(path), "size": path.stat().st_size} for path in sorted(output.iterdir())],

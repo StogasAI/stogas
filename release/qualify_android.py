@@ -1,4 +1,4 @@
-"""Test packaged native libraries and a Maven AAR on an explicit Android device."""
+"""Test packaged native libraries and a Maven AAR on an Android emulator, and the AAR on a real phone."""
 
 import json
 import os
@@ -10,27 +10,35 @@ import uuid
 from pathlib import Path
 
 from artifacts import unpack
+from device_farm import run as run_on_phone
+from gate import CASES, attempt
 
 
-def qualify(source, packages, version, platform, target, requested, device):
-    if not device:
-        raise ValueError("Android qualification requires --device with an adb serial")
+def qualify(source, packages, version, platform, target, requested, device, device_farm):
+    if bool(device) == bool(device_farm):
+        raise ValueError("Android qualification requires --device with an adb serial or --device-farm with a project ARN")
     selected = set(requested or target["packages"])
     if not selected <= set(target["packages"]):
         raise ValueError("Requested Android package is unsupported")
+    # A phone runs only the instrumented app; the emulator also runs the C consumer.
+    if device_farm and selected != {"android"}:
+        raise ValueError("Device Farm qualifies only the Android package")
     adb = ["adb", "-s", device]
     def shell(*arguments):
         return subprocess.check_output([*adb, "shell", *arguments], text=True).strip()
-    if subprocess.check_output([*adb, "get-state"], text=True).strip() != "device":
-        raise ValueError("Android device is not ready")
-    if target["android_abi"] not in shell("getprop", "ro.product.cpu.abilist").split(","):
-        raise ValueError("Android device does not support the requested ABI")
-    api = int(shell("getprop", "ro.build.version.sdk"))
-    if api < int(target["minimum"]):
-        raise ValueError("Android device is below the SDK minimum")
-    page_size = int(shell("getconf", "PAGE_SIZE"))
-    case = "installed-contract-16k" if page_size == 16384 else "installed-contract"
-    runtime = json.dumps({"fingerprint": shell("getprop", "ro.build.fingerprint"), "abi": target["android_abi"], "api": api, "page_size": page_size}, sort_keys=True)
+    if device:
+        if subprocess.check_output([*adb, "get-state"], text=True).strip() != "device":
+            raise ValueError("Android device is not ready")
+        if target["android_abi"] not in shell("getprop", "ro.product.cpu.abilist").split(","):
+            raise ValueError("Android device does not support the requested ABI")
+        api = int(shell("getprop", "ro.build.version.sdk"))
+        if api < int(target["minimum"]):
+            raise ValueError("Android device is below the SDK minimum")
+        page_size = int(shell("getconf", "PAGE_SIZE"))
+        # Every device runs the offline and live tests. A 16 KB page-size
+        # device records them as its own case.
+        cases = ("16k",) if page_size == 16384 else CASES
+        runtime = json.dumps({"fingerprint": shell("getprop", "ro.build.fingerprint"), "abi": target["android_abi"], "api": api, "page_size": page_size}, sort_keys=True)
     checks = []
     with tempfile.TemporaryDirectory(prefix="stogas-android-consumer-") as temporary:
         work = Path(temporary)
@@ -46,17 +54,21 @@ def qualify(source, packages, version, platform, target, requested, device):
             shutil.copyfile(source / "release/consumers/native.c", native / "native.c")
             directory = "/build/" + native.relative_to(work).as_posix()
             compiler = {"amd64": "x86_64-linux-android", "arm64": "aarch64-linux-android"}[target["arch"]]
-            run(image("Dockerfile", "android"), [f"/opt/android-ndk-r30/toolchains/llvm/prebuilt/linux-x86_64/bin/{compiler}{target['minimum']}-clang", "-Wall", "-Wextra", "-Werror", directory + "/native.c", "-L" + directory, "-lstogas_verifier_ffi", "-o", directory + "/native-consumer"])
+            # Google's ARM64 translation ignores LD_LIBRARY_PATH, so the consumer finds the library beside itself.
+            run(image("Dockerfile", "android"), [f"/opt/android-ndk-r30/toolchains/llvm/prebuilt/linux-x86_64/bin/{compiler}{target['minimum']}-clang", "-Wall", "-Wextra", "-Werror", directory + "/native.c", "-L" + directory, "-lstogas_verifier_ffi", "-Wl,-rpath,$ORIGIN", "-o", directory + "/native-consumer"])
             remote = "/data/local/tmp/stogas-" + uuid.uuid4().hex
             shell("mkdir", remote)
             try:
                 for name in ("native-consumer", "libstogas_verifier_ffi.so"):
                     subprocess.run([*adb, "push", str(native / name), remote + "/" + name], check=True)
                 shell("chmod", "700", remote + "/native-consumer")
-                shell("env", "LD_LIBRARY_PATH=" + remote, remote + "/native-consumer")
+                commands = {"offline": remote + "/native-consumer", "live": "STOGAS_LIVE=prod " + remote + "/native-consumer"}
+                if cases == ("16k",):
+                    commands = {"16k": " && ".join(commands.values())}
+                for case, command in commands.items():
+                    checks.append({"platform": platform, "package": "native", "case": case, "runtime": runtime, "outcome": attempt(f"native/{case}", lambda: shell(command))})
             finally:
                 shell("rm", "-rf", remote)
-            checks.append({"platform": platform, "package": "native", "case": case, "runtime": runtime, "outcome": "passed"})
         if "android" in selected:
             application = "ai.stogas.consumer.q" + uuid.uuid4().hex
             shutil.copytree(source / "release/consumers/android", work / "app")
@@ -68,15 +80,26 @@ def qualify(source, packages, version, platform, target, requested, device):
             builder = image("android.Dockerfile")
             run(builder, ["gradle", "--no-daemon", "--project-dir", "app", f"-PsdkVersion={version}", f"-PtestAbi={target['android_abi']}", f"-PtestApplicationId={application}", "assembleDebug", "assembleDebugAndroidTest"])
             run(builder, ["/opt/android-sdk/build-tools/36.0.0/zipalign", "-c", "-P", "16", "4", "/build/app/build/outputs/apk/debug/stogas-release-consumer-debug.apk"])
-            try:
-                for path in ("apk/debug/stogas-release-consumer-debug.apk", "apk/androidTest/debug/stogas-release-consumer-debug-androidTest.apk"):
-                    subprocess.run([*adb, "install", "-r", "-t", str(work / "app/build/outputs" / path)], check=True)
-                result = shell("am", "instrument", "-w", application + ".test/androidx.test.runner.AndroidJUnitRunner")
-                print(result, flush=True)
-                if not re.search(r"^OK \(2 tests\)$", result, re.MULTILINE):
-                    raise ValueError("Installed Android package tests did not pass")
-            finally:
-                for name in (application + ".test", application):
-                    subprocess.run([*adb, "uninstall", name], check=False, stdout=subprocess.DEVNULL)
-            checks.append({"platform": platform, "package": "android", "case": case, "runtime": runtime, "outcome": "passed"})
+            outputs = work / "app/build/outputs/apk"
+            app, tests = outputs / "debug/stogas-release-consumer-debug.apk", outputs / "androidTest/debug/stogas-release-consumer-debug-androidTest.apk"
+            if device_farm:
+                # Device Farm reports Android versions; API 33 is Android 13.
+                phone = run_on_phone(
+                    device_farm, platform="ANDROID", os_major={"33": "13"}[target["minimum"]], architecture=target["android_abi"],
+                    app=app, app_kind="ANDROID_APP", tests=tests, test_kind="INSTRUMENTATION_TEST_PACKAGE", test_type="INSTRUMENTATION",
+                    expected=[f"ai.stogas.consumer.InstalledPackageTest/{name}" for name in ("packagedNativeLibraryRejectsInvalidConfiguration", "productionPackageRejectsStagingAuthority", "liveGatewayRejectsAnInvalidKeyThroughEachSecurityMode")],
+                )
+                cases, runtime = CASES, json.dumps(phone, sort_keys=True)
+            else:
+                try:
+                    for path in (app, tests):
+                        subprocess.run([*adb, "install", "-r", "-t", str(path)], check=True)
+                    result = shell("am", "instrument", "-w", application + ".test/androidx.test.runner.AndroidJUnitRunner")
+                    print(result, flush=True)
+                    if not re.search(r"^OK \(3 tests\)$", result, re.MULTILINE):
+                        raise ValueError("Installed Android package tests did not pass")
+                finally:
+                    for name in (application + ".test", application):
+                        subprocess.run([*adb, "uninstall", name], check=False, stdout=subprocess.DEVNULL)
+            checks.extend({"platform": platform, "package": "android", "case": case, "runtime": runtime, "outcome": "passed"} for case in cases)
     return checks

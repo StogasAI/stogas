@@ -10,7 +10,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from artifacts import digest, tar_gz, zip_archive, write_json
+from apple_metadata import normalize_dsym, normalize_wheel
+from artifacts import digest, tar_gz, unpack, write_json, zip_archive
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = json.loads((ROOT / "release/targets.json").read_text())["targets"]
@@ -147,13 +148,11 @@ def build(platform, output, epoch):
         ], library_env)
         # Maturin owns native dependency validation. Apple metadata additionally
         # needs portable paths, with RECORD updated to bind those exact bytes.
-        from artifacts import unpack
         for wheel in wheels.glob("*.whl"):
             with tempfile.TemporaryDirectory(prefix="stogas-wheel-") as temporary:
                 tree = Path(temporary) / "wheel"
                 unpack(wheel, tree)
                 if apple:
-                    from apple_metadata import normalize_wheel
                     normalize_wheel(tree, ROOT)
                 zip_archive(output / wheel.name, tree, epoch)
         shutil.rmtree(wheels)
@@ -176,7 +175,6 @@ def split_debug(objcopy, source, binary, debug, env):
 
 def split_apple_debug(source, binary, debug, env):
     run(["xcrun", "dsymutil", source, "-o", debug], env)
-    from apple_metadata import normalize_dsym
     normalize_dsym(debug)
     shutil.copyfile(source, binary)
     run(["xcrun", "strip", "-S", binary], env)

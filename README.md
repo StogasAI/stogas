@@ -42,7 +42,7 @@ Streamed content can arrive before final verification. Treat a response as compl
 cargo test --locked --workspace --all-targets --features stogas/cli
 ```
 
-[CI](.github/workflows/ci.yml) covers the core, transports, and language bindings; [fuzzing](.github/workflows/fuzz.yml) covers parsers and verification boundaries. Report vulnerabilities through the [security policy](SECURITY.md).
+[CI](.github/workflows/ci.yml) covers the core, transports, and language bindings; [fuzzing](.github/workflows/fuzz.yml) covers parsers and verification boundaries. [`scripts/live-test.py`](scripts/live-test.py) runs every language's tests against the live gateway. Report vulnerabilities through the [security policy](SECURITY.md).
 
 ## License
 
