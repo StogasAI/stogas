@@ -115,6 +115,17 @@ enum Command {
         #[arg(long, hide = true)]
         now_unix_ms: Option<i64>,
     },
+    /// Download the archived boot and evidence that a receipt names, for `stogas proof`.
+    DownloadEvidence {
+        /// The receipt's `boot_sha256`.
+        #[arg(long)]
+        boot: String,
+        #[arg(long, default_value = "prod", value_parser = parse_environment)]
+        environment: stogas::Environment,
+        /// Directory for `boot.json` and `evidence.json`.
+        #[arg(long, default_value = ".")]
+        output: PathBuf,
+    },
     /// Verify an exact-content receipt without network access.
     Proof {
         /// Detached final Stogas metadata JSON; --response then contains only the exact signed bytes.
@@ -213,6 +224,15 @@ async fn main() -> Result<()> {
                 now_unix_ms,
             })
             .await?;
+        }
+        Command::DownloadEvidence {
+            boot,
+            environment,
+            output,
+        } => {
+            let archive = stogas::evidence_archive::download(environment, &boot).await?;
+            tokio::fs::write(output.join("boot.json"), archive.boot).await?;
+            tokio::fs::write(output.join("evidence.json"), archive.evidence).await?;
         }
         Command::Proof {
             proof,

@@ -16,6 +16,7 @@ pub use stogas_verifier::evidence::{Error, Snapshot, Verifier};
 pub mod encrypted_client;
 pub mod encrypted_http;
 pub mod encrypted_setup;
+pub mod evidence_archive;
 pub mod evidence_client;
 pub mod http2_pool;
 pub mod native_http;

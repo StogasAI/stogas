@@ -1,0 +1,89 @@
+{
+  "allowed_igvms": [
+    "e1b1771a8b63969ea0bce99361fb5e07d748df67005fd80dbb4b55b61469da26"
+  ],
+  "approvals": "1be52aa2381640575beb9323ea66f83b517fcd28bde2afbc6ef0f4706bc2f99c",
+  "body_sha256": "ed237bc12ce602864e66d149a460ad45e59f25429f95542c7d6c56ec506eec44",
+  "catalogs": [
+    "1c4c338eb0e6b122d329da8caf8cd1debf0fba9c23bcdf53d15b3c2d9137abd9",
+    "2cd9a7772abf62b123fde58d98d60697a14d58bcdcec8377e775430780c8a76e"
+  ],
+  "hardware_policy": "94126f4e6c787a6193f2e64ff692ebfd328859cc716aeba8050cd86257b5b74b",
+  "keys": "bd2ad3bc8cac1ef8b773b635b3efbe86a17ea41cfcbb1a7ca1276adbb88dadf6",
+  "schema": "stogas.evidence-archive.v1",
+  "sizes": {
+    "1be52aa2381640575beb9323ea66f83b517fcd28bde2afbc6ef0f4706bc2f99c": 8027,
+    "1bf822723d7ea3ec183a9d82879ca246c2fc5922ff039076fecab558165a0aac": 1804,
+    "1c4c338eb0e6b122d329da8caf8cd1debf0fba9c23bcdf53d15b3c2d9137abd9": 5637,
+    "2cd9a7772abf62b123fde58d98d60697a14d58bcdcec8377e775430780c8a76e": 5637,
+    "4ba22b0b428118e9fe05fccb24f97d826072c5e0a39b3d6cad42c3c826ead24f": 2238,
+    "94126f4e6c787a6193f2e64ff692ebfd328859cc716aeba8050cd86257b5b74b": 7986,
+    "b0ad898a33d2360e39f74bc234f5d2000771bd8b7bfd82b0572d2974e106cc87": 1157,
+    "bd2ad3bc8cac1ef8b773b635b3efbe86a17ea41cfcbb1a7ca1276adbb88dadf6": 10452,
+    "e1b1771a8b63969ea0bce99361fb5e07d748df67005fd80dbb4b55b61469da26": 8679,
+    "f0745ca730fce43fa4a0ad3fd46c088acfe9a5e0ecde8e89b3b3e79e1d723721": 2188
+  },
+  "vendor_collateral": [
+    {
+      "der": "f0745ca730fce43fa4a0ad3fd46c088acfe9a5e0ecde8e89b3b3e79e1d723721",
+      "metadata": {
+        "ca_product_name": "Milan",
+        "collateral_type": "ark",
+        "fetched_at": "2026-09-21T13:11:56.561Z",
+        "product_name": "Milan",
+        "schema": "stogas.amd-kds-collateral.v1",
+        "sha256": "69d063b45344d26a2e94e1f4210de49ef555308287d4c174445c95639a540bcd",
+        "source": "amd-kds",
+        "source_url": "https://kdsintf.amd.com/vcek/v1/Milan/cert_chain"
+      }
+    },
+    {
+      "der": "4ba22b0b428118e9fe05fccb24f97d826072c5e0a39b3d6cad42c3c826ead24f",
+      "metadata": {
+        "ca_product_name": "Milan",
+        "collateral_type": "ask",
+        "fetched_at": "2026-09-21T13:11:56.561Z",
+        "product_name": "Milan",
+        "schema": "stogas.amd-kds-collateral.v1",
+        "sha256": "67d303bd3905fd38db8b20e0793699870e7fa612eaad5dec358293fd8c0bac1b",
+        "source": "amd-kds",
+        "source_url": "https://kdsintf.amd.com/vcek/v1/Milan/cert_chain"
+      }
+    },
+    {
+      "der": "b0ad898a33d2360e39f74bc234f5d2000771bd8b7bfd82b0572d2974e106cc87",
+      "metadata": {
+        "ca_product_name": "Milan",
+        "collateral_type": "crl",
+        "fetched_at": "2026-09-30T17:11:35.469Z",
+        "product_name": "Milan",
+        "schema": "stogas.amd-kds-collateral.v1",
+        "sha256": "dd68e9e3feb97dd0e95135feeae47d9cc193c73239a6281ec9884c00d5e6a525",
+        "source": "amd-kds",
+        "source_url": "https://kdsintf.amd.com/vcek/v1/Milan/crl"
+      }
+    },
+    {
+      "der": "1bf822723d7ea3ec183a9d82879ca246c2fc5922ff039076fecab558165a0aac",
+      "metadata": {
+        "ca_product_name": "Milan",
+        "chip_id": "b2202e1f13696edf8e6f3e833df25da9278cfeb1105e70894a14452b2ec5fd2a263db3bdc596294925a01bfaff8b1dd65ad0dfb527a8e6381fed31f097d41e67",
+        "collateral_type": "vcek",
+        "fetched_at": "2026-09-21T13:11:56.561Z",
+        "hwid": "b2202e1f13696edf8e6f3e833df25da9278cfeb1105e70894a14452b2ec5fd2a263db3bdc596294925a01bfaff8b1dd65ad0dfb527a8e6381fed31f097d41e67",
+        "product_name": "Milan",
+        "reported_tcb": "0400000000001dde",
+        "schema": "stogas.amd-kds-collateral.v1",
+        "sha256": "538c396ac18906f5f391ac7f0ee8c069d91f11d2ff9c7995aa479aa33ede4da8",
+        "source": "amd-kds",
+        "source_url": "https://kdsintf.amd.com/vcek/v1/Milan/b2202e1f13696edf8e6f3e833df25da9278cfeb1105e70894a14452b2ec5fd2a263db3bdc596294925a01bfaff8b1dd65ad0dfb527a8e6381fed31f097d41e67?blSPL=4&teeSPL=0&snpSPL=29&ucodeSPL=222",
+        "tcb": {
+          "blSPL": 4,
+          "snpSPL": 29,
+          "teeSPL": 0,
+          "ucodeSPL": 222
+        }
+      }
+    }
+  ]
+}
