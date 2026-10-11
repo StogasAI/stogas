@@ -122,6 +122,61 @@ pub struct VerifiedMetadata {
     pub receipt: VerifiedReceipt,
 }
 
+/// Exact content hashes and the final metadata bag, read before the signing boot
+/// is appraised. Nothing here is authenticated until `verify` succeeds.
+pub struct Signed {
+    metadata: serde_json::Value,
+    request: [u8; 32],
+    response: [u8; 32],
+}
+
+impl Signed {
+    /// Split a buffered response without reserializing the provider response being hashed.
+    ///
+    /// # Errors
+    /// Rejects malformed or oversized responses and metadata.
+    pub fn buffered(request: [u8; 32], body: &[u8]) -> Result<Self, Error> {
+        use sha2::{Digest as _, Sha256};
+        let (metadata, content) =
+            http::split_buffered_response(body, 64 * 1024 * 1024).map_err(|_| Error::Invalid)?;
+        Self::detached(request, &metadata, Sha256::digest(content).into())
+    }
+
+    /// Pair a detached final `stogas` bag with locally computed content hashes.
+    ///
+    /// # Errors
+    /// Rejects malformed or oversized metadata.
+    pub fn detached(request: [u8; 32], metadata: &[u8], response: [u8; 32]) -> Result<Self, Error> {
+        if metadata.len() > MAX_METADATA_BYTES {
+            return Err(Error::Invalid);
+        }
+        Ok(Self {
+            metadata: crate::strict_json::from_slice(metadata).map_err(|_| Error::Invalid)?,
+            request,
+            response,
+        })
+    }
+
+    /// The boot the receipt names, for locating its archived evidence. `verify`
+    /// rejects the receipt unless the appraised boot is this exact document.
+    #[must_use]
+    pub fn boot_sha256(&self) -> Option<&str> {
+        self.metadata.pointer("/receipt/boot_sha256")?.as_str()
+    }
+
+    /// # Errors
+    /// Rejects malformed receipts, changed content and incorrect signatures.
+    pub fn verify(self, boot: &VerifiedBoot) -> Result<VerifiedMetadata, Error> {
+        let receipt = self.metadata.get("receipt").ok_or(Error::Invalid)?;
+        let receipt = Receipt::parse(&serde_json::to_vec(receipt).map_err(|_| Error::Invalid)?)?;
+        let receipt = receipt.verify(boot, &self.request, &self.response, &self.metadata)?;
+        Ok(VerifiedMetadata {
+            metadata: self.metadata,
+            receipt,
+        })
+    }
+}
+
 /// Verify the appended receipt without reserializing the provider response being hashed.
 ///
 /// # Errors
@@ -131,10 +186,7 @@ pub fn verify_buffered(
     request: &[u8; 32],
     body: &[u8],
 ) -> Result<VerifiedMetadata, Error> {
-    use sha2::{Digest as _, Sha256};
-    let (metadata, content) =
-        http::split_buffered_response(body, 64 * 1024 * 1024).map_err(|_| Error::Invalid)?;
-    verify_metadata(&metadata, boot, request, &Sha256::digest(content).into())
+    Signed::buffered(*request, body)?.verify(boot)
 }
 
 /// Streaming exact-content verification. The terminal delimiter is withheld until `finish`.
@@ -181,8 +233,15 @@ impl Stream {
     /// # Errors
     /// Rejects incomplete streams, changed content and invalid receipt signatures.
     pub fn finish(self, boot: &VerifiedBoot) -> Result<VerifiedMetadata, Error> {
+        self.signed()?.verify(boot)
+    }
+    /// Read a complete saved stream before its signing boot is appraised.
+    ///
+    /// # Errors
+    /// Rejects incomplete streams and malformed metadata.
+    pub fn signed(self) -> Result<Signed, Error> {
         let (metadata, response) = self.body.finish().map_err(|_| Error::Invalid)?;
-        verify_metadata(&metadata, boot, &self.request, &response)
+        Signed::detached(self.request, &metadata, response)
     }
 }
 
@@ -196,14 +255,7 @@ pub fn verify_metadata(
     request: &[u8; 32],
     response: &[u8; 32],
 ) -> Result<VerifiedMetadata, Error> {
-    if bytes.len() > MAX_METADATA_BYTES {
-        return Err(Error::Invalid);
-    }
-    let metadata = crate::strict_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
-    let receipt = metadata.get("receipt").ok_or(Error::Invalid)?;
-    let receipt = Receipt::parse(&serde_json::to_vec(receipt).map_err(|_| Error::Invalid)?)?;
-    let receipt = receipt.verify(boot, request, response, &metadata)?;
-    Ok(VerifiedMetadata { metadata, receipt })
+    Signed::detached(*request, bytes, *response)?.verify(boot)
 }
 
 pub(crate) fn metadata_digest(metadata: &serde_json::Value) -> Result<[u8; 32], Error> {

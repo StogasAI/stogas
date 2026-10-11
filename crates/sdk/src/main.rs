@@ -15,7 +15,7 @@ use std::{
 use stogas::SecurityMode;
 use stogas_verifier::{
     MAX_INPUT_BYTES,
-    evidence::Verifier,
+    evidence::{MAX_ARCHIVE_BYTES, Verifier},
     receipt::{self, VerifiedReceipt},
 };
 use tokio::io::AsyncReadExt as _;
@@ -32,8 +32,8 @@ struct ProofCommandInput {
     stream: bool,
     request: PathBuf,
     response: PathBuf,
-    bundle: PathBuf,
-    boot: PathBuf,
+    bundle: Option<PathBuf>,
+    boot: Option<PathBuf>,
     environment: stogas::Environment,
     now_unix_ms: Option<i64>,
 }
@@ -115,7 +115,7 @@ enum Command {
         #[arg(long, hide = true)]
         now_unix_ms: Option<i64>,
     },
-    /// Download the archived boot and evidence that a receipt names, for `stogas proof`.
+    /// Save the archived boot and evidence that a receipt names, for checks without network access.
     DownloadEvidence {
         /// The receipt's `boot_sha256`.
         #[arg(long)]
@@ -126,7 +126,7 @@ enum Command {
         #[arg(long, default_value = ".")]
         output: PathBuf,
     },
-    /// Verify an exact-content receipt without network access.
+    /// Verify an exact-content receipt against the archived evidence of the boot it names.
     Proof {
         /// Detached final Stogas metadata JSON; --response then contains only the exact signed bytes.
         #[arg(long, conflicts_with = "stream")]
@@ -140,12 +140,13 @@ enum Command {
         /// Buffered JSON with metadata, complete SSE, or detached signed response bytes.
         #[arg(long)]
         response: PathBuf,
-        /// Archived evidence bundle identified by the boot archive.
-        #[arg(long)]
-        bundle: PathBuf,
-        /// Immutable boot archive containing its quote, inclusion and evidence digest.
-        #[arg(long)]
-        boot: PathBuf,
+        /// Saved evidence bundle identified by the boot archive. Without --bundle and
+        /// --boot, the command downloads both.
+        #[arg(long, requires = "boot")]
+        bundle: Option<PathBuf>,
+        /// Saved boot archive containing its quote, inclusion and evidence digest.
+        #[arg(long, requires = "bundle")]
+        boot: Option<PathBuf>,
         #[arg(long, default_value = "prod", value_parser = parse_environment)]
         environment: stogas::Environment,
         /// Emit stable JSON containing the verified content commitment.
@@ -327,14 +328,32 @@ async fn verify_proof_files(
     verifier: &Verifier,
 ) -> Result<VerifiedReceipt> {
     let now = input.now_unix_ms.unwrap_or_else(wall_clock_ms);
-    let bundle = read_bounded_file(&input.bundle, MAX_INPUT_BYTES, "bundle").await?;
-    let archive = read_bounded_file(&input.boot, 64 * 1024, "boot archive").await?;
-    let boot = verifier.verify_boot_archive(&archive, &bundle, now)?;
     let request = hash_file(&input.request, "request body").await?;
+    let signed = read_signed_response(input, request).await?;
+    let (archive, bundle) = if let (Some(boot), Some(bundle)) = (&input.boot, &input.bundle) {
+        (
+            read_bounded_file(boot, MAX_ARCHIVE_BYTES, "boot archive").await?,
+            read_bounded_file(bundle, MAX_INPUT_BYTES, "bundle").await?,
+        )
+    } else {
+        let boot = signed
+            .boot_sha256()
+            .context("the response has no Stogas receipt")?;
+        let archive = stogas::evidence_archive::download(input.environment, boot).await?;
+        (archive.boot, archive.evidence)
+    };
+    let boot = verifier.verify_boot_archive(&archive, &bundle, now)?;
+    Ok(signed.verify(&boot)?.receipt)
+}
+
+async fn read_signed_response(
+    input: &ProofCommandInput,
+    request: [u8; 32],
+) -> Result<receipt::Signed> {
     if let Some(path) = &input.proof {
         let proof = read_bounded_file(path, receipt::MAX_METADATA_BYTES, "Stogas metadata").await?;
         let response = hash_file(&input.response, "response body").await?;
-        return Ok(receipt::verify_metadata(&proof, &boot, &request, &response)?.receipt);
+        return Ok(receipt::Signed::detached(request, &proof, response)?);
     }
     if input.stream {
         let mut response = tokio::fs::File::open(&input.response).await?;
@@ -347,7 +366,7 @@ async fn verify_proof_files(
             }
             stream.push(&buffer[..count])?;
         }
-        return Ok(stream.finish(&boot)?.receipt);
+        return Ok(stream.signed()?);
     }
     let response = read_bounded_file(
         &input.response,
@@ -355,7 +374,7 @@ async fn verify_proof_files(
         "buffered response",
     )
     .await?;
-    Ok(receipt::verify_buffered(&boot, &request, &response)?.receipt)
+    Ok(receipt::Signed::buffered(request, &response)?)
 }
 
 fn print_proof_output(output: &VerifiedReceipt, json: bool) -> Result<()> {
@@ -490,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn proof_requires_complete_boot_evidence_and_unambiguous_response_framing() {
+    fn proof_takes_saved_evidence_only_as_a_pair_and_unambiguous_response_framing() {
         let base = [
             "stogas",
             "proof",
@@ -512,6 +531,7 @@ mod tests {
             ]))
             .is_err()
         );
+        assert!(Cli::try_parse_from(base).is_ok());
         for missing in 0..evidence.len() / 2 {
             let mut incomplete = evidence.to_vec();
             incomplete.drain(missing * 2..missing * 2 + 2);
