@@ -30,13 +30,13 @@ impl Files {
             stream: false,
             request: directory.join("request"),
             response: directory.join("response"),
-            bundle: directory.join("bundle"),
-            boot: directory.join("boot"),
+            bundle: Some(directory.join("bundle")),
+            boot: Some(directory.join("boot")),
             environment: stogas::Environment::Staging,
             now_unix_ms: fixture["verified_at_ms"].as_i64(),
         };
         std::fs::write(
-            &input.bundle,
+            directory.join("bundle"),
             serde_json::to_vec(&fixture["bundle"]).unwrap(),
         )
         .unwrap();
@@ -50,7 +50,11 @@ impl Files {
             "signature": proof["signature"],
             "inclusion": proof["inclusion"]
         });
-        std::fs::write(&input.boot, serde_json::to_vec(&archive).unwrap()).unwrap();
+        std::fs::write(
+            directory.join("boot"),
+            serde_json::to_vec(&archive).unwrap(),
+        )
+        .unwrap();
         std::fs::write(&input.request, b"{\n  \"messages\": []\n}\n").unwrap();
         Self {
             directory,
@@ -174,8 +178,8 @@ async fn offline_files_fail_closed_on_changed_evidence_content_and_oversized_rec
     std::fs::write(&files.input.response, response).unwrap();
     files.verify().await.unwrap();
     for path in [
-        &files.input.bundle,
-        &files.input.boot,
+        &files.directory.join("bundle"),
+        &files.directory.join("boot"),
         &files.input.request,
         &files.input.response,
     ] {
@@ -199,6 +203,6 @@ async fn offline_files_fail_closed_on_changed_evidence_content_and_oversized_rec
             .contains("exceeds")
     );
     std::fs::write(&proof, original).unwrap();
-    std::fs::remove_file(&files.input.boot).unwrap();
+    std::fs::remove_file(files.directory.join("boot")).unwrap();
     assert!(files.verify().await.is_err());
 }
