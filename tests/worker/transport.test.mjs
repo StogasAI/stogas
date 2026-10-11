@@ -6,9 +6,9 @@ import { Miniflare, Response } from 'miniflare';
 
 const root = resolve(import.meta.dirname, '../..');
 
-test('packaged Worker never follows evidence, setup or inference redirects', async () => {
+async function packagedModules(...tests) {
 	const names = [
-		'tests/worker/entry.js',
+		...tests,
 		'bindings/worker/worker.js',
 		'bindings/browser/browser.js',
 		'pkg/browser/stogas_verifier.js',
@@ -17,7 +17,7 @@ test('packaged Worker never follows evidence, setup or inference redirects', asy
 			.filter((name) => name.endsWith('.js'))
 			.map((name) => `bindings/shared/${name}`)
 	];
-	const modules = Object.fromEntries(
+	return Object.fromEntries(
 		await Promise.all(
 			names.map(async (name) => [
 				name,
@@ -28,6 +28,10 @@ test('packaged Worker never follows evidence, setup or inference redirects', asy
 			])
 		)
 	);
+}
+
+test('packaged Worker never follows evidence, setup or inference redirects', async () => {
+	const modules = await packagedModules('tests/worker/entry.js');
 	const fixture = JSON.parse(
 		await readFile(resolve(root, 'tests/fixtures/hardware-session-v1.json'), 'utf8')
 	);
@@ -100,3 +104,35 @@ test('packaged Worker never follows evidence, setup or inference redirects', asy
 		await runtime.dispose();
 	}
 });
+
+// STOGAS_LIVE=staging|prod lets workerd reach that environment's gateway.
+test(
+	'live gateway rejects an invalid key through E2EE in workerd',
+	{ skip: !process.env.STOGAS_LIVE },
+	async () => {
+		const runtime = new Miniflare({
+			cf: false,
+			telemetry: { enabled: false },
+			workers: [
+				{
+					config: {
+						name: 'live',
+						compatibilityDate: '2026-09-21',
+						manifest: {
+							mainModule: 'tests/worker/live-entry.js',
+							modules: await packagedModules('tests/worker/live-entry.js', 'tests/browser/live.mjs')
+						}
+					}
+				}
+			]
+		});
+		try {
+			const response = await runtime.dispatchFetch(
+				`http://live/?environment=${process.env.STOGAS_LIVE}`
+			);
+			assert.equal(response.status, 200, await response.clone().text());
+		} finally {
+			await runtime.dispose();
+		}
+	}
+);

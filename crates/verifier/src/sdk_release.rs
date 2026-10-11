@@ -1,16 +1,23 @@
-//! Historical SDK release authorization under the normal Stogas root hierarchy.
+//! SDK release signatures under the normal Stogas root hierarchy.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use stogas_offline_sigstore::{GithubPolicy, Subject, verify_github_attestation};
 
 use crate::{
-    LoggedDocument, MAX_INPUT_BYTES,
+    MAX_INPUT_BYTES, StogasSignature,
     approvals::{self, ApprovalVerifier, Environment, SignedKeyManifest},
     strict_json,
 };
 
 const REPOSITORY: &str = "https://github.com/StogasAI/verifier";
+pub const MANIFEST: &str = "release-manifest.json";
+pub const ATTESTATION: &str = "github-attestation.jsonl";
+pub const SIGNATURE: &str = "stogas-signature.json";
+pub const QUALIFICATION: &str = "qualification.json";
+/// The release files besides its artifacts; no artifact may share these names.
+pub const METADATA: [&str; 4] = [MANIFEST, ATTESTATION, SIGNATURE, QUALIFICATION];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -40,45 +47,34 @@ pub struct Manifest {
     pub artifacts: Vec<Artifact>,
 }
 
-/// The online signer binds the GitHub build, independent rebuild and complete test report.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Approval {
-    pub schema: String,
-    pub environment: Environment,
-    /// Identity of the canonical unsigned manifest, without a trailing newline.
-    pub manifest_sha256: String,
-    pub key_manifest_sha256: String,
-    pub github_attestation_sha256: String,
-    pub qualification_sha256: String,
-    pub rebuild_sha256: String,
-}
-
+/// The online key's signature over GitHub's unchanged manifest, logged in Rekor.
+/// Stogas signs only after its own build matched GitHub's bytes and every test passed.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Proof {
+pub struct Signature {
     pub keys: SignedKeyManifest,
-    pub approval: LoggedDocument<Approval>,
+    pub signature: StogasSignature,
+    pub inclusion: Value,
 }
 
-/// Verify immutable release authorization, including the exact GitHub build identity.
+/// Verify GitHub's build proof and the Stogas signature of a production SDK release.
 ///
 /// This authenticates historical publication, without granting current gateway authority.
-/// The caller must also compare artifact and report bytes with their authenticated hashes.
+/// The caller must also compare artifact bytes with the returned manifest.
 ///
 /// # Errors
-/// Rejects unsigned, incomplete, altered, staging or dirty releases and expired signing authority
-/// at the authenticated publication time. A later key expiry does not invalidate old software.
+/// Rejects unsigned, altered, staging or dirty releases and signing keys that had expired
+/// when Rekor logged the signature. A later key expiry does not invalidate old software.
 pub fn verify(
     manifest_bytes: &[u8],
     github_attestation: &[u8],
-    proof_bytes: &[u8],
+    signature_bytes: &[u8],
     now_unix_ms: i64,
-) -> Result<Approval, approvals::Error> {
+) -> Result<Manifest, approvals::Error> {
     if [
         manifest_bytes.len(),
         github_attestation.len(),
-        proof_bytes.len(),
+        signature_bytes.len(),
     ]
     .into_iter()
     .any(|length| length > MAX_INPUT_BYTES)
@@ -89,27 +85,14 @@ pub fn verify(
         serde_json::from_value(strict_json::from_slice(manifest_bytes).map_err(invalid)?)
             .map_err(invalid)?;
     validate_manifest(&manifest)?;
-    let proof: Proof =
-        serde_json::from_value(strict_json::from_slice(proof_bytes).map_err(invalid)?)
+    let signed: Signature =
+        serde_json::from_value(strict_json::from_slice(signature_bytes).map_err(invalid)?)
             .map_err(invalid)?;
-    let approval = &proof.approval.document;
-    if approval.schema != "stogas.sdk-release-approval.v1"
-        || approval.environment != Environment::Production
-        || approval.manifest_sha256 != approvals::payload_sha256(&manifest)?
-        || approval.key_manifest_sha256 != approvals::payload_sha256(&proof.keys.document)?
-        || approval.github_attestation_sha256 != hex::encode(Sha256::digest(github_attestation))
-        || !sha256(&approval.qualification_sha256)
-        || !sha256(&approval.rebuild_sha256)
-    {
-        return Err(invalid(
-            "SDK approval does not bind this production release",
-        ));
-    }
-    let document = serde_json::to_value(approval).map_err(invalid)?;
+    let document = serde_json::to_value(&manifest).map_err(invalid)?;
     let published = approvals::verify_document_inclusion(
         &document,
-        &proof.approval.signature,
-        &proof.approval.inclusion,
+        &signed.signature,
+        &signed.inclusion,
         now_unix_ms,
     )?;
     let published_ms = published
@@ -120,37 +103,44 @@ pub fn verify(
         Environment::Production.stogas_root()?,
     )?;
     let keys = authority.verify_key_manifest(
-        &serde_json::to_vec(&proof.keys).map_err(invalid)?,
+        &serde_json::to_vec(&signed.keys).map_err(invalid)?,
         published_ms,
     )?;
     approvals::verify_signature(
         &document,
-        &proof.approval.signature,
+        &signed.signature,
         &keys.active_key.key_id,
         &keys.active_key.public_key,
     )?;
     let reference = format!("refs/tags/v{}", manifest.version);
-    let github = verify_github_attestation(
+    let manifest_sha256 = hex::encode(Sha256::digest(manifest_bytes));
+    let subjects: Vec<_> = manifest
+        .artifacts
+        .iter()
+        .map(|artifact| Subject {
+            name: &artifact.name,
+            sha256: &artifact.sha256,
+        })
+        .chain([Subject {
+            name: MANIFEST,
+            sha256: &manifest_sha256,
+        }])
+        .collect();
+    verify_github_attestation(
         github_attestation,
-        &[Subject {
-            name: "release-manifest.json",
-            sha256: &hex::encode(Sha256::digest(manifest_bytes)),
-        }],
+        &subjects,
         &GithubPolicy {
             repository: REPOSITORY.into(),
             workflow_identity: format!("{REPOSITORY}/.github/workflows/release.yml@{reference}"),
             source_ref: reference,
-            source_commit: manifest.source.commit,
+            source_commit: manifest.source.commit.clone(),
             predicate_type: "https://slsa.dev/provenance/v1".into(),
             require_github_hosted: true,
         },
         now_unix_ms,
     )
     .map_err(invalid)?;
-    if github.integrated_time > published {
-        return Err(invalid("SDK approval precedes the GitHub build proof"));
-    }
-    Ok(proof.approval.document)
+    Ok(manifest)
 }
 
 fn validate_manifest(manifest: &Manifest) -> Result<(), approvals::Error> {
@@ -171,6 +161,7 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), approvals::Error> {
             .any(|pair| pair[0].name >= pair[1].name)
         || manifest.artifacts.iter().any(|artifact| {
             !safe_name(&artifact.name)
+                || METADATA.contains(&artifact.name.as_str())
                 || !sha256(&artifact.sha256)
                 || artifact.size == 0
                 || artifact.size > 2 * 1024 * 1024 * 1024

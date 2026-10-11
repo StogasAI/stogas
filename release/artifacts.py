@@ -10,6 +10,7 @@ import tarfile
 import tempfile
 import time
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 
@@ -37,6 +38,23 @@ def canonical(value):
         raise ValueError("Release JSON requires ASCII keys, strings and safe integers; floats are forbidden")
     validate(value)
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
+
+
+def wheel_tag(target):
+    machine = {"amd64": "x86_64", "arm64": "aarch64"}[target["arch"]]
+    if target["os"] == "linux":
+        return f"manylinux_2_17_{machine}.manylinux2014_{machine}" if target["libc"] == "glibc" else f"musllinux_1_2_{machine}"
+    if target["os"] == "windows":
+        return {"amd64": "win_amd64", "arm64": "win_arm64"}[target["arch"]]
+    return f"macosx_{target['minimum'].replace('.', '_')}_{'arm64' if target['arch'] == 'arm64' else 'x86_64'}"
+
+
+def wheel(names, target):
+    """Return the one abi3 wheel built for a target."""
+    matching = [name for name in names if re.fullmatch(r"stogas-[0-9A-Za-z.]+-cp310-abi3-" + re.escape(wheel_tag(target)) + r"\.whl", name)]
+    if len(matching) != 1:
+        raise ValueError(f"Release requires exactly one wheel for {wheel_tag(target)}")
+    return matching[0]
 
 
 def digest(path):
@@ -74,6 +92,12 @@ def regular_files(root):
             raise ValueError(f"Non-regular release input: {path}")
 
 
+def source_digest(root):
+    """Identify a source tree by its paths, executable bits and file bytes."""
+    files = [{"path": path.relative_to(root).as_posix(), "mode": 0o755 if path.stat().st_mode & 0o111 else 0o644, "sha256": digest(path)} for path in regular_files(root)]
+    return hashlib.sha256(canonical(files)).hexdigest()
+
+
 def verify_source(source, archive, expected, prefix):
     """Bind consumer fixtures to source bytes, preserving tar modes on Windows."""
     actual = {path.relative_to(source).as_posix(): path for path in regular_files(source)}
@@ -96,6 +120,18 @@ def verify_source(source, archive, expected, prefix):
             entries.append({"path": name, "mode": member.mode, "sha256": sha256})
     if seen != set(actual) or hashlib.sha256(canonical(sorted(entries, key=lambda entry: entry["path"]))).hexdigest() != expected:
         raise ValueError("Source differs from its recorded identity")
+
+
+@contextmanager
+def release_source(directory, manifest):
+    """Unpack and authenticate the source snapshot a release records."""
+    version = manifest["version"]
+    archive = Path(directory) / f"stogas-source-v{version}.tar.gz"
+    with tempfile.TemporaryDirectory(prefix="stogas-release-source-") as temporary:
+        unpack(archive, Path(temporary) / "source")
+        source = Path(temporary) / "source" / f"stogas-v{version}"
+        verify_source(source, archive, manifest["source"]["sha256"], f"stogas-v{version}")
+        yield source
 
 
 def tar_gz(destination, root, epoch, prefix=""):

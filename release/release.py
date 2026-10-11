@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and compare SDK artifacts from a fixed source snapshot."""
+"""Build, package, qualify and compare SDK artifacts from a fixed source snapshot."""
 
 import argparse
 import json
@@ -14,7 +14,9 @@ sys.dont_write_bytecode = True
 if sys.version_info < (3, 11):
     raise SystemExit("Release tooling requires Python 3.11 or later")
 
-from artifacts import canonical, digest, regular_files, write_json
+from artifacts import digest, inventory, release_source, source_digest, tar_gz, unpack, verify_inventory, wheel, write_json
+from gate import METADATA, check_release, combine_reports, read_document
+from package_bindings import package
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = json.loads((ROOT / "release/targets.json").read_text())["targets"]
@@ -30,68 +32,43 @@ def capture(destination, allow_dirty):
     if dirty and not allow_dirty:
         raise ValueError("Release source has uncommitted changes; use --allow-dirty for local qualification only")
     commit = git("rev-parse", "HEAD").decode().strip()
-    epoch = int(git("show", "-s", "--format=%ct", "HEAD"))
+    epoch = int(git("show", "-s", "--format=%ct", commit))
     if not dirty:
         # A clean release comes from Git's immutable objects, avoiding a mixed
         # snapshot when another editor changes and restores a working-tree file.
-        from artifacts import unpack
         with tempfile.TemporaryDirectory(prefix="stogas-source-") as temporary:
             archive = Path(temporary) / "source.tar.gz"
             subprocess.run(["git", "-C", str(ROOT), "archive", "--format=tar.gz", "--output", str(archive), commit], check=True)
             unpack(archive, destination)
-        return {"commit": commit, "dirty": False, "epoch": epoch, "sha256": source_digest(destination)}
-    destination.mkdir()
-    files = []
-    for name in sorted(set(git("ls-files", "--cached", "--others", "--exclude-standard", "-z").split(b"\0")) - {b""}):
-        relative = os.fsdecode(name)
-        source = ROOT / relative
-        if source.is_symlink():
-            raise ValueError(f"Release source contains a symlink: {relative}")
-        if not source.exists():
-            continue  # A deliberate deletion in an explicitly dirty snapshot.
-        if not source.is_file():
-            raise ValueError(f"Release source is not a regular file: {relative}")
-        target = destination / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
-        mode = 0o755 if source.stat().st_mode & 0o111 else 0o644
-        target.chmod(mode)
-        files.append({"path": relative, "mode": mode, "sha256": digest(target)})
-    # Hash the captured files, never the changing working tree after capture.
-    if git("rev-parse", "HEAD").decode().strip() != commit or (not dirty and git("status", "--porcelain", "--untracked-files=all").strip()):
-        raise ValueError("Release source changed while it was being captured")
-    import hashlib
-    return {"commit": commit, "dirty": dirty, "epoch": epoch, "sha256": hashlib.sha256(canonical(files)).hexdigest()}
+    else:
+        destination.mkdir()
+        for name in sorted(set(git("ls-files", "--cached", "--others", "--exclude-standard", "-z").split(b"\0")) - {b""}):
+            relative = os.fsdecode(name)
+            source = ROOT / relative
+            if source.is_symlink():
+                raise ValueError(f"Release source contains a symlink: {relative}")
+            if not source.exists():
+                continue  # A deliberate deletion in an explicitly dirty snapshot.
+            if not source.is_file():
+                raise ValueError(f"Release source is not a regular file: {relative}")
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+            target.chmod(0o755 if source.stat().st_mode & 0o111 else 0o644)
+    return {"commit": commit, "dirty": dirty, "epoch": epoch, "sha256": source_digest(destination)}
 
 
-def source_digest(source):
-    import hashlib
-    files = [{"path": path.relative_to(source).as_posix(), "mode": 0o755 if path.stat().st_mode & 0o111 else 0o644, "sha256": digest(path)} for path in regular_files(source)]
-    return hashlib.sha256(canonical(files)).hexdigest()
-
-
-def build(platforms, output, allow_dirty, previous=None):
-    if output.exists():
-        raise ValueError("Build output must be a new directory")
+def build(platforms, output, allow_dirty, archive=None):
+    if output.exists() or (archive and (archive.exists() or archive.is_relative_to(output))):
+        raise ValueError("Build output and archive must be new and separate")
     if output.is_relative_to(ROOT):
         raise ValueError("Build output must be outside the source checkout")
     output.mkdir(parents=True)
     snapshot = output / "source"
-    if previous:
-        source = json.loads((previous / "build.json").read_text())["source"]
-        if source["dirty"] and not allow_dirty:
-            raise ValueError("A dirty source snapshot requires --allow-dirty")
-        if source_digest(previous / "source") != source["sha256"]:
-            raise ValueError("Source snapshot differs from its recorded identity")
-        shutil.copytree(previous / "source", snapshot)
-    else:
-        source = capture(snapshot, allow_dirty)
-    if source_digest(snapshot) != source["sha256"]:
-        raise ValueError("Captured source differs from its recorded identity")
+    source = capture(snapshot, allow_dirty)
     build_targets = {**json.loads((snapshot / "release/targets.json").read_text())["targets"], "portable": {"os": "portable"}}
     apple = {name for name, target in build_targets.items() if target["os"] in {"macos", "ios"}}
-    if "apple" in platforms:
-        platforms = [name for name in platforms if name != "apple"] + sorted(apple)
+    platforms = [name for platform in platforms for name in (sorted(apple) if platform == "apple" else [platform])]
     if len(set(platforms)) != len(platforms):
         raise ValueError("A platform was requested more than once")
     bundles = ["apple"] if apple <= set(platforms) else []
@@ -129,22 +106,26 @@ def build(platforms, output, allow_dirty, previous=None):
     finally:
         if source_digest(snapshot) != source["sha256"]:
             raise ValueError("Source snapshot changed during the build")
-
-
-def compare(first, second):
-    def files(root):
-        from artifacts import regular_files
-        return {path.relative_to(root).as_posix(): digest(path) for path in regular_files(root)}
-    a, b = files(first), files(second)
-    if a != b:
-        changed = sorted(name for name in a.keys() | b.keys() if a.get(name) != b.get(name))
-        raise ValueError("Independent build bytes differ: " + ", ".join(changed))
-    print(f"Independent builds match: {len(a)} files")
+    if archive:
+        # File transfers between machines drop modes; the archive keeps them.
+        tar_gz(archive, output, source["epoch"])
 
 
 def collect(builds, output, complete):
     if output.exists():
         raise ValueError("Collected output must be a new directory")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="stogas-builds-", dir=output.parent) as temporary:
+        directories = []
+        for index, build in enumerate(builds):
+            if build.is_file():
+                unpack(build, Path(temporary) / str(index))
+                build = Path(temporary) / str(index)
+            directories.append(build)
+        combine(directories, output, complete)
+
+
+def combine(builds, output, complete):
     metadata = [json.loads((directory / "build.json").read_text()) for directory in builds]
     first = metadata[0]
     platforms = [platform for item in metadata for platform in item["platforms"]]
@@ -169,94 +150,119 @@ def collect(builds, output, complete):
     write_json(output / "build.json", {**first, "platforms": sorted(platforms), "bundles": sorted(bundles)})
 
 
-def compare_packages(first, second, report):
-    from gate import METADATA, read_document
-    from artifacts import verify_inventory
+def rebuild(release, output):
+    """Build every platform except Apple again from HEAD and require the release's exact bytes.
+
+    Xcode runs only on Apple hardware, so the Apple compiler outputs come from
+    the release. Packaging repacks each Apple archive with the pinned packer,
+    which reproduces the released bytes."""
+    manifest = check_release(release, reports=False)
+    if output.exists():
+        raise ValueError("Rebuild output must be a new directory")
+    apple = sorted(name for name, target in TARGETS.items() if target["os"] in {"macos", "ios"})
+    native = output / "native"
+    build(sorted(set(BUILD_TARGETS) - set(apple)), native, False)
+    metadata = json.loads((native / "build.json").read_text())
+    if metadata["source"] != manifest["source"]:
+        raise ValueError("HEAD differs from the release source")
+    imported = output / "apple"
+    imported.mkdir()
+    shutil.copytree(native / "source", imported / "source")
+    names = [artifact["name"] for artifact in manifest["artifacts"]]
+    version = manifest["version"]
+    shards = {"apple": [f"stogas-xcframework-v{version}.zip"]}
+    for platform in apple:
+        shards[platform] = [f"stogas-v{version}-{platform}.tar.gz", f"stogas-v{version}-{platform}-debug.tar.gz"]
+        if "python" in TARGETS[platform]["packages"]:
+            shards[platform].append(wheel(names, TARGETS[platform]))
+    for name, files in shards.items():
+        (imported / name).mkdir()
+        for file in files:
+            shutil.copyfile(release / file, imported / name / file)
+        write_json(imported / name / f"{name}.json", {"schema": "stogas.sdk-build.v1", "platform": name, "environment": "prod", "artifacts": inventory(imported / name, files)})
+    write_json(imported / "build.json", {**metadata, "platforms": apple, "bundles": ["apple"]})
+    collect([native, imported], output / "release", complete=True)
+    subprocess.run([sys.executable, "-B", str(output / "release/source/release/release.py"), "package", str(output / "release")], check=True)
+    compare(release, output / "release/packages")
+
+
+def compare(first, second):
+    if first == second:
+        raise ValueError("Compare two different package directories")
     manifests = [read_document(directory / "release-manifest.json") for directory in (first, second)]
-    if first == second or manifests[0] != manifests[1]:
-        raise ValueError("Independent package builds must have the same complete manifest")
+    if manifests[0] != manifests[1]:
+        a, b = ({artifact["name"]: artifact for artifact in manifest["artifacts"]} for manifest in manifests)
+        changed = sorted(name for name in a.keys() | b.keys() if a.get(name) != b.get(name))
+        raise ValueError("Independent package builds differ: " + (", ".join(changed) or "source identity or targets"))
     for directory, manifest in zip((first, second), manifests):
         verify_inventory(directory, manifest, METADATA & {path.name for path in directory.iterdir()})
     for artifact in manifests[0]["artifacts"]:
         if (first / artifact["name"]).samefile(second / artifact["name"]):
             raise ValueError("Compared artifacts must not share the same underlying file")
-    write_json(report, {"schema": "stogas.sdk-rebuild.v1", "manifest_sha256": digest(first / "release-manifest.json"), "source_sha256": manifests[0]["source"]["sha256"], "artifacts": manifests[0]["artifacts"]})
 
 
 if __name__ == "__main__":
+    # Packages record file permissions, so every host creates files alike.
+    os.umask(0o022)
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     build_parser = commands.add_parser("build", help="Build production artifacts; staging packages do not exist")
     build_parser.add_argument("--platform", action="append", choices=[*BUILD_TARGETS, "apple"], required=True, help="apple builds all Apple slices and their XCFramework together")
     build_parser.add_argument("--out", type=Path, required=True)
     build_parser.add_argument("--allow-dirty", action="store_true")
-    build_parser.add_argument("--snapshot", type=Path, help="Use a previously captured local build's source, with a fresh compiler process and no artifact cache")
-    compare_parser = commands.add_parser("compare", help="Compare every file from independent builds")
+    build_parser.add_argument("--archive", type=Path, help="Also write the build as one archive that keeps file modes, for collection on another machine")
+    compare_parser = commands.add_parser("compare", help="Require two complete package directories to hold identical release artifacts")
     compare_parser.add_argument("first", type=Path)
     compare_parser.add_argument("second", type=Path)
-    compare_parser.add_argument("--report", type=Path, help="Compare complete package manifests and write the independent rebuild report")
-    inventory_parser = commands.add_parser("inventory", help="Verify every downloaded artifact against its manifest")
-    inventory_parser.add_argument("directory", type=Path)
-    collect_parser = commands.add_parser("collect", help="Combine platform builds from the same captured source")
+    collect_parser = commands.add_parser("collect", help="Combine platform builds or build archives from the same captured source")
     collect_parser.add_argument("builds", type=Path, nargs="+")
     collect_parser.add_argument("--out", type=Path, required=True)
     collect_parser.add_argument("--complete", action="store_true")
+    rebuild_parser = commands.add_parser("rebuild", help="Build every platform except Apple again from HEAD and require the release's exact packages")
+    rebuild_parser.add_argument("release", type=Path)
+    rebuild_parser.add_argument("--out", type=Path, required=True)
     package_parser = commands.add_parser("package", help="Assemble language packages from a captured build")
     package_parser.add_argument("build", type=Path)
-    qualify_parser = commands.add_parser("qualify", help="Run installed-package checks; full release approval requires transport qualification too")
-    qualify_parser.add_argument("build", type=Path)
-    qualify_parser.add_argument("--platform", choices=BUILD_TARGETS, required=True)
+    qualify_parser = commands.add_parser("qualify", help="Run the release's own offline and live tests on its installed packages")
+    qualify_parser.add_argument("packages", type=Path)
+    qualify_parser.add_argument("--platform", required=True)
     qualify_parser.add_argument("--out", type=Path, required=True)
     qualify_parser.add_argument("--package", action="append", default=[], help="Qualify a subset; release approval still requires every declared package")
     qualify_parser.add_argument("--device", help="Explicit Android adb serial or iOS destination UDID")
-    qualify_parser.add_argument("--python", type=Path, help="Desktop Python consumer interpreter; independent of the release tooling's Python")
-    gate_parser = commands.add_parser("gate", help="Require complete packages, qualification and independent rebuild")
+    qualify_parser.add_argument("--device-farm", help="AWS Device Farm project ARN for tests on a real phone")
+    gate_parser = commands.add_parser("gate", help="Require complete packages and their qualification")
     gate_parser.add_argument("directory", type=Path)
-    gate_parser.add_argument("--source", type=Path, required=True)
     gate_parser.add_argument("--packages-only", action="store_true", help="Validate a draft's complete artifacts before post-build qualification")
     reports_parser = commands.add_parser("reports", help="Combine complete qualification reports for one artifact set")
     reports_parser.add_argument("paths", type=Path, nargs="+")
     reports_parser.add_argument("--packages", type=Path, required=True)
-    reports_parser.add_argument("--source", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "build":
-        if len(args.platform) != len(set(args.platform)):
-            parser.error("Duplicate platform")
-        build(args.platform, args.out.resolve(), args.allow_dirty, args.snapshot.resolve() if args.snapshot else None)
+        build(args.platform, args.out.resolve(), args.allow_dirty, args.archive.resolve() if args.archive else None)
     elif args.command == "compare":
-        if args.report:
-            compare_packages(args.first.resolve(), args.second.resolve(), args.report.resolve())
-        else:
-            compare(args.first.resolve(), args.second.resolve())
+        compare(args.first.resolve(), args.second.resolve())
+        print("Package directories contain identical release artifacts")
     elif args.command == "collect":
         collect([directory.resolve() for directory in args.builds], args.out.resolve(), args.complete)
-    elif args.command == "inventory":
-        from artifacts import verify_inventory
-        from gate import METADATA, read_document
-        directory = args.directory.resolve()
-        verify_inventory(directory, read_document(directory / "release-manifest.json"), METADATA & {path.name for path in directory.iterdir()})
-        print("Every release artifact matches its manifest")
+    elif args.command == "rebuild":
+        rebuild(args.release.resolve(), args.out.resolve())
+        print("The rebuild reproduces every release artifact")
     elif args.command == "gate":
-        from gate import check_release
-        check_release(args.directory.resolve(), args.source.resolve(), reports=not args.packages_only)
+        check_release(args.directory.resolve(), reports=not args.packages_only)
         print("Complete production release gate passed")
     elif args.command == "reports":
-        from gate import check_release, combine_reports
-        packages, source = args.packages.resolve(), args.source.resolve()
-        check_release(packages, source, reports=False)
-        targets = json.loads((source / "release/targets.json").read_text())["targets"]
+        packages = args.packages.resolve()
+        manifest = check_release(packages, reports=False)
+        with release_source(packages, manifest) as source:
+            targets = json.loads((source / "release/targets.json").read_text())["targets"]
         combine_reports(args.paths, packages / "qualification.json", digest(packages / "release-manifest.json"), targets)
     elif args.command == "qualify":
-        recorded = args.build.resolve() / "source/release/release.py"
-        if recorded.resolve() != Path(__file__).resolve():
-            subprocess.run([sys.executable, "-B", str(recorded), "qualify", str(args.build.resolve()), "--platform", args.platform, "--out", str(args.out.resolve()), *[part for package in args.package for part in ("--package", package)], *(["--device", args.device] if args.device else []), *(["--python", str(args.python.resolve())] if args.python else [])], check=True)
-        else:
-            from qualify import qualify
-            qualify(args.build.resolve(), args.platform, args.out.resolve(), args.package, args.device, args.python.resolve() if args.python else None)
+        packages = args.packages.resolve()
+        with release_source(packages, read_document(packages / "release-manifest.json")) as source:
+            subprocess.run([sys.executable, "-B", str(source / "release/qualify.py"), str(packages), "--platform", args.platform, "--out", str(args.out.resolve()), *[part for package in args.package for part in ("--package", package)], *(["--device", args.device] if args.device else []), *(["--device-farm", args.device_farm] if args.device_farm else [])], check=True)
     else:
         recorded = args.build.resolve() / "source/release/release.py"
         if recorded.resolve() != Path(__file__).resolve():
-            subprocess.run(["python3", "-B", str(recorded), "package", str(args.build.resolve())], check=True)
+            subprocess.run([sys.executable, "-B", str(recorded), "package", str(args.build.resolve())], check=True)
         else:
-            from package_bindings import package
             package(args.build.resolve())

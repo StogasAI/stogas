@@ -29,11 +29,12 @@ jobs:
           if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?', os.environ['GITHUB_REF_NAME']):
               raise SystemExit('Invalid release tag')
           targets = json.loads(Path('release/targets.json').read_text())['targets']
+          apple = ','.join(target['triple'] for target in targets.values() if target['os'] in ('macos', 'ios'))
           matrix = {'include': [
               {'platform': name, 'runner': 'ubuntu-24.04', 'triple': target['triple']}
               for name, target in targets.items() if target['os'] not in ('macos', 'ios')
           ] + [
-              {'platform': 'apple', 'runner': 'macos-15-intel', 'triple': ','.join(target['triple'] for target in targets.values() if target['os'] in ('macos', 'ios'))},
+              {'platform': 'apple', 'runner': 'macos-15', 'triple': apple},
               {'platform': 'portable', 'runner': 'ubuntu-24.04', 'triple': 'wasm32-unknown-unknown'}
           ]}
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
@@ -59,29 +60,20 @@ jobs:
         with:
           python-version: '3.14.7'
       - if: runner.os == 'macOS'
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
-        with:
-          toolchain: 1.97.1
-          targets: ${{ matrix.triple }}
-          components: llvm-tools-preview
+        name: Add the Apple targets to the repository's Rust toolchain
+        env:
+          TRIPLES: ${{ matrix.triple }}
+        run: |
+          rustup install --no-self-update
+          rustup target add ${TRIPLES//,/ }
+          rustup component add llvm-tools-preview
       - if: runner.os == 'macOS'
         name: Select the reviewed Apple toolchain
         run: |
           echo 'DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer' >> "$GITHUB_ENV"
           python3 -m pip install --require-hashes --only-binary=:all: -r release/apple-requirements.txt
       - name: Build production packages from an immutable source snapshot
-        run: python3 -B release/release.py build --platform "$PLATFORM" --out "$RUNNER_TEMP/sdk-build"
-      - name: Preserve build and source permissions for collection
-        run: |
-          python3 -B - <<'PY'
-          import json, os, sys
-          from pathlib import Path
-          sys.path.insert(0, 'release')
-          from artifacts import tar_gz
-          root = Path(os.environ['RUNNER_TEMP'])
-          epoch = json.loads((root / 'sdk-build/build.json').read_text())['source']['epoch']
-          tar_gz(root / (os.environ['PLATFORM'] + '.tar.gz'), root / 'sdk-build', epoch)
-          PY
+        run: python3 -B release/release.py build --platform "$PLATFORM" --out "$RUNNER_TEMP/sdk-build" --archive "$RUNNER_TEMP/$PLATFORM.tar.gz"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: sdk-build-${{ matrix.platform }}
@@ -109,32 +101,267 @@ jobs:
           merge-multiple: true
       - name: Collect all platforms and assemble release packages
         run: |
-          python3 -B - <<'PY'
-          import os, sys
-          from pathlib import Path
-          sys.path.insert(0, 'release')
-          from artifacts import unpack
-          from release import collect
-          root = Path(os.environ['RUNNER_TEMP'])
-          builds = []
-          for archive in sorted((root / 'shards').glob('*.tar.gz')):
-              destination = root / 'builds' / archive.name.removesuffix('.tar.gz')
-              unpack(archive, destination)
-              builds.append(destination)
-          collect(builds, root / 'sdk-release', complete=True)
-          PY
+          python3 -B release/release.py collect "$RUNNER_TEMP"/shards/*.tar.gz --out "$RUNNER_TEMP/sdk-release" --complete
           python3 -B release/release.py package "$RUNNER_TEMP/sdk-release"
-          python3 -B release/release.py gate "$RUNNER_TEMP/sdk-release/packages" --source "$RUNNER_TEMP/sdk-release/source" --packages-only
+          python3 -B release/release.py gate "$RUNNER_TEMP/sdk-release/packages" --packages-only
       - id: attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
-          subject-path: ${{ runner.temp }}/sdk-release/packages/release-manifest.json
-      - name: Create the immutable draft proposal
+          subject-path: ${{ runner.temp }}/sdk-release/packages/*
+      - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
           ATTESTATION_PATH: ${{ steps.attest.outputs.bundle-path }}
         run: |
           set -euo pipefail
-          cp "$ATTESTATION_PATH" "$RUNNER_TEMP/sdk-release/packages/github-attestation.json"
+          cp "$ATTESTATION_PATH" "$RUNNER_TEMP/sdk-release/packages/github-attestation.jsonl"
           gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/sdk-release/packages/"* \
-            --draft --verify-tag --target "$GITHUB_SHA" --title "Stogas SDK $GITHUB_REF_NAME"
+            --draft --verify-tag --target "$GITHUB_SHA" --title "Stogas SDK $GITHUB_REF_NAME" \
+            --notes "Verify downloads: https://stogas.ai/docs/sdk-overview#verify-a-download"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sdk-packages
+          path: ${{ runner.temp }}/sdk-release/packages
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  qualify:
+    name: Qualify ${{ matrix.name }}
+    needs: [proposal]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      # Signs in to AWS Device Farm for the real phones.
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-amd64, platform: linux-amd64, runner: ubuntu-24.04 }
+          - { name: linux-arm64, platform: linux-arm64, runner: ubuntu-24.04-arm }
+          - { name: linux-musl-amd64, platform: linux-musl-amd64, runner: ubuntu-24.04 }
+          - { name: linux-musl-arm64, platform: linux-musl-arm64, runner: ubuntu-24.04-arm }
+          - {
+              name: windows-amd64,
+              platform: windows-amd64,
+              desktop: true,
+              runner: windows-2025,
+              mingw: llvm-mingw-20261006-ucrt-x86_64,
+              mingw-sha256: 317492c456aa27ee607a5919f1d2d38dcdc1112516a24d0bf4b00d078f52d17a
+            }
+          - {
+              name: windows-arm64,
+              platform: windows-arm64,
+              desktop: true,
+              runner: windows-11-arm,
+              mingw: llvm-mingw-20261006-ucrt-aarch64,
+              mingw-sha256: 9a835d5179c9f3a5a783c11a7f14062a249b4765dd11add64a66786864e82ab2
+            }
+          - { name: darwin-amd64, platform: darwin-amd64, desktop: true, runner: macos-15-intel }
+          - { name: darwin-arm64, platform: darwin-arm64, desktop: true, runner: macos-15 }
+          - { name: ios-arm64, platform: ios-arm64, runner: macos-15, device-farm: true }
+          - { name: ios-simulator-arm64, platform: ios-simulator-arm64, runner: macos-15 }
+          # x86_64 system images under KVM. Google's native bridge in the API 35
+          # images runs ARM64 code; the API 33 image has none. A real ARM64
+          # phone runs the Android package with 4 KB pages.
+          - {
+              name: android-amd64-4k,
+              platform: android-amd64,
+              runner: ubuntu-24.04,
+              api: 33,
+              tag: google_apis,
+              image: x86_64-33_r17.zip,
+              image-sha256: 0455f853dcaf23e89b44f810e4b6391e8ef356326ec0e6c25b7f3f9de9ff5659
+            }
+          - {
+              name: android-amd64-16k,
+              platform: android-amd64,
+              runner: ubuntu-24.04,
+              api: 35,
+              tag: google_apis_ps16k,
+              image: x86_64-ps16k-35_r05.zip,
+              image-sha256: 61ae26a86ec209e200337fcd04329c2f568b1d920d4e555712dec95fd89c22ec
+            }
+          - {
+              name: android-arm64-4k,
+              platform: android-arm64,
+              package: native,
+              runner: ubuntu-24.04,
+              api: 35,
+              tag: google_apis,
+              image: x86_64-35_r09.zip,
+              image-sha256: c67b9ba0ff5bc0eb6d046871bfa228af14d4d47b02f0cdae94f048e511b7566e
+            }
+          - {
+              name: android-arm64-phone,
+              platform: android-arm64,
+              package: android,
+              runner: ubuntu-24.04,
+              device-farm: true
+            }
+          - {
+              name: android-arm64-16k,
+              platform: android-arm64,
+              runner: ubuntu-24.04,
+              api: 35,
+              tag: google_apis_ps16k,
+              image: x86_64-ps16k-35_r05.zip,
+              image-sha256: 61ae26a86ec209e200337fcd04329c2f568b1d920d4e555712dec95fd89c22ec
+            }
+          - { name: portable, platform: portable, runner: ubuntu-24.04 }
+    defaults:
+      run:
+        shell: bash
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      NAME: ${{ matrix.name }}
+      PACKAGE: ${{ matrix.package }}
+      DEVICE_FARM: ${{ matrix.device-farm && vars.DEVICE_FARM_PROJECT || '' }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - if: matrix.device-farm
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ vars.DEVICE_FARM_ROLE }}
+          role-duration-seconds: 7200
+          aws-region: us-west-2
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14.7'
+      - if: runner.os == 'macOS'
+        run: echo 'DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer' >> "$GITHUB_ENV"
+      - if: matrix.desktop
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          # The JAR's Java 17 floor, on every desktop target including Windows ARM64.
+          distribution: microsoft
+          java-version: '17'
+      - if: matrix.desktop
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        with:
+          dotnet-version: '10.0.x'
+      - if: matrix.desktop
+        uses: ruby/setup-ruby@e8944e80fb94b20106697132f8c20c665fab29e9
+        with:
+          ruby-version: '3.4.9'
+      - if: matrix.desktop
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-version-file: go/go.mod
+          cache: false
+      - if: matrix.mingw
+        name: Install the pinned MinGW C compiler
+        env:
+          MINGW: ${{ matrix.mingw }}
+          MINGW_SHA256: ${{ matrix.mingw-sha256 }}
+        run: |
+          set -euo pipefail
+          curl -sSfL -o "$RUNNER_TEMP/$MINGW.zip" "https://github.com/mstorsjo/llvm-mingw/releases/download/20261006/$MINGW.zip"
+          echo "$MINGW_SHA256  $RUNNER_TEMP/$MINGW.zip" | sha256sum -c -
+          python -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$RUNNER_TEMP/$MINGW.zip" "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$MINGW/bin" >> "$GITHUB_PATH"
+      - if: startsWith(matrix.platform, 'ios-')
+        name: Install the pinned XcodeGen
+        run: |
+          set -euo pipefail
+          curl -sSfL -o "$RUNNER_TEMP/xcodegen.zip" https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip
+          echo "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - if: matrix.platform == 'ios-simulator-arm64'
+        name: Boot a new iOS simulator
+        run: |
+          set -euo pipefail
+          device=$(xcrun simctl create stogas-qualification com.apple.CoreSimulator.SimDeviceType.iPhone-16 com.apple.CoreSimulator.SimRuntime.iOS-26-2)
+          xcrun simctl bootstatus "$device" -b
+          echo "DEVICE=$device" >> "$GITHUB_ENV"
+      - if: matrix.image
+        name: Install the pinned Android emulator and system image
+        env:
+          IMAGE: ${{ matrix.image }}
+          IMAGE_SHA256: ${{ matrix.image-sha256 }}
+          SYSTEM: system-images/android-${{ matrix.api }}/${{ matrix.tag }}
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sdk="$RUNNER_TEMP/android-sdk"
+          mkdir -p "$sdk/$SYSTEM" "$RUNNER_TEMP/avd/stogas.avd"
+          ln -s "$ANDROID_HOME/platform-tools" "$sdk/platform-tools"
+          repository=https://dl.google.com/android/repository
+          curl -sSfL -o "$RUNNER_TEMP/emulator.zip" "$repository/emulator-linux_x64-16428233.zip"
+          curl -sSfL -o "$RUNNER_TEMP/image.zip" "$repository/sys-img/google_apis/$IMAGE"
+          sha256sum -c - <<SUMS
+          b08fc43d8608d2955f607f1b287beb525041e730086bdca3af152accac3af9c1  $RUNNER_TEMP/emulator.zip
+          $IMAGE_SHA256  $RUNNER_TEMP/image.zip
+          SUMS
+          unzip -q "$RUNNER_TEMP/emulator.zip" -d "$sdk"
+          unzip -q "$RUNNER_TEMP/image.zip" -d "$sdk/$SYSTEM"
+          rm "$RUNNER_TEMP/emulator.zip" "$RUNNER_TEMP/image.zip"
+          printf 'avd.ini.encoding=UTF-8\npath=%s\ntarget=android-%s\n' "$RUNNER_TEMP/avd/stogas.avd" "${{ matrix.api }}" > "$RUNNER_TEMP/avd/stogas.ini"
+          printf '%s\n' AvdId=stogas abi.type=x86_64 hw.cpu.arch=x86_64 hw.ramSize=4096 disk.dataPartition.size=6G \
+            "image.sysdir.1=$SYSTEM/x86_64/" "tag.id=${{ matrix.tag }}" hw.gpu.enabled=no hw.audioInput=no hw.audioOutput=no \
+            > "$RUNNER_TEMP/avd/stogas.avd/config.ini"
+          echo "ANDROID_HOME=$sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_AVD_HOME=$RUNNER_TEMP/avd" >> "$GITHUB_ENV"
+          echo "$sdk/platform-tools" >> "$GITHUB_PATH"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: sdk-packages
+          path: ${{ runner.temp }}/sdk-packages
+      - if: '!matrix.image'
+        name: Run installed-package checks with the release's own test code
+        run: python -B release/release.py qualify "$RUNNER_TEMP/sdk-packages" --platform "$PLATFORM" --out "$RUNNER_TEMP/report/$NAME.json" ${DEVICE:+--device "$DEVICE"} ${DEVICE_FARM:+--device-farm "$DEVICE_FARM"} ${PACKAGE:+--package "$PACKAGE"}
+      - if: matrix.image
+        name: Boot the emulator and run installed-package checks
+        run: |
+          set -euo pipefail
+          "$ANDROID_HOME/emulator/emulator" -avd stogas -port 5554 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          # shellcheck disable=SC2016 # The loop runs in the emulator's shell.
+          timeout 900 adb -s emulator-5554 wait-for-device shell 'until [ "$(getprop sys.boot_completed)" = 1 ]; do sleep 5; done'
+          python -B release/release.py qualify "$RUNNER_TEMP/sdk-packages" --platform "$PLATFORM" --out "$RUNNER_TEMP/report/$NAME.json" --device emulator-5554 ${PACKAGE:+--package "$PACKAGE"}
+          adb -s emulator-5554 emu kill
+      - if: failure() && matrix.image
+        run: tail -n 200 "$RUNNER_TEMP/emulator.log"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sdk-report-${{ matrix.name }}
+          path: ${{ runner.temp }}/report/${{ matrix.name }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+  qualification:
+    needs: [qualify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: sdk-packages
+          path: ${{ runner.temp }}/sdk-packages
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: sdk-report-*
+          path: ${{ runner.temp }}/reports
+          merge-multiple: true
+      # Fails until every required check, including live transport, has passed.
+      - run: python3 -B release/release.py reports "$RUNNER_TEMP"/reports/*.json --packages "$RUNNER_TEMP/sdk-packages"
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: ${{ runner.temp }}/sdk-packages/qualification.json
+      - name: Add the qualification report to the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/sdk-packages/qualification.json"

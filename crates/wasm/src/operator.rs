@@ -25,7 +25,7 @@ struct OwnedSubject {
     sha256: String,
 }
 
-/// Verify an immutable production SDK release and its root-authorized approval.
+/// Verify a production SDK release's GitHub build proof and root-authorized Stogas signature.
 ///
 /// # Errors
 /// Rejects invalid release identity, build provenance, signing authority or publication time.
@@ -33,17 +33,17 @@ struct OwnedSubject {
 pub fn verify_sdk_release(
     manifest: &[u8],
     github_attestation: &[u8],
-    proof: &[u8],
+    signature: &[u8],
     now_unix_ms: f64,
-) -> Result<JsValue, JsError> {
-    let approval = stogas_verifier::sdk_release::verify(
+) -> Result<(), JsError> {
+    stogas_verifier::sdk_release::verify(
         manifest,
         github_attestation,
-        proof,
+        signature,
         parse_unix_ms(now_unix_ms, "current time")?,
     )
-    .map_err(|error| JsError::new(&error.to_string()))?;
-    to_js_value(&approval)
+    .map(drop)
+    .map_err(|error| JsError::new(&error.to_string()))
 }
 
 /// Seal one boot's provisioning envelope to its attested X-Wing public key.

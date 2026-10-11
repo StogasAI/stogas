@@ -8,7 +8,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from artifacts import MANIFEST, canonical, digest, inventory, tar_gz, unpack, verify_inventory, verify_source, write_json, zip_archive
+from artifacts import MANIFEST, canonical, digest, inventory, source_digest, tar_gz, unpack, verify_inventory, verify_source, write_json, zip_archive
 
 
 class ArtifactsTests(unittest.TestCase):
@@ -27,7 +27,6 @@ class ArtifactsTests(unittest.TestCase):
                     normalize_wheel(tree, root)
 
     def test_consumer_source_cannot_drift_from_packaged_source(self):
-        from release import source_digest
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source"

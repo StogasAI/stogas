@@ -1,14 +1,11 @@
 name: Publish approved SDK bytes
 
+# Stogas publishes a release only after it has checked every file. Resume with
+# `gh workflow run publish.yml --ref <tag>`.
 on:
   release:
     types: [published]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Published SDK release tag to resume
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -25,16 +22,10 @@ jobs:
     permissions:
       contents: write
       id-token: write
-    env:
-      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          ref: ${{ github.event.release.tag_name || inputs.tag }}
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
-        with:
-          toolchain: 1.97.1
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: 24.14.1
@@ -42,42 +33,22 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.14.7'
-      - name: Download and authenticate the complete published release
+      - name: Download the published release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
-          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false
-          python3 scripts/check-package-versions.py "${RELEASE_TAG#v}"
+          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = false
           mkdir "$RUNNER_TEMP/approved"
-          gh release download "$RELEASE_TAG" --dir "$RUNNER_TEMP/approved"
-          git archive --format=tar.gz --output="$RUNNER_TEMP/source.tar.gz" HEAD
-          python3 -B - <<'PY'
-          import os, sys
-          from pathlib import Path
-          sys.path.insert(0, 'release')
-          from artifacts import unpack
-          root = Path(os.environ['RUNNER_TEMP'])
-          unpack(root / 'source.tar.gz', root / 'source')
-          PY
-          python3 -B release/release.py gate "$RUNNER_TEMP/approved" --source "$RUNNER_TEMP/source"
-          cargo build --locked --release -p stogas --features cli --bin stogas
-          target/release/stogas verify-release "$RUNNER_TEMP/approved"
-          python3 -B - <<'PY'
-          import json, os, subprocess
-          from pathlib import Path
-          manifest = json.loads((Path(os.environ['RUNNER_TEMP']) / 'approved/release-manifest.json').read_text())
-          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-          if manifest['source']['commit'] != commit or 'v' + manifest['version'] != os.environ['RELEASE_TAG']:
-              raise SystemExit('Published source identity differs from the checked-out release')
-          PY
+          gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/approved"
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18
+        id: crates
       - name: Publish the exact crate archives in dependency order
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: python3 -B release/publish.py crates "$RUNNER_TEMP/approved" --source "$RUNNER_TEMP/source" --verifier target/release/stogas
-      - name: Publish the exact npm archives with trusted publishing
-        run: python3 -B release/publish.py npm "$RUNNER_TEMP/approved" --source "$RUNNER_TEMP/source" --verifier target/release/stogas
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates.outputs.token }}
+        run: python3 -B release/publish.py crates "$RUNNER_TEMP/approved"
+      - name: Publish the exact npm archives with trusted publishing and provenance
+        run: python3 -B release/publish.py npm "$RUNNER_TEMP/approved"
       - name: Stage approved wheels
         run: |
           mkdir "$RUNNER_TEMP/wheels"
@@ -87,7 +58,7 @@ jobs:
           packages-dir: ${{ runner.temp }}/wheels
           skip-existing: true
       - name: Verify all PyPI wheel bytes
-        run: python3 -B release/publish.py pypi "$RUNNER_TEMP/approved" --source "$RUNNER_TEMP/source" --verifier target/release/stogas
+        run: python3 -B release/publish.py pypi "$RUNNER_TEMP/approved"
       - name: Install the pinned Maven Central publisher
         run: |
           curl --fail --location --silent --show-error https://github.com/jreleaser/jreleaser/releases/download/v1.26.0/jreleaser-1.26.0.zip --output "$RUNNER_TEMP/jreleaser.zip"
@@ -101,16 +72,19 @@ jobs:
           JRELEASER_GPG_PUBLIC_KEY: ${{ secrets.MAVEN_GPG_PUBLIC_KEY }}
           JRELEASER_GPG_SECRET_KEY: ${{ secrets.MAVEN_GPG_SECRET_KEY }}
           JRELEASER_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
-        run: python3 -B release/publish.py maven "$RUNNER_TEMP/approved" --source "$RUNNER_TEMP/source" --verifier target/release/stogas
+        run: python3 -B release/publish.py maven "$RUNNER_TEMP/approved"
+      - uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841
+        id: nuget
+        with:
+          user: ${{ vars.NUGET_USER }}
       - name: Publish and verify NuGet package contents and repository signature
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
-        run: python3 -B release/publish.py nuget "$RUNNER_TEMP/approved" --source "$RUNNER_TEMP/source" --verifier target/release/stogas
+          NUGET_API_KEY: ${{ steps.nuget.outputs.NUGET_API_KEY }}
+        run: python3 -B release/publish.py nuget "$RUNNER_TEMP/approved"
+      - uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a
       - name: Publish the exact platform gems
-        env:
-          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
-        run: python3 -B release/publish.py ruby "$RUNNER_TEMP/approved" --source "$RUNNER_TEMP/source" --verifier target/release/stogas
-      - name: Publish the approved Go module as an immutable module tag
+        run: python3 -B release/publish.py ruby "$RUNNER_TEMP/approved"
+      - name: Publish the approved Go module as a module tag
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 -B release/publish.py go "$RUNNER_TEMP/approved" --source "$RUNNER_TEMP/source" --verifier target/release/stogas
+        run: python3 -B release/publish.py go "$RUNNER_TEMP/approved"

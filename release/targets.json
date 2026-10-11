@@ -108,15 +108,6 @@
 			"swift": "arm64-apple-ios-simulator",
 			"simulator": true
 		},
-		"ios-simulator-amd64": {
-			"triple": "x86_64-apple-ios",
-			"os": "ios",
-			"arch": "amd64",
-			"minimum": "15.0",
-			"packages": ["native", "swift"],
-			"swift": "x86_64-apple-ios-simulator",
-			"simulator": true
-		},
 		"android-arm64": {
 			"triple": "aarch64-linux-android",
 			"os": "android",

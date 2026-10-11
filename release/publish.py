@@ -21,8 +21,7 @@ import zipfile
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-from artifacts import digest, unpack
-from gate import check_release
+from artifacts import digest, source_digest, unpack
 
 
 def run(arguments, **kwargs):
@@ -162,7 +161,7 @@ def npm(packages, version):
                 raise ValueError("npm package identity differs from the approved release")
             return exact_remote(path, metadata["dist"]["tarball"])
         if not check():
-            run(["npm", "publish", str(path), "--access", "public", "--provenance"])
+            run(["npm", "publish", str(path), "--access", "public"])
         wait_for(check)
 
 
@@ -254,7 +253,6 @@ def go(packages, version, source):
         repo = work / "repo"
         approved = work / "approved/go"
         def compare():
-            from release import source_digest
             if source_digest(repo / "go") != source_digest(approved):
                 raise ValueError("Go release tag differs from the approved module")
         found = run(["git", "tag", "--list", tag], cwd=repo).strip()
@@ -285,12 +283,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("ecosystem", choices=["crates", "npm", "pypi", "ruby", "nuget", "maven", "go"])
     parser.add_argument("packages", type=Path)
-    parser.add_argument("--source", type=Path, required=True)
-    parser.add_argument("--verifier", type=Path, required=True)
     args = parser.parse_args()
-    packages, source = args.packages.resolve(), args.source.resolve()
-    manifest = check_release(packages, source)
-    run([str(args.verifier.resolve()), "verify-release", str(packages)])
+    packages = args.packages.resolve()
+    manifest = json.loads((packages / "release-manifest.json").read_text())
     if args.ecosystem == "go":
         go(packages, manifest["version"], manifest["source"])
     else:

@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 from artifacts import unpack
+from gate import CASES, attempt
 
 PLAYWRIGHT = "mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e"
 RUST = "rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97"
@@ -25,16 +26,19 @@ def qualify(source, packages, version, requested=()):
         work = Path(temporary)
         shutil.copytree(packages, work / "packages")
         shutil.copytree(source / "tests", work / "tests")
-        def run(image, arguments, network=True):
+        # Setup steps use the network. Offline cases have none; live cases use
+        # the production gateways.
+        def run(image, arguments, case=None):
             subprocess.run([
                 "docker", "run", "--rm", "--init", "--memory", "4g", "--cpus", "4", "--shm-size", "1g",
                 "--platform", "linux/amd64", "--user", f"{os.getuid()}:{os.getgid()}",
                 "--mount", f"type=bind,source={work},target=/work", "--workdir", "/work",
                 "--env", "HOME=/work", "--env", "CARGO_HOME=/work/.cargo", "--env", "CARGO_BUILD_JOBS=4",
-                *([] if network else ["--network", "none"]), "--entrypoint", arguments[0], image, *arguments[1:],
+                *(["--network", "none"] if case == "offline" else []), *(["--env", "STOGAS_LIVE=prod"] if case == "live" else []),
+                "--entrypoint", arguments[0], image, *arguments[1:],
             ], check=True)
-        def passed(package, case, runtime):
-            checks.append({"platform": "portable", "package": package, "case": case, "runtime": runtime, "outcome": "passed"})
+        def record(package, case, runtime, outcome):
+            checks.append({"platform": "portable", "package": package, "case": case, "runtime": runtime, "outcome": outcome})
         if "npm" in selected:
             package = json.loads((source / "package.json").read_text())
             (work / "package.json").write_text(json.dumps({"name": "stogas-release-consumer", "private": True, "type": "module", "devDependencies": package["devDependencies"]}))
@@ -50,25 +54,25 @@ def qualify(source, packages, version, requested=()):
             shutil.copytree(installed / "pkg/browser", work / "target/browser")
             shutil.copytree(work / "node_modules/@stogas/offline-sigstore/pkg/browser", work / "target/offline-browser")
             tests = ["tests/node/" + path.name for path in sorted((work / "tests/node").glob("*.test.mjs")) if path.name != "fuzz-workflows.test.mjs"]
-            run(PLAYWRIGHT, ["node", "--test", *tests], network=False)
-            passed("npm", "node-contract", PLAYWRIGHT)
-            run(NODE_MINIMUM, ["node", "--test", *tests], network=False)
-            passed("npm", "node-minimum-contract", NODE_MINIMUM)
-            run(BUN, ["bun", "test", *tests], network=False)
-            passed("npm", "bun-contract", BUN)
-            run(DENO, ["deno", "test", "--allow-all", "--no-check", *tests], network=False)
-            passed("npm", "deno-contract", DENO)
-            run(PLAYWRIGHT, ["node", "--test", "tests/worker/transport.test.mjs"], network=False)
-            passed("npm", "worker-contract", PLAYWRIGHT)
             (work / "tests/browser/release.config.mjs").write_text("""import {defineConfig} from '@playwright/test';
-export default defineConfig({testDir:'.',testMatch:'verifier.spec.ts',forbidOnly:true,retries:0,reporter:'line',workers:2,projects:['chromium','firefox','webkit'].map(name=>({name,use:{browserName:name,headless:true}}))});
+export default defineConfig({testDir:'.',testMatch:['verifier.spec.ts','live.spec.ts'],forbidOnly:true,retries:0,reporter:'line',workers:2,projects:['chromium','firefox','webkit'].map(name=>({name,use:{browserName:name,headless:true}}))});
 """)
             # Staging authority cases require a different compile-time trust
             # profile. Production packages test real offline GitHub evidence and
-            # independent signing vectors here; live transport is a separate gate.
-            run(PLAYWRIGHT, ["npx", "--no-install", "playwright", "test", "--config", "tests/browser/release.config.mjs", "--grep", "ML-DSA publisher|standalone lightweight|real GitHub release|invalid Rekor"], network=False)
-            for runtime in ("chromium", "firefox", "webkit"):
-                passed("npm", f"{runtime}-contract", PLAYWRIGHT)
+            # independent signing vectors here.
+            browsers = ["npx", "--no-install", "playwright", "test", "--config", "tests/browser/release.config.mjs", "--grep", "ML-DSA publisher|standalone lightweight|real GitHub release|invalid Rekor|live gateway"]
+            for case in CASES:
+                for runtime, image, arguments in (
+                    ("node", PLAYWRIGHT, ["node", "--test", *tests]),
+                    ("node-minimum", NODE_MINIMUM, ["node", "--test", *tests]),
+                    ("bun", BUN, ["bun", "test", *tests]),
+                    ("deno", DENO, ["deno", "test", "--allow-all", "--no-check", *tests]),
+                    ("worker", PLAYWRIGHT, ["node", "--test", "tests/worker/transport.test.mjs"]),
+                ):
+                    record("npm", f"{runtime}-{case}", image, attempt(f"npm/{runtime}-{case}", lambda: run(image, arguments, case)))
+                outcome = attempt(f"npm/browsers-{case}", lambda: run(PLAYWRIGHT, browsers, case))
+                for runtime in ("chromium", "firefox", "webkit"):
+                    record("npm", f"{runtime}-{case}", PLAYWRIGHT, outcome)
         if "rust" in selected:
             crates = ("stogas-offline-sigstore", "stogas-verifier", "stogas")
             for name in crates:
@@ -80,18 +84,10 @@ export default defineConfig({testDir:'.',testMatch:'verifier.spec.ts',forbidOnly
             manifest += '\n[patch.crates-io]\n' + '\n'.join(f'{name}={{path="{path}"}}' for name, path in paths.items()) + '\n'
             (work / "Cargo.toml").write_text(manifest)
             shutil.copyfile(work / paths["stogas"] / "Cargo.lock", work / "Cargo.lock")
-            (work / "src/main.rs").write_text('''use stogas::{Environment, Transport, TransportOptions, Verifier};
-fn main() {
-    assert!(Transport::start(&TransportOptions { max_connections: 0, ..Default::default() }).is_err());
-    let mut verifier = Verifier::stogas(Environment::Production).unwrap();
-    assert!(verifier.refresh(b"{}", 1_791_331_200_000).is_err());
-    assert!(verifier.current().is_none());
-    println!("Installed Rust SDK preserves production authority and rejects invalid configuration/evidence");
-}
-''')
+            shutil.copyfile(source / "release/consumers/rust.rs", work / "src/main.rs")
             # Cargo retains the shipped lock's dependency versions, adding the
             # consumer and local overrides for the three unpublished archives.
-            run(RUST, ["cargo", "run", "--release"])
-            run(RUST, ["cargo", "run", "--release", "--locked", "--offline"], network=False)
-            passed("rust", "installed-contract", RUST)
+            run(RUST, ["cargo", "build", "--release"])
+            for case in CASES:
+                record("rust", case, RUST, attempt(f"rust/{case}", lambda: run(RUST, ["cargo", "run", "--release", "--locked", "--offline"], case)))
     return checks
