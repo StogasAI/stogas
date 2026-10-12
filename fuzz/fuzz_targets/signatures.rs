@@ -1,7 +1,7 @@
 #![no_main]
 
-use libfuzzer_sys::fuzz_target;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use libfuzzer_sys::fuzz_target;
 use std::sync::OnceLock;
 use stogas_verifier::signing;
 

@@ -11,8 +11,25 @@ permissions:
   contents: read
 
 jobs:
+  targets:
+    name: List fuzz targets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      targets: ${{ steps.list.outputs.targets }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - id: list
+        run: |
+          targets=$(cargo metadata --manifest-path fuzz/Cargo.toml --no-deps --format-version 1 |
+            jq -c '[.packages[].targets[] | select(.kind == ["bin"]) | .name]')
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+
   fuzz:
     name: ${{ matrix.target }}
+    needs: targets
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -23,17 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target:
-          [
-            sigstore,
-            current_evidence,
-            session_evidence,
-            c_abi,
-            encrypted_setup,
-            signatures,
-            ratchet,
-            records
-          ]
+        target: ${{ fromJSON(needs.targets.outputs.targets) }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
