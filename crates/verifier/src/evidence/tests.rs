@@ -200,8 +200,6 @@ mod staging {
                 .unwrap();
         let mut record = synthetic["record"].clone();
         record["gateway_release_id"] = json!(snapshot.approvals.manifest().gateways[0]);
-        record["hardware_policy_sha256"] =
-            json!(snapshot.approvals.manifest().hardware_policy_sha256);
         record["report_data"]["environment"] = json!("staging");
         let challenge: [u8; 32] = hex::decode(
             record["report_data"]["registration_challenge"]

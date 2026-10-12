@@ -72,7 +72,6 @@ fn boot() -> Boot {
             report.as_ptr(),
             report.len(),
             digest.as_ptr(),
-            digest.as_ptr(),
             &raw mut document,
         );
         assert_eq!(status, 0);

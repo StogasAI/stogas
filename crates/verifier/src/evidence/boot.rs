@@ -90,7 +90,6 @@ pub struct BootReportData {
 pub struct BootRecord {
     pub schema: String,
     pub gateway_release_id: String,
-    pub hardware_policy_sha256: String,
     /// Canonical unpadded base64url of the raw 1184-byte SNP report.
     pub report: String,
     pub report_data: BootReportData,
@@ -447,7 +446,6 @@ fn parse_record(document: &[u8]) -> Result<BootRecord, Error> {
         return Err(invalid("unsupported boot schema"));
     }
     lower_hex::<32>(&record.gateway_release_id)?;
-    lower_hex::<32>(&record.hardware_policy_sha256)?;
     Ok(record)
 }
 
