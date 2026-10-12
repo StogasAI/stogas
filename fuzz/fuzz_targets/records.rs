@@ -30,14 +30,11 @@ fuzz_target!(|input: &[u8]| {
         1 => candidate.truncate(input.len().min(candidate.len())),
         _ => candidate = input.to_vec(),
     }
-    match session.accept_start(0, &mut candidate, 0) {
-        Ok((_, _, plaintext)) => {
-            assert_eq!(plaintext, b"credentials");
-            // This exact sequence has already authenticated; it cannot be reused.
-            assert!(session.accept_start(0, &mut records[0].clone(), 0).is_err());
-            return;
-        }
-        Err(_) => {}
+    if let Ok((_, _, plaintext)) = session.accept_start(0, &mut candidate, 0) {
+        assert_eq!(plaintext, b"credentials");
+        // This exact sequence has already authenticated; it cannot be reused.
+        assert!(session.accept_start(0, &mut records[0].clone(), 0).is_err());
+        return;
     }
     let (mut reader, mut writer, _) = session.accept_start(0, &mut records[0].clone(), 0).unwrap();
     session.close();
