@@ -179,7 +179,7 @@ fn hardware_alternatives_apply_to_quotes_registered_facts_and_fresh_sessions() {
 }
 
 #[test]
-fn registered_boot_reappraisal_preserves_history_without_reopening_registration() {
+fn registered_boot_reappraisal_requires_its_digest_and_an_approved_release() {
     use sha2::{Digest as _, Sha256};
     let (mut verifier, bundle, _, _, _) = fixture();
     let registration: Value = serde_json::from_str(include_str!(
@@ -190,14 +190,13 @@ fn registered_boot_reappraisal_preserves_history_without_reopening_registration(
     let snapshot = verifier
         .refresh(&serde_json::to_vec(&bundle).unwrap(), now)
         .unwrap();
-    // The original policy reference is historical. The genuine SNP report must still
-    // satisfy today's policy, and its registered document cannot change.
-    let mut historical = registration["boot"].clone();
-    historical["hardware_policy_sha256"] = serde_json::json!("ab".repeat(32));
-    let document = crate::canonical_json(&historical).unwrap();
+    // The genuine SNP report must still satisfy today's policy, and the registered
+    // document cannot change.
+    let mut boot = registration["boot"].clone();
+    let document = crate::canonical_json(&boot).unwrap();
     let registered_digest = Sha256::digest(document.as_bytes()).into();
     let challenge = hex::decode(
-        historical["report_data"]["registration_challenge"]
+        boot["report_data"]["registration_challenge"]
             .as_str()
             .unwrap(),
     )
@@ -230,8 +229,8 @@ fn registered_boot_reappraisal_preserves_history_without_reopening_registration(
         ),
         Err(Error::CollateralExpired)
     ));
-    historical["gateway_release_id"] = serde_json::json!("cd".repeat(32));
-    let unapproved = crate::canonical_json(&historical).unwrap();
+    boot["gateway_release_id"] = serde_json::json!("cd".repeat(32));
+    let unapproved = crate::canonical_json(&boot).unwrap();
     assert!(
         snapshot
             .verify_registration(unapproved.as_bytes(), &challenge, now)

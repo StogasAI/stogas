@@ -197,7 +197,6 @@ fn boot_parser_rejects_alternate_bytes_unknown_fields_and_invalid_sizes() {
     for (pointer, value) in [
         ("/schema", json!("other")),
         ("/gateway_release_id", json!("AF".repeat(32))),
-        ("/hardware_policy_sha256", json!("bad")),
     ] {
         let mut record = vector["record"].clone();
         *record.pointer_mut(pointer).unwrap() = value;

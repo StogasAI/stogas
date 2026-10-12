@@ -204,7 +204,6 @@ pub unsafe extern "C" fn stogas_node_boot_document(
     report: *const u8,
     report_len: usize,
     gateway_release_id: *const u8,
-    hardware_policy_sha256: *const u8,
     document: *mut StogasBuffer,
 ) -> u32 {
     status(|| {
@@ -221,7 +220,6 @@ pub unsafe extern "C" fn stogas_node_boot_document(
                 array(challenge)?,
                 input(report, report_len)?,
                 array(gateway_release_id)?,
-                array(hardware_policy_sha256)?,
             )?
         };
         // SAFETY: the output is writable.

@@ -93,7 +93,6 @@ impl NodeKeys {
         challenge: &[u8; 32],
         report: &[u8],
         gateway_release_id: &[u8; 32],
-        hardware_policy_sha256: &[u8; 32],
     ) -> Result<Vec<u8>, Error> {
         let data = self.boot_report_data(environment, tls_spki_sha256, challenge);
         let commitment = data
@@ -105,7 +104,6 @@ impl NodeKeys {
         let record = BootRecord {
             schema: boot::BOOT_SCHEMA.into(),
             gateway_release_id: hex::encode(gateway_release_id),
-            hardware_policy_sha256: hex::encode(hardware_policy_sha256),
             report: URL_SAFE_NO_PAD.encode(report),
             report_data: data,
         };

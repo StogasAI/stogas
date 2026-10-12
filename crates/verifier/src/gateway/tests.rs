@@ -107,7 +107,6 @@ fn boot_documents_commit_the_quote_and_requests_and_receipts_verify_under_the_bo
             &challenge,
             &report,
             &[5; 32],
-            &[6; 32],
         )
         .unwrap();
     let record: BootRecord = serde_json::from_slice(&document).unwrap();
@@ -121,8 +120,7 @@ fn boot_documents_commit_the_quote_and_requests_and_receipts_verify_under_the_bo
             &spki,
             &challenge,
             &report,
-            &[5; 32],
-            &[6; 32]
+            &[5; 32]
         )
         .is_err()
     );

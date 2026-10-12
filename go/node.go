@@ -10,7 +10,7 @@ typedef struct StogasTlsKey StogasTlsKey;
 typedef struct StogasBuffer { uint8_t *data; size_t len; } StogasBuffer;
 uint32_t stogas_node_keys_new(uint8_t *, uint8_t *, StogasNodeKeys **);
 uint32_t stogas_node_report_data(const StogasNodeKeys *, uint8_t, const uint8_t *, const uint8_t *, uint8_t *);
-uint32_t stogas_node_boot_document(const StogasNodeKeys *, uint8_t, const uint8_t *, const uint8_t *, const uint8_t *, size_t, const uint8_t *, const uint8_t *, StogasBuffer *);
+uint32_t stogas_node_boot_document(const StogasNodeKeys *, uint8_t, const uint8_t *, const uint8_t *, const uint8_t *, size_t, const uint8_t *, StogasBuffer *);
 uint32_t stogas_node_sign_boot_request(const StogasNodeKeys *, uint8_t, const uint8_t *, size_t, int64_t, uint8_t *);
 uint32_t stogas_node_sign_receipt(const StogasNodeKeys *, const uint8_t *, const uint8_t *, const uint8_t *, const uint8_t *, size_t, StogasBuffer *);
 uint32_t stogas_node_open_provisioning(const StogasNodeKeys *, const uint8_t *, const uint8_t *, size_t, StogasBuffer *);
@@ -122,11 +122,11 @@ func (k *NodeKeys) ReportData(environment byte, tlsSPKISHA256, challenge [32]byt
 }
 
 // BootDocument returns the exact logged boot document for a quote over ReportData.
-func (k *NodeKeys) BootDocument(environment byte, tlsSPKISHA256, challenge [32]byte, report []byte, gatewayReleaseID, hardwarePolicySHA256 [32]byte) ([]byte, error) {
+func (k *NodeKeys) BootDocument(environment byte, tlsSPKISHA256, challenge [32]byte, report []byte, gatewayReleaseID [32]byte) ([]byte, error) {
 	var buffer C.StogasBuffer
 	err := k.call(func(handle *C.StogasNodeKeys) C.uint32_t {
 		return C.stogas_node_boot_document(handle, C.uint8_t(environment), bytePointer(tlsSPKISHA256[:]), bytePointer(challenge[:]),
-			bytePointer(report), C.size_t(len(report)), bytePointer(gatewayReleaseID[:]), bytePointer(hardwarePolicySHA256[:]), &buffer)
+			bytePointer(report), C.size_t(len(report)), bytePointer(gatewayReleaseID[:]), &buffer)
 	})
 	if err != nil {
 		return nil, err
