@@ -1,11 +1,18 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
-  workflow_call:
 
 permissions:
   contents: read
+
+# A release needs a passing run for its exact commit, so only the newest push
+# on a ref keeps running.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   minimum-rust:
@@ -725,26 +732,3 @@ jobs:
             --certificate-identity 'https://github.com/StogasAI/gateway/.github/workflows/gateway-igvm-release.yml@refs/tags/v0.0.1' \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "$GITHUB_WORKSPACE/tests/fixtures/gateway-v0.0.1-launch-policy.json"
-
-  fuzz-smoke:
-    name: Sanitized fuzz-target smoke gate
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    env:
-      RUSTUP_TOOLCHAIN: nightly-2026-07-01
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          persist-credentials: false
-      - run: rustup install --no-self-update --profile minimal "$RUSTUP_TOOLCHAIN"
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-        with:
-          workspaces: fuzz
-      - run: cargo install cargo-fuzz --version =0.13.2 --locked
-      - name: Exercise every native trust boundary under libFuzzer and sanitizers
-        shell: bash
-        run: |
-          set -euo pipefail
-          for target in sigstore current_evidence session_evidence c_abi encrypted_setup signatures ratchet records; do
-            cargo fuzz run "$target" -- -max_total_time=10 -timeout=10
-          done

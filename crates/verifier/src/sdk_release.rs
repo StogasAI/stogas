@@ -59,8 +59,10 @@ pub struct Signature {
 
 /// Verify GitHub's build proof and the Stogas signature of a production SDK release.
 ///
-/// This authenticates historical publication, without granting current gateway authority.
-/// The caller must also compare artifact bytes with the returned manifest.
+/// GitHub's one proof names every artifact, the manifest and the test report, so it exists
+/// only for files that passed every test in the same workflow run. This authenticates
+/// historical publication, without granting current gateway authority. The caller must also
+/// compare artifact bytes with the returned manifest.
 ///
 /// # Errors
 /// Rejects unsigned, altered, staging or dirty releases and signing keys that had expired
@@ -68,12 +70,14 @@ pub struct Signature {
 pub fn verify(
     manifest_bytes: &[u8],
     github_attestation: &[u8],
+    qualification: &[u8],
     signature_bytes: &[u8],
     now_unix_ms: i64,
 ) -> Result<Manifest, approvals::Error> {
     if [
         manifest_bytes.len(),
         github_attestation.len(),
+        qualification.len(),
         signature_bytes.len(),
     ]
     .into_iter()
@@ -114,6 +118,7 @@ pub fn verify(
     )?;
     let reference = format!("refs/tags/v{}", manifest.version);
     let manifest_sha256 = hex::encode(Sha256::digest(manifest_bytes));
+    let qualification_sha256 = hex::encode(Sha256::digest(qualification));
     let subjects: Vec<_> = manifest
         .artifacts
         .iter()
@@ -121,10 +126,16 @@ pub fn verify(
             name: &artifact.name,
             sha256: &artifact.sha256,
         })
-        .chain([Subject {
-            name: MANIFEST,
-            sha256: &manifest_sha256,
-        }])
+        .chain([
+            Subject {
+                name: MANIFEST,
+                sha256: &manifest_sha256,
+            },
+            Subject {
+                name: QUALIFICATION,
+                sha256: &qualification_sha256,
+            },
+        ])
         .collect();
     verify_github_attestation(
         github_attestation,
