@@ -1,25 +1,37 @@
 name: Build SDK release proposal
 
+# Start on a release tag: `gh workflow run release.yml --ref vX.Y.Z`. The draft
+# release appears only after every package passed its tests.
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  verify:
-    uses: ./.github/workflows/ci.yml
-
   metadata:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
     outputs:
       matrix: ${{ steps.targets.outputs.matrix }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
+      - name: Require a release tag whose commit passed CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = tag
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&status=success&per_page=1" --jq .total_count)
+          if [ "$passed" = 0 ]; then
+            echo "::error::CI has not passed for $GITHUB_SHA"
+            exit 1
+          fi
       - id: targets
         run: |
           python3 scripts/check-package-versions.py "${GITHUB_REF_NAME#v}"
@@ -43,7 +55,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.platform }}
-    needs: [metadata, verify]
+    needs: [metadata]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
@@ -82,14 +94,10 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  proposal:
+  package:
     needs: [build]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    permissions:
-      contents: write
-      attestations: write
-      id-token: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
@@ -104,20 +112,6 @@ jobs:
           python3 -B release/release.py collect "$RUNNER_TEMP"/shards/*.tar.gz --out "$RUNNER_TEMP/sdk-release" --complete
           python3 -B release/release.py package "$RUNNER_TEMP/sdk-release"
           python3 -B release/release.py gate "$RUNNER_TEMP/sdk-release/packages" --packages-only
-      - id: attest
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
-        with:
-          subject-path: ${{ runner.temp }}/sdk-release/packages/*
-      - name: Create the draft release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ATTESTATION_PATH: ${{ steps.attest.outputs.bundle-path }}
-        run: |
-          set -euo pipefail
-          cp "$ATTESTATION_PATH" "$RUNNER_TEMP/sdk-release/packages/github-attestation.jsonl"
-          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/sdk-release/packages/"* \
-            --draft --verify-tag --target "$GITHUB_SHA" --title "Stogas SDK $GITHUB_REF_NAME" \
-            --notes "Verify downloads: https://stogas.ai/docs/sdk-overview#verify-a-download"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: sdk-packages
@@ -128,7 +122,7 @@ jobs:
 
   qualify:
     name: Qualify ${{ matrix.name }}
-    needs: [proposal]
+    needs: [package]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     permissions:
@@ -335,10 +329,10 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  qualification:
+  release:
     needs: [qualify]
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: write
       attestations: write
@@ -358,10 +352,19 @@ jobs:
           merge-multiple: true
       # Fails until every required check, including live transport, has passed.
       - run: python3 -B release/release.py reports "$RUNNER_TEMP"/reports/*.json --packages "$RUNNER_TEMP/sdk-packages"
-      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+      # One proof names every artifact, the manifest and the test report, so
+      # `gh attestation verify` works on any single file.
+      - id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
-          subject-path: ${{ runner.temp }}/sdk-packages/qualification.json
-      - name: Add the qualification report to the draft
+          subject-path: ${{ runner.temp }}/sdk-packages/*
+      - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/sdk-packages/qualification.json"
+          ATTESTATION_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          cp "$ATTESTATION_PATH" "$RUNNER_TEMP/sdk-packages/github-attestation.jsonl"
+          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/sdk-packages/"* \
+            --draft --verify-tag --target "$GITHUB_SHA" --title "Stogas SDK $GITHUB_REF_NAME" \
+            --notes "Verify downloads: https://stogas.ai/docs/reproducible-builds#verify-an-sdk-download"

@@ -33,12 +33,14 @@ struct OwnedSubject {
 pub fn verify_sdk_release(
     manifest: &[u8],
     github_attestation: &[u8],
+    qualification: &[u8],
     signature: &[u8],
     now_unix_ms: f64,
 ) -> Result<(), JsError> {
     stogas_verifier::sdk_release::verify(
         manifest,
         github_attestation,
+        qualification,
         signature,
         parse_unix_ms(now_unix_ms, "current time")?,
     )

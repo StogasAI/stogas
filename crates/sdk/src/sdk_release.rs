@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use stogas_verifier::{
     MAX_INPUT_BYTES,
-    sdk_release::{self, ATTESTATION, MANIFEST, METADATA, SIGNATURE},
+    sdk_release::{self, ATTESTATION, MANIFEST, METADATA, QUALIFICATION, SIGNATURE},
 };
 
 /// Verify the release proofs and each release artifact beside them.
@@ -12,6 +12,7 @@ pub async fn verify_directory(directory: &Path) -> Result<()> {
     let manifest = sdk_release::verify(
         &manifest_bytes,
         &read(directory, ATTESTATION).await?,
+        &read(directory, QUALIFICATION).await?,
         &read(directory, SIGNATURE).await?,
         super::wall_clock_ms(),
     )?;
