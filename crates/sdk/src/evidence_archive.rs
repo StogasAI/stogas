@@ -135,6 +135,7 @@ struct Index {
     schema: String,
     body_sha256: String,
     sizes: BTreeMap<String, usize>,
+    sigstore: String,
     keys: String,
     approvals: String,
     vendor_collateral: Vec<Collateral>,
@@ -175,7 +176,7 @@ impl Index {
     }
 
     fn references(&self) -> BTreeSet<&str> {
-        [&self.keys, &self.approvals]
+        [&self.sigstore, &self.keys, &self.approvals]
             .into_iter()
             .chain(self.vendor_collateral.iter().map(|entry| &entry.der))
             .map(String::as_str)
@@ -200,6 +201,7 @@ impl Index {
             .collect::<Result<Vec<_>>>()?;
         let body = json!({
             "schema": "stogas.confidential-bundle.v1",
+            "sigstore": object(&self.sigstore)?,
             "keys": object(&self.keys)?,
             "approvals": object(&self.approvals)?,
             "vendor_collateral": collateral,

@@ -93,6 +93,7 @@ mod staging {
         assert_eq!(checks.last().unwrap().0, VerificationStep::Accepted);
         assert!(checks.iter().all(|check| !check.1));
         for step in [
+            VerificationStep::Sigstore,
             VerificationStep::SigningManifest,
             VerificationStep::ReleasePolicy,
             VerificationStep::GatewayRelease,
@@ -106,7 +107,8 @@ mod staging {
         assert_eq!(summary["approvals"], body["approvals"]);
         assert_eq!(summary["hardware_policy"]["policy_count"], 1);
 
-        // A renewal signs the same releases again; their checks are not repeated.
+        // A renewal signs the same releases and Sigstore files again; their checks are not
+        // repeated.
         let renewal = revised(&body, 2, |_| {});
         checks.clear();
         let second = verifier
@@ -114,6 +116,7 @@ mod staging {
                 checks.push((check.step, check.cached));
             })
             .unwrap();
+        assert!(checks.contains(&(VerificationStep::Sigstore, true)));
         let releases = checks
             .iter()
             .filter(|check| {

@@ -1,7 +1,8 @@
 name: Sigstore Trusted Root
 
-# The verifier never downloads Sigstore keys. This daily check finds a changed
-# Sigstore root while the old keys still verify current entries.
+# The verifier never downloads Sigstore keys. Evidence carries Sigstore's current
+# keys; this daily check keeps the compiled copy, which verifies releases and
+# build proofs without evidence, current while the old keys still verify them.
 on:
   schedule:
     - cron: '41 5 * * *'

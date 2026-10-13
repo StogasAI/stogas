@@ -1,8 +1,11 @@
 //! Registration, sealing, release and publication checks for the operator build
 //! used by Stogas's own services and CLI. Customer packages never enable it.
 use serde::Deserialize;
-use stogas_offline_sigstore::{GithubPolicy, Subject, verify_github_attestation};
-use stogas_verifier::secret_release;
+use stogas_offline_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};
+use stogas_verifier::{
+    approvals::{SigstoreFiles, VerifiedSigstore},
+    secret_release,
+};
 use wasm_bindgen::prelude::*;
 
 use super::{parse_unix_ms, to_js_value};
@@ -91,7 +94,33 @@ pub fn verify_sigstore_github_attestation(
         .collect::<Vec<_>>();
     let policy: GithubPolicy = serde_json::from_str(policy_json)
         .map_err(|error| JsError::new(&format!("invalid policy: {error}")))?;
-    let output = verify_github_attestation(bundle, &subjects, &policy, now_unix_ms)
+    let trust = TrustedRoot::embedded().map_err(|error| JsError::new(&error.to_string()))?;
+    let output = verify_github_attestation(trust, bundle, &subjects, &policy, now_unix_ms)
         .map_err(|error| JsError::new(&error.to_string()))?;
     to_js_value(&output)
+}
+
+/// Check Sigstore files fetched for new evidence against Sigstore's current timestamp and
+/// snapshot, and return their digest and versions.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for malformed, unsigned, inconsistent or stale metadata.
+#[wasm_bindgen]
+pub fn verify_current_sigstore_files(
+    files_json: &str,
+    snapshot: &[u8],
+    timestamp: &[u8],
+    now_unix_ms: f64,
+) -> Result<JsValue, JsError> {
+    let files: SigstoreFiles = serde_json::from_str(files_json)
+        .map_err(|error| JsError::new(&format!("invalid Sigstore files: {error}")))?;
+    let verified = VerifiedSigstore::verify_current(
+        &files,
+        snapshot,
+        timestamp,
+        parse_unix_ms(now_unix_ms, "now_unix_ms")?,
+    )
+    .map_err(|error| JsError::new(&error.to_string()))?;
+    to_js_value(&verified.summary())
 }

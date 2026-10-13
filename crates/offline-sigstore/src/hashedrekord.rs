@@ -89,11 +89,7 @@ struct PublicKey {
     content: String,
 }
 
-pub fn verify(value: &serde_json::Value, artifact: &[u8], now_unix_ms: i64) -> Result<i64, String> {
-    verify_with_root(value, artifact, now_unix_ms, TrustedRoot::production()?)
-}
-
-fn verify_with_root(
+pub fn verify(
     value: &serde_json::Value,
     artifact: &[u8],
     now_unix_ms: i64,

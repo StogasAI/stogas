@@ -129,6 +129,7 @@ struct CertificateInfo {
 }
 
 pub fn verify(
+    root: &TrustedRoot,
     value: &serde_json::Value,
     expected_identity: &str,
     expected_issuer: &str,
@@ -144,7 +145,6 @@ pub fn verify(
     {
         return Err("unsupported or ambiguous GitHub Sigstore bundle".into());
     }
-    let root = TrustedRoot::production()?;
     let certificate_der = STANDARD
         .decode(&bundle.verification_material.certificate.raw_bytes)
         .map_err(|error| format!("invalid Fulcio certificate encoding: {error}"))?;
@@ -283,7 +283,7 @@ fn verify_certificate_chain(
         .map(|certificate| {
             anchor_from_trusted_cert(&certificate)
                 .map(|anchor| anchor.to_owned())
-                .map_err(|error| format!("invalid embedded Fulcio anchor: {error}"))
+                .map_err(|error| format!("invalid Fulcio anchor: {error}"))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let certificate_der = CertificateDer::from(certificate_der);

@@ -397,6 +397,7 @@ impl Snapshot {
             &publication,
             &proof.signature,
             &proof.inclusion,
+            self.approvals.sigstore().trusted_root(),
             now_unix_ms,
         )?;
         let identity = self.verify_boot_report(document, record, now_unix_ms)?;

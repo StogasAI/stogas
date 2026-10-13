@@ -29,6 +29,7 @@ export interface StogasBundleSnapshot {
 export interface StogasVerificationCheck {
 	step:
 		| 'decode'
+		| 'sigstore'
 		| 'signing_manifest'
 		| 'vendor_revocations'
 		| 'envelope'

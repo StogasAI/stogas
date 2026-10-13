@@ -431,7 +431,7 @@ fn verify_tsa_chain(
         .filter(|certificate| certificate != signer)
         .map(|certificate| certificate.to_der())
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("could not encode embedded TSA certificate: {error}"))?
+        .map_err(|error| format!("could not encode TSA certificate: {error}"))?
         .into_iter()
         .map(CertificateDer::from)
         .collect::<Vec<_>>();
@@ -444,7 +444,7 @@ fn verify_tsa_chain(
         anchors.push(
             anchor_from_trusted_cert(&root)
                 .map(|anchor| anchor.to_owned())
-                .map_err(|error| format!("invalid embedded TSA root: {error}"))?,
+                .map_err(|error| format!("invalid TSA root: {error}"))?,
         );
         intermediates.extend(
             rest.iter()

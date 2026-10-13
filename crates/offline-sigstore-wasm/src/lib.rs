@@ -1,7 +1,9 @@
 //! Small browser, Worker, Node, and Bun adapter for the generic offline Sigstore verifier.
 
 use serde::{Deserialize, Serialize};
-use stogas_offline_sigstore::{GithubPolicy, Subject, verify_github_attestation as verify_core};
+use stogas_offline_sigstore::{
+    GithubPolicy, Subject, TrustedRoot, verify_github_attestation as verify_core,
+};
 use wasm_bindgen::prelude::*;
 
 #[derive(Deserialize)]
@@ -60,7 +62,8 @@ pub fn verify_github_attestation_at(
         .collect::<Vec<_>>();
     let policy: GithubPolicy = serde_json::from_str(policy_json)
         .map_err(|error| JsError::new(&format!("invalid policy: {error}")))?;
-    let output = verify_core(bundle, &subjects, &policy, now_unix_ms)
+    let trust = TrustedRoot::embedded().map_err(|error| JsError::new(&error.to_string()))?;
+    let output = verify_core(trust, bundle, &subjects, &policy, now_unix_ms)
         .map_err(|error| JsError::new(&error.to_string()))?;
     to_js_value(&output)
 }
