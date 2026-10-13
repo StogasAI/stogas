@@ -10,6 +10,7 @@ use ed25519_dalek::{VerifyingKey, pkcs8::DecodePublicKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use stogas_offline_sigstore::TrustedRoot;
 use thiserror::Error;
 
 use crate::{
@@ -149,6 +150,8 @@ pub struct ApprovalManifest {
     pub environment: Environment,
     pub revision: u64,
     pub key_manifest_sha256: String,
+    /// Digest of the evidence's Sigstore files, so this decision selects the Sigstore keys.
+    pub sigstore_sha256: String,
     /// Ordered by strictly increasing release sequence.
     pub gateways: Vec<AllowedIgvm>,
     /// Ordered by strictly increasing catalog sequence.
@@ -158,6 +161,109 @@ pub struct ApprovalManifest {
 
 pub type SignedApprovalManifest = crate::LoggedDocument<ApprovalManifest>;
 
+/// Sigstore's exact TUF files as standard base64: every root after the verifier's compiled
+/// root in version order, the current targets metadata, and the trusted root it lists.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SigstoreFiles {
+    pub roots: Vec<String>,
+    pub targets: String,
+    pub trusted_root: String,
+}
+
+/// Sigstore keys that Sigstore's own signatures authorize. They verify an approval's
+/// transparency proofs only when that approval names their digest.
+#[derive(Debug)]
+pub struct VerifiedSigstore {
+    digest: String,
+    trusted_root: TrustedRoot,
+    root_version: u64,
+    targets_version: u64,
+}
+
+impl VerifiedSigstore {
+    /// # Errors
+    /// Rejects malformed files, broken root chains and trusted roots that differ from the
+    /// signed targets listing.
+    pub fn verify(files: &SigstoreFiles) -> Result<Self, Error> {
+        Self::check(files, stogas_offline_sigstore::verify_trust_update)
+    }
+
+    /// Publishers also require Sigstore's current timestamp and snapshot to name these files
+    /// before new evidence carries them.
+    ///
+    /// # Errors
+    /// Rejects everything [`Self::verify`] rejects, plus stale or inconsistent metadata.
+    pub fn verify_current(
+        files: &SigstoreFiles,
+        snapshot: &[u8],
+        timestamp: &[u8],
+        now_unix_ms: i64,
+    ) -> Result<Self, Error> {
+        Self::check(files, |roots, targets, trusted_root| {
+            stogas_offline_sigstore::verify_current_trust_update(
+                roots,
+                targets,
+                trusted_root,
+                snapshot,
+                timestamp,
+                now_unix_ms,
+            )
+        })
+    }
+
+    fn check(
+        files: &SigstoreFiles,
+        verify: impl FnOnce(
+            &[&[u8]],
+            &[u8],
+            &[u8],
+        ) -> Result<
+            stogas_offline_sigstore::TrustUpdate,
+            stogas_offline_sigstore::Error,
+        >,
+    ) -> Result<Self, Error> {
+        let decode = |text: &String| STANDARD.decode(text).map_err(|_| sigstore("base64"));
+        let roots = files
+            .roots
+            .iter()
+            .map(decode)
+            .collect::<Result<Vec<_>, _>>()?;
+        let roots: Vec<_> = roots.iter().map(Vec::as_slice).collect();
+        let update = verify(
+            &roots,
+            &decode(&files.targets)?,
+            &decode(&files.trusted_root)?,
+        )
+        .map_err(sigstore)?;
+        Ok(Self {
+            digest: payload_sha256(files)?,
+            trusted_root: update.trusted_root,
+            root_version: update.root_version,
+            targets_version: update.targets_version,
+        })
+    }
+
+    #[must_use]
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+
+    pub(crate) const fn trusted_root(&self) -> &TrustedRoot {
+        &self.trusted_root
+    }
+
+    /// Public summary for bindings.
+    #[must_use]
+    pub fn summary(&self) -> Value {
+        serde_json::json!({
+            "sigstore_sha256": self.digest,
+            "root_version": self.root_version,
+            "targets_version": self.targets_version
+        })
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum Error {
     #[error("approval evidence exceeds the input limit")]
@@ -166,8 +272,10 @@ pub enum Error {
     Invalid(String),
     #[error("approval evidence belongs to another authority or environment")]
     Authority,
-    #[error("key manifest transparency verification failed: {0}")]
+    #[error("transparency log verification failed: {0}")]
     Transparency(String),
+    #[error("Sigstore keys failed verification: {0}")]
+    Sigstore(String),
     #[error("approval signing key is not active")]
     InactiveKey,
     #[error("root key authorization has expired")]
@@ -190,6 +298,7 @@ pub struct VerifiedApprovals {
     authority: [u8; 32],
     keys: KeyManifest,
     approvals: SignedApprovalManifest,
+    sigstore: Arc<VerifiedSigstore>,
     keys_digest: String,
     approvals_digest: String,
     expires_unix_ms: i64,
@@ -224,6 +333,12 @@ impl VerifiedApprovals {
         &self.approvals
     }
 
+    /// The Sigstore keys this decision selected.
+    #[must_use]
+    pub const fn sigstore(&self) -> &Arc<VerifiedSigstore> {
+        &self.sigstore
+    }
+
     /// Verify one listed release's launch manifest and its independent build proof.
     ///
     /// # Errors
@@ -233,8 +348,9 @@ impl VerifiedApprovals {
         release: &AllowedIgvm,
         now_unix_ms: i64,
     ) -> Result<VerifiedRelease, Error> {
-        let verified = crate::verify_gateway_release(release, now_unix_ms)
-            .map_err(|error| Error::Evidence(error.to_string()))?;
+        let verified =
+            crate::verify_gateway_release(release, self.sigstore.trusted_root(), now_unix_ms)
+                .map_err(|error| Error::Evidence(error.to_string()))?;
         if !self.accepts_provenance(&verified.provenance) {
             return Err(Error::Authority);
         }
@@ -250,8 +366,9 @@ impl VerifiedApprovals {
         catalog: &AllowedCatalog,
         now_unix_ms: i64,
     ) -> Result<VerifiedCatalogRelease, Error> {
-        let verified = crate::verify_catalog_release(catalog, now_unix_ms)
-            .map_err(|error| Error::Evidence(error.to_string()))?;
+        let verified =
+            crate::verify_catalog_release(catalog, self.sigstore.trusted_root(), now_unix_ms)
+                .map_err(|error| Error::Evidence(error.to_string()))?;
         if !self.accepts_provenance(&verified.provenance) {
             return Err(Error::Authority);
         }
@@ -302,9 +419,10 @@ impl ApprovalVerifier {
     pub fn verify_key_manifest(
         &self,
         bytes: &[u8],
+        trust: &TrustedRoot,
         now_unix_ms: i64,
     ) -> Result<KeyManifest, Error> {
-        let keys = self.observe_keys(bytes, now_unix_ms)?.document;
+        let keys = self.observe_keys(bytes, trust, now_unix_ms)?.document;
         if now_unix_ms >= keys.expiry_unix_ms()? {
             return Err(Error::Expired);
         }
@@ -325,25 +443,12 @@ impl ApprovalVerifier {
         })
     }
 
-    /// Verify root authorization, public logging and the complete signed approval decision.
-    /// This does not verify the artifacts named in the decision or install a new snapshot.
-    ///
-    /// # Errors
-    /// Rejects malformed, untrusted, conflicting or superseded decisions without changing state.
-    pub fn verify_candidate(
+    fn verify_keys(
         &self,
-        keys_bytes: &[u8],
-        approvals_bytes: &[u8],
+        bytes: &[u8],
+        trust: &TrustedRoot,
         now_unix_ms: i64,
-    ) -> Result<VerifiedApprovals, Error> {
-        if keys_bytes.len().saturating_add(approvals_bytes.len()) > MAX_INPUT_BYTES {
-            return Err(Error::TooLarge);
-        }
-        let keys = self.verify_keys(keys_bytes, now_unix_ms)?;
-        self.verify_with_keys(keys, parse(approvals_bytes)?, now_unix_ms)
-    }
-
-    fn verify_keys(&self, bytes: &[u8], now_unix_ms: i64) -> Result<VerifiedKeys, Error> {
+    ) -> Result<VerifiedKeys, Error> {
         if bytes.len() > MAX_INPUT_BYTES {
             return Err(Error::TooLarge);
         }
@@ -357,8 +462,13 @@ impl ApprovalVerifier {
             &self.root.public_key,
         )?;
         // Logging proves publication; only the root signature authorizes this manifest.
-        let published =
-            verify_document_inclusion(&document, &keys.signature, &keys.inclusion, now_unix_ms)?;
+        let published = verify_document_inclusion(
+            &document,
+            &keys.signature,
+            &keys.inclusion,
+            trust,
+            now_unix_ms,
+        )?;
         let published = published
             .checked_mul(1000)
             .ok_or_else(|| invalid("log time overflow"))?;
@@ -374,9 +484,10 @@ impl ApprovalVerifier {
     pub(crate) fn observe_keys(
         &self,
         bytes: &[u8],
+        trust: &TrustedRoot,
         now_unix_ms: i64,
     ) -> Result<VerifiedKeys, Error> {
-        let keys = self.verify_keys(bytes, now_unix_ms)?;
+        let keys = self.verify_keys(bytes, trust, now_unix_ms)?;
         self.key_state.learn(keys.clone())?;
         Ok(keys)
     }
@@ -389,15 +500,17 @@ impl ApprovalVerifier {
         &self,
         keys: VerifiedKeys,
         approvals: SignedApprovalManifest,
+        sigstore: Arc<VerifiedSigstore>,
         now_unix_ms: i64,
     ) -> Result<VerifiedApprovals, Error> {
         verify_document_inclusion(
             &serde_json::to_value(&approvals.document).map_err(invalid)?,
             &approvals.signature,
             &approvals.inclusion,
+            sigstore.trusted_root(),
             now_unix_ms,
         )?;
-        let candidate = verify_online_approval(self.authority, keys.document, approvals)?;
+        let candidate = verify_online_approval(self.authority, keys.document, approvals, sigstore)?;
         candidate.valid_until(now_unix_ms)?;
         self.check_update(&candidate)?;
         Ok(candidate)
@@ -465,6 +578,7 @@ fn verify_online_approval(
     authority: [u8; 32],
     keys: KeyManifest,
     signed: SignedApprovalManifest,
+    sigstore: Arc<VerifiedSigstore>,
 ) -> Result<VerifiedApprovals, Error> {
     let approvals = &signed.document;
     if approvals.schema != APPROVAL_MANIFEST_SCHEMA || !valid_revision(approvals.revision) {
@@ -476,6 +590,9 @@ fn verify_online_approval(
     let keys_digest = payload_sha256(&keys)?;
     if approvals.key_manifest_sha256 != keys_digest {
         return Err(Error::Invalid("key manifest digest mismatch".into()));
+    }
+    if approvals.sigstore_sha256 != sigstore.digest {
+        return Err(Error::Invalid("Sigstore files digest mismatch".into()));
     }
     // One release per sequence keeps release selection and history unambiguous.
     if !increasing(
@@ -506,6 +623,7 @@ fn verify_online_approval(
         authority,
         keys,
         approvals: signed,
+        sigstore,
         keys_digest,
         approvals_digest,
         expires_unix_ms,
@@ -570,11 +688,13 @@ pub(crate) fn verify_document_inclusion(
     document: &Value,
     signature: &StogasSignature,
     inclusion: &Value,
+    trust: &TrustedRoot,
     now_unix_ms: i64,
 ) -> Result<i64, Error> {
     let artifact = canonical_json(&serde_json::json!({"document":document, "signature":signature}))
         .map_err(invalid)?;
     stogas_offline_sigstore::verify_rekor_document_inclusion(
+        trust,
         &serde_json::to_vec(inclusion).map_err(invalid)?,
         artifact.as_bytes(),
         now_unix_ms,
@@ -622,6 +742,10 @@ fn canonical_payload(value: &Value) -> Result<Vec<u8>, Error> {
 
 fn parse<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
     serde_json::from_value(strict_json::from_slice(bytes).map_err(invalid)?).map_err(invalid)
+}
+
+fn sigstore(error: impl std::fmt::Display) -> Error {
+    Error::Sigstore(error.to_string())
 }
 
 const fn valid_revision(revision: u64) -> bool {

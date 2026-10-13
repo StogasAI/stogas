@@ -10,7 +10,7 @@ use crate::{
     VerifiedCatalogRelease, VerifiedHardwarePolicy, VerifiedRelease,
     approvals::{
         self, ApprovalVerifier, Environment, RootKey, SignedApprovalManifest, SignedKeyManifest,
-        VerifiedApprovals, payload_sha256,
+        SigstoreFiles, VerifiedApprovals, VerifiedSigstore, payload_sha256,
     },
 };
 
@@ -37,6 +37,7 @@ pub use snp::{SnpHardwareFacts, VerifiedSnpReport};
 #[serde(rename_all = "snake_case")]
 pub enum VerificationStep {
     Decode,
+    Sigstore,
     SigningManifest,
     VendorRevocations,
     Envelope,
@@ -61,6 +62,7 @@ pub struct VerificationCheck<'a> {
 #[serde(deny_unknown_fields)]
 pub struct Bundle {
     pub schema: String,
+    pub sigstore: SigstoreFiles,
     pub keys: SignedKeyManifest,
     pub approvals: SignedApprovalManifest,
     pub vendor_collateral: Vec<BTreeMap<String, Value>>,
@@ -118,6 +120,7 @@ impl Error {
             | Self::Approval(
                 approvals::Error::Invalid(_)
                 | approvals::Error::Transparency(_)
+                | approvals::Error::Sigstore(_)
                 | approvals::Error::Signature
                 | approvals::Error::Evidence(_),
             ) => "invalid_evidence",
@@ -167,6 +170,7 @@ impl Snapshot {
     #[must_use]
     pub fn summary(&self) -> Value {
         serde_json::json!({
+            "sigstore": self.approvals.sigstore().summary(),
             "keys": self.keys_evidence, "approvals": self.approvals.evidence(),
             "gateways": by_sequence(&self.gateways, |release| release.sequence),
             "catalogs": by_sequence(&self.catalogs, |release| release.sequence),
@@ -269,7 +273,8 @@ impl Verifier {
         Self::new(environment, environment.stogas_root()?)
     }
 
-    /// Learn a root-signed key manifest without requiring the rest of the bundle.
+    /// Learn a root-signed key manifest without requiring the rest of the bundle. Its log
+    /// proof uses the current snapshot's Sigstore keys, or the compiled ones before any.
     ///
     /// # Errors
     /// Rejects unauthenticated or conflicting root decisions.
@@ -278,7 +283,14 @@ impl Verifier {
         bytes: &[u8],
         now_unix_ms: i64,
     ) -> Result<crate::approvals::KeyManifest, Error> {
-        Ok(self.approvals.verify_key_manifest(bytes, now_unix_ms)?)
+        let trust = match &self.current {
+            Some(snapshot) => snapshot.approvals.sigstore().trusted_root(),
+            None => stogas_offline_sigstore::TrustedRoot::embedded()
+                .map_err(|error| approvals::Error::Sigstore(error.to_string()))?,
+        };
+        Ok(self
+            .approvals
+            .verify_key_manifest(bytes, trust, now_unix_ms)?)
     }
 
     /// # Errors
@@ -326,15 +338,24 @@ impl Verifier {
         };
         let value = parse_json(bytes)?;
         checked(VerificationStep::Decode, None, false);
-        // Vendor revocation is an independent signed decision. Retain it even if a missing
-        // release, altered approval or other malformed object prevents snapshot installation.
-        let keys = self.approvals.observe_keys(
-            &serde_json::to_vec(&value["body"]["keys"]).map_err(invalid)?,
-            now_unix_ms,
-        );
+        // Sigstore's own signatures authenticate its keys, so they can check the root's log
+        // proof before the approval that names them is verified.
+        let keys = self
+            .sigstore(&value["body"]["sigstore"])
+            .and_then(|(sigstore, reused)| {
+                checked(VerificationStep::Sigstore, None, reused);
+                let keys = self.approvals.observe_keys(
+                    &serde_json::to_vec(&value["body"]["keys"]).map_err(invalid)?,
+                    sigstore.trusted_root(),
+                    now_unix_ms,
+                )?;
+                Ok((sigstore, keys))
+            });
         if keys.is_ok() {
             checked(VerificationStep::SigningManifest, None, false);
         }
+        // Vendor revocation is an independent signed decision. Retain it even if a missing
+        // release, altered approval or other malformed object prevents snapshot installation.
         #[cfg(feature = "snp")]
         let vendor = self.revocations.observe(&value["body"], now_unix_ms);
         #[cfg(feature = "snp")]
@@ -342,16 +363,16 @@ impl Verifier {
             checked(VerificationStep::VendorRevocations, None, false);
         }
         // Process both independent authorities before returning either delivery failure.
-        let keys = keys?;
+        let (sigstore, keys) = keys?;
         #[cfg(feature = "snp")]
         vendor?;
         let Envelope {
             body_sha256, body, ..
         } = parse_envelope(value)?;
         checked(VerificationStep::Envelope, None, false);
-        let approvals = self
-            .approvals
-            .verify_with_keys(keys, body.approvals, now_unix_ms)?;
+        let approvals =
+            self.approvals
+                .verify_with_keys(keys, body.approvals, sigstore, now_unix_ms)?;
         checked(VerificationStep::ReleasePolicy, None, false);
         let snapshot = Arc::new(self.verify_snapshot(
             Candidate {
@@ -376,14 +397,17 @@ impl Verifier {
         checked: &mut impl FnMut(VerificationStep, Option<&str>, bool),
     ) -> Result<Snapshot, Error> {
         let approvals = candidate.approvals;
-        // A release check depends only on its bytes and the fixed environment, so unchanged
-        // entries reuse earlier results. The approval manifest still decides what is listed.
         let prior = self.current.as_deref();
+        // A release check depends only on its bytes, the fixed environment and the Sigstore
+        // keys, so unchanged entries reuse earlier results. The approval manifest still
+        // decides what is listed.
+        let releases = prior
+            .filter(|snapshot| Arc::ptr_eq(snapshot.approvals.sigstore(), approvals.sigstore()));
         let mut gateways = BTreeMap::new();
         for gateway in &approvals.manifest().gateways {
             let id = payload_sha256(&gateway.document)?;
             let (entry, reused) = cached(
-                prior.and_then(|snapshot| snapshot.gateways.get(&id)),
+                releases.and_then(|snapshot| snapshot.gateways.get(&id)),
                 payload_sha256(gateway)?,
                 now_unix_ms,
                 || approvals.verify_gateway(gateway, now_unix_ms),
@@ -395,7 +419,7 @@ impl Verifier {
         for catalog in &approvals.manifest().catalogs {
             let id = payload_sha256(&catalog.document)?;
             let (entry, reused) = cached(
-                prior.and_then(|snapshot| snapshot.catalogs.get(&id)),
+                releases.and_then(|snapshot| snapshot.catalogs.get(&id)),
                 payload_sha256(catalog)?,
                 now_unix_ms,
                 || approvals.verify_catalog(catalog, now_unix_ms),
@@ -424,6 +448,21 @@ impl Verifier {
             collateral_evidence: candidate.vendor_collateral,
             collateral,
         })
+    }
+}
+
+impl Verifier {
+    /// Verify the evidence's Sigstore files, reusing the current snapshot's result for the
+    /// same files.
+    fn sigstore(&self, files: &Value) -> Result<(Arc<VerifiedSigstore>, bool), Error> {
+        let files: SigstoreFiles = serde_json::from_value(files.clone()).map_err(invalid)?;
+        let digest = payload_sha256(&files)?;
+        if let Some(snapshot) = &self.current
+            && snapshot.approvals.sigstore().digest() == digest
+        {
+            return Ok((Arc::clone(snapshot.approvals.sigstore()), true));
+        }
+        Ok((Arc::new(VerifiedSigstore::verify(&files)?), false))
     }
 }
 

@@ -1,4 +1,4 @@
-//! Embedded Sigstore trusted-root snapshot with deterministic time selection.
+//! Sigstore trusted roots with deterministic time selection.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Utc};
@@ -8,59 +8,53 @@ use std::{collections::HashSet, sync::LazyLock};
 
 const MEDIA_TYPE: &str = "application/vnd.dev.sigstore.trustedroot+json;version=0.1";
 
+// Evidence delivers Sigstore's current trusted root to every released verifier, so parsing
+// ignores fields and skips logs that a later Sigstore format adds. A proof that needs a
+// skipped log still fails.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct TrustedRootDocument {
     media_type: String,
+    #[serde(default)]
     certificate_authorities: Vec<CertificateAuthority>,
+    #[serde(default)]
     tlogs: Vec<TransparencyLog>,
+    #[serde(default)]
     ctlogs: Vec<TransparencyLog>,
+    #[serde(default)]
     timestamp_authorities: Vec<CertificateAuthority>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct CertificateAuthority {
-    subject: CertificateSubject,
-    #[serde(default)]
-    uri: Option<String>,
     cert_chain: CertificateChain,
     #[serde(default)]
     valid_for: Option<Validity>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CertificateSubject {
-    #[serde(default)]
-    organization: Option<String>,
-    #[serde(default)]
-    common_name: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct CertificateChain {
     certificates: Vec<CertificateEntry>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct CertificateEntry {
     raw_bytes: String,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct TransparencyLog {
-    base_url: String,
     hash_algorithm: String,
     public_key: PublicKey,
     log_id: LogId,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct PublicKey {
     raw_bytes: String,
     key_details: String,
@@ -69,13 +63,13 @@ struct PublicKey {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct LogId {
     key_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct Validity {
     #[serde(default)]
     start: Option<String>,
@@ -104,6 +98,7 @@ pub struct Authority {
     validity: Option<Validity>,
 }
 
+/// Sigstore's Fulcio, Rekor, CT and timestamp keys with their validity periods.
 #[derive(Clone, Debug)]
 pub struct TrustedRoot {
     fulcio: Vec<Authority>,
@@ -113,24 +108,33 @@ pub struct TrustedRoot {
 }
 
 impl TrustedRoot {
-    pub fn production() -> Result<&'static Self, String> {
-        // Only decoding of the compiled trust seed is shared. Each proof still selects
-        // keys and authorities at its own authenticated time and verifies every signature.
-        static ROOT: LazyLock<Result<TrustedRoot, String>> = LazyLock::new(|| {
-            let root = TrustedRoot::from_json(include_str!("trusted_root.json"))?;
-            if root.fulcio.is_empty() || root.rekor.is_empty() || root.ct.is_empty() {
-                return Err("embedded Sigstore trusted root is incomplete".into());
-            }
-            Ok(root)
-        });
-        ROOT.as_ref().map_err(Clone::clone)
+    /// The copy compiled into this release, for checks without signed evidence.
+    ///
+    /// # Errors
+    /// Returns an error if the compiled copy is malformed or incomplete.
+    pub fn embedded() -> Result<&'static Self, crate::Error> {
+        // Only decoding of the compiled copy is shared. Each proof still selects keys and
+        // authorities at its own authenticated time and verifies every signature.
+        static ROOT: LazyLock<Result<TrustedRoot, String>> =
+            LazyLock::new(|| TrustedRoot::complete(include_str!("trusted_root.json")));
+        ROOT.as_ref()
+            .map_err(|error| crate::Error::Trust(error.clone()))
+    }
+
+    /// Parse a trusted root that has every key type the supported proofs use.
+    pub(crate) fn complete(json: &str) -> Result<Self, String> {
+        let root = Self::from_json(json)?;
+        if root.fulcio.is_empty() || root.rekor.is_empty() || root.ct.is_empty() {
+            return Err("Sigstore trusted root is incomplete".into());
+        }
+        Ok(root)
     }
 
     fn from_json(json: &str) -> Result<Self, String> {
         let document: TrustedRootDocument = serde_json::from_str(json)
-            .map_err(|error| format!("invalid embedded Sigstore trusted root: {error}"))?;
+            .map_err(|error| format!("invalid Sigstore trusted root: {error}"))?;
         if document.media_type != MEDIA_TYPE {
-            return Err("unsupported embedded Sigstore trusted-root media type".into());
+            return Err("unsupported Sigstore trusted-root media type".into());
         }
         let fulcio = parse_authorities(document.certificate_authorities, "Fulcio")?;
         let tsa = parse_authorities(document.timestamp_authorities, "TSA")?;
@@ -145,23 +149,23 @@ impl TrustedRoot {
     }
 
     #[cfg(test)]
-    pub fn test_root(json: &str) -> Result<Self, String> {
+    pub(crate) fn test_root(json: &str) -> Result<Self, String> {
         Self::from_json(json)
     }
 
-    pub fn fulcio_certificates_at(&self, time: i64) -> Result<Vec<Vec<u8>>, String> {
+    pub(crate) fn fulcio_certificates_at(&self, time: i64) -> Result<Vec<Vec<u8>>, String> {
         certificates_at(&self.fulcio, time)
     }
 
-    pub fn rekor_key_at(&self, id: &[u8], time: i64) -> Result<&LogKey, String> {
+    pub(crate) fn rekor_key_at(&self, id: &[u8], time: i64) -> Result<&LogKey, String> {
         key_at(&self.rekor, id, time, "Rekor")
     }
 
-    pub fn ct_key_at(&self, id: &[u8], time: i64) -> Result<&LogKey, String> {
+    pub(crate) fn ct_key_at(&self, id: &[u8], time: i64) -> Result<&LogKey, String> {
         key_at(&self.ct, id, time, "CT")
     }
 
-    pub fn tsa_authorities_at(&self, time: i64) -> Result<Vec<&Authority>, String> {
+    pub(crate) fn tsa_authorities_at(&self, time: i64) -> Result<Vec<&Authority>, String> {
         self.tsa
             .iter()
             .filter_map(|authority| {
@@ -188,11 +192,6 @@ fn parse_authorities(
     authorities
         .into_iter()
         .map(|authority| {
-            let _ = (
-                authority.subject.organization,
-                authority.subject.common_name,
-                authority.uri,
-            );
             if authority.cert_chain.certificates.is_empty() {
                 return Err(format!("{label} authority contains no certificates"));
             }
@@ -218,16 +217,14 @@ fn parse_authorities(
 fn parse_logs(logs: Vec<TransparencyLog>, label: &str) -> Result<Vec<LogKey>, String> {
     let mut ids = HashSet::new();
     logs.into_iter()
-        .map(|log| {
-            if log.hash_algorithm != "SHA2_256"
-                || !log.base_url.starts_with("https://")
-                || !matches!(
+        .filter(|log| {
+            log.hash_algorithm == "SHA2_256"
+                && matches!(
                     log.public_key.key_details.as_str(),
                     "PKIX_ECDSA_P256_SHA_256" | "PKIX_ED25519"
                 )
-            {
-                return Err(format!("unsupported {label} log configuration"));
-            }
+        })
+        .map(|log| {
             let spki = decode(&log.public_key.raw_bytes, "log public key")?;
             let id = decode(&log.log_id.key_id, "log id")?;
             if id.len() != 32 || !ids.insert(id.clone()) {
@@ -345,5 +342,29 @@ mod tests {
             root.fulcio_certificates_at(parse_time("2020-01-01T00:00:00Z").unwrap())
                 .is_err()
         );
+    }
+
+    // Released verifiers read whatever trusted root current evidence carries.
+    #[test]
+    fn later_fields_and_unsupported_logs_do_not_reject_the_root() {
+        let mut p384 = log(3, &json!({}));
+        p384["publicKey"]["keyDetails"] = json!("PKIX_ECDSA_P384_SHA_384");
+        let mut extended = log(1, &json!({}));
+        extended["operator"] = json!("sigstore.dev");
+        extended["checkpointKeyId"] = json!({"keyId": STANDARD.encode([1; 32])});
+        let root = TrustedRoot::complete(
+            &json!({
+                "mediaType": MEDIA_TYPE, "tlogs": [extended, p384], "ctlogs": [log(2, &json!({}))],
+                "certificateAuthorities": [authority(1, &json!({}))], "signingConfig": {}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(root.rekor_key_at(&[1; 32], 0).is_ok());
+        assert!(root.rekor_key_at(&[3; 32], 0).is_err());
+        assert!(root.tsa_authorities_at(0).unwrap().is_empty());
+        let other =
+            json!({"mediaType": "application/vnd.dev.sigstore.trustedroot+json;version=0.2"});
+        assert!(TrustedRoot::complete(&other.to_string()).is_err());
     }
 }

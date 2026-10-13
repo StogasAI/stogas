@@ -8,6 +8,10 @@ pub mod strict_json;
 mod tlog;
 mod trust_root;
 mod tsa;
+mod tuf;
+
+pub use trust_root::TrustedRoot;
+pub use tuf::{TrustUpdate, verify_current_trust_update, verify_trust_update};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -85,6 +89,7 @@ pub struct VerifiedAttestation {
 /// # Errors
 /// Rejects malformed bundles, substituted artifacts, invalid signatures, log proofs or times.
 pub fn verify_rekor_document_inclusion(
+    trust: &TrustedRoot,
     bundle: &[u8],
     artifact: &[u8],
     now_unix_ms: i64,
@@ -94,7 +99,7 @@ pub fn verify_rekor_document_inclusion(
     }
     let value =
         strict_json::from_slice(bundle).map_err(|error| Error::InvalidBundle(error.to_string()))?;
-    hashedrekord::verify(&value, artifact, now_unix_ms).map_err(Error::Cryptographic)
+    hashedrekord::verify(&value, artifact, now_unix_ms, trust).map_err(Error::Cryptographic)
 }
 
 /// Offline Sigstore verification failure.
@@ -112,6 +117,9 @@ pub enum Error {
     /// Upstream cryptographic verification failed.
     #[error("Sigstore cryptographic verification failed: {0}")]
     Cryptographic(String),
+    /// Sigstore's keys or TUF metadata failed verification.
+    #[error("Sigstore trust verification failed: {0}")]
+    Trust(String),
 }
 
 /// Verify one Sigstore v0.3 bundle without network access.
@@ -124,13 +132,14 @@ pub enum Error {
 ///
 /// Returns an error if parsing, cryptographic verification, or any pinned policy check fails.
 pub fn verify_github_attestation(
+    trust: &TrustedRoot,
     bundle_bytes: &[u8],
     expected_subjects: &[Subject<'_>],
     policy: &GithubPolicy,
     now_unix_ms: i64,
 ) -> Result<VerifiedAttestation, Error> {
     verify_single_attestation(bundle_bytes, |value| {
-        verify_github_attestation_value(value, expected_subjects, policy, now_unix_ms)
+        verify_github_attestation_value(trust, value, expected_subjects, policy, now_unix_ms)
     })
 }
 
@@ -143,13 +152,14 @@ pub fn verify_github_attestation(
 ///
 /// Returns an error for malformed, unsupported, untrusted, or policy-mismatched evidence.
 pub fn verify_dsse_attestation(
+    trust: &TrustedRoot,
     bundle_bytes: &[u8],
     expected_subjects: &[Subject<'_>],
     policy: &IdentityPolicy,
     now_unix_ms: i64,
 ) -> Result<VerifiedAttestation, Error> {
     verify_single_attestation(bundle_bytes, |value| {
-        verify_dsse_attestation_value(value, expected_subjects, policy, now_unix_ms)
+        verify_dsse_attestation_value(trust, value, expected_subjects, policy, now_unix_ms)
     })
 }
 
@@ -180,6 +190,7 @@ fn verify_single_attestation(
 }
 
 fn verify_dsse_attestation_value(
+    trust: &TrustedRoot,
     value: &Value,
     expected_subjects: &[Subject<'_>],
     policy: &IdentityPolicy,
@@ -200,6 +211,7 @@ fn verify_dsse_attestation_value(
         ));
     }
     let integrated_time = sigstore::verify(
+        trust,
         value,
         &policy.certificate_identity,
         &policy.certificate_oidc_issuer,
@@ -218,6 +230,7 @@ fn verify_dsse_attestation_value(
 }
 
 fn verify_github_attestation_value(
+    trust: &TrustedRoot,
     value: &Value,
     expected_subjects: &[Subject<'_>],
     policy: &GithubPolicy,
@@ -234,6 +247,7 @@ fn verify_github_attestation_value(
     // Keep all Sigstore parsing and cryptography in the community verifier. The concrete API is
     // isolated here so SDKs never duplicate or weaken its policy.
     let integrated_time = sigstore::verify(
+        trust,
         value,
         &policy.workflow_identity,
         "https://token.actions.githubusercontent.com",
@@ -543,7 +557,7 @@ mod tests {
     fn rejects_oversized_input_before_parsing() {
         let bytes = vec![b' '; MAX_BUNDLE_BYTES + 1];
         assert!(matches!(
-            verify_github_attestation(&bytes, &[], &policy(), 0),
+            verify_github_attestation(TrustedRoot::embedded().unwrap(), &bytes, &[], &policy(), 0),
             Err(Error::TooLarge)
         ));
     }

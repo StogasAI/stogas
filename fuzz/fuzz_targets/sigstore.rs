@@ -2,8 +2,10 @@
 
 use libfuzzer_sys::fuzz_target;
 use std::sync::LazyLock;
-use stogas_offline_sigstore::{GithubPolicy, Subject, verify_github_attestation};
+use stogas_offline_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};
 
+static TRUST: LazyLock<Result<&TrustedRoot, stogas_offline_sigstore::Error>> =
+    LazyLock::new(TrustedRoot::embedded);
 const FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/gateway-v0.0.1-attestation.jsonl");
 const NOW_UNIX_MS: i64 = 1_784_246_400_000;
 static DOCUMENT: LazyLock<(Vec<u8>, Vec<u8>)> = LazyLock::new(|| {
@@ -22,6 +24,7 @@ fuzz_target!(|data: &[u8]| {
         // the synthetic log proof itself must never establish trust.
         let candidate = mutate_fixture(&DOCUMENT.0, &data[1..]);
         let _ = stogas_offline_sigstore::verify_rekor_document_inclusion(
+            TRUST.as_ref().unwrap(),
             &candidate,
             &DOCUMENT.1,
             NOW_UNIX_MS,
@@ -47,8 +50,14 @@ fuzz_target!(|data: &[u8]| {
         predicate_type: "https://slsa.dev/provenance/v1".into(),
         require_github_hosted: true,
     };
-    let _ = verify_github_attestation(&candidate, &subjects, &policy, NOW_UNIX_MS);
-    let _ = stogas_offline_sigstore::verify_rekor_document_inclusion(&candidate, data, NOW_UNIX_MS);
+    let trust = TRUST.as_ref().unwrap();
+    let _ = verify_github_attestation(trust, &candidate, &subjects, &policy, NOW_UNIX_MS);
+    let _ = stogas_offline_sigstore::verify_rekor_document_inclusion(
+        trust,
+        &candidate,
+        data,
+        NOW_UNIX_MS,
+    );
 });
 
 fn mutate_fixture_or_raw(fixture: &[u8], data: &[u8]) -> Vec<u8> {

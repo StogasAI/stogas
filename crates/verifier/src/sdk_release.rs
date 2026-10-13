@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
-use stogas_offline_sigstore::{GithubPolicy, Subject, verify_github_attestation};
+use stogas_offline_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};
 
 use crate::{
     MAX_INPUT_BYTES, StogasSignature,
@@ -93,10 +93,14 @@ pub fn verify(
         serde_json::from_value(strict_json::from_slice(signature_bytes).map_err(invalid)?)
             .map_err(invalid)?;
     let document = serde_json::to_value(&manifest).map_err(invalid)?;
+    // Without current evidence, the Sigstore keys compiled into this release check its successors.
+    let trust =
+        TrustedRoot::embedded().map_err(|error| approvals::Error::Sigstore(error.to_string()))?;
     let published = approvals::verify_document_inclusion(
         &document,
         &signed.signature,
         &signed.inclusion,
+        trust,
         now_unix_ms,
     )?;
     let published_ms = published
@@ -108,6 +112,7 @@ pub fn verify(
     )?;
     let keys = authority.verify_key_manifest(
         &serde_json::to_vec(&signed.keys).map_err(invalid)?,
+        trust,
         published_ms,
     )?;
     approvals::verify_signature(
@@ -138,6 +143,7 @@ pub fn verify(
         ])
         .collect();
     verify_github_attestation(
+        trust,
         github_attestation,
         &subjects,
         &GithubPolicy {

@@ -12,7 +12,7 @@ fn bundle() -> Value {
 }
 
 fn objects(body: &Value) -> BTreeMap<String, Value> {
-    [&body["keys"], &body["approvals"]]
+    [&body["sigstore"], &body["keys"], &body["approvals"]]
         .into_iter()
         .chain(
             body["vendor_collateral"]
