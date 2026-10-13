@@ -285,3 +285,65 @@ fn parse_time(value: &str) -> Result<i64, String> {
         .map(|time| time.with_timezone(&Utc).timestamp())
         .map_err(|error| format!("invalid trusted-root time {value:?}: {error}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const CHANGE: &str = "2026-01-01T00:00:00Z";
+
+    fn log(seed: u8, valid_for: &serde_json::Value) -> serde_json::Value {
+        json!({
+            "baseUrl": "https://rekor.sigstore.dev", "hashAlgorithm": "SHA2_256",
+            "publicKey": {"rawBytes": STANDARD.encode([seed; 4]), "keyDetails": "PKIX_ED25519", "validFor": valid_for},
+            "logId": {"keyId": STANDARD.encode([seed; 32])}
+        })
+    }
+
+    fn authority(seed: u8, valid_for: &serde_json::Value) -> serde_json::Value {
+        json!({
+            "subject": {}, "validFor": valid_for,
+            "certChain": {"certificates": [{"rawBytes": STANDARD.encode([seed; 4])}]}
+        })
+    }
+
+    // Sigstore replaces a key by ending the old key's validity and adding a new key, and
+    // never deletes the old one. Each proof uses the key that was valid at its logged time.
+    #[test]
+    fn rotated_keys_verify_only_proofs_from_their_own_validity_window() {
+        let root = TrustedRoot::test_root(
+            &json!({
+                "mediaType": MEDIA_TYPE,
+                "tlogs": [
+                    log(1, &json!({"start": "2021-01-12T11:53:27Z", "end": CHANGE})),
+                    log(2, &json!({"start": CHANGE}))
+                ],
+                "certificateAuthorities": [
+                    authority(1, &json!({"start": "2022-04-13T20:06:15Z", "end": CHANGE})),
+                    authority(2, &json!({"start": CHANGE}))
+                ],
+                "ctlogs": [], "timestampAuthorities": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let change = parse_time(CHANGE).unwrap();
+        let (before, after) = (change - 1, change + 1);
+
+        assert_eq!(root.rekor_key_at(&[1; 32], before).unwrap().spki, [1; 4]);
+        assert!(root.rekor_key_at(&[1; 32], after).is_err());
+        assert!(root.rekor_key_at(&[2; 32], before).is_err());
+        assert_eq!(root.rekor_key_at(&[2; 32], after).unwrap().spki, [2; 4]);
+        // The boundary second belongs to both windows, so no proof falls between them.
+        assert!(root.rekor_key_at(&[1; 32], change).is_ok());
+        assert!(root.rekor_key_at(&[2; 32], change).is_ok());
+
+        assert_eq!(root.fulcio_certificates_at(before).unwrap(), [vec![1; 4]]);
+        assert_eq!(root.fulcio_certificates_at(after).unwrap(), [vec![2; 4]]);
+        assert!(
+            root.fulcio_certificates_at(parse_time("2020-01-01T00:00:00Z").unwrap())
+                .is_err()
+        );
+    }
+}
