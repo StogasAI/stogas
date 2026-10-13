@@ -57,7 +57,7 @@ class StagingEvidenceTests(unittest.TestCase):
 
     def test_snapshot_survives_rejected_refresh_and_verifier_destruction(self):
         fixture = json.loads(
-            (Path(__file__).resolve().parents[3] / "tests/fixtures/current-evidence-v1.json").read_bytes()
+            (Path(__file__).resolve().parents[3] / "tests/fixtures/hardware-session-v1.json").read_bytes()
         )
         verifier = EvidenceVerifier(
             environment="staging",

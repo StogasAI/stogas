@@ -219,10 +219,10 @@ impl Snapshot {
                 reported_tcb: &reported_tcb,
                 report_data_sha512: &hex::encode(expected_report_data),
             },
-            &release.evidence.document,
+            &release.measurement,
             launch,
             report,
-            Some(&self.hardware_evidence.document),
+            Some(&self.approvals.manifest().hardware_policy),
         )
         .map_err(attestation_error)?;
         let vcek = self.collateral.vcek(&chip_id, &reported_tcb)?;

@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    AllowedCatalog, AllowedIgvm, MAX_INPUT_BYTES, STOGAS_SIGNATURE_DOMAIN, SignedHardwarePolicy,
+    AllowedCatalog, AllowedIgvm, HardwarePolicy, MAX_INPUT_BYTES, STOGAS_SIGNATURE_DOMAIN,
     StogasSignature, VerifiedCatalogRelease, VerifiedHardwarePolicy, VerifiedRelease,
     canonical_json, strict_json,
 };
@@ -140,6 +140,8 @@ impl KeyManifest {
 
 pub type SignedKeyManifest = crate::LoggedDocument<KeyManifest>;
 
+/// Everything Stogas currently approves, under one online-key signature. The exact key
+/// manifest digest makes that manifest's root-signed expiry the expiry of the whole decision.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalManifest {
@@ -147,10 +149,11 @@ pub struct ApprovalManifest {
     pub environment: Environment,
     pub revision: u64,
     pub key_manifest_sha256: String,
-    /// Sorted SHA-256 digests of canonical unsigned release manifests, without a newline.
-    pub gateways: Vec<String>,
-    pub catalogs: Vec<String>,
-    pub hardware_policy_sha256: String,
+    /// Ordered by strictly increasing release sequence.
+    pub gateways: Vec<AllowedIgvm>,
+    /// Ordered by strictly increasing catalog sequence.
+    pub catalogs: Vec<AllowedCatalog>,
+    pub hardware_policy: HardwarePolicy,
 }
 
 pub type SignedApprovalManifest = crate::LoggedDocument<ApprovalManifest>;
@@ -175,7 +178,7 @@ pub enum Error {
     Rollback,
     #[error("different signed decisions use the same revision")]
     Equivocation,
-    #[error("{0} is not in the signed approval set")]
+    #[error("{0} is not in the signed approval manifest")]
     NotApproved(&'static str),
     #[error("approved evidence failed verification: {0}")]
     Evidence(String),
@@ -186,7 +189,7 @@ pub enum Error {
 pub struct VerifiedApprovals {
     authority: [u8; 32],
     keys: KeyManifest,
-    approvals: ApprovalManifest,
+    approvals: SignedApprovalManifest,
     keys_digest: String,
     approvals_digest: String,
     expires_unix_ms: i64,
@@ -212,93 +215,54 @@ impl VerifiedApprovals {
 
     #[must_use]
     pub const fn manifest(&self) -> &ApprovalManifest {
+        &self.approvals.document
+    }
+
+    /// The approval manifest with its signature and Rekor inclusion proof.
+    #[must_use]
+    pub const fn evidence(&self) -> &SignedApprovalManifest {
         &self.approvals
     }
 
-    #[must_use]
-    pub fn allows_gateway(&self, release_id: &str) -> bool {
-        self.approvals
-            .gateways
-            .binary_search_by(|id| id.as_str().cmp(release_id))
-            .is_ok()
-    }
-
-    #[must_use]
-    pub fn allows_catalog(&self, release_id: &str) -> bool {
-        self.approvals
-            .catalogs
-            .binary_search_by(|id| id.as_str().cmp(release_id))
-            .is_ok()
-    }
-
-    /// Verify current approval, the exact release signature and its independent build evidence.
+    /// Verify one listed release's launch manifest and its independent build proof.
     ///
     /// # Errors
-    /// Rejects an unlisted release, retired signer, invalid launch manifest or build proof.
-    pub fn verify_gateway(
+    /// Rejects an invalid launch manifest, build proof or placeholder proof in production.
+    pub(crate) fn verify_gateway(
         &self,
         release: &AllowedIgvm,
         now_unix_ms: i64,
     ) -> Result<VerifiedRelease, Error> {
-        self.valid_until(now_unix_ms)?;
-        if !self.allows_gateway(&payload_sha256(&release.document)?) {
-            return Err(Error::NotApproved("gateway"));
-        }
-        self.require_active_key(&release.signature.key_id)?;
-        let verified =
-            crate::verify_release_with_key(release, &self.keys.active_key.public_key, now_unix_ms)
-                .map_err(|error| Error::Evidence(error.to_string()))?;
+        let verified = crate::verify_gateway_release(release, now_unix_ms)
+            .map_err(|error| Error::Evidence(error.to_string()))?;
         if !self.accepts_provenance(&verified.provenance) {
             return Err(Error::Authority);
         }
         Ok(verified)
     }
 
-    /// Verify current approval, the catalog signature and independent artifact build evidence.
+    /// Verify one listed catalog's release manifest and its independent build proof.
     ///
     /// # Errors
-    /// Rejects an unlisted catalog, retired signer or invalid release/build evidence.
-    pub fn verify_catalog(
+    /// Rejects an invalid release manifest, build proof or placeholder proof in production.
+    pub(crate) fn verify_catalog(
         &self,
         catalog: &AllowedCatalog,
         now_unix_ms: i64,
     ) -> Result<VerifiedCatalogRelease, Error> {
-        self.valid_until(now_unix_ms)?;
-        if !self.allows_catalog(&payload_sha256(&catalog.document)?) {
-            return Err(Error::NotApproved("catalog"));
-        }
-        self.require_active_key(&catalog.signature.key_id)?;
-        let verified =
-            crate::verify_catalog_with_key(catalog, &self.keys.active_key.public_key, now_unix_ms)
-                .map_err(|error| Error::Evidence(error.to_string()))?;
+        let verified = crate::verify_catalog_release(catalog, now_unix_ms)
+            .map_err(|error| Error::Evidence(error.to_string()))?;
         if !self.accepts_provenance(&verified.provenance) {
             return Err(Error::Authority);
         }
         Ok(verified)
     }
 
-    /// Verify the selected hardware policy, its active-key signature and Rekor inclusion.
-    ///
     /// # Errors
-    /// Rejects a different policy, invalid hardware rules, untrusted signer or invalid log proof.
-    pub fn verify_hardware_policy(
-        &self,
-        signed: &SignedHardwarePolicy,
-        now_unix_ms: i64,
-    ) -> Result<VerifiedHardwarePolicy, Error> {
-        self.valid_until(now_unix_ms)?;
-        if payload_sha256(&signed.document)? != self.approvals.hardware_policy_sha256 {
-            return Err(Error::NotApproved("hardware policy"));
-        }
-        crate::verify_signed_hardware_policy_with_key(signed, &self.keys.active_key, now_unix_ms)
+    /// Rejects invalid hardware rules.
+    pub(crate) fn verify_hardware_policy(&self) -> Result<VerifiedHardwarePolicy, Error> {
+        crate::verify_hardware_policy(&self.approvals.document.hardware_policy)
             .map_err(|error| Error::Evidence(error.to_string()))
-    }
-
-    fn require_active_key(&self, key_id: &str) -> Result<(), Error> {
-        if key_id != self.keys.active_key.key_id {
-            return Err(Error::InactiveKey);
-        }
-        Ok(())
     }
 
     // A staging-capable binary must still reject placeholders when its selected context is production.
@@ -376,7 +340,7 @@ impl ApprovalVerifier {
             return Err(Error::TooLarge);
         }
         let keys = self.verify_keys(keys_bytes, now_unix_ms)?;
-        self.verify_with_keys(keys, approvals_bytes, now_unix_ms)
+        self.verify_with_keys(keys, parse(approvals_bytes)?, now_unix_ms)
     }
 
     fn verify_keys(&self, bytes: &[u8], now_unix_ms: i64) -> Result<VerifiedKeys, Error> {
@@ -424,13 +388,9 @@ impl ApprovalVerifier {
     pub(crate) fn verify_with_keys(
         &self,
         keys: VerifiedKeys,
-        approvals_bytes: &[u8],
+        approvals: SignedApprovalManifest,
         now_unix_ms: i64,
     ) -> Result<VerifiedApprovals, Error> {
-        if approvals_bytes.len() > MAX_INPUT_BYTES {
-            return Err(Error::TooLarge);
-        }
-        let approvals: SignedApprovalManifest = parse(approvals_bytes)?;
         verify_document_inclusion(
             &serde_json::to_value(&approvals.document).map_err(invalid)?,
             &approvals.signature,
@@ -479,10 +439,10 @@ impl ApprovalVerifier {
             if candidate.keys_digest != previous.keys_digest {
                 return Err(Error::Equivocation);
             }
-            if candidate.approvals.revision < previous.approvals.revision {
+            if candidate.manifest().revision < previous.manifest().revision {
                 return Err(Error::Rollback);
             }
-            if candidate.approvals.revision == previous.approvals.revision
+            if candidate.manifest().revision == previous.manifest().revision
                 && candidate.approvals_digest != previous.approvals_digest
             {
                 return Err(Error::Equivocation);
@@ -506,7 +466,7 @@ fn verify_online_approval(
     keys: KeyManifest,
     signed: SignedApprovalManifest,
 ) -> Result<VerifiedApprovals, Error> {
-    let approvals = signed.document;
+    let approvals = &signed.document;
     if approvals.schema != APPROVAL_MANIFEST_SCHEMA || !valid_revision(approvals.revision) {
         return Err(Error::Invalid("approval schema or revision".into()));
     }
@@ -517,30 +477,44 @@ fn verify_online_approval(
     if approvals.key_manifest_sha256 != keys_digest {
         return Err(Error::Invalid("key manifest digest mismatch".into()));
     }
-    if !is_digest(&approvals.hardware_policy_sha256)
-        || !sorted_digests(&approvals.gateways)
-        || !sorted_digests(&approvals.catalogs)
-    {
+    // One release per sequence keeps release selection and history unambiguous.
+    if !increasing(
+        approvals
+            .gateways
+            .iter()
+            .map(|release| release.document.sequence),
+    ) || !increasing(
+        approvals
+            .catalogs
+            .iter()
+            .map(|release| release.document.sequence),
+    ) {
         return Err(Error::Invalid(
-            "approval digests must be sorted and unique".into(),
+            "approved releases must be ordered by unique sequence".into(),
         ));
     }
+    let document = serde_json::to_value(approvals).map_err(invalid)?;
     verify_signature(
-        &serde_json::to_value(&approvals).map_err(invalid)?,
+        &document,
         &signed.signature,
         &keys.active_key.key_id,
         &keys.active_key.public_key,
     )?;
-    let approvals_digest = payload_sha256(&approvals)?;
+    let approvals_digest = hex::encode(Sha256::digest(canonical_payload(&document)?));
     let expires_unix_ms = keys.expiry_unix_ms()?;
     Ok(VerifiedApprovals {
         authority,
         keys,
-        approvals,
+        approvals: signed,
         keys_digest,
         approvals_digest,
         expires_unix_ms,
     })
+}
+
+fn increasing(mut sequences: impl Iterator<Item = u64>) -> bool {
+    let mut previous = 0;
+    sequences.all(|sequence| std::mem::replace(&mut previous, sequence) < sequence)
 }
 
 fn validate_keys(
@@ -652,15 +626,6 @@ fn parse<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
 
 const fn valid_revision(revision: u64) -> bool {
     revision > 0 && revision <= MAX_REVISION
-}
-fn is_digest(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-}
-fn sorted_digests(values: &[String]) -> bool {
-    values.iter().all(|v| is_digest(v)) && values.windows(2).all(|pair| pair[0] < pair[1])
 }
 fn invalid(error: impl std::fmt::Display) -> Error {
     Error::Invalid(error.to_string())

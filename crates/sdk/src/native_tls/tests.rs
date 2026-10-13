@@ -13,7 +13,7 @@ use tokio_rustls::TlsAcceptor;
 
 fn snapshot() -> Arc<Snapshot> {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../tests/fixtures/current-evidence-v1.json"
+        "../../../../tests/fixtures/hardware-session-v1.json"
     ))
     .unwrap();
     evidence::Verifier::new(

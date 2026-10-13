@@ -7,8 +7,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    AllowedCatalog, AllowedIgvm, SignedHardwarePolicy, VerifiedCatalogRelease,
-    VerifiedHardwarePolicy, VerifiedRelease,
+    VerifiedCatalogRelease, VerifiedHardwarePolicy, VerifiedRelease,
     approvals::{
         self, ApprovalVerifier, Environment, RootKey, SignedApprovalManifest, SignedKeyManifest,
         VerifiedApprovals, payload_sha256,
@@ -64,9 +63,6 @@ pub struct Bundle {
     pub schema: String,
     pub keys: SignedKeyManifest,
     pub approvals: SignedApprovalManifest,
-    pub allowed_igvms: Vec<AllowedIgvm>,
-    pub catalogs: Vec<AllowedCatalog>,
-    pub hardware_policy: SignedHardwarePolicy,
     pub vendor_collateral: Vec<BTreeMap<String, Value>>,
 }
 
@@ -86,8 +82,6 @@ pub enum Error {
     Invalid(String),
     #[error(transparent)]
     Approval(#[from] approvals::Error),
-    #[error("the bundle does not contain the complete signed {0} set")]
-    Incomplete(&'static str),
     #[error("invalid vendor collateral: {0}")]
     Collateral(String),
     #[error("the required vendor collateral is absent")]
@@ -108,7 +102,6 @@ impl Error {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::TooLarge | Self::Approval(approvals::Error::TooLarge) => "evidence_too_large",
-            Self::Incomplete(_) => "incomplete_evidence",
             Self::MissingCollateral => "missing_collateral",
             Self::CollateralExpired => "expired_collateral",
             Self::Revoked => "revoked",
@@ -148,12 +141,10 @@ pub struct Snapshot {
     identity: Arc<()>,
     approvals: VerifiedApprovals,
     keys_evidence: SignedKeyManifest,
-    approvals_evidence: SignedApprovalManifest,
     key_state: Arc<approvals::KeyState>,
     gateways: BTreeMap<String, Cached<VerifiedRelease>>,
     catalogs: BTreeMap<String, Cached<VerifiedCatalogRelease>>,
-    hardware: Cached<VerifiedHardwarePolicy>,
-    hardware_evidence: SignedHardwarePolicy,
+    hardware: VerifiedHardwarePolicy,
     collateral_evidence: Vec<BTreeMap<String, Value>>,
     collateral: collateral::Store,
 }
@@ -172,28 +163,14 @@ impl Snapshot {
     }
 
     /// Verified public configuration for bindings. This does not appraise a live node.
+    /// Releases follow the approval manifest's sequence order.
     #[must_use]
     pub fn summary(&self) -> Value {
-        let gateways: Vec<_> = self
-            .approvals
-            .manifest()
-            .gateways
-            .iter()
-            .map(|id| serde_json::json!({"release_id": id, "release": self.gateway(id)}))
-            .collect();
-        let catalogs: Vec<_> = self
-            .approvals
-            .manifest()
-            .catalogs
-            .iter()
-            .map(|id| serde_json::json!({"release_id": id, "release": self.catalog(id)}))
-            .collect();
         serde_json::json!({
-            "keys": self.approvals.keys(), "approvals": self.approvals.manifest(),
-            "keys_evidence": self.keys_evidence, "approvals_evidence": self.approvals_evidence,
-            "gateways": gateways, "catalogs": catalogs, "hardware_policy": self.hardware_policy(),
-            "hardware_policy_evidence": self.hardware_evidence,
-            "vendor_collateral_evidence": self.collateral_evidence
+            "keys": self.keys_evidence, "approvals": self.approvals.evidence(),
+            "gateways": by_sequence(&self.gateways, |release| release.sequence),
+            "catalogs": by_sequence(&self.catalogs, |release| release.sequence),
+            "hardware_policy": self.hardware, "vendor_collateral": self.collateral_evidence
         })
     }
 
@@ -239,8 +216,8 @@ impl Snapshot {
     }
 
     #[must_use]
-    pub fn hardware_policy(&self) -> &VerifiedHardwarePolicy {
-        &self.hardware.value
+    pub const fn hardware_policy(&self) -> &VerifiedHardwarePolicy {
+        &self.hardware
     }
 
     /// The vendor-signed interval for one chip/TCB, capped by the root authorization deadline.
@@ -368,16 +345,24 @@ impl Verifier {
         let keys = keys?;
         #[cfg(feature = "snp")]
         vendor?;
-        let envelope = parse_envelope(value)?;
+        let Envelope {
+            body_sha256, body, ..
+        } = parse_envelope(value)?;
         checked(VerificationStep::Envelope, None, false);
-        let approvals = self.approvals.verify_with_keys(
-            keys,
-            &serde_json::to_vec(&envelope.body.approvals).map_err(invalid)?,
-            now_unix_ms,
-        )?;
+        let approvals = self
+            .approvals
+            .verify_with_keys(keys, body.approvals, now_unix_ms)?;
         checked(VerificationStep::ReleasePolicy, None, false);
-        let snapshot =
-            Arc::new(self.verify_snapshot(envelope, approvals, now_unix_ms, &mut checked)?);
+        let snapshot = Arc::new(self.verify_snapshot(
+            Candidate {
+                body_sha256,
+                keys: body.keys,
+                approvals,
+                vendor_collateral: body.vendor_collateral,
+            },
+            now_unix_ms,
+            &mut checked,
+        )?);
         self.approvals.accept(snapshot.approvals.clone())?;
         self.current = Some(Arc::clone(&snapshot));
         checked(VerificationStep::Accepted, None, false);
@@ -386,97 +371,80 @@ impl Verifier {
 
     fn verify_snapshot(
         &self,
-        envelope: Envelope,
-        approvals: VerifiedApprovals,
+        candidate: Candidate,
         now_unix_ms: i64,
         checked: &mut impl FnMut(VerificationStep, Option<&str>, bool),
     ) -> Result<Snapshot, Error> {
-        let body = envelope.body;
-        // Exact evidence bytes alone are not a trust-cache key after a signing-key change.
-        let reusable = self.current.as_deref().filter(|snapshot| {
-            snapshot
-                .approvals
-                .keys()
-                .active_key
-                .same_signer(&approvals.keys().active_key)
-        });
+        let approvals = candidate.approvals;
+        // A release check depends only on its bytes and the fixed environment, so unchanged
+        // entries reuse earlier results. The approval manifest still decides what is listed.
+        let prior = self.current.as_deref();
         let mut gateways = BTreeMap::new();
-        for gateway in body.allowed_igvms {
+        for gateway in &approvals.manifest().gateways {
             let id = payload_sha256(&gateway.document)?;
-            if !approvals.allows_gateway(&id) || gateways.contains_key(&id) {
-                return Err(Error::Incomplete("gateway"));
-            }
-            let digest = payload_sha256(&gateway)?;
             let (entry, reused) = cached(
-                reusable.and_then(|snapshot| snapshot.gateways.get(&id)),
-                digest,
+                prior.and_then(|snapshot| snapshot.gateways.get(&id)),
+                payload_sha256(gateway)?,
                 now_unix_ms,
-                || approvals.verify_gateway(&gateway, now_unix_ms),
+                || approvals.verify_gateway(gateway, now_unix_ms),
             )?;
             checked(VerificationStep::GatewayRelease, Some(id.as_str()), reused);
             gateways.insert(id, entry);
         }
-        if gateways.len() != approvals.manifest().gateways.len() {
-            return Err(Error::Incomplete("gateway"));
-        }
         let mut catalogs = BTreeMap::new();
-        let mut sequences = std::collections::BTreeSet::new();
-        for catalog in body.catalogs {
+        for catalog in &approvals.manifest().catalogs {
             let id = payload_sha256(&catalog.document)?;
-            if !approvals.allows_catalog(&id)
-                || catalogs.contains_key(&id)
-                || !sequences.insert(catalog.document.sequence)
-            {
-                return Err(Error::Incomplete("catalog"));
-            }
-            let digest = payload_sha256(&catalog)?;
             let (entry, reused) = cached(
-                reusable.and_then(|snapshot| snapshot.catalogs.get(&id)),
-                digest,
+                prior.and_then(|snapshot| snapshot.catalogs.get(&id)),
+                payload_sha256(catalog)?,
                 now_unix_ms,
-                || approvals.verify_catalog(&catalog, now_unix_ms),
+                || approvals.verify_catalog(catalog, now_unix_ms),
             )?;
             checked(VerificationStep::CatalogRelease, Some(id.as_str()), reused);
             catalogs.insert(id, entry);
         }
-        if catalogs.len() != approvals.manifest().catalogs.len() {
-            return Err(Error::Incomplete("catalog"));
-        }
-        // Recheck selection even on a cache hit: unchanged bytes may have been withdrawn.
-        if payload_sha256(&body.hardware_policy.document)?
-            != approvals.manifest().hardware_policy_sha256
-        {
-            return Err(Error::Incomplete("hardware policy"));
-        }
-        let (hardware, reused) = cached(
-            reusable.map(|snapshot| &snapshot.hardware),
-            payload_sha256(&body.hardware_policy)?,
-            now_unix_ms,
-            || approvals.verify_hardware_policy(&body.hardware_policy, now_unix_ms),
-        )?;
-        checked(VerificationStep::HardwarePolicy, None, reused);
+        let hardware = approvals.verify_hardware_policy()?;
+        checked(VerificationStep::HardwarePolicy, None, false);
         let collateral = collateral::Store::verify(
-            &body.vendor_collateral,
-            self.current.as_deref().map(|snapshot| &snapshot.collateral),
+            &candidate.vendor_collateral,
+            prior.map(|snapshot| &snapshot.collateral),
             Arc::clone(&self.revocations),
         )?;
         checked(VerificationStep::VendorCollateral, None, false);
         Ok(Snapshot {
-            body_sha256: envelope.body_sha256,
+            body_sha256: candidate.body_sha256,
             #[cfg(feature = "snp")]
             identity: Arc::new(()),
             approvals,
-            keys_evidence: body.keys,
-            approvals_evidence: body.approvals,
+            keys_evidence: candidate.keys,
             key_state: self.approvals.key_state(),
             gateways,
             catalogs,
             hardware,
-            hardware_evidence: body.hardware_policy,
-            collateral_evidence: body.vendor_collateral,
+            collateral_evidence: candidate.vendor_collateral,
             collateral,
         })
     }
+}
+
+/// An envelope whose approval decision passed; its listed objects are not yet verified.
+struct Candidate {
+    body_sha256: String,
+    keys: SignedKeyManifest,
+    approvals: VerifiedApprovals,
+    vendor_collateral: Vec<BTreeMap<String, Value>>,
+}
+
+fn by_sequence<T: Serialize>(
+    entries: &BTreeMap<String, Cached<T>>,
+    sequence: impl Fn(&T) -> u64,
+) -> Vec<Value> {
+    let mut entries: Vec<_> = entries.iter().collect();
+    entries.sort_unstable_by_key(|(_, entry)| sequence(&entry.value));
+    entries
+        .into_iter()
+        .map(|(id, entry)| serde_json::json!({"release_id": id, "release": entry.value.as_ref()}))
+        .collect()
 }
 
 fn cached<T>(

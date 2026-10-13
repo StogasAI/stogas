@@ -297,7 +297,7 @@ impl Snapshot {
                 "gateway",
             )))?;
         crate::appraise_hardware(
-            &self.hardware_evidence.document,
+            &self.approvals.manifest().hardware_policy,
             &facts.chip_id,
             |profile| facts.hardware.appraise(profile, &facts.node_id),
         )

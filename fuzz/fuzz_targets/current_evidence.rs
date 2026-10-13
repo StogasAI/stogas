@@ -11,7 +11,7 @@ fuzz_target!(|data: &[u8]| {
     static FIXTURE: OnceLock<(RootKey, Vec<u8>, i64)> = OnceLock::new();
     let (root, bundle, now) = FIXTURE.get_or_init(|| {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../tests/fixtures/current-evidence-v1.json"
+            "../../tests/fixtures/hardware-session-v1.json"
         ))
         .unwrap();
         (

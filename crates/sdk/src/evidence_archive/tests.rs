@@ -12,10 +12,8 @@ fn bundle() -> Value {
 }
 
 fn objects(body: &Value) -> BTreeMap<String, Value> {
-    [&body["keys"], &body["approvals"], &body["hardware_policy"]]
+    [&body["keys"], &body["approvals"]]
         .into_iter()
-        .chain(body["allowed_igvms"].as_array().unwrap())
-        .chain(body["catalogs"].as_array().unwrap())
         .chain(
             body["vendor_collateral"]
                 .as_array()

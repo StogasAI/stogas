@@ -1,24 +1,12 @@
 {
-  "allowed_igvms": [
-    "96f17aea3cbd027721648778121f4c82ccfbef84f97e0deb2d3db5a1162fb1c5"
-  ],
-  "approvals": "26eacc4699842c9ae717d02d1a58ca309997a415c7cd1d128416b1dc836b4604",
-  "body_sha256": "28fa34f64e1206fc5daab4ab3dc16d5a87348d65d64ac81b2d6dc2ba50938ed7",
-  "catalogs": [
-    "1c4c338eb0e6b122d329da8caf8cd1debf0fba9c23bcdf53d15b3c2d9137abd9",
-    "2cd9a7772abf62b123fde58d98d60697a14d58bcdcec8377e775430780c8a76e"
-  ],
-  "hardware_policy": "94126f4e6c787a6193f2e64ff692ebfd328859cc716aeba8050cd86257b5b74b",
+  "approvals": "4cc0a7573aa17e7e828245fe904ac3526b60e4a9aa0c25b5ba71b4cb8c5c191b",
+  "body_sha256": "dc245ab47f6df0eb09c344f94eda3d2e90042ac2d378185f6643d20ab5287043",
   "keys": "bd2ad3bc8cac1ef8b773b635b3efbe86a17ea41cfcbb1a7ca1276adbb88dadf6",
   "schema": "stogas.evidence-archive.v1",
   "sizes": {
-    "1bf822723d7ea3ec183a9d82879ca246c2fc5922ff039076fecab558165a0aac": 1804,
-    "1c4c338eb0e6b122d329da8caf8cd1debf0fba9c23bcdf53d15b3c2d9137abd9": 5637,
-    "26eacc4699842c9ae717d02d1a58ca309997a415c7cd1d128416b1dc836b4604": 7980,
-    "2cd9a7772abf62b123fde58d98d60697a14d58bcdcec8377e775430780c8a76e": 5637,
     "4ba22b0b428118e9fe05fccb24f97d826072c5e0a39b3d6cad42c3c826ead24f": 2238,
-    "94126f4e6c787a6193f2e64ff692ebfd328859cc716aeba8050cd86257b5b74b": 7986,
-    "96f17aea3cbd027721648778121f4c82ccfbef84f97e0deb2d3db5a1162fb1c5": 8678,
+    "4cc0a7573aa17e7e828245fe904ac3526b60e4a9aa0c25b5ba71b4cb8c5c191b": 14037,
+    "8878c09bd5c264bb2f2e2b0403f7901ec01ca96210b3f52bd46ed13bab012943": 1804,
     "b0ad898a33d2360e39f74bc234f5d2000771bd8b7bfd82b0572d2974e106cc87": 1157,
     "bd2ad3bc8cac1ef8b773b635b3efbe86a17ea41cfcbb1a7ca1276adbb88dadf6": 10452,
     "f0745ca730fce43fa4a0ad3fd46c088acfe9a5e0ecde8e89b3b3e79e1d723721": 2188
@@ -64,17 +52,17 @@
       }
     },
     {
-      "der": "1bf822723d7ea3ec183a9d82879ca246c2fc5922ff039076fecab558165a0aac",
+      "der": "8878c09bd5c264bb2f2e2b0403f7901ec01ca96210b3f52bd46ed13bab012943",
       "metadata": {
         "ca_product_name": "Milan",
         "chip_id": "b2202e1f13696edf8e6f3e833df25da9278cfeb1105e70894a14452b2ec5fd2a263db3bdc596294925a01bfaff8b1dd65ad0dfb527a8e6381fed31f097d41e67",
         "collateral_type": "vcek",
-        "fetched_at": "2026-09-21T13:11:56.561Z",
+        "fetched_at": "2026-10-13T02:48:38.826Z",
         "hwid": "b2202e1f13696edf8e6f3e833df25da9278cfeb1105e70894a14452b2ec5fd2a263db3bdc596294925a01bfaff8b1dd65ad0dfb527a8e6381fed31f097d41e67",
         "product_name": "Milan",
         "reported_tcb": "0400000000001dde",
         "schema": "stogas.amd-kds-collateral.v1",
-        "sha256": "538c396ac18906f5f391ac7f0ee8c069d91f11d2ff9c7995aa479aa33ede4da8",
+        "sha256": "28b92ebc91bdfa299f46c2e9f3676caecb9f7622262f05957b6af639e13cbdea",
         "source": "amd-kds",
         "source_url": "https://kdsintf.amd.com/vcek/v1/Milan/b2202e1f13696edf8e6f3e833df25da9278cfeb1105e70894a14452b2ec5fd2a263db3bdc596294925a01bfaff8b1dd65ad0dfb527a8e6381fed31f097d41e67?blSPL=4&teeSPL=0&snpSPL=29&ucodeSPL=222",
         "tcb": {
