@@ -10,13 +10,12 @@ pub struct LoggedDocument<T> {
     pub inclusion: Value,
 }
 
-pub type SignedHardwarePolicy = LoggedDocument<HardwarePolicy>;
-
+/// A release manifest and the build proof that names its files. The signed approval
+/// manifest that lists it is the only Stogas signature over it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReleaseEvidence<T> {
     pub document: T,
-    pub signature: StogasSignature,
     pub provenance: Value,
 }
 
@@ -76,8 +75,9 @@ pub struct CatalogReleaseArtifacts {
 pub struct ReleaseSource {
     pub commit: String,
     pub repository: String,
+    /// SHA-256 of the canonical JSON list of every source file's path, mode and SHA-256.
+    pub sha256: String,
     pub tag: String,
-    pub tree: String,
 }
 
 pub type AllowedIgvm = ReleaseEvidence<GatewayReleaseManifest>;
@@ -220,7 +220,6 @@ pub enum ReleaseProvenance {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct VerifiedRelease {
-    pub evidence: AllowedIgvm,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub github_integrated_time_unix_ms: Option<i64>,
     pub igvm_sha256: String,
@@ -232,14 +231,12 @@ pub struct VerifiedRelease {
     pub sequence: u64,
     pub source_commit: String,
     pub source_repository: String,
-    pub source_tree: String,
-    pub stogas_signing_key_id: String,
+    pub source_sha256: String,
     pub vcpu_count: u16,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct VerifiedCatalogRelease {
-    pub evidence: AllowedCatalog,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub github_integrated_time_unix_ms: Option<i64>,
     pub minimum_gateway_sequence: u64,
@@ -251,24 +248,13 @@ pub struct VerifiedCatalogRelease {
     pub sequence: u64,
     pub source_commit: String,
     pub source_repository: String,
+    pub source_sha256: String,
     pub source_tag: String,
-    pub source_tree: String,
-    pub stogas_signing_key_id: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HardwarePolicySource {
-    Local,
-    StogasBundle,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct VerifiedHardwarePolicy {
     pub chip_ids: Vec<String>,
     pub policy_count: usize,
-    pub rekor_integrated_time_unix_ms: Option<i64>,
     pub sha256: String,
-    pub source: HardwarePolicySource,
-    pub stogas_signing_key_id: Option<String>,
 }

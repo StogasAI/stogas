@@ -30,7 +30,7 @@ def offline(cli, version, fixtures, work):
     if run(cli, "--version").split() != ["stogas", version]:
         raise SystemExit("The CLI reported a different version")
     # Staging evidence fails only on its authority at its own verification time.
-    fixture = json.loads((fixtures / "current-evidence-v1.json").read_text())
+    fixture = json.loads((fixtures / "hardware-session-v1.json").read_text())
     bundle = work / "staging-bundle.json"
     bundle.write_text(json.dumps(fixture["bundle"]))
     run(cli, "verify", "--environment", "staging", str(bundle), accepted=False)

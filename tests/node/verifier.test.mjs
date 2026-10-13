@@ -12,7 +12,7 @@ for (const retired of [
 	assert.equal(retired in publicAPI, false);
 
 const { root } = JSON.parse(
-	readFileSync(new URL('../fixtures/logged-key-manifest.json', import.meta.url), 'utf8')
+	readFileSync(new URL('../fixtures/hardware-session-v1.json', import.meta.url), 'utf8')
 );
 const verifier = new EvidenceVerifier('prod', root.key_id, root.public_key);
 try {

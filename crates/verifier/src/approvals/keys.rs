@@ -83,16 +83,24 @@ fn check(previous: &Learned, keys: &KeyManifest, digest: &str) -> Result<(), Err
 mod tests {
     use super::*;
 
-    #[test]
-    fn renewal_keeps_old_snapshots_usable_but_cannot_restore_them_as_current() {
-        let vector: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../tests/fixtures/approval-decisions.json"
+    fn sample_keys() -> VerifiedKeys {
+        let session: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/hardware-session-v1.json"
         ))
         .unwrap();
-        let original = VerifiedKeys {
-            document: serde_json::from_value(vector["key_manifest"].clone()).unwrap(),
-            digest: vector["key_manifest_sha256"].as_str().unwrap().into(),
-        };
+        // Key state compares generations, digests and deadlines, so a production build can use
+        // the staging sample under the production environment name.
+        let mut document = session["bundle"]["body"]["keys"]["document"].clone();
+        document["environment"] = "prod".into();
+        VerifiedKeys {
+            digest: crate::approvals::payload_sha256(&document).unwrap(),
+            document: serde_json::from_value(document).unwrap(),
+        }
+    }
+
+    #[test]
+    fn renewal_keeps_old_snapshots_usable_but_cannot_restore_them_as_current() {
+        let original = sample_keys();
         let state = KeyState::default();
         state.learn(original.clone()).unwrap();
         let mut renewal = original.clone();
@@ -117,15 +125,7 @@ mod tests {
 
     #[test]
     fn authenticated_conflict_blocks_old_snapshots_until_a_later_root_decision() {
-        let vector: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../tests/fixtures/approval-decisions.json"
-        ))
-        .unwrap();
-        let document: KeyManifest = serde_json::from_value(vector["key_manifest"].clone()).unwrap();
-        let original = VerifiedKeys {
-            document,
-            digest: vector["key_manifest_sha256"].as_str().unwrap().into(),
-        };
+        let original = sample_keys();
         let state = KeyState::default();
         state.learn(original.clone()).unwrap();
         let mut conflicting = original.clone();

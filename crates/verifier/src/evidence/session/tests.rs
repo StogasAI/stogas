@@ -115,16 +115,17 @@ fn registered_facts_recheck_current_policy_collateral_and_release_membership() {
     drop(verifier);
     let mut snapshot = std::sync::Arc::try_unwrap(snapshot)
         .unwrap_or_else(|_| panic!("exclusive fixture snapshot"));
-    let original = snapshot.hardware_evidence.document.clone();
-    snapshot.hardware_evidence.document.policies[0]
-        .minimum_tcb
-        .snp = 255;
+    let original = snapshot.approvals.clone();
+    snapshot.approvals = original.clone().edited(|manifest| {
+        manifest.hardware_policy.policies[0].minimum_tcb.snp = 255;
+    });
     assert!(snapshot.appraise_registered_boot(&facts, now).is_err());
-    snapshot.hardware_evidence.document = original.clone();
-    snapshot.hardware_evidence.document.policies[0].required_current_mitigation_mask =
-        "0xffffffffffffffff".into();
+    snapshot.approvals = original.clone().edited(|manifest| {
+        manifest.hardware_policy.policies[0].required_current_mitigation_mask =
+            "0xffffffffffffffff".into();
+    });
     assert!(snapshot.appraise_registered_boot(&facts, now).is_err());
-    snapshot.hardware_evidence.document = original;
+    snapshot.approvals = original;
     snapshot.appraise_registered_boot(&facts, now).unwrap();
 }
 
@@ -146,12 +147,19 @@ fn hardware_alternatives_apply_to_quotes_registered_facts_and_fresh_sessions() {
     // appraisal paths with genuine hardware evidence and validated alternatives.
     drop(verifier);
     let mut snapshot = std::sync::Arc::try_unwrap(snapshot).ok().unwrap();
-    let mut smt_on = snapshot.hardware_evidence.document.policies[0].clone();
+    let original = snapshot.approvals.clone();
+    let alternatives = |policies: Vec<crate::AmdSevSnpPolicy>| {
+        let approvals = original.clone().edited(|manifest| {
+            manifest.hardware_policy.policies = policies;
+        });
+        crate::validate_hardware_policy(&approvals.manifest().hardware_policy).unwrap();
+        approvals
+    };
+    let mut smt_on = original.manifest().hardware_policy.policies[0].clone();
     smt_on.required_platform_info_mask = "0x0000000000000025".into();
-    let mut smt_off = snapshot.hardware_evidence.document.policies[0].clone();
+    let mut smt_off = original.manifest().hardware_policy.policies[0].clone();
     smt_off.forbidden_platform_info_mask = "0x0000000000000001".into();
-    snapshot.hardware_evidence.document.policies = vec![smt_on.clone(), smt_off.clone()];
-    crate::validate_hardware_policy(&snapshot.hardware_evidence.document).unwrap();
+    snapshot.approvals = alternatives(vec![smt_on.clone(), smt_off.clone()]);
     snapshot
         .verify_registered_boot(document.as_bytes(), &digest, now)
         .unwrap();
@@ -163,8 +171,7 @@ fn hardware_alternatives_apply_to_quotes_registered_facts_and_fresh_sessions() {
     // Retiring the SMT-on alternative immediately rejects that configuration in
     // all three paths. Another chip's matching configuration grants no permission.
     smt_on.chip_ids = vec!["ff".repeat(64)];
-    snapshot.hardware_evidence.document.policies = vec![smt_off, smt_on];
-    crate::validate_hardware_policy(&snapshot.hardware_evidence.document).unwrap();
+    snapshot.approvals = alternatives(vec![smt_off, smt_on]);
     assert!(
         snapshot
             .verify_registered_boot(document.as_bytes(), &digest, now)
@@ -415,17 +422,15 @@ fn learned_release_withdrawal_blocks_warm_reappraisal_but_keeps_owned_request_ev
     let session = original
         .verify_native_certificate(&certificate, challenge, now)
         .unwrap();
-    let approval = &mut bundle["body"]["approvals"]["document"];
+    let mut approval = bundle["body"]["approvals"]["document"].clone();
     approval["revision"] = json!(approval["revision"].as_u64().unwrap() + 1);
     approval["gateways"] = json!([]);
+    bundle["body"]["approvals"] = super::super::tests::logged_approval(&approval);
     let variants: Value = serde_json::from_str(include_str!(
         "../../../../../tests/fixtures/logged-approval-variants.json"
     ))
     .unwrap();
-    let digest = crate::approvals::payload_sha256(approval).unwrap();
-    bundle["body"]["approvals"] = variants["approvals"][digest].clone();
     let refresh_time = now.max(variants["verified_at_ms"].as_i64().unwrap());
-    bundle["body"]["allowed_igvms"] = json!([]);
     bundle["body_sha256"] = json!(crate::approvals::payload_sha256(&bundle["body"]).unwrap());
     let current = verifier
         .refresh(&serde_json::to_vec(&bundle).unwrap(), refresh_time)

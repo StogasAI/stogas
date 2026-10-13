@@ -18,7 +18,7 @@ from stogas import (
 )
 
 # Local offline trust configuration, never accepted by the managed transport.
-_root = json.loads((Path(__file__).resolve().parents[3] / "tests/fixtures/logged-key-manifest.json").read_text())["root"]
+_root = json.loads((Path(__file__).resolve().parents[3] / "tests/fixtures/hardware-session-v1.json").read_text())["root"]
 ROOT = {"root_key_id": _root["key_id"], "root_public_key": _root["public_key"]}
 
 

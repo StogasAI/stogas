@@ -37,7 +37,7 @@ fn trusted_fixture() -> (Value, IssuerId, Revocations) {
 #[test]
 fn forged_root_metadata_cannot_poison_later_authentic_crl_delivery() {
     let fixture: Value = serde_json::from_str(include_str!(
-        "../../../../../tests/fixtures/current-evidence-v1.json"
+        "../../../../../tests/fixtures/hardware-session-v1.json"
     ))
     .unwrap();
     let rows = fixture["bundle"]["body"]["vendor_collateral"]
@@ -248,7 +248,7 @@ fn incomplete_bundle_cannot_hide_authenticated_negative_appraisal() {
     let (value, id, state) = trusted_fixture();
     let now = value["now"].as_i64().unwrap();
     let roots: Value = serde_json::from_str(include_str!(
-        "../../../../../tests/fixtures/logged-key-manifest.json"
+        "../../../../../tests/fixtures/hardware-session-v1.json"
     ))
     .unwrap();
     let mut verifier = Verifier::new(

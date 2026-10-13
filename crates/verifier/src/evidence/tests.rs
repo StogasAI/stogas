@@ -1,22 +1,24 @@
 use super::*;
 
+/// Attach the logged signature of an approval manifest that a fixture variant already published.
 #[cfg(feature = "staging")]
-pub(super) fn logged_approval(manifest: &Value) -> Value {
+pub(super) fn logged_approval(document: &Value) -> Value {
     let fixtures: Value = serde_json::from_str(include_str!(
         "../../../../tests/fixtures/logged-approval-variants.json"
     ))
     .unwrap();
-    let id = payload_sha256(manifest).unwrap();
-    let signed = &fixtures["approvals"][&id];
-    assert_eq!(
-        &signed["document"], manifest,
-        "missing authentic approval fixture for {id}"
-    );
-    signed.clone()
+    let id = payload_sha256(document).unwrap();
+    let logged = &fixtures["approvals"][&id];
+    assert!(logged.is_object(), "missing logged approval fixture {id}");
+    serde_json::json!({
+        "document": document,
+        "signature": logged["signature"],
+        "inclusion": logged["inclusion"]
+    })
 }
 
 #[test]
-fn strict_delivery_boundary_rejects_legacy_unknown_duplicate_and_oversized_inputs() {
+fn strict_delivery_boundary_rejects_unknown_duplicate_and_oversized_inputs() {
     assert!(matches!(
         parse_json(&vec![b' '; crate::MAX_INPUT_BYTES + 1]),
         Err(Error::TooLarge)
@@ -28,20 +30,13 @@ fn strict_delivery_boundary_rejects_legacy_unknown_duplicate_and_oversized_input
     ] {
         assert!(parse_json(bytes).is_err());
     }
-    let legacy: Value = serde_json::from_str(include_str!(
-        "../../tests/fixtures/staging-bundle-sequence-1927.json"
-    ))
-    .unwrap();
-    assert!(parse_envelope(legacy).is_err());
 }
 
 #[cfg(feature = "staging")]
 mod staging {
     use super::*;
-    use crate::signing::SigningKey;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use serde_json::json;
-    use sha2::{Digest, Sha256};
 
     fn encode(body: &Value) -> Vec<u8> {
         serde_json::to_vec(&json!({"schema": crate::BUNDLE_ENVELOPE_SCHEMA,
@@ -49,123 +44,102 @@ mod staging {
         .unwrap()
     }
 
-    fn signature(value: &Value) -> Value {
-        signature_for(value, 242, "stogas-fixture-online-20260920")
-    }
-
-    fn signature_for(value: &Value, seed: u8, key_id: &str) -> Value {
-        let mut signed = crate::STOGAS_SIGNATURE_DOMAIN.to_vec();
-        let canonical = crate::canonical_json(value).unwrap();
-        signed.extend_from_slice(canonical.strip_suffix('\n').unwrap().as_bytes());
-        json!({"key_id":key_id, "signature":URL_SAFE_NO_PAD.encode(SigningKey::from_seeds(&[[seed; 32]; 2]).sign(&signed).unwrap())})
-    }
-
-    fn placeholder(subjects: Vec<(&str, String)>) -> Value {
-        json!({"_type":"https://in-toto.io/Statement/v1", "predicateType":"https://stogas.ai/attestations/staging-development/v1", "predicate":{"environment":"staging"},
-            "subject":subjects.into_iter().map(|(name,digest)|json!({"name":name,"digest":{"sha256":digest}})).collect::<Vec<_>>()})
-    }
-
-    fn sign_gateway(gateway: &mut Value) {
-        gateway["provenance"] = placeholder(vec![
-            (
-                "release-manifest.json",
-                hex::encode(Sha256::digest(
-                    crate::canonical_json(&gateway["document"]).unwrap(),
-                )),
-            ),
-            (
-                "gateway.igvm",
-                gateway["document"]["artifacts"]["gateway.igvm"]["sha256"]
-                    .as_str()
-                    .unwrap()
-                    .into(),
-            ),
-        ]);
-        gateway["signature"] = signature(&gateway["document"]);
-    }
-
     fn fixture() -> (Verifier, Value, i64) {
-        let current: Value = serde_json::from_str(include_str!(
-            "../../../../tests/fixtures/current-evidence-v1.json"
+        let session: Value = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/hardware-session-v1.json"
         ))
         .unwrap();
-        let mut body = current["bundle"]["body"].clone();
-        body["catalogs"].as_array_mut().unwrap().truncate(1);
-        body["vendor_collateral"] = json!([]);
-        body["approvals"]["document"]["catalogs"] =
-            json!([payload_sha256(&body["catalogs"][0]["document"]).unwrap()]);
-        body["approvals"] = logged_approval(&body["approvals"]["document"]);
-        let now = serde_json::from_str::<Value>(include_str!(
+        let variants: Value = serde_json::from_str(include_str!(
             "../../../../tests/fixtures/logged-approval-variants.json"
         ))
-        .unwrap()["verified_at_ms"]
+        .unwrap();
+        let now = session["verified_at_ms"]
             .as_i64()
-            .unwrap();
+            .unwrap()
+            .max(variants["verified_at_ms"].as_i64().unwrap());
         (
             Verifier::new(
                 Environment::Staging,
-                serde_json::from_value(current["root"].clone()).unwrap(),
+                serde_json::from_value(session["root"].clone()).unwrap(),
             )
             .unwrap(),
-            body,
+            session["bundle"]["body"].clone(),
             now,
         )
     }
 
+    fn revised(body: &Value, revision: u64, edit: impl FnOnce(&mut Value)) -> Value {
+        let mut body = body.clone();
+        let mut document = body["approvals"]["document"].clone();
+        document["revision"] = json!(revision);
+        edit(&mut document);
+        body["approvals"] = logged_approval(&document);
+        body
+    }
+
+    fn gateway_id(body: &Value) -> String {
+        payload_sha256(&body["approvals"]["document"]["gateways"][0]["document"]).unwrap()
+    }
+
     #[test]
-    fn complete_logged_bundle_installs_and_reuses_unchanged_approvals() {
+    fn complete_logged_bundle_installs_and_renewals_reuse_unchanged_releases() {
         let (mut verifier, body, now) = fixture();
         let mut checks = Vec::new();
         let first = verifier
             .refresh_observed(&encode(&body), now, |check| {
-                checks.push((check.step, check.reference.map(str::to_owned), check.cached));
+                checks.push((check.step, check.cached));
             })
             .unwrap();
         assert_eq!(checks.last().unwrap().0, VerificationStep::Accepted);
-        assert!(checks.iter().all(|check| !check.2));
+        assert!(checks.iter().all(|check| !check.1));
         for step in [
             VerificationStep::SigningManifest,
             VerificationStep::ReleasePolicy,
+            VerificationStep::GatewayRelease,
+            VerificationStep::CatalogRelease,
             VerificationStep::HardwarePolicy,
         ] {
             assert!(checks.iter().any(|check| check.0 == step));
         }
         let summary = first.summary();
-        assert_eq!(summary["keys_evidence"], body["keys"]);
-        assert_eq!(summary["approvals_evidence"], body["approvals"]);
+        assert_eq!(summary["keys"], body["keys"]);
+        assert_eq!(summary["approvals"], body["approvals"]);
+        assert_eq!(summary["hardware_policy"]["policy_count"], 1);
+
+        // A renewal signs the same releases again; their checks are not repeated.
+        let renewal = revised(&body, 2, |_| {});
         checks.clear();
         let second = verifier
-            .refresh_observed(&encode(&body), now + 1000, |check| {
-                checks.push((check.step, check.reference.map(str::to_owned), check.cached));
+            .refresh_observed(&encode(&renewal), now + 1000, |check| {
+                checks.push((check.step, check.cached));
             })
             .unwrap();
-        assert!(
-            checks
-                .iter()
-                .filter(|check| matches!(
+        let releases = checks
+            .iter()
+            .filter(|check| {
+                matches!(
                     check.0,
-                    VerificationStep::GatewayRelease
-                        | VerificationStep::CatalogRelease
-                        | VerificationStep::HardwarePolicy
-                ))
-                .all(|check| check.2)
-        );
-        assert!(Arc::ptr_eq(&first.hardware.value, &second.hardware.value));
-        let gateway_id = &first.approvals.manifest().gateways[0];
+                    VerificationStep::GatewayRelease | VerificationStep::CatalogRelease
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(releases.len(), 3);
+        assert!(releases.iter().all(|check| check.1));
+        let id = gateway_id(&body);
         assert!(Arc::ptr_eq(
-            &first.gateways[gateway_id].value,
-            &second.gateways[gateway_id].value
+            &first.gateways[&id].value,
+            &second.gateways[&id].value
         ));
-        assert!(second.compatible_catalog(gateway_id).is_some());
+        assert!(second.compatible_catalog(&id).is_some());
         assert!(second.compatible_catalog(&"0".repeat(64)).is_none());
-        assert_eq!(second.hardware_policy().policy_count, 1);
-        let mut altered = body;
-        altered["hardware_policy"]["document"]["schema"] = json!("altered");
+
+        let mut altered = renewal;
+        altered["approvals"]["document"]["hardware_policy"]["schema"] = json!("altered");
         checks.clear();
         assert!(
             verifier
                 .refresh_observed(&encode(&altered), now + 2000, |check| {
-                    checks.push((check.step, check.reference.map(str::to_owned), check.cached));
+                    checks.push((check.step, check.cached));
                 })
                 .is_err()
         );
@@ -179,19 +153,8 @@ mod staging {
 
     #[test]
     fn typescript_current_bundle_verifies_and_synthetic_boots_never_gain_hardware_trust() {
-        let fixture: Value = serde_json::from_str(include_str!(
-            "../../../../tests/fixtures/current-evidence-v1.json"
-        ))
-        .unwrap();
-        let now = fixture["verified_at_ms"].as_i64().unwrap();
-        let mut verifier = Verifier::new(
-            Environment::Staging,
-            serde_json::from_value(fixture["root"].clone()).unwrap(),
-        )
-        .unwrap();
-        let snapshot = verifier
-            .refresh(&serde_json::to_vec(&fixture["bundle"]).unwrap(), now)
-            .unwrap();
+        let (mut verifier, body, now) = fixture();
+        let snapshot = verifier.refresh(&encode(&body), now).unwrap();
         assert_eq!(snapshot.gateways.len(), 1);
         assert_eq!(snapshot.catalogs.len(), 2);
 
@@ -199,7 +162,7 @@ mod staging {
             serde_json::from_str(include_str!("../../../../tests/fixtures/node-boot-v1.json"))
                 .unwrap();
         let mut record = synthetic["record"].clone();
-        record["gateway_release_id"] = json!(snapshot.approvals.manifest().gateways[0]);
+        record["gateway_release_id"] = json!(gateway_id(&body));
         record["report_data"]["environment"] = json!("staging");
         let challenge: [u8; 32] = hex::decode(
             record["report_data"]["registration_challenge"]
@@ -234,16 +197,16 @@ mod staging {
     }
 
     #[test]
-    fn incomplete_or_altered_candidate_never_replaces_an_accepted_snapshot() {
+    fn altered_candidate_never_replaces_an_accepted_snapshot_and_withdrawal_is_signed() {
         let (mut verifier, body, now) = fixture();
         let first = verifier.refresh(&encode(&body), now).unwrap();
         for pointer in [
-            "/allowed_igvms",
-            "/catalogs",
-            "/keys/inclusion",
-            "/hardware_policy/inclusion",
+            "/approvals/document/gateways",
+            "/approvals/document/catalogs",
+            "/approvals/document/gateways/0/provenance",
             "/approvals/signature",
-            "/allowed_igvms/0/provenance",
+            "/approvals/inclusion",
+            "/keys/inclusion",
         ] {
             let mut bad = body.clone();
             *bad.pointer_mut(pointer).unwrap() = json!([]);
@@ -253,17 +216,9 @@ mod staging {
             );
             assert!(Arc::ptr_eq(verifier.current().unwrap(), &first));
         }
-        let mut omitted = body.clone();
-        omitted["approvals"]["document"]["revision"] = json!(2);
-        omitted["approvals"]["document"]["gateways"] = json!([]);
-        omitted["approvals"] = logged_approval(&omitted["approvals"]["document"]);
-        assert!(matches!(
-            verifier.refresh(&encode(&omitted), now),
-            Err(Error::Incomplete("gateway"))
-        ));
-        omitted["allowed_igvms"] = json!([]);
-        let withdrawal = verifier.refresh(&encode(&omitted), now).unwrap();
-        assert!(withdrawal.gateways.is_empty());
+        let withdrawal = revised(&body, 2, |document| document["gateways"] = json!([]));
+        let withdrawn = verifier.refresh(&encode(&withdrawal), now).unwrap();
+        assert!(withdrawn.gateways.is_empty());
         assert!(matches!(
             verifier.refresh(&encode(&body), now),
             Err(Error::Approval(approvals::Error::Rollback))
@@ -276,8 +231,8 @@ mod staging {
     fn delivery_checksum_and_extensions_do_not_grant_authority() {
         let (mut verifier, body, now) = fixture();
         for pointer in [
-            "/allowed_igvms/0/document/sequence",
-            "/hardware_policy/document/policies/0/cpuid_family",
+            "/approvals/document/gateways/0/document/sequence",
+            "/approvals/document/hardware_policy/policies/0/cpuid_family",
             "/approvals/document/revision",
         ] {
             let mut bad = body.clone();
@@ -285,10 +240,10 @@ mod staging {
             assert!(verifier.refresh(&encode(&bad), now).is_err());
         }
         for (field, value) in [
+            ("gateways", json!([])),
             ("nodes", json!([])),
             ("sequence", json!(99)),
             ("node_id", json!("attacker-controlled")),
-            ("region", json!("attacker-controlled")),
         ] {
             let mut bad = body.clone();
             bad[field] = value;
@@ -311,23 +266,13 @@ mod staging {
     fn logged_root_retirement_survives_partial_delivery_and_rotation_preserves_release_identity() {
         let (mut verifier, body, now) = fixture();
         let first = verifier.refresh(&encode(&body), now).unwrap();
-        let rotation: Value = serde_json::from_str(include_str!(
-            "../../../../tests/fixtures/logged-key-rotation.json"
+        let rotated: Value = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/hardware-session-rotated-v1.json"
         ))
         .unwrap();
-        let now = now.max(rotation["verified_at_ms"].as_i64().unwrap());
-        let mut next = body.clone();
-        next["keys"] = rotation["keys"].clone();
-        next["hardware_policy"] = rotation["hardware_policy"].clone();
-        next["approvals"]["document"]["key_manifest_sha256"] =
-            json!(payload_sha256(&next["keys"]["document"]).unwrap());
-        let sign = |value: &Value| signature_for(value, 243, "stogas-fixture-online-20260921");
-        next["approvals"] = logged_approval(&next["approvals"]["document"]);
-        next["allowed_igvms"][0]["signature"] = sign(&next["allowed_igvms"][0]["document"]);
-        next["catalogs"][0]["signature"] = sign(&next["catalogs"][0]["document"]);
+        let next = rotated["body"].clone();
         let mut partial = next.clone();
-        partial["allowed_igvms"] = json!([]);
-        partial["vendor_collateral"] = json!([{"collateral_type":"crl","der_base64url":"bad"}]);
+        partial["approvals"]["document"]["revision"] = json!(99);
         assert!(verifier.refresh(&encode(&partial), now).is_err());
         assert!(Arc::ptr_eq(verifier.current().unwrap(), &first));
         assert!(matches!(
@@ -340,23 +285,17 @@ mod staging {
         ));
         let second = verifier.refresh(&encode(&next), now).unwrap();
         second.require_current_keys().unwrap();
-        assert_eq!(
-            first.approvals.manifest().gateways,
-            second.approvals.manifest().gateways
-        );
-        assert_eq!(
-            first.approvals.manifest().catalogs,
-            second.approvals.manifest().catalogs
-        );
+        assert!(first.gateways.keys().eq(second.gateways.keys()));
+        assert!(first.catalogs.keys().eq(second.catalogs.keys()));
         assert_eq!(
             first.hardware_policy().sha256,
             second.hardware_policy().sha256
         );
-        let id = &second.approvals.manifest().gateways[0];
-        assert!(second.compatible_catalog(id).is_some());
+        let id = gateway_id(&next);
+        assert!(second.compatible_catalog(&id).is_some());
         assert_eq!(
-            first.gateway(id).unwrap().measurement,
-            second.gateway(id).unwrap().measurement
+            first.gateway(&id).unwrap().measurement,
+            second.gateway(&id).unwrap().measurement
         );
         // Already-running requests retain their original evidence; new work uses the current set.
         assert_eq!(
@@ -366,80 +305,67 @@ mod staging {
     }
 
     #[cfg(feature = "snp")]
+    fn registered_report() -> Vec<u8> {
+        let registration: Value = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/hardware-registration-v1.json"
+        ))
+        .unwrap();
+        URL_SAFE_NO_PAD
+            .decode(registration["boot"]["report"].as_str().unwrap())
+            .unwrap()
+    }
+
+    #[cfg(feature = "snp")]
     #[test]
     fn expired_collateral_remains_a_local_platform_failure_not_a_manifest_withdrawal() {
         let (mut verifier, mut body, now) = fixture();
-        let archived: Value = serde_json::from_str(include_str!(
-            "../../tests/fixtures/staging-bundle-sequence-1927.json"
-        ))
-        .unwrap();
-        body["vendor_collateral"] = Value::Array(
-            archived["body"]["vendor_collateral"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v["payload"].clone())
-                .collect(),
-        );
+        let report = registered_report();
+        let chip = hex::encode(&report[0x1a0..0x1e0]);
+        let tcb = hex::encode(&report[0x180..0x188]);
         let snapshot = verifier.refresh(&encode(&body), now).unwrap();
-        let chip = archived["body"]["nodes"][0]["chip_id"].as_str().unwrap();
-        let tcb = archived["body"]["nodes"][0]["reported_tcb"]
-            .as_str()
-            .unwrap();
+        let expiry = snapshot
+            .collateral_validity(&chip, &tcb, now)
+            .unwrap()
+            .not_after_unix_ms;
         assert!(matches!(
-            snapshot.collateral_validity(chip, tcb, now),
+            snapshot.collateral_validity(&chip, &tcb, expiry),
             Err(Error::CollateralExpired)
         ));
-        let before_expiry = crate::parse_time("2026-07-20T00:00:00Z").unwrap();
-        assert!(
-            snapshot
-                .collateral_validity(chip, tcb, before_expiry)
-                .is_ok()
-        );
-        let summaries = snapshot.collateral_summary(before_expiry);
-        assert!(!summaries.is_empty());
-        assert!(summaries.iter().all(|row| row["error"].is_null()
-            && row["not_before_unix_ms"].as_i64().unwrap() <= before_expiry
-            && row["not_after_unix_ms"].as_i64().unwrap() > before_expiry));
         assert!(
             snapshot
                 .collateral_summary(now)
                 .iter()
-                .all(|row| row["error"] == "expired_collateral"
-                    && row.get("not_after_unix_ms").is_none())
+                .all(|row| row["error"].is_null()
+                    && row["not_before_unix_ms"].as_i64().unwrap() <= now
+                    && row["not_after_unix_ms"].as_i64().unwrap() > now)
         );
-        // Delivery timestamps cannot extend the vendor's signed nextUpdate.
+        // Delivery timestamps cannot extend the vendor's signed nextUpdate, and expired
+        // collateral does not reject the approved evidence itself.
         for row in body["vendor_collateral"].as_array_mut().unwrap() {
-            row["fetched_at"] = json!("2026-09-20T00:00:00Z");
+            row["fetched_at"] = json!("2099-01-01T00:00:00Z");
         }
-        let refreshed = verifier.refresh(&encode(&body), now).unwrap();
+        let refreshed = verifier.refresh(&encode(&body), expiry).unwrap();
         assert!(matches!(
-            refreshed.collateral_validity(chip, tcb, now),
+            refreshed.collateral_validity(&chip, &tcb, expiry),
             Err(Error::CollateralExpired)
         ));
-        assert_eq!(
-            refreshed.approvals.manifest().revision,
-            snapshot.approvals.manifest().revision
+        assert!(
+            refreshed
+                .collateral_summary(expiry)
+                .iter()
+                .any(|row| row["error"] == "expired_collateral"
+                    && row.get("not_after_unix_ms").is_none())
         );
+        assert_eq!(refreshed.gateways.len(), 1);
     }
 
     #[cfg(feature = "snp")]
     #[test]
     fn genuine_snp_report_requires_current_approval_binding_and_complete_hardware_appraisal() {
-        let (mut verifier, mut body, now) = fixture();
-        let real: Value =
-            serde_json::from_str(include_str!("../../tests/fixtures/snp-report-v5.json")).unwrap();
-        let now = now.max(crate::parse_time(real["captured_at"].as_str().unwrap()).unwrap());
-        let report = URL_SAFE_NO_PAD
-            .decode(real["report"].as_str().unwrap())
-            .unwrap();
+        let (mut verifier, body, now) = fixture();
+        let report = registered_report();
         let expected: [u8; 64] = report[0x50..0x90].try_into().unwrap();
-        body["allowed_igvms"][0]["document"] = real["document"].clone();
-        sign_gateway(&mut body["allowed_igvms"][0]);
-        let release_id = payload_sha256(&real["document"]).unwrap();
-        body["approvals"]["document"]["gateways"] = json!([release_id]);
-        body["approvals"] = logged_approval(&body["approvals"]["document"]);
-        body["vendor_collateral"] = real["vendor_collateral"].clone();
+        let release_id = gateway_id(&body);
         let snapshot = verifier.refresh(&encode(&body), now).unwrap();
         // Historical report appraisal, not a claim that this fixture establishes a fresh session.
         let session = snapshot
@@ -509,11 +435,8 @@ mod staging {
                     .is_err()
             );
         }
-        body["approvals"]["document"]["revision"] = json!(2);
-        body["approvals"]["document"]["gateways"] = json!([]);
-        body["approvals"] = logged_approval(&body["approvals"]["document"]);
-        body["allowed_igvms"] = json!([]);
-        let withdrawn = verifier.refresh(&encode(&body), now).unwrap();
+        let withdrawal = revised(&body, 2, |document| document["gateways"] = json!([]));
+        let withdrawn = verifier.refresh(&encode(&withdrawal), now).unwrap();
         assert!(matches!(
             withdrawn.verify_snp_report(&report, &expected, &release_id, now),
             Err(Error::Approval(crate::approvals::Error::NotApproved(

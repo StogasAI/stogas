@@ -16,7 +16,7 @@ import (
 )
 
 func TestEvidenceSnapshotsRetainOwnershipAcrossRefreshAndClose(t *testing.T) {
-	bytes, err := os.ReadFile("../tests/fixtures/current-evidence-v1.json")
+	bytes, err := os.ReadFile("../tests/fixtures/hardware-session-v1.json")
 	if err != nil {
 		t.Fatal(err)
 	}

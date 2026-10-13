@@ -1,8 +1,8 @@
 //! Archived evidence for offline receipt checks.
 //!
 //! The public ledger stores each evidence bundle as an index of content-addressed
-//! objects, so bundles share unchanged signed documents. This rebuilds the bundle;
-//! `stogas proof` performs the appraisal.
+//! objects, so bundles share unchanged signed documents and certificates. This rebuilds
+//! the bundle; `stogas proof` performs the appraisal.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -137,9 +137,6 @@ struct Index {
     sizes: BTreeMap<String, usize>,
     keys: String,
     approvals: String,
-    allowed_igvms: Vec<String>,
-    catalogs: Vec<String>,
-    hardware_policy: String,
     vendor_collateral: Vec<Collateral>,
 }
 
@@ -178,10 +175,8 @@ impl Index {
     }
 
     fn references(&self) -> BTreeSet<&str> {
-        [&self.keys, &self.approvals, &self.hardware_policy]
+        [&self.keys, &self.approvals]
             .into_iter()
-            .chain(&self.allowed_igvms)
-            .chain(&self.catalogs)
             .chain(self.vendor_collateral.iter().map(|entry| &entry.der))
             .map(String::as_str)
             .collect()
@@ -207,9 +202,6 @@ impl Index {
             "schema": "stogas.confidential-bundle.v1",
             "keys": object(&self.keys)?,
             "approvals": object(&self.approvals)?,
-            "allowed_igvms": self.allowed_igvms.iter().map(object).collect::<Result<Vec<_>>>()?,
-            "catalogs": self.catalogs.iter().map(object).collect::<Result<Vec<_>>>()?,
-            "hardware_policy": object(&self.hardware_policy)?,
             "vendor_collateral": collateral,
         });
         ensure!(

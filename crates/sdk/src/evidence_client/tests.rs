@@ -101,16 +101,14 @@ impl Server {
 }
 
 fn fixture() -> (RootKey, Value) {
-    let fixture: Value = serde_json::from_str(include_str!(
-        "../../../../tests/fixtures/current-evidence-v1.json"
-    ))
-    .unwrap();
+    let fixture = hardware_fixture();
     (
         serde_json::from_value(fixture["root"].clone()).unwrap(),
         fixture["bundle"]["body"].clone(),
     )
 }
 
+/// Replaces edited approvals with their logged fixture signature; unchanged ones keep theirs.
 fn signed(mut body: Value) -> Vec<u8> {
     let variants: Value = serde_json::from_str(include_str!(
         "../../../../tests/fixtures/logged-approval-variants.json"
@@ -118,8 +116,9 @@ fn signed(mut body: Value) -> Vec<u8> {
     .unwrap();
     let digest =
         stogas_verifier::approvals::payload_sha256(&body["approvals"]["document"]).unwrap();
-    if let Some(approval) = variants["approvals"].get(&digest) {
-        body["approvals"] = approval.clone();
+    if let Some(logged) = variants["approvals"].get(&digest) {
+        body["approvals"]["signature"] = logged["signature"].clone();
+        body["approvals"]["inclusion"] = logged["inclusion"].clone();
     }
     serde_json::to_vec(&json!({"schema":"stogas.confidential-bundle-envelope.v1", "body_sha256":stogas_verifier::approvals::payload_sha256(&body).unwrap(),"body":body})).unwrap()
 }
@@ -188,21 +187,18 @@ async fn compression_cannot_bypass_the_decoded_evidence_limit() {
 async fn stale_success_falls_through_to_replica_and_etags_never_cross_origins() {
     let (root, mut latest) = fixture();
     let target = stogas_verifier::approvals::payload_sha256(
-        latest["catalogs"]
+        &latest["approvals"]["document"]["catalogs"]
             .as_array()
             .unwrap()
             .last()
-            .unwrap()
-            .get("document")
-            .unwrap(),
+            .unwrap()["document"],
     )
     .unwrap();
     let mut old = latest.clone();
-    old["catalogs"].as_array_mut().unwrap().pop();
     old["approvals"]["document"]["catalogs"]
         .as_array_mut()
         .unwrap()
-        .retain(|id| id != &target);
+        .pop();
     latest["approvals"]["document"]["revision"] = json!(2);
     let server = Server::new([
         reply(signed(old), "\"r2-old\""),
@@ -217,7 +213,7 @@ async fn stale_success_falls_through_to_replica_and_etags_never_cross_origins() 
         .recover(deadline(), move |snapshot| {
             snapshot
                 .catalog(&required)
-                .ok_or(evidence::Error::Incomplete("catalog"))
+                .ok_or_else(|| stogas_verifier::approvals::Error::NotApproved("catalog").into())
                 .map(|_| ())
         })
         .await
@@ -251,7 +247,8 @@ async fn concurrent_recovery_shares_success_and_failed_recovery_has_one_cooldown
     let (first, second) = tokio::join!(first, second);
     assert!(Arc::ptr_eq(&first.unwrap(), &second.unwrap()));
     assert_eq!(server.state.requests.lock().unwrap().len(), 1);
-    let missing = |_: &Snapshot| Err(evidence::Error::Incomplete("missing requested release"));
+    let missing =
+        |_: &Snapshot| Err(stogas_verifier::approvals::Error::NotApproved("gateway").into());
     assert!(matches!(
         client.recover(deadline(), missing).await,
         Err(Error::Verification(_))
@@ -677,7 +674,6 @@ async fn warm_rejection_preserves_cause_and_old_requests_without_reusing_stale_a
     body["approvals"]["document"]["revision"] =
         json!(body["approvals"]["document"]["revision"].as_u64().unwrap() + 1);
     body["approvals"]["document"]["gateways"] = json!([]);
-    body["allowed_igvms"] = json!([]);
     let withdrawn = client
         .verifier
         .lock()

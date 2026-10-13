@@ -59,12 +59,12 @@ mod tests {
         let (mut verifier, archive, bundle, now) = fixture();
         let current = verifier.refresh(&bytes(&bundle), now).unwrap();
         let rotation: Value = serde_json::from_str(include_str!(
-            "../../../../tests/fixtures/logged-key-rotation.json"
+            "../../../../tests/fixtures/hardware-session-rotated-v1.json"
         ))
         .unwrap();
         let later = now + 366 * 24 * 60 * 60 * 1000;
         verifier
-            .verify_key_manifest(&bytes(&rotation["keys"]), later)
+            .verify_key_manifest(&bytes(&rotation["body"]["keys"]), later)
             .unwrap();
         assert!(current.require_current_keys().is_err());
         let approvals = verifier
@@ -73,7 +73,7 @@ mod tests {
         assert_eq!(approvals["body_sha256"], bundle["body_sha256"]);
         assert_eq!(
             approvals["evidence"]["approvals"],
-            bundle["body"]["approvals"]["document"]
+            bundle["body"]["approvals"]
         );
         let boot = verifier
             .verify_boot_archive(&bytes(&archive), &bytes(&bundle), later)
