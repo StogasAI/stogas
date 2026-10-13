@@ -26,6 +26,18 @@ class ArtifactsTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     normalize_wheel(tree, root)
 
+    def test_source_digest_matches_the_shared_release_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "dir").mkdir()
+            (root / "empty").mkdir()
+            (root / "a").write_bytes(b"first")
+            (root / "a").chmod(0o755)
+            (root / "dir.txt").write_bytes(b"")
+            (root / "dir" / "z").write_bytes(b"payload\0\xff")
+            # The same value the gateway and catalog release tooling compute.
+            self.assertEqual(source_digest(root), "887904a1ae03e4449f05e05fb147314cf9c8c428d3eec00179e0d7f56fc3a853")
+
     def test_consumer_source_cannot_drift_from_packaged_source(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
