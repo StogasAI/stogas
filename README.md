@@ -23,7 +23,7 @@ The optional CLI provides a local verified endpoint for an existing client. Inst
 stogas serve --security tls
 ```
 
-Use the printed URL as your client's base URL and keep it private. The transport never replays inference, so a retry after an interruption may run the request again. Use `--security e2ee` for encrypted transport over HTTPS.
+Use the printed URL as your client's base URL and keep it private. The transport sends a request again only when the gateway refused it before starting it, so a client retry after any other interruption may run the request again. Use `--security e2ee` for encrypted transport over HTTPS.
 
 Other commands:
 

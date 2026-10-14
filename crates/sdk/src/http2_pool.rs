@@ -54,7 +54,8 @@ pub enum Error {
     Request {
         #[source]
         source: hyper::Error,
-        /// True only when Hyper returns the unsubmitted request. Otherwise execution is unknown.
+        /// True when Hyper returns the unsubmitted request or the peer refused the stream
+        /// before processing it. Otherwise execution is unknown.
         not_sent: bool,
     },
     #[error("HTTP/2 close deadline expired")]
@@ -509,7 +510,8 @@ impl<M: Send + Sync + 'static> Permit<M> {
         self.lease.context = context;
     }
 
-    /// Submit once. Disconnects, resets and GOAWAY races never cause automatic replay.
+    /// Submit once. Disconnects, resets and GOAWAY races never cause automatic replay; the
+    /// caller decides whether to resend a request the peer refused before processing it.
     /// The deadline covers response headers; the consumer owns the response body's deadline.
     /// Authentication context remains in the response extensions and body ownership.
     ///
@@ -535,11 +537,25 @@ impl<M: Send + Sync + 'static> Permit<M> {
             .await
             .map_err(|_| Error::ResponseDeadline)?
             .map_err(|mut error| {
-                let not_sent = error.take_message().is_some();
-                Error::Request {
-                    source: error.into_error(),
-                    not_sent,
+                let returned = error.take_message().is_some();
+                let source = error.into_error();
+                // RFC 9113 Section 8.7: the peer processed no part of a stream it reset with
+                // REFUSED_STREAM, or of one above the last stream identifier in its GOAWAY. h2
+                // reports a received GOAWAY only on such streams and on streams it never opened.
+                let refusal = std::error::Error::source(&source)
+                    .and_then(|cause| cause.downcast_ref::<h2::Error>())
+                    .filter(|cause| cause.is_remote());
+                let going_away = refusal.is_some_and(h2::Error::is_go_away);
+                if going_away {
+                    // The connection takes no new streams, so a resend must not select it
+                    // before the dispatcher observes the GOAWAY.
+                    lease.activity.retired.store(true, Ordering::Release);
+                    lease.activity.changed.notify_waiters();
                 }
+                let not_sent = returned
+                    || going_away
+                    || refusal.and_then(h2::Error::reason) == Some(h2::Reason::REFUSED_STREAM);
+                Error::Request { source, not_sent }
             })?;
         response.extensions_mut().insert(Arc::clone(&self.metadata));
         Ok(response.map(|body| OwnedBody {

@@ -115,13 +115,15 @@ impl Client {
         Self { evidence, pool }
     }
 
-    /// Submit once after checking the current appraisal. The response extensions contain
+    /// Submit after checking the current appraisal. The response extensions contain
     /// `Arc<RequestContext>`. Requested receipts use that original context and the same deadline;
     /// the consumer owns body deadlines when no receipt is requested.
     ///
     /// # Errors
     /// Pool/verification errors before submission release no application bytes. A transport error
     /// or response-header timeout after dispatch may leave execution unknown; no replay is attempted.
+    /// A request the gateway refused before processing it, or one that never left this client, is
+    /// sent once more, as gRPC retries transparently.
     pub async fn send(
         &self,
         request: Request<Bytes>,
@@ -146,16 +148,13 @@ impl Client {
                     .ok_or(Error::Size)
             },
         )?;
-        let mut permit = self.pool.acquire(retained, deadline).await?;
-        let context = permit
-            .metadata
-            .prepare(&self.evidence, deadline, wall_clock_ms)
-            .await?;
-        permit.retain_context(Arc::clone(&context));
-        let mut response = permit.send(request, deadline).await?;
-        response.extensions_mut().remove::<Arc<Channel>>();
-        response.extensions_mut().insert(Arc::clone(&context));
-        let response = response.map(Body::new);
+        // Hyper consumes a submitted request, so the first attempt sends a clone.
+        let (response, context) = match self.submit(request.clone(), retained, deadline).await {
+            Err(Error::Pool(
+                http2_pool::Error::Closed | http2_pool::Error::Request { not_sent: true, .. },
+            )) => self.submit(request, retained, deadline).await?,
+            result => result?,
+        };
         match digest {
             Some(digest) => {
                 Ok(
@@ -165,6 +164,24 @@ impl Client {
             }
             None => Ok(response),
         }
+    }
+
+    async fn submit(
+        &self,
+        request: Request<Bytes>,
+        retained: usize,
+        deadline: Instant,
+    ) -> Result<(Response<Body>, Arc<RequestContext>), Error> {
+        let mut permit = self.pool.acquire(retained, deadline).await?;
+        let context = permit
+            .metadata
+            .prepare(&self.evidence, deadline, wall_clock_ms)
+            .await?;
+        permit.retain_context(Arc::clone(&context));
+        let mut response = permit.send(request, deadline).await?;
+        response.extensions_mut().remove::<Arc<Channel>>();
+        response.extensions_mut().insert(Arc::clone(&context));
+        Ok((response.map(Body::new), context))
     }
 
     /// Stop new work and finish owned responses before the deadline.
