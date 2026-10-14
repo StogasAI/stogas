@@ -321,6 +321,108 @@ async fn disconnect_after_dispatch_is_not_replayed_and_later_request_reconnects(
 }
 
 #[tokio::test]
+async fn only_a_refused_stream_is_not_sent_and_its_connection_stays_usable() {
+    let (pool, mut server) = harness(1, 2);
+    for (reason, not_sent) in [
+        (h2::Reason::REFUSED_STREAM, true),
+        (h2::Reason::INTERNAL_ERROR, false),
+    ] {
+        let request = start(&pool, "/reset").await;
+        let mut seen = next(&mut server).await;
+        seen.response.send_reset(reason);
+        assert!(
+            matches!(request.await.unwrap(), Err(Error::Request { not_sent: sent, .. }) if sent == not_sent),
+            "{reason:?}"
+        );
+    }
+    let later = start(&pool, "/later").await;
+    let seen = next(&mut server).await;
+    assert_eq!(seen.channel, 0);
+    seen.respond(b"later", true);
+    later
+        .await
+        .unwrap()
+        .unwrap()
+        .into_body()
+        .collect()
+        .await
+        .unwrap();
+    pool.close(deadline()).await.unwrap();
+}
+
+// Go's server sends one GOAWAY naming the highest stream it accepted and ignores later
+// streams, so a request sent while that GOAWAY is in flight was never processed.
+#[tokio::test]
+async fn goaway_proves_later_streams_unprocessed_and_retires_the_connection_at_once() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    async fn headers(server: &mut tokio::io::DuplexStream) -> u32 {
+        loop {
+            let mut header = [0; 9];
+            server.read_exact(&mut header).await.unwrap();
+            let mut payload =
+                vec![0; u32::from_be_bytes([0, header[0], header[1], header[2]]) as usize];
+            server.read_exact(&mut payload).await.unwrap();
+            if header[3] == 1 {
+                return u32::from_be_bytes(header[5..].try_into().unwrap());
+            }
+        }
+    }
+    let (sockets, mut accepted) = mpsc::unbounded_channel();
+    let pool = Pool::new(limits(1), move |_| {
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        sockets.send(server).unwrap();
+        async move { Ok((client, ())) }
+    });
+    let request = |path: &'static str| {
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            let request = Request::builder()
+                .uri(format!("https://gateway.test{path}"))
+                .body(Bytes::new())
+                .unwrap();
+            pool.acquire(1, deadline())
+                .await?
+                .send(request, deadline())
+                .await
+        })
+    };
+    let kept = request("/kept");
+    let mut server = accepted.recv().await.unwrap();
+    let mut preface = [0; 24];
+    server.read_exact(&mut preface).await.unwrap();
+    // SETTINGS allowing two concurrent streams.
+    server
+        .write_all(&[0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 2])
+        .await
+        .unwrap();
+    assert_eq!(headers(&mut server).await, 1);
+    let refused = request("/refused");
+    assert_eq!(headers(&mut server).await, 3);
+    // GOAWAY with last stream 1 and NO_ERROR.
+    server
+        .write_all(&[0, 0, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0])
+        .await
+        .unwrap();
+    assert!(matches!(
+        refused.await.unwrap(),
+        Err(Error::Request { not_sent: true, .. })
+    ));
+    assert!(
+        pool.inner.state.lock().unwrap().channels[0]
+            .activity
+            .retired
+            .load(Ordering::Acquire)
+    );
+    // Stream 1 still completes: HEADERS with `:status: 200` and END_STREAM.
+    server
+        .write_all(&[0, 0, 1, 1, 5, 0, 0, 0, 1, 0x88])
+        .await
+        .unwrap();
+    assert_eq!(kept.await.unwrap().unwrap().status(), 200);
+    pool.close(deadline()).await.unwrap();
+}
+
+#[tokio::test]
 async fn close_waits_for_body_completion_then_stops_all_channels() {
     let (pool, mut server) = harness(1, 2);
     let request = start(&pool, "/active").await;

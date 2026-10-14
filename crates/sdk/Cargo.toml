@@ -38,6 +38,7 @@ base64.workspace = true
 clap = { version = "4.5.47", features = ["derive"], optional = true }
 futures-util = "0.3.31"
 getrandom = "0.4.3"
+h2 = "0.4.15"
 hex.workspace = true
 http-body-util = "0.1.4"
 hyper = { version = "1.10.1", features = ["client", "http2"] }
@@ -60,7 +61,6 @@ x509-parser = { version = "0.18.0", default-features = false }
 brotli = "8"
 ed25519-dalek.workspace = true
 flate2 = "1"
-h2 = "0.4.15"
 hpke = { version = "=0.14.0", default-features = false, features = ["alloc", "getrandom", "aes", "x25519", "mlkem"] }
 rcgen = "0.14.4"
 tokio = { version = "1.47.1", features = ["test-util"] }
