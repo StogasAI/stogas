@@ -34,7 +34,7 @@ def run(arguments, **kwargs):
 
 
 def download(url):
-    request = urllib.request.Request(url, headers={"User-Agent": "stogas-sdk-release/1 (https://github.com/StogasAI/verifier)"})
+    request = urllib.request.Request(url, headers={"User-Agent": "stogas-sdk-release/1 (https://github.com/StogasAI/stogas)"})
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             value = response.read(2 * 1024**3 + 1)
@@ -109,7 +109,7 @@ def crate_upload(path, metadata, token):
     body = struct.pack("<I", len(encoded)) + encoded + struct.pack("<I", len(archive)) + archive
     request = urllib.request.Request("https://crates.io/api/v1/crates/new", data=body, method="PUT", headers={
         "Authorization": token, "Content-Type": "application/octet-stream", "Accept": "application/json",
-        "User-Agent": "stogas-sdk-release/1 (https://github.com/StogasAI/verifier)",
+        "User-Agent": "stogas-sdk-release/1 (https://github.com/StogasAI/stogas)",
     })
     # Never forward an authorization header to a redirect target.
     class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -245,7 +245,7 @@ def maven(packages, version):
 
 def go(packages, version, source):
     tag = f"go/v{version}"
-    repository = "https://github.com/StogasAI/verifier.git"
+    repository = "https://github.com/StogasAI/stogas.git"
     with tempfile.TemporaryDirectory(prefix="stogas-go-") as temporary:
         work = Path(temporary)
         unpack(packages / f"stogas-go-v{version}.tar.gz", work / "approved")

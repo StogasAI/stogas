@@ -2,8 +2,8 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>ai.stogas</groupId><artifactId>stogas</artifactId><version>0.1.0-alpha.1</version>
   <name>Stogas SDK</name><description>Verified confidential HTTP transport backed by Rust.</description>
-  <url>https://github.com/StogasAI/verifier</url>
-  <scm><connection>scm:git:https://github.com/StogasAI/verifier.git</connection><url>https://github.com/StogasAI/verifier</url></scm>
+  <url>https://github.com/StogasAI/stogas</url>
+  <scm><connection>scm:git:https://github.com/StogasAI/stogas.git</connection><url>https://github.com/StogasAI/stogas</url></scm>
   <developers><developer><id>StogasAI</id><name>Stogas</name><url>https://stogas.ai</url></developer></developers>
   <licenses><license><name>Apache-2.0</name><url>https://www.apache.org/licenses/LICENSE-2.0</url></license></licenses>
   <properties><maven.compiler.release>17</maven.compiler.release><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>

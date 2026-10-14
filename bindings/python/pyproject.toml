@@ -20,8 +20,8 @@ classifiers = [
 
 [project.urls]
 Documentation = "https://stogas.ai/docs/verification"
-Issues = "https://github.com/StogasAI/verifier/issues"
-Repository = "https://github.com/StogasAI/verifier"
+Issues = "https://github.com/StogasAI/stogas/issues"
+Repository = "https://github.com/StogasAI/stogas"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]

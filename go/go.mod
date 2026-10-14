@@ -1,3 +1,3 @@
-module github.com/StogasAI/verifier/go
+module github.com/StogasAI/stogas/go
 
 go 1.26.5

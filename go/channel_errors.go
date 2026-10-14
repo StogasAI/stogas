@@ -1,6 +1,6 @@
 //go:build stogas_gateway
 
-package verifier
+package stogas
 
 import "errors"
 

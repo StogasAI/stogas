@@ -9,7 +9,7 @@
     <PackageId>Stogas</PackageId>
     <Description>Verified confidential HTTP transport backed by the Stogas Rust verifier.</Description>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
-    <RepositoryUrl>https://github.com/StogasAI/verifier</RepositoryUrl>
+    <RepositoryUrl>https://github.com/StogasAI/stogas</RepositoryUrl>
   </PropertyGroup>
   <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="/" />

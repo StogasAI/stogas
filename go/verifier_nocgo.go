@@ -1,6 +1,6 @@
 //go:build !cgo
 
-package verifier
+package stogas
 
 import "errors"
 

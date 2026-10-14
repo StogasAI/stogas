@@ -1,3 +1,3 @@
-module github.com/StogasAI/verifier/go/reference
+module github.com/StogasAI/stogas/go/reference
 
 go 1.27.0

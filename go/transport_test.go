@@ -1,6 +1,6 @@
 //go:build cgo && !stogas_gateway
 
-package verifier
+package stogas
 
 import (
 	"encoding/json"

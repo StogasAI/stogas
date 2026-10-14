@@ -1,4 +1,4 @@
-package verifier
+package stogas
 
 // VerificationError preserves the core's fixed reason without parsing human-readable messages.
 type VerificationError struct {
