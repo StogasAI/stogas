@@ -38,7 +38,7 @@ def build(output, epoch):
     run("node", "scripts/package-npm.mjs", "--pack-destination", output)
     # Cargo packages interdependent workspace members together, using an isolated
     # temporary registry for verification before any real registry publication.
-    run("cargo", "package", "--locked", "--registry", "crates-io", "-p", "stogas-offline-sigstore", "-p", "stogas-verifier", "-p", "stogas", "--features", "stogas/cli")
+    run("cargo", "package", "--locked", "--registry", "crates-io", "-p", "stogas-offline-sigstore", "-p", "stogas-verifier", "-p", "stogas", "-p", "stogas-cli")
     for archive in Path("/build/target/package").glob("*.crate"):
         shutil.copyfile(archive, output / archive.name)
     files = sorted(path for path in output.iterdir() if path.is_file())

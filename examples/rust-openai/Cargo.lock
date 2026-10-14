@@ -2826,8 +2826,6 @@ dependencies = [
  "tokio-rustls",
  "url",
  "webpki-roots",
- "x509-parser",
- "zeroize",
 ]
 
 [[package]]

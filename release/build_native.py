@@ -119,7 +119,7 @@ def build(platform, output, epoch):
             shared = "libstogas_verifier_ffi.so"
             split_debug(objcopy, built / shared, runtime / shared, symbols / (shared + ".debug"), env)
         if "cli" in target["packages"]:
-            run([*base, "--package", "stogas", "--features", "cli"], env)
+            run([*base, "--package", "stogas-cli"], env)
             if windows:
                 shutil.copyfile(built / "stogas.exe", runtime / "stogas.exe")
                 shutil.copyfile(built / "stogas.pdb", symbols / "stogas.pdb")

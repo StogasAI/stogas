@@ -26,7 +26,7 @@ aes-gcm = { version = "=0.11.0", default-features = false, features = ["aes", "a
 base64.workspace = true
 chrono.workspace = true
 ed25519-dalek = { workspace = true, features = ["digest"] }
-getrandom = "0.4.3"
+getrandom.workspace = true
 ghash = { version = "=0.6.0", default-features = false, features = ["zeroize"] }
 hex.workspace = true
 hkdf = "0.13.0"

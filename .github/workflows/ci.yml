@@ -27,7 +27,7 @@ jobs:
           persist-credentials: false
       - run: rustup install --no-self-update --profile minimal "$RUSTUP_TOOLCHAIN"
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - run: cargo check --locked --workspace --all-targets --features stogas/cli
+      - run: cargo check --locked --workspace --all-targets
       - run: cargo test --locked --tests --package stogas-verifier --package stogas-verifier-ffi --no-default-features --features staging,stogas-verifier-ffi/gateway
 
   security:
@@ -58,10 +58,10 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo fmt --manifest-path fuzz/Cargo.toml --check
       - run: python3 -B -m unittest discover -s release -p 'test_*.py' -v
-      - run: cargo clippy --locked --workspace --all-targets --features stogas/cli -- -D warnings
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       # The nightly fuzz campaign is the only other build of these targets.
       - run: cargo clippy --locked --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
-      - run: cargo clippy --locked --package stogas --all-targets --features cli,staging -- -D warnings
+      - run: cargo clippy --locked --package stogas --package stogas-cli --all-targets --features staging -- -D warnings
       - run: cargo clippy --locked --package stogas-verifier --all-targets --no-default-features -- -D warnings
       - run: cargo clippy --locked --package stogas-verifier --all-targets --features staging,gateway -- -D warnings
       - run: cargo clippy --locked --package stogas-verifier-ffi --all-targets --no-default-features --features staging,gateway -- -D warnings
@@ -130,7 +130,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - run: cargo test --locked --workspace --all-targets --features stogas/cli
+      - run: cargo test --locked --workspace --all-targets
       - name: Qualify the Rust OpenAI client example
         run: cargo test --locked --manifest-path examples/rust-openai/Cargo.toml
       - name: Rust client through encrypted HTTP records
@@ -139,7 +139,7 @@ jobs:
           cargo build --locked --manifest-path examples/rust-openai/Cargo.toml
           python3 examples/check_http_client.py examples/rust-openai/target/debug/stogas-openai-example
       - name: Test compiled staging trust policy and transport
-        run: cargo test --locked --package stogas-verifier --package stogas --all-targets --features cli,staging
+        run: cargo test --locked --package stogas-verifier --package stogas --package stogas-cli --all-targets --features staging
       - name: Test the verifier without optional SNP support
         run: cargo test --locked --package stogas-verifier --all-targets --no-default-features
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
@@ -463,7 +463,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - run: cargo build --locked --package stogas-verifier-ffi --package stogas --features stogas/cli,staging
+      - run: cargo build --locked --package stogas-verifier-ffi --package stogas-cli --features staging
       - run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libcurl4-openssl-dev

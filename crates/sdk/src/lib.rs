@@ -1,4 +1,4 @@
-//! Managed Stogas HTTP transport shared by the SDK bindings and optional CLI.
+//! Managed Stogas HTTP transport shared by the SDK bindings and the CLI.
 
 use anyhow::{Result, bail};
 use std::{
