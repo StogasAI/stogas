@@ -11,7 +11,7 @@ use crate::{
     strict_json,
 };
 
-const REPOSITORY: &str = "https://github.com/StogasAI/verifier";
+const REPOSITORY: &str = "https://github.com/StogasAI/stogas";
 pub const MANIFEST: &str = "release-manifest.json";
 pub const ATTESTATION: &str = "github-attestation.jsonl";
 pub const SIGNATURE: &str = "stogas-signature.json";

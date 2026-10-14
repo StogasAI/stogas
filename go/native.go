@@ -1,8 +1,8 @@
 //go:build cgo
 
-// Package verifier provides the Stogas SDK through the packaged native Rust library bundled with
+// Package stogas provides the Stogas SDK through the packaged native Rust library bundled with
 // each tagged Go module release.
-package verifier
+package stogas
 
 /*
 #cgo linux,amd64,!musl LDFLAGS: -L${SRCDIR}/native/linux-amd64 -l:libstogas_verifier_ffi.a -ldl -lpthread -lm

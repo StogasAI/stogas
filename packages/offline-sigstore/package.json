@@ -5,11 +5,11 @@
 	"license": "Apache-2.0",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/StogasAI/verifier.git",
+		"url": "git+https://github.com/StogasAI/stogas.git",
 		"directory": "packages/offline-sigstore"
 	},
-	"homepage": "https://github.com/StogasAI/verifier#packages",
-	"bugs": "https://github.com/StogasAI/verifier/issues",
+	"homepage": "https://github.com/StogasAI/stogas#packages",
+	"bugs": "https://github.com/StogasAI/stogas/issues",
 	"engines": {
 		"node": ">=20"
 	},

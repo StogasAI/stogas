@@ -1,6 +1,6 @@
 //go:build cgo && staging
 
-package verifier
+package stogas
 
 import (
 	"crypto/sha256"

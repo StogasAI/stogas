@@ -4,7 +4,7 @@ Gem::Specification.new do |s|
   s.summary = 'Verified confidential HTTP transport backed by the Stogas Rust verifier.'
   s.authors = ['Stogas']
   s.license = 'Apache-2.0'
-  s.homepage = 'https://github.com/StogasAI/verifier'
+  s.homepage = 'https://github.com/StogasAI/stogas'
   s.required_ruby_version = '>= 3.3'
   s.platform = Gem::Platform.new(ENV.fetch('STOGAS_RUBY_PLATFORM', Gem::Platform.local.to_s))
   s.files = Dir['lib/**/*', 'README.md', 'LICENSE']

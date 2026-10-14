@@ -2,7 +2,7 @@
 name = "stogas"
 description = "The Stogas SDK for verified confidential AI connections"
 readme = "../../README.md"
-homepage = "https://github.com/StogasAI/verifier"
+homepage = "https://github.com/StogasAI/stogas"
 documentation = "https://docs.rs/stogas"
 keywords = ["confidential-computing", "sev-snp", "openai", "e2ee"]
 categories = ["api-bindings", "authentication", "cryptography"]

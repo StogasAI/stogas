@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 
-REPOSITORY = "https://github.com/StogasAI/verifier"
+REPOSITORY = "https://github.com/StogasAI/stogas"
 MANIFEST = "release-manifest.json"
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,199}\Z")
 

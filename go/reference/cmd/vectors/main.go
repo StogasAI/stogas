@@ -14,7 +14,7 @@ import (
 	"os"
 	"path/filepath"
 
-	ref "github.com/StogasAI/verifier/go/reference"
+	ref "github.com/StogasAI/stogas/go/reference"
 )
 
 func hx(b []byte) string       { return hex.EncodeToString(b) }

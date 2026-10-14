@@ -2,7 +2,7 @@
 name = "stogas-offline-sigstore"
 description = "Networkless verification of the GitHub/Sigstore in-toto profile"
 readme = "../../README.md"
-homepage = "https://github.com/StogasAI/verifier"
+homepage = "https://github.com/StogasAI/stogas"
 documentation = "https://docs.rs/stogas-offline-sigstore"
 keywords = ["sigstore", "in-toto", "slsa", "verification", "wasm"]
 categories = ["authentication", "cryptography", "web-programming::wasm"]
