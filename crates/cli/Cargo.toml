@@ -1,0 +1,40 @@
+[package]
+name = "stogas-cli"
+description = "The Stogas command line: a verified local endpoint, offline verification and local encryption"
+readme = "../../README.md"
+homepage = "https://github.com/StogasAI/stogas"
+documentation = "https://stogas.ai/docs/cli"
+keywords = ["confidential-computing", "sev-snp", "openai", "e2ee", "cli"]
+categories = ["command-line-utilities", "authentication", "cryptography"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "stogas"
+path = "src/main.rs"
+
+[features]
+staging = ["stogas/staging"]
+
+[dependencies]
+anyhow.workspace = true
+aws-lc-rs.workspace = true
+base64.workspace = true
+clap = { version = "4.5.47", features = ["derive"] }
+getrandom.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+stogas = { path = "../sdk", version = "0.1.0-alpha.1" }
+stogas-verifier = { path = "../verifier", version = "0.1.0-alpha.1" }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt-multi-thread"] }
+zeroize.workspace = true
+
+[dev-dependencies]
+url.workspace = true
+
+[lints]
+workspace = true

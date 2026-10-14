@@ -3258,14 +3258,11 @@ dependencies = [
  "axum",
  "base64",
  "brotli",
- "clap",
- "ed25519-dalek",
  "flate2",
  "futures-util",
  "getrandom 0.4.3",
  "h2",
  "hex",
- "hpke",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -3282,13 +3279,30 @@ dependencies = [
  "tokio-rustls",
  "url",
  "webpki-roots",
- "x509-parser",
- "zeroize",
 ]
 
 [[package]]
 name = "stogas-alloc-probe"
 version = "0.1.0-alpha.1"
+
+[[package]]
+name = "stogas-cli"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "anyhow",
+ "aws-lc-rs",
+ "base64",
+ "clap",
+ "getrandom 0.4.3",
+ "hex",
+ "serde_json",
+ "sha2 0.10.9",
+ "stogas",
+ "stogas-verifier",
+ "tokio",
+ "url",
+ "zeroize",
+]
 
 [[package]]
 name = "stogas-offline-sigstore"

@@ -17,7 +17,7 @@ Use the verifier transport with your language's OpenAI-compatible client or HTTP
 
 Choose a [language guide](https://stogas.ai/docs/sdk-overview) or a runnable [example](examples/). Rust source builds require Rust 1.94.1 or later.
 
-The optional CLI provides a local verified endpoint for an existing client. Install it with `cargo install stogas --locked --features cli` or a native release archive, then run:
+The optional CLI provides a local verified endpoint for an existing client. Install it with `cargo install stogas-cli --locked` or a native release archive, then run:
 
 ```console
 stogas serve --security tls
@@ -39,7 +39,7 @@ Streamed content can arrive before final verification. Treat a response as compl
 ## Contributing
 
 ```console
-cargo test --locked --workspace --all-targets --features stogas/cli
+cargo test --locked --workspace --all-targets
 ```
 
 [CI](.github/workflows/ci.yml) covers the core, transports, and language bindings; [fuzzing](.github/workflows/fuzz.yml) covers parsers and verification boundaries; a [daily check](.github/workflows/sigstore-root.yml) compares the compiled Sigstore trusted root with Sigstore's current one. [`scripts/live-test.py`](scripts/live-test.py) runs every language's tests against the live gateway. Report vulnerabilities through the [security policy](SECURITY.md).

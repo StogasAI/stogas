@@ -12,32 +12,20 @@ rust-version.workspace = true
 license-file.workspace = true
 repository.workspace = true
 
-[[bin]]
-name = "stogas"
-path = "src/main.rs"
-required-features = ["cli"]
-
-[[test]]
-name = "process_shutdown"
-required-features = ["cli"]
-
 [lib]
 name = "stogas"
 path = "src/lib.rs"
 
 [features]
-cli = ["dep:clap"]
 staging = ["stogas-verifier/staging"]
 
 [dependencies]
-aws-lc-rs = "1.17.1"
-zeroize.workspace = true
-anyhow = "1.0.99"
+anyhow.workspace = true
+aws-lc-rs.workspace = true
 axum = "0.8.4"
 base64.workspace = true
-clap = { version = "4.5.47", features = ["derive"], optional = true }
 futures-util = "0.3.31"
-getrandom = "0.4.3"
+getrandom.workspace = true
 h2 = "0.4.15"
 hex.workspace = true
 http-body-util = "0.1.4"
@@ -51,19 +39,16 @@ serde.workspace = true
 sha2.workspace = true
 stogas-verifier = { path = "../verifier", version = "0.1.0-alpha.1" }
 thiserror.workspace = true
-tokio = { version = "1.47.1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
 tokio-rustls = "0.26.4"
-url = "2.5.7"
+url.workspace = true
 webpki-roots = "1.0.2"
-x509-parser = { version = "0.18.0", default-features = false }
 
 [dev-dependencies]
 brotli = "8"
-ed25519-dalek.workspace = true
 flate2 = "1"
-hpke = { version = "=0.14.0", default-features = false, features = ["alloc", "getrandom", "aes", "x25519", "mlkem"] }
 rcgen = "0.14.4"
-tokio = { version = "1.47.1", features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

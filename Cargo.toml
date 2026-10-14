@@ -3,6 +3,7 @@ exclude = ["fuzz"]
 members = [
   "bindings/python",
   "crates/alloc-probe",
+  "crates/cli",
   "crates/sdk",
   "crates/ffi",
   "crates/offline-sigstore",
@@ -20,14 +21,19 @@ license-file = "LICENSE"
 repository = "https://github.com/StogasAI/stogas"
 
 [workspace.dependencies]
+anyhow = "1.0.99"
+aws-lc-rs = "1.17.1"
 base64 = "0.22.1"
 chrono = { version = "0.4.41", default-features = false, features = ["serde", "std"] }
 ed25519-dalek = { version = "2.2.0", default-features = false, features = ["alloc", "pkcs8", "zeroize"] }
+getrandom = "0.4.3"
 hex = "0.4.3"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.143", features = ["preserve_order"] }
 sha2 = "0.10.9"
 thiserror = "2.0.16"
+tokio = "1.47.1"
+url = "2.5.7"
 zeroize = "1.8.1"
 
 [workspace.lints.rust]

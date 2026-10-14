@@ -47,7 +47,7 @@ def main(environment):
     features = ["--features", "staging"] if staging else []
     cargo = ["cargo", "build", "--locked", "--target-dir", target]
     run(*cargo, "--package", "stogas-verifier-ffi", *features)
-    run(*cargo, "--package", "stogas", "--features", "cli,staging" if staging else "cli")
+    run(*cargo, "--package", "stogas-cli", *features)
     run(*cargo, "--release", "--package", "stogas-verifier-wasm", "--target", "wasm32-unknown-unknown", *features)
     run(sys.executable, "-B", "scripts/stage-native-bindings.py", "--platform", "linux-amd64", "--native-dir", native)
     (ROOT / "go/native/linux-amd64").mkdir(parents=True, exist_ok=True)

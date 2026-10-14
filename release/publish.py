@@ -125,7 +125,7 @@ def crate_upload(path, metadata, token):
 
 
 def crates(packages, version):
-    for name in ("stogas-offline-sigstore", "stogas-verifier", "stogas"):
+    for name in ("stogas-offline-sigstore", "stogas-verifier", "stogas", "stogas-cli"):
         path = packages / f"{name}-{version}.crate"
         url = f"https://static.crates.io/crates/{name}/{path.name}"
         check = lambda: exact_remote(path, url)

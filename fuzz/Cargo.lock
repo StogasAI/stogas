@@ -2611,6 +2611,7 @@ dependencies = [
  "base64",
  "futures-util",
  "getrandom 0.4.3",
+ "h2",
  "hex",
  "http-body-util",
  "hyper",
@@ -2627,8 +2628,6 @@ dependencies = [
  "tokio-rustls",
  "url",
  "webpki-roots",
- "x509-parser",
- "zeroize",
 ]
 
 [[package]]

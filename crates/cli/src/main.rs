@@ -3,13 +3,13 @@ mod sdk_release;
 
 use anyhow::{Context, Result, bail};
 use clap::{
-    Parser, Subcommand,
+    Args, Parser, Subcommand,
     builder::{PossibleValuesParser, TypedValueParser},
 };
 use sha2::{Digest as _, Sha256};
 use std::{
     io::Read as _,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use stogas::SecurityMode;
@@ -25,34 +25,6 @@ use tokio::io::AsyncReadExt as _;
 struct Cli {
     #[command(subcommand)]
     command: Command,
-}
-
-struct ProofCommandInput {
-    proof: Option<PathBuf>,
-    stream: bool,
-    request: PathBuf,
-    response: PathBuf,
-    bundle: Option<PathBuf>,
-    boot: Option<PathBuf>,
-    environment: stogas::Environment,
-    now_unix_ms: Option<i64>,
-}
-
-struct VerifyCommandInput {
-    bundle: PathBuf,
-    environment: stogas::Environment,
-    json: bool,
-    now_unix_ms: Option<i64>,
-}
-
-struct ServeCommandInput {
-    environment: stogas::Environment,
-    upstream: Option<String>,
-    listen: String,
-    max_connections: usize,
-    security: SecurityMode,
-    browser_origin: Option<String>,
-    exit_on_stdin_close: bool,
 }
 
 fn parse_environment(value: &str) -> Result<stogas::Environment, String> {
@@ -103,18 +75,7 @@ enum Command {
         output: PathBuf,
     },
     /// Verify a bundle without network access.
-    Verify {
-        /// Bundle path, or `-` for stdin.
-        bundle: PathBuf,
-        #[arg(long, default_value = "prod", value_parser = parse_environment)]
-        environment: stogas::Environment,
-        /// Emit stable JSON.
-        #[arg(long)]
-        json: bool,
-        /// Exact Unix time in milliseconds, for tests and auditing only.
-        #[arg(long, hide = true)]
-        now_unix_ms: Option<i64>,
-    },
+    Verify(VerifyArgs),
     /// Save the archived boot and evidence that a receipt names, for checks without network access.
     DownloadEvidence {
         /// The receipt's `boot_sha256`.
@@ -127,56 +88,76 @@ enum Command {
         output: PathBuf,
     },
     /// Verify an exact-content receipt against the archived evidence of the boot it names.
-    Proof {
-        /// Detached final Stogas metadata JSON; --response then contains only the exact signed bytes.
-        #[arg(long, conflicts_with = "stream")]
-        proof: Option<PathBuf>,
-        /// Read a complete SSE response, including its metadata and terminal event.
-        #[arg(long)]
-        stream: bool,
-        /// Exact plaintext request body sent to the inference endpoint.
-        #[arg(long)]
-        request: PathBuf,
-        /// Buffered JSON with metadata, complete SSE, or detached signed response bytes.
-        #[arg(long)]
-        response: PathBuf,
-        /// Saved evidence bundle identified by the boot archive. Without --bundle and
-        /// --boot, the command downloads both.
-        #[arg(long, requires = "boot")]
-        bundle: Option<PathBuf>,
-        /// Saved boot archive containing its quote, inclusion and evidence digest.
-        #[arg(long, requires = "bundle")]
-        boot: Option<PathBuf>,
-        #[arg(long, default_value = "prod", value_parser = parse_environment)]
-        environment: stogas::Environment,
-        /// Emit stable JSON containing the verified content commitment.
-        #[arg(long)]
-        json: bool,
-        /// Exact appraisal time in milliseconds, for tests and historical audits only.
-        #[arg(long, hide = true)]
-        now_unix_ms: Option<i64>,
-    },
+    Proof(ProofArgs),
     /// Run the verified loopback proxy.
-    Serve {
-        #[arg(long, default_value = "prod", value_parser = parse_environment)]
-        environment: stogas::Environment,
-        /// Optional HTTPS API origin; the environment's evidence roots remain fixed.
-        #[arg(long)]
-        upstream: Option<String>,
-        #[arg(long, default_value = "127.0.0.1:8787")]
-        listen: String,
-        /// Maximum reusable channels, opened lazily.
-        #[arg(long, default_value_t = 4)]
-        max_connections: usize,
-        #[arg(long, value_parser = security_parser(), default_value = "tls")]
-        security: SecurityMode,
-        /// Allow one browser origin to use the capability-protected local endpoint.
-        #[arg(long)]
-        browser_origin: Option<String>,
-        /// Close when the parent closes stdin; intended for supervised child processes.
-        #[arg(long)]
-        exit_on_stdin_close: bool,
-    },
+    Serve(ServeArgs),
+}
+
+#[derive(Args)]
+struct VerifyArgs {
+    /// Bundle path, or `-` for stdin.
+    bundle: PathBuf,
+    #[arg(long, default_value = "prod", value_parser = parse_environment)]
+    environment: stogas::Environment,
+    /// Emit stable JSON.
+    #[arg(long)]
+    json: bool,
+    /// Exact Unix time in milliseconds, for tests and auditing only.
+    #[arg(long, hide = true)]
+    now_unix_ms: Option<i64>,
+}
+
+#[derive(Args)]
+struct ProofArgs {
+    /// Detached final Stogas metadata JSON; --response then contains only the exact signed bytes.
+    #[arg(long, conflicts_with = "stream")]
+    proof: Option<PathBuf>,
+    /// Read a complete SSE response, including its metadata and terminal event.
+    #[arg(long)]
+    stream: bool,
+    /// Exact plaintext request body sent to the inference endpoint.
+    #[arg(long)]
+    request: PathBuf,
+    /// Buffered JSON with metadata, complete SSE, or detached signed response bytes.
+    #[arg(long)]
+    response: PathBuf,
+    /// Saved evidence bundle identified by the boot archive. Without --bundle and
+    /// --boot, the command downloads both.
+    #[arg(long, requires = "boot")]
+    bundle: Option<PathBuf>,
+    /// Saved boot archive containing its quote, inclusion and evidence digest.
+    #[arg(long, requires = "bundle")]
+    boot: Option<PathBuf>,
+    #[arg(long, default_value = "prod", value_parser = parse_environment)]
+    environment: stogas::Environment,
+    /// Emit stable JSON containing the verified content commitment.
+    #[arg(long)]
+    json: bool,
+    /// Exact appraisal time in milliseconds, for tests and historical audits only.
+    #[arg(long, hide = true)]
+    now_unix_ms: Option<i64>,
+}
+
+#[derive(Args)]
+struct ServeArgs {
+    #[arg(long, default_value = "prod", value_parser = parse_environment)]
+    environment: stogas::Environment,
+    /// Optional HTTPS API origin; the environment's evidence roots remain fixed.
+    #[arg(long)]
+    upstream: Option<String>,
+    #[arg(long, default_value = "127.0.0.1:8787")]
+    listen: String,
+    /// Maximum reusable channels, opened lazily.
+    #[arg(long, default_value_t = 4)]
+    max_connections: usize,
+    #[arg(long, value_parser = security_parser(), default_value = "tls")]
+    security: SecurityMode,
+    /// Allow one browser origin to use the capability-protected local endpoint.
+    #[arg(long)]
+    browser_origin: Option<String>,
+    /// Close when the parent closes stdin; intended for supervised child processes.
+    #[arg(long)]
+    exit_on_stdin_close: bool,
 }
 
 #[tokio::main]
@@ -212,20 +193,7 @@ async fn main() -> Result<()> {
             input,
             output,
         } => customer_encryption::encrypt(&key_file, &organization, &purpose, &input, &output)?,
-        Command::Verify {
-            bundle,
-            environment,
-            json,
-            now_unix_ms,
-        } => {
-            run_verify(VerifyCommandInput {
-                bundle,
-                environment,
-                json,
-                now_unix_ms,
-            })
-            .await?;
-        }
+        Command::Verify(args) => run_verify(args).await?,
         Command::DownloadEvidence {
             boot,
             environment,
@@ -235,55 +203,16 @@ async fn main() -> Result<()> {
             tokio::fs::write(output.join("boot.json"), archive.boot).await?;
             tokio::fs::write(output.join("evidence.json"), archive.evidence).await?;
         }
-        Command::Proof {
-            proof,
-            stream,
-            request,
-            response,
-            bundle,
-            boot,
-            environment,
-            json,
-            now_unix_ms,
-        } => {
-            let output = run_proof(ProofCommandInput {
-                proof,
-                stream,
-                request,
-                response,
-                bundle,
-                boot,
-                environment,
-                now_unix_ms,
-            })
-            .await?;
-            print_proof_output(&output, json)?;
+        Command::Proof(args) => {
+            let verifier = Verifier::stogas(args.environment)?;
+            print_proof_output(&verify_proof_files(&args, &verifier).await?, args.json)?;
         }
-        Command::Serve {
-            environment,
-            upstream,
-            listen,
-            max_connections,
-            security,
-            browser_origin,
-            exit_on_stdin_close,
-        } => {
-            run_serve(ServeCommandInput {
-                environment,
-                upstream,
-                listen,
-                max_connections,
-                security,
-                browser_origin,
-                exit_on_stdin_close,
-            })
-            .await?;
-        }
+        Command::Serve(args) => run_serve(args).await?,
     }
     Ok(())
 }
 
-async fn run_verify(input: VerifyCommandInput) -> Result<()> {
+async fn run_verify(input: VerifyArgs) -> Result<()> {
     let bytes = if input.bundle.as_os_str() == "-" {
         let mut bytes = Vec::new();
         std::io::stdin()
@@ -303,7 +232,7 @@ async fn run_verify(input: VerifyCommandInput) -> Result<()> {
     Ok(())
 }
 
-async fn run_serve(input: ServeCommandInput) -> Result<()> {
+async fn run_serve(input: ServeArgs) -> Result<()> {
     stogas::serve(stogas::ServeOptions {
         transport: stogas::TransportOptions {
             environment: input.environment,
@@ -318,15 +247,7 @@ async fn run_serve(input: ServeCommandInput) -> Result<()> {
     .await
 }
 
-async fn run_proof(input: ProofCommandInput) -> Result<VerifiedReceipt> {
-    let verifier = Verifier::stogas(input.environment)?;
-    verify_proof_files(&input, &verifier).await
-}
-
-async fn verify_proof_files(
-    input: &ProofCommandInput,
-    verifier: &Verifier,
-) -> Result<VerifiedReceipt> {
+async fn verify_proof_files(input: &ProofArgs, verifier: &Verifier) -> Result<VerifiedReceipt> {
     let now = input.now_unix_ms.unwrap_or_else(wall_clock_ms);
     let request = hash_file(&input.request, "request body").await?;
     let signed = read_signed_response(input, request).await?;
@@ -346,10 +267,7 @@ async fn verify_proof_files(
     Ok(signed.verify(&boot)?.receipt)
 }
 
-async fn read_signed_response(
-    input: &ProofCommandInput,
-    request: [u8; 32],
-) -> Result<receipt::Signed> {
+async fn read_signed_response(input: &ProofArgs, request: [u8; 32]) -> Result<receipt::Signed> {
     if let Some(path) = &input.proof {
         let proof = read_bounded_file(path, receipt::MAX_METADATA_BYTES, "Stogas metadata").await?;
         let response = hash_file(&input.response, "response body").await?;
@@ -389,7 +307,7 @@ fn print_proof_output(output: &VerifiedReceipt, json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn hash_file(path: &PathBuf, label: &str) -> Result<[u8; 32]> {
+async fn hash_file(path: &Path, label: &str) -> Result<[u8; 32]> {
     let mut file = tokio::fs::File::open(path)
         .await
         .with_context(|| format!("could not read {}", path.display()))?;
@@ -408,7 +326,7 @@ async fn hash_file(path: &PathBuf, label: &str) -> Result<[u8; 32]> {
     Ok(hasher.finalize().into())
 }
 
-async fn read_bounded_file(path: &PathBuf, maximum: usize, label: &str) -> Result<Vec<u8>> {
+async fn read_bounded_file(path: &Path, maximum: usize, label: &str) -> Result<Vec<u8>> {
     let file = tokio::fs::File::open(path)
         .await
         .with_context(|| format!("could not read {}", path.display()))?;
@@ -454,13 +372,13 @@ mod tests {
     #[test]
     fn serve_uses_explicit_environment_and_transport_profile() {
         let cli = Cli::try_parse_from(["stogas", "serve"]).unwrap();
-        let Command::Serve {
+        let Command::Serve(ServeArgs {
             environment,
             security,
             max_connections,
             upstream,
             ..
-        } = cli.command
+        }) = cli.command
         else {
             panic!("wrong command")
         };

@@ -7,7 +7,7 @@ use stogas_verifier::signing::SigningKey;
 struct Files {
     directory: PathBuf,
     fixture: Value,
-    input: ProofCommandInput,
+    input: ProofArgs,
     boot_hash: String,
 }
 
@@ -25,7 +25,7 @@ impl Files {
             .decode(fixture["certificate"].as_str().unwrap())
             .unwrap();
         let parsed = ParsedNativeCertificate::parse(&certificate).unwrap();
-        let input = ProofCommandInput {
+        let input = ProofArgs {
             proof: None,
             stream: false,
             request: directory.join("request"),
@@ -33,6 +33,7 @@ impl Files {
             bundle: Some(directory.join("bundle")),
             boot: Some(directory.join("boot")),
             environment: stogas::Environment::Staging,
+            json: false,
             now_unix_ms: fixture["verified_at_ms"].as_i64(),
         };
         std::fs::write(
