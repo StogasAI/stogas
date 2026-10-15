@@ -366,10 +366,10 @@ fn print_qr(text: &str) -> Result<()> {
 async fn payments(dashboard: &Dashboard, base: &str) -> Result<Vec<Payment>> {
     #[derive(Deserialize)]
     struct Page {
-        payments: Vec<Payment>,
+        items: Vec<Payment>,
     }
     let page: Page = dashboard.get(&format!("{base}/payments?limit=50")).await?;
-    Ok(page.payments)
+    Ok(page.items)
 }
 
 /// Reports each new payment to the address until one is credited or needs a person.
