@@ -415,7 +415,7 @@ fn describe(payment: &Payment) -> String {
         "not_creditable" => format!("{received}. It cannot be credited."),
         "review_required" => format!("{received}. It needs a review before it is credited."),
         _ if payment.attention.as_deref() == Some("provider_review") => format!(
-            "{received}. The payment processor holds it for review; contact support, since another payment will not release it."
+            "{received}. The payment processor holds it for review. Contact billing@stogas.ai; another payment will not release it."
         ),
         "waiting_settlement" => format!("{received}. Waiting for network confirmations."),
         "credit_failed" => format!("{received}. Adding the credit failed; it will be tried again."),
