@@ -170,8 +170,8 @@ pub struct LaunchPolicies {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AmdSevSnpLaunchPolicy {
-    pub chip_ids: Vec<String>,
     pub launch: LaunchValues,
+    pub product_name: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
