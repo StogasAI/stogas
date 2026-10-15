@@ -180,11 +180,18 @@ pub async fn ccpayment(
             printable(&deposit.memo)
         );
     }
-    println!(
-        "Minimum deposit: {} {}. Smaller deposits may not be credited.",
-        printable(&asset.minimum_deposit),
-        printable(&asset.symbol)
-    );
+    // A zero minimum means none, as for testnet tokens.
+    if asset
+        .minimum_deposit
+        .bytes()
+        .any(|byte| matches!(byte, b'1'..=b'9'))
+    {
+        println!(
+            "Minimum deposit: {} {}. Smaller deposits may not be credited.",
+            printable(&asset.minimum_deposit),
+            printable(&asset.symbol)
+        );
+    }
     print_qr(&deposit.address)?;
     if deposit.testnet {
         println!("Testnet: send test funds only. The credit has no cash value.");
@@ -279,6 +286,8 @@ async fn set_location(dashboard: &Dashboard, base: &str) -> Result<()> {
         else {
             return Err(error);
         };
+        // A refused value can fail several rules; ask for each field once.
+        let mut asked = HashSet::new();
         for issue in &refused.issues {
             let (field, prompt) = match issue.path.as_str() {
                 "address.countryCode" => (
@@ -289,6 +298,9 @@ async fn set_location(dashboard: &Dashboard, base: &str) -> Result<()> {
                 "address.postalCode" => ("postalCode", "ZIP or postal code: "),
                 _ => return Err(error),
             };
+            if !asked.insert(field) {
+                continue;
+            }
             // Explain only a refused value; a missing one needs only the question.
             if profile["address"][field]
                 .as_str()
@@ -436,11 +448,31 @@ fn has_code(error: &anyhow::Error, code: &str) -> bool {
         .is_some_and(|refused| refused.code.as_deref() == Some(code))
 }
 
-/// An exact dollar amount with cents, such as 12.50.
+/// The API's exact decimal dollar string, rounded half up to cents as the dashboard shows it.
 fn dollars(amount: &str) -> String {
-    let amount = printable(amount);
-    let (whole, cents) = amount.split_once('.').unwrap_or((&amount, ""));
-    format!("{whole}.{cents:0<2}")
+    cents(amount).map_or_else(
+        || printable(amount),
+        |cents| format!("{}.{:02}", cents / 100, cents % 100),
+    )
+}
+
+fn cents(amount: &str) -> Option<u128> {
+    let (whole, fraction) = amount.split_once('.').unwrap_or((amount, ""));
+    if whole.is_empty()
+        || !whole
+            .bytes()
+            .chain(fraction.bytes())
+            .all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let fraction = format!("{fraction:0<3}");
+    let round_up = u128::from(fraction.as_bytes()[2] >= b'5');
+    whole
+        .parse::<u128>()
+        .ok()?
+        .checked_mul(100)?
+        .checked_add(fraction[..2].parse::<u128>().ok()? + round_up)
 }
 
 /// `2026-10-15T14:05:00.000Z` as `2026-10-15 14:05 UTC`.
@@ -573,7 +605,10 @@ mod tests {
     fn shows_dollars_with_cents_and_times_in_utc() {
         assert_eq!(dollars("10"), "10.00");
         assert_eq!(dollars("10.5"), "10.50");
-        assert_eq!(dollars("0.125"), "0.125");
+        assert_eq!(dollars("0.125"), "0.13");
+        assert_eq!(dollars("5.00050351584"), "5.00");
+        assert_eq!(dollars("9.995"), "10.00");
+        assert_eq!(dollars("-1.5"), "-1.5");
         assert_eq!(
             utc_minute("2026-10-15T14:05:00.000Z"),
             "2026-10-15 14:05 UTC"
