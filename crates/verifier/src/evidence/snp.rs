@@ -210,7 +210,10 @@ impl Snapshot {
         let node_id = crate::attestation::snp_node_id(&report_id);
         let chip_id = hex::encode(&report[0x1a0..0x1e0]);
         let reported_tcb = hex::encode(&report[0x180..0x188]);
-        let launch = crate::compatible_launch_policy(&release.launch_policies, &chip_id)
+        let vcek = self.collateral.vcek(&chip_id, &reported_tcb)?;
+        let product =
+            crate::validate_report_product_binding(vcek, report).map_err(attestation_error)?;
+        let launch = crate::compatible_launch_policy(&release.launch_policies, product)
             .map_err(attestation_error)?;
         crate::check_raw_report_bindings(
             crate::ExpectedSnpReport {
@@ -225,13 +228,6 @@ impl Snapshot {
             Some(&self.approvals.manifest().hardware_policy),
         )
         .map_err(attestation_error)?;
-        let vcek = self.collateral.vcek(&chip_id, &reported_tcb)?;
-        let product =
-            crate::validate_report_product_binding(vcek, report).map_err(attestation_error)?;
-        let expected_policy =
-            crate::parse_u64_hex(&launch.policy, "launch policy").map_err(attestation_error)?;
-        crate::validate_snp_launch_policy(expected_policy, Some(product))
-            .map_err(attestation_error)?;
         crate::verify_raw_snp_report_signature_with_vcek(report, vcek, &node_id)
             .map_err(attestation_error)?;
         // Consult shared CRL state after crypto work. An old retained snapshot cannot hide

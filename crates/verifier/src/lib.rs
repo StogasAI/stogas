@@ -33,6 +33,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 #[cfg(any(feature = "snp", feature = "staging"))]
 use std::collections::BTreeMap;
+#[cfg(feature = "snp")]
 use std::collections::BTreeSet;
 use stogas_offline_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};
 use thiserror::Error;
@@ -123,21 +124,17 @@ const AMD_PRODUCT_PROFILES: [AmdProductProfile; 4] = [
     },
 ];
 
-fn validate_snp_launch_policy(
-    policy: u64,
-    product: Option<&AmdProductProfile>,
-) -> Result<(), Error> {
+fn validate_snp_launch_policy(policy: u64, product: &AmdProductProfile) -> Result<(), Error> {
     if policy >> 26 != 0 {
         return Err(Error::Node(
             "authorized SNP launch policy sets reserved high bits".into(),
         ));
     }
-    let required =
-        SNP_POLICY_COMMON_REQUIRED | product.map_or(0, |profile| profile.required_policy_bits);
+    let required = SNP_POLICY_COMMON_REQUIRED | product.required_policy_bits;
     if policy & required != required {
-        let product_name = product.map_or("admitted platform", |profile| profile.product_name);
         return Err(Error::Node(format!(
-            "authorized SNP launch policy lacks required {product_name} protections"
+            "authorized SNP launch policy lacks required {} protections",
+            product.product_name
         )));
     }
     if policy & SNP_POLICY_COMMON_FORBIDDEN != 0 {
@@ -145,7 +142,7 @@ fn validate_snp_launch_policy(
             "authorized SNP launch policy permits CXL, debugging, or migration".into(),
         ));
     }
-    let minimum_abi = product.map_or((1, 58), |profile| profile.minimum_policy_abi);
+    let minimum_abi = product.minimum_policy_abi;
     let policy_abi = (((policy >> 8) & 0xff) as u8, (policy & 0xff) as u8);
     if policy_abi < minimum_abi {
         return Err(Error::Node(format!(
@@ -759,48 +756,37 @@ fn validate_gateway_release_build(build: &GatewayReleaseBuild) -> Result<(), Err
 }
 
 fn validate_gateway_launch_policies(policies: &LaunchPolicies) -> Result<(), Error> {
-    if policies.schema != "stogas.snp-launch-policies.v1"
-        || policies.policies.is_empty()
-        || policies.policies.len() > MAX_NODES
-    {
+    if policies.schema != "stogas.snp-launch-policies.v1" || policies.policies.is_empty() {
         return Err(Error::InvalidBundle(
             "invalid gateway launch policies".into(),
         ));
     }
-    let mut chip_ids = BTreeSet::new();
-    let mut previous_group_first: Option<&str> = None;
+    let mut previous_product: Option<&str> = None;
     for policy in &policies.policies {
-        if policy.chip_ids.is_empty() || policy.chip_ids.len() > MAX_NODES {
+        let product_name = policy.product_name.as_str();
+        if previous_product.is_some_and(|previous| previous >= product_name) {
             return Err(Error::InvalidBundle(
-                "invalid gateway launch-policy group".into(),
+                "gateway launch policies are duplicated or not sorted by product".into(),
             ));
         }
-        let mut previous_chip: Option<&str> = None;
-        for chip_id in &policy.chip_ids {
-            if !is_lower_hex(chip_id, 64)
-                || previous_chip.is_some_and(|previous| previous >= chip_id.as_str())
-                || !chip_ids.insert(chip_id.as_str())
-            {
-                return Err(Error::InvalidBundle(
-                    "gateway launch policies contain an invalid, unsorted, or duplicate chip id"
-                        .into(),
-                ));
-            }
-            previous_chip = Some(chip_id);
-        }
-        let first = policy.chip_ids[0].as_str();
-        if previous_group_first.is_some_and(|previous| previous >= first) {
-            return Err(Error::InvalidBundle(
-                "gateway launch-policy groups are not canonically ordered".into(),
-            ));
-        }
-        previous_group_first = Some(first);
-        validate_gateway_launch_policy(&policy.launch)?;
+        previous_product = Some(product_name);
+        let product = AMD_PRODUCT_PROFILES
+            .iter()
+            .find(|profile| profile.product_name == product_name)
+            .ok_or_else(|| {
+                Error::InvalidBundle(
+                    "gateway launch policy names an unsupported AMD product".into(),
+                )
+            })?;
+        validate_gateway_launch_policy(&policy.launch, product)?;
     }
     Ok(())
 }
 
-fn validate_gateway_launch_policy(launch: &LaunchValues) -> Result<(), Error> {
+fn validate_gateway_launch_policy(
+    launch: &LaunchValues,
+    product: &AmdProductProfile,
+) -> Result<(), Error> {
     if !is_lower_hex(&launch.family_id, 16)
         || !is_lower_hex(&launch.image_id, 16)
         || !is_lower_hex(&launch.host_data, 32)
@@ -813,25 +799,28 @@ fn validate_gateway_launch_policy(launch: &LaunchValues) -> Result<(), Error> {
     }
     let launch_policy = u64::from_str_radix(&launch.policy[2..], 16)
         .map_err(|_| Error::InvalidBundle("invalid SNP launch policy".into()))?;
-    validate_snp_launch_policy(launch_policy, None)
+    validate_snp_launch_policy(launch_policy, product)
         .map_err(|error| Error::InvalidBundle(format!("invalid gateway launch policy: {error}")))
 }
+
+/// Launch values depend on the processor generation, not on the individual chip, so a new host
+/// of an admitted generation needs only a hardware-policy change.
 #[cfg(feature = "snp")]
 fn compatible_launch_policy<'a>(
     policies: &'a LaunchPolicies,
-    chip_id: &str,
+    product: &AmdProductProfile,
 ) -> Result<&'a LaunchValues, Error> {
     policies
         .policies
         .iter()
-        .find(|policy| {
-            policy
-                .chip_ids
-                .iter()
-                .any(|candidate| candidate.eq_ignore_ascii_case(chip_id))
-        })
+        .find(|policy| policy.product_name == product.product_name)
         .map(|policy| &policy.launch)
-        .ok_or_else(|| Error::Node("chip id is absent from the release launch policies".into()))
+        .ok_or_else(|| {
+            Error::Node(format!(
+                "the release has no launch policy for AMD {}",
+                product.product_name
+            ))
+        })
 }
 
 fn gateway_release_sequence(release_tag: &str) -> Option<u64> {
@@ -1325,9 +1314,9 @@ fn check_raw_report_bindings(
     let u64_at = |offset: usize| {
         u64::from_le_bytes(report[offset..offset + 8].try_into().unwrap_or_default())
     };
+    // Release verification checked these values against the rules of their AMD product.
     let expected_policy = u64::from_str_radix(launch.policy.trim_start_matches("0x"), 16)
         .map_err(|_| Error::Node("invalid launch policy value".into()))?;
-    validate_snp_launch_policy(expected_policy, None)?;
     let report_version = u32_at(0x00);
     if !(2..=5).contains(&report_version) {
         return Err(Error::Node(format!(
@@ -1336,9 +1325,6 @@ fn check_raw_report_bindings(
         )));
     }
     let (_, _, _, report_product) = inspect_report_product(report, report_version)?;
-    if let Some(product) = report_product {
-        validate_snp_launch_policy(expected_policy, Some(product))?;
-    }
     validate_raw_snp_report_encoding(report, report_version, report_product, node.node_id)?;
     let report_info = u32_at(0x48);
     let author_key_present = launch.author_key_digest.bytes().any(|byte| byte != b'0');
@@ -2043,8 +2029,8 @@ mod tests {
         });
         let launch_policies = serde_json::json!({
             "policies": [{
-                "chip_ids": ["66".repeat(64)],
-                "launch": launch
+                "launch": launch,
+                "product_name": "Milan"
             }],
             "schema": "stogas.snp-launch-policies.v1"
         });
@@ -2158,27 +2144,69 @@ mod tests {
     }
 
     #[test]
-    fn snp_policy_requirements_are_product_specific() {
-        let milan = AMD_PRODUCT_PROFILES
-            .iter()
-            .find(|profile| profile.product_name == "Milan")
-            .unwrap();
-        let genoa = AMD_PRODUCT_PROFILES
-            .iter()
-            .find(|profile| profile.product_name == "Genoa")
-            .unwrap();
-        let milan_policy = 0x0000_0000_0213_013a;
-
-        validate_snp_launch_policy(milan_policy, Some(milan)).unwrap();
-        let error = validate_snp_launch_policy(milan_policy, Some(genoa)).unwrap_err();
-        assert!(error.to_string().contains("required Genoa protections"));
-        validate_snp_launch_policy(milan_policy | SNP_POLICY_MEM_AES_256_XTS, Some(genoa)).unwrap();
-    }
-
-    #[test]
     fn rejects_duplicate_keys() {
         let error = strict_json::from_slice(br#"{"body":1,"body":2}"#).unwrap_err();
         assert!(error.to_string().contains("duplicate JSON key"));
+    }
+
+    #[test]
+    fn release_launch_policies_follow_the_rules_of_their_amd_product() {
+        let manifest = release_fixture().document;
+        let milan = manifest.sev_snp.launch_policies.policies[0].clone();
+        let with = |policies: Vec<AmdSevSnpLaunchPolicy>| {
+            validate_gateway_launch_policies(&LaunchPolicies {
+                policies,
+                schema: manifest.sev_snp.launch_policies.schema.clone(),
+            })
+        };
+        let product = |name: &str, policy: &str| {
+            let mut entry = milan.clone();
+            entry.product_name = name.into();
+            entry.launch.policy = policy.into();
+            entry
+        };
+
+        with(vec![
+            product("Genoa", "0x000000000253013a"),
+            product("Milan", "0x000000000213013a"),
+        ])
+        .unwrap();
+        for (policies, message) in [
+            (vec![], "invalid gateway launch policies"),
+            (
+                vec![product("Milan", "0x000000000013013a")],
+                "required Milan protections",
+            ),
+            (
+                vec![product("Genoa", "0x000000000213013a")],
+                "required Genoa protections",
+            ),
+            (
+                vec![product("Milan", "0x000000000213012f")],
+                "ABI 1.47 is older",
+            ),
+            (
+                vec![product("Venice", "0x000000000253013a")],
+                "unsupported AMD product",
+            ),
+            (
+                vec![
+                    product("Milan", "0x000000000213013a"),
+                    product("Genoa", "0x000000000253013a"),
+                ],
+                "not sorted by product",
+            ),
+            (
+                vec![
+                    product("Milan", "0x000000000213013a"),
+                    product("Milan", "0x000000000213013a"),
+                ],
+                "duplicated",
+            ),
+        ] {
+            let error = with(policies).unwrap_err().to_string();
+            assert!(error.contains(message), "{error}");
+        }
     }
 
     #[test]
@@ -2345,43 +2373,6 @@ mod tests {
         assert!(inspect_snp_report(&report).is_err());
         report[..4].copy_from_slice(&2_u32.to_le_bytes());
         assert!(inspect_snp_report(&report).is_err());
-    }
-
-    #[cfg(feature = "snp")]
-    #[test]
-    fn raw_report_binding_requires_hardened_launch_policy() {
-        let mut manifest = release_fixture().document;
-        let expected = ExpectedSnpReport {
-            node_id: "test",
-            chip_id: &"00".repeat(64),
-            reported_tcb: &"00".repeat(8),
-            report_data_sha512: &"00".repeat(64),
-        };
-        let report = vec![0_u8; 0x4a0];
-        manifest.sev_snp.launch_policies.policies[0].launch.policy = "0x000000000013013a".into();
-        let error = check_raw_report_bindings(
-            expected,
-            &manifest.sev_snp.launch_measurement,
-            &manifest.sev_snp.launch_policies.policies[0].launch,
-            &report,
-            None,
-        )
-        .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("required admitted platform protections")
-        );
-        manifest.sev_snp.launch_policies.policies[0].launch.policy = "0x000000000213013a".into();
-        let error = check_raw_report_bindings(
-            expected,
-            &manifest.sev_snp.launch_measurement,
-            &manifest.sev_snp.launch_policies.policies[0].launch,
-            &report,
-            None,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("SNP report version differs"));
     }
 
     #[cfg(feature = "snp")]
