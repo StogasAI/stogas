@@ -28,12 +28,15 @@ chrono = { version = "0.4.41", default-features = false, features = ["serde", "s
 ed25519-dalek = { version = "2.2.0", default-features = false, features = ["alloc", "pkcs8", "zeroize"] }
 getrandom = "0.4.3"
 hex = "0.4.3"
+reqwest = { version = "0.12.23", default-features = false, features = ["brotli", "gzip", "http2", "json", "rustls-tls-webpki-roots-no-provider", "stream"] }
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.143", features = ["preserve_order"] }
 sha2 = "0.10.9"
 thiserror = "2.0.16"
 tokio = "1.47.1"
 url = "2.5.7"
+webpki-roots = "1.0.2"
 zeroize = "1.8.1"
 
 [workspace.lints.rust]

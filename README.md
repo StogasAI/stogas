@@ -28,13 +28,16 @@ Use the printed URL as your client's base URL and keep it private. The transport
 Other commands:
 
 ```console
+stogas signup                        # create an account and save its access token in the keychain
+stogas topup 20 BTC                  # add credit with a cryptocurrency payment
+stogas api GET /api/account          # send a dashboard API request with the saved access token
 stogas probe --security tls          # check a fresh verified connection without an API key
 stogas verify evidence.json --json   # verify saved evidence offline
 stogas encryption-key --output org.key
 stogas verify-release ./release      # verify downloaded release assets offline
 ```
 
-Streamed content can arrive before final verification. Treat a response as complete only after verified completion. See the [CLI guide](https://stogas.ai/docs/cli) for customer encryption and proofs.
+Streamed content can arrive before final verification. Treat a response as complete only after verified completion. See the [CLI guide](https://stogas.ai/docs/cli) for sign-in, top-ups, customer encryption and proofs.
 
 ## Contributing
 

@@ -1,14 +1,20 @@
+mod account;
+mod altcha;
+mod credentials;
 mod customer_encryption;
+mod dashboard;
 mod sdk_release;
+mod topup;
 
 use anyhow::{Context, Result, bail};
 use clap::{
     Args, Parser, Subcommand,
     builder::{PossibleValuesParser, TypedValueParser},
 };
+use reqwest::Method;
 use sha2::{Digest as _, Sha256};
 use std::{
-    io::Read as _,
+    io::{IsTerminal as _, Write as _},
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -39,8 +45,39 @@ fn security_parser() -> impl TypedValueParser<Value = SecurityMode> {
     })
 }
 
+fn method_parser() -> impl TypedValueParser<Value = Method> {
+    PossibleValuesParser::new(["GET", "POST", "PUT", "PATCH", "DELETE"]).map(|value| {
+        match value.to_ascii_uppercase().as_str() {
+            "POST" => Method::POST,
+            "PUT" => Method::PUT,
+            "PATCH" => Method::PATCH,
+            "DELETE" => Method::DELETE,
+            _ => Method::GET,
+        }
+    })
+}
+
 #[derive(Subcommand)]
 enum Command {
+    /// Create an account and sign this machine in.
+    Signup,
+    /// Sign this machine in with your account password.
+    Login,
+    /// Sign this machine out and delete its access token.
+    Logout,
+    /// Send a request to the dashboard API and print the response.
+    Api {
+        /// GET, POST, PUT, PATCH or DELETE.
+        #[arg(value_parser = method_parser(), ignore_case = true)]
+        method: Method,
+        /// A path under /api/, such as /api/account.
+        path: String,
+        /// A file with the JSON request body, or `-` for standard input.
+        #[arg(long)]
+        input: Option<PathBuf>,
+    },
+    /// Add credit with a cryptocurrency payment.
+    Topup(topup::Args),
     /// Verify downloaded SDK release artifacts, build provenance and the Stogas signature offline.
     VerifyRelease { directory: PathBuf },
     /// Check fresh session verification and gateway admission without a provider call.
@@ -163,6 +200,15 @@ struct ServeArgs {
 #[tokio::main]
 async fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::Signup => account::signup().await?,
+        Command::Login => account::login().await?,
+        Command::Logout => account::logout().await?,
+        Command::Api {
+            method,
+            path,
+            input,
+        } => run_api(method, &path, input.as_deref()).await?,
+        Command::Topup(args) => topup::run(args).await?,
         Command::VerifyRelease { directory } => sdk_release::verify_directory(&directory).await?,
         Command::Probe {
             environment,
@@ -212,19 +258,36 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_verify(input: VerifyArgs) -> Result<()> {
-    let bytes = if input.bundle.as_os_str() == "-" {
-        let mut bytes = Vec::new();
-        std::io::stdin()
-            .take(u64::try_from(MAX_INPUT_BYTES + 1)?)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() > MAX_INPUT_BYTES {
-            bail!("bundle exceeds {MAX_INPUT_BYTES} bytes");
-        }
-        bytes
-    } else {
-        read_bounded_file(&input.bundle, MAX_INPUT_BYTES, "bundle").await?
+async fn run_api(method: Method, path: &str, input: Option<&Path>) -> Result<()> {
+    let body = match input {
+        Some(input) => Some(
+            serde_json::from_slice::<serde_json::Value>(
+                &read_bounded_input(input, dashboard::MAX_BODY_BYTES, "request body").await?,
+            )
+            .context("the request body is not JSON")?,
+        ),
+        None => None,
     };
+    let response = account::signed_in()
+        .await?
+        .send(method, path, body.as_ref())
+        .await?;
+    let mut stdout = std::io::stdout().lock();
+    if !stdout.is_terminal() {
+        stdout.write_all(&response)?;
+    } else if !response.is_empty() {
+        // Escaping text again keeps the response from driving the terminal.
+        let response: serde_json::Value = serde_json::from_slice(&response)
+            .context("the response is not JSON; send it to a file instead")?;
+        for line in serde_json::to_string_pretty(&response)?.lines() {
+            writeln!(stdout, "{}", dashboard::printable(line))?;
+        }
+    }
+    Ok(())
+}
+
+async fn run_verify(input: VerifyArgs) -> Result<()> {
+    let bytes = read_bounded_input(&input.bundle, MAX_INPUT_BYTES, "bundle").await?;
     let mut verifier = stogas_verifier::evidence::Verifier::stogas(input.environment)?;
     let now = input.now_unix_ms.unwrap_or_else(wall_clock_ms);
     let output = verifier.refresh(&bytes, now)?;
@@ -324,6 +387,22 @@ async fn hash_file(path: &Path, label: &str) -> Result<[u8; 32]> {
         hasher.update(&buffer[..read]);
     }
     Ok(hasher.finalize().into())
+}
+
+/// Reads a file, or standard input for `-`.
+async fn read_bounded_input(path: &Path, maximum: usize, label: &str) -> Result<Vec<u8>> {
+    if path.as_os_str() != "-" {
+        return read_bounded_file(path, maximum, label).await;
+    }
+    let mut bytes = Vec::new();
+    tokio::io::stdin()
+        .take(u64::try_from(maximum + 1)?)
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() > maximum {
+        bail!("{label} exceeds {maximum} bytes");
+    }
+    Ok(bytes)
 }
 
 async fn read_bounded_file(path: &Path, maximum: usize, label: &str) -> Result<Vec<u8>> {
@@ -482,3 +561,6 @@ mod tests {
 #[cfg(all(test, feature = "staging"))]
 #[path = "proof_tests.rs"]
 mod proof_tests;
+
+#[cfg(test)]
+mod live_tests;
