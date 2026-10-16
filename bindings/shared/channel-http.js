@@ -101,8 +101,8 @@ function responseMetadata(bytes) {
 		!value ||
 		typeof value !== 'object' ||
 		Array.isArray(value) ||
-		Object.keys(value).some((key) => !['status', 'headers', 'closing'].includes(key)) ||
-		('closing' in value && typeof value.closing !== 'boolean') ||
+		Object.keys(value).some((key) => !['status', 'headers', 'refused'].includes(key)) ||
+		('refused' in value && typeof value.refused !== 'boolean') ||
 		!Number.isInteger(value.status) ||
 		value.status < 200 ||
 		value.status > 599 ||
@@ -123,7 +123,7 @@ function responseMetadata(bytes) {
 		}
 		headers.set(name, content);
 	}
-	return { status: value.status, headers, closing: value.closing === true };
+	return { status: value.status, headers, refused: value.refused === true };
 }
 
 // No delivery failure in this function retries an inference. The returned
@@ -137,6 +137,7 @@ export async function sendSessionRequest({
 	signal = request.signal,
 	release = () => {},
 	retire = () => {},
+	refuse = () => {},
 	onProgress,
 	onMetadata = () => {}
 }) {
@@ -274,8 +275,9 @@ export async function sendSessionRequest({
 		};
 		while (!metadata && !finished) await advance();
 		if (!metadata) throw new Error('encrypted response ended before metadata');
+		// The gateway authenticated this request and refused it without processing it.
 		// Session closure can enter Wasm; run it after the record callback's borrow ends.
-		if (metadata.closing) retire();
+		if (metadata.refused) refuse();
 		if ([204, 205, 304].includes(metadata.status)) {
 			while (!finished) await advance();
 			if (receipt) throw new Error('receipt response has no content');

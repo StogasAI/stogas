@@ -7,7 +7,7 @@ use crate::{
 };
 use axum::{
     body::Body,
-    http::{Request, Response},
+    http::{Request, Response, StatusCode},
 };
 use hyper::body::Bytes;
 use rustls::pki_types::ServerName;
@@ -153,6 +153,14 @@ impl Client {
             Err(Error::Pool(
                 http2_pool::Error::Closed | http2_pool::Error::Request { not_sent: true, .. },
             )) => self.submit(request, retained, deadline).await?,
+            Ok((response, context)) if refused(&response) => {
+                let refusal = read_refusal(response, deadline).await;
+                match self.acquire(retained, deadline).await {
+                    Ok(selected) => dispatch(selected, request, deadline).await?,
+                    // A resend that cannot get a connection sends nothing, so the refusal stands.
+                    Err(error) => (refusal.ok_or(error)?, context),
+                }
+            }
             result => result?,
         };
         match digest {
@@ -172,16 +180,21 @@ impl Client {
         retained: usize,
         deadline: Instant,
     ) -> Result<(Response<Body>, Arc<RequestContext>), Error> {
+        dispatch(self.acquire(retained, deadline).await?, request, deadline).await
+    }
+
+    async fn acquire(
+        &self,
+        retained: usize,
+        deadline: Instant,
+    ) -> Result<(http2_pool::Permit<Channel>, Arc<RequestContext>), Error> {
         let mut permit = self.pool.acquire(retained, deadline).await?;
         let context = permit
             .metadata
             .prepare(&self.evidence, deadline, wall_clock_ms)
             .await?;
         permit.retain_context(Arc::clone(&context));
-        let mut response = permit.send(request, deadline).await?;
-        response.extensions_mut().remove::<Arc<Channel>>();
-        response.extensions_mut().insert(Arc::clone(&context));
-        Ok((response.map(Body::new), context))
+        Ok((permit, context))
     }
 
     /// Stop new work and finish owned responses before the deadline.
@@ -192,6 +205,48 @@ impl Client {
         self.pool.close(deadline).await.map_err(Error::from)
     }
 }
+async fn dispatch(
+    (permit, context): (http2_pool::Permit<Channel>, Arc<RequestContext>),
+    request: Request<Bytes>,
+    deadline: Instant,
+) -> Result<(Response<Body>, Arc<RequestContext>), Error> {
+    let mut response = permit.send(request, deadline).await?;
+    if refused(&response) {
+        // The gateway closes this connection after the response. A resend must not
+        // select it before its GOAWAY arrives.
+        response.body().retire();
+    }
+    response.extensions_mut().remove::<Arc<Channel>>();
+    response.extensions_mut().insert(Arc::clone(&context));
+    Ok((response.map(Body::new), context))
+}
+
+/// Only the guest terminates attested TLS, so only the gateway can mark a refusal.
+fn refused<B>(response: &Response<B>) -> bool {
+    response.status() == StatusCode::SERVICE_UNAVAILABLE
+        && response
+            .headers()
+            .get("stogas-refused")
+            .is_some_and(|value| value == "?1")
+}
+
+// The gateway's refusal is a fixed error object of about 100 bytes.
+const MAX_REFUSAL_BYTES: usize = 1024;
+
+/// Read a refusal, so that its session or stream holds no capacity a resend needs.
+/// `None` means it could not be read. The gateway still did not process the request.
+pub(crate) async fn read_refusal(
+    response: Response<Body>,
+    deadline: Instant,
+) -> Option<Response<Body>> {
+    let (parts, body) = response.into_parts();
+    let body = timeout_at(deadline, axum::body::to_bytes(body, MAX_REFUSAL_BYTES))
+        .await
+        .ok()?
+        .ok()?;
+    Some(Response::from_parts(parts, Body::from(body)))
+}
+
 impl Channel {
     pub(crate) fn new(snapshot: Arc<Snapshot>, session: Arc<VerifiedSession>) -> Self {
         Self {

@@ -96,7 +96,7 @@ impl EvidenceClient {
         Self::from_parts(client, origins, environment, root)
     }
 
-    fn from_parts(
+    pub(crate) fn from_parts(
         client: Client,
         origins: [Url; 2],
         environment: Environment,

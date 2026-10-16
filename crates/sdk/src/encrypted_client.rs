@@ -14,7 +14,7 @@ use sha2::{Digest as _, Sha256};
 use std::{
     num::NonZeroUsize,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use stogas_verifier::{
     approvals::Environment,
@@ -102,7 +102,10 @@ struct Owner {
 struct SessionState {
     core: ClientSession,
     active: usize,
-    idle_since: Instant,
+    // The last request selection, or the setup start. The gateway counts the idle
+    // hint from later points, so it keeps the session at least as long. Wall time
+    // also counts while this device sleeps and the gateway keeps counting.
+    dispatched: SystemTime,
     retired: bool,
     forced: bool,
 }
@@ -130,28 +133,27 @@ impl Drop for Opening {
 }
 impl Drop for Lease {
     fn drop(&mut self) {
-        let mut state = self
-            .owner
+        self.owner
             .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.active -= 1;
-        if state.active == 0 {
-            state.idle_since = Instant::now();
-        }
-        drop(state);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .active -= 1;
         self.owner.changed.notify_waiters();
     }
 }
 impl Owner {
-    fn new(connection: encrypted_setup::Connection, changed: Arc<Notify>) -> Self {
+    fn new(
+        connection: encrypted_setup::Connection,
+        changed: Arc<Notify>,
+        started: SystemTime,
+    ) -> Self {
         Self {
             node_id: connection.appraisal.boot().hardware().node_id().to_owned(),
             channel: Channel::new(connection.snapshot, connection.appraisal),
             state: Mutex::new(SessionState {
                 core: connection.session,
                 active: 0,
-                idle_since: Instant::now(),
+                dispatched: started,
                 retired: false,
                 forced: false,
             }),
@@ -222,7 +224,9 @@ impl Client {
         }
     }
 
-    /// Send exactly once. The returned body owns request admission and its original evidence.
+    /// Send once. A request the gateway refused inside its session goes once more
+    /// through another session. The returned body owns request admission and its
+    /// original evidence.
     ///
     /// # Errors
     /// Setup/appraisal failures occur before submission. HTTP/receipt failures never retry inference.
@@ -239,17 +243,40 @@ impl Client {
         };
         let digest: Option<[u8; 32]> = requested.then(|| Sha256::digest(request.body()).into());
         let selected = self.acquire(deadline).await?;
-        self.send_on_session(request, deadline, selected, digest)
-            .await
+        let (lease, response, context) = self.exchange(request.clone(), deadline, selected).await?;
+        if response
+            .extensions()
+            .get::<encrypted_http::Refused>()
+            .is_none()
+        {
+            return own((lease, response, context), digest, deadline).await;
+        }
+        let refusal = native_http::read_refusal(response, deadline).await;
+        drop(lease);
+        match self.acquire(deadline).await {
+            Ok(selected) => {
+                own(
+                    self.exchange(request, deadline, selected).await?,
+                    digest,
+                    deadline,
+                )
+                .await
+            }
+            // A resend that cannot get a session sends nothing, so the refusal stands.
+            Err(error) => {
+                let mut refusal = refusal.ok_or(error)?;
+                refusal.extensions_mut().insert(context);
+                Ok(refusal)
+            }
+        }
     }
 
-    async fn send_on_session(
+    async fn exchange(
         &self,
         request: Request<Bytes>,
         deadline: Instant,
         (lease, exchange, context): (Lease, ClientRequest, Arc<RequestContext>),
-        digest: Option<[u8; 32]>,
-    ) -> Result<Response<Body>, Error> {
+    ) -> Result<(Lease, Response<Body>, Arc<RequestContext>), Error> {
         let response = encrypted_http::send(
             &self.inner.http,
             self.inner.endpoint.clone(),
@@ -260,48 +287,29 @@ impl Client {
             Some(Arc::clone(&lease.owner.changed)),
         )
         .await;
-        let response = match response {
-            Ok(response) => response,
-            Err(error) => {
-                lease.owner.retire();
-                return Err(error.into());
-            }
-        };
-        let mut response = response;
-        if response
-            .extensions()
-            .get::<encrypted_http::SessionClosing>()
-            .is_some()
-        {
-            lease.owner.retire();
-        }
-        response.extensions_mut().insert(Arc::clone(&context));
-        let (parts, body) = response.into_parts();
-        let state = OwnedResponse {
-            source: body.into_data_stream(),
-            lease,
-            _context: Arc::clone(&context),
-        };
-        let response = Response::from_parts(
-            parts,
-            Body::from_stream(stream::unfold(Some(state), |state| async {
-                let mut state = state?;
-                match state.next().await {
-                    Ok(Some(bytes)) => Some((Ok::<_, std::io::Error>(bytes), Some(state))),
-                    Ok(None) => None,
-                    Err(error) => Some((Err(error), None)),
+        match &response {
+            Err(_) => lease.owner.retire(),
+            Ok(response)
+                if response
+                    .extensions()
+                    .get::<encrypted_http::Refused>()
+                    .is_some() =>
+            {
+                // A draining or paused gateway refuses on all of its sessions.
+                let state = self
+                    .inner
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                for owner in &state.owners {
+                    if owner.node_id == lease.owner.node_id {
+                        owner.retire();
+                    }
                 }
-            })),
-        );
-        match digest {
-            Some(digest) => {
-                Ok(
-                    receipt_http::verify(response, Arc::clone(&context.session), digest, deadline)
-                        .await?,
-                )
             }
-            None => Ok(response),
+            Ok(_) => {}
         }
+        Ok((lease, response?, context))
     }
 
     async fn acquire(
@@ -329,12 +337,13 @@ impl Client {
                         return Ok((lease, exchange, context));
                     }
                     Selection::Opening(_opening) => {
+                        let started = SystemTime::now();
                         let connection = tokio::select! {
                             biased;
                             () = &mut closing => return Err(Error::Closed),
                             result = encrypted_setup::connect(&self.inner.evidence, &self.inner.http, self.inner.endpoint.clone(), self.inner.environment, setup_deadline) => result?,
                         };
-                        let owner = Arc::new(Owner::new(connection, Arc::clone(&self.inner.changed)));
+                        let owner = Arc::new(Owner::new(connection, Arc::clone(&self.inner.changed), started));
                         let mut state = self.inner.state.lock().map_err(|_| Error::State)?;
                         if state.closed { return Err(Error::Closed); }
                         state.owners.push(owner);
@@ -355,9 +364,12 @@ impl Client {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if session.active == 0
-                && session.idle_since.elapsed()
-                    >= Duration::from_secs(u64::from(session.core.idle_seconds()))
+            // A clock that moved back cannot show the session is still fresh.
+            let idle = Duration::from_secs(u64::from(session.core.idle_seconds()));
+            if !session
+                .dispatched
+                .elapsed()
+                .is_ok_and(|elapsed| elapsed < idle)
             {
                 session.retired = true;
                 session.core.close();
@@ -383,6 +395,7 @@ impl Client {
             match session.core.request() {
                 Ok(request) => {
                     session.active += 1;
+                    session.dispatched = SystemTime::now();
                     return Ok(Selection::Ready(Box::new((
                         Lease {
                             owner: Arc::clone(owner),
@@ -500,6 +513,40 @@ impl Client {
             drop(state);
             Err(Error::CloseDeadline)
         }
+    }
+}
+
+async fn own(
+    (lease, mut response, context): (Lease, Response<Body>, Arc<RequestContext>),
+    digest: Option<[u8; 32]>,
+    deadline: Instant,
+) -> Result<Response<Body>, Error> {
+    response.extensions_mut().insert(Arc::clone(&context));
+    let (parts, body) = response.into_parts();
+    let state = OwnedResponse {
+        source: body.into_data_stream(),
+        lease,
+        _context: Arc::clone(&context),
+    };
+    let response = Response::from_parts(
+        parts,
+        Body::from_stream(stream::unfold(Some(state), |state| async {
+            let mut state = state?;
+            match state.next().await {
+                Ok(Some(bytes)) => Some((Ok::<_, std::io::Error>(bytes), Some(state))),
+                Ok(None) => None,
+                Err(error) => Some((Err(error), None)),
+            }
+        })),
+    );
+    match digest {
+        Some(digest) => {
+            Ok(
+                receipt_http::verify(response, Arc::clone(&context.session), digest, deadline)
+                    .await?,
+            )
+        }
+        None => Ok(response),
     }
 }
 

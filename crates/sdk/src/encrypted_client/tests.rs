@@ -1,21 +1,41 @@
 use super::*;
 use crate::encrypted_http::tests::{Records, Server, SharedServer, session, shared};
-use axum::{Router, body::to_bytes, http::header, routing::post};
+use axum::{
+    Router,
+    body::to_bytes,
+    http::header,
+    routing::{get, post},
+};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::Value;
-use stogas_verifier::{channel::Kind, evidence};
+use stogas_verifier::channel::Kind;
 
-fn fixture(maximum: usize) -> (Client, Arc<Owner>, SharedServer, Arc<RequestContext>) {
+async fn fixture(maximum: usize) -> (Client, Arc<Owner>, SharedServer, Arc<RequestContext>) {
     let fixture: Value = serde_json::from_str(include_str!(
         "../../../../tests/fixtures/hardware-session-v1.json"
     ))
     .unwrap();
-    let root = serde_json::from_value(fixture["root"].clone()).unwrap();
-    let mut verifier = evidence::Verifier::new(Environment::Staging, root).unwrap();
-    let now = fixture["verified_at_ms"].as_i64().unwrap();
-    let snapshot = verifier
-        .refresh(&serde_json::to_vec(&fixture["bundle"]).unwrap(), now)
-        .unwrap();
+    // Requests check their session against current evidence, so serve the fixture's.
+    let bundle = serde_json::to_vec(&fixture["bundle"]).unwrap();
+    let origin = Server::new(Router::new().route(
+        "/evidence",
+        get(move || {
+            let bundle = bundle.clone();
+            async move { bundle }
+        }),
+    ))
+    .await;
+    let origin = origin.endpoint.join("/evidence").unwrap();
+    let evidence = Arc::new(
+        EvidenceClient::from_parts(
+            evidence_client::https_client().unwrap(),
+            [origin.clone(), origin],
+            Environment::Staging,
+            serde_json::from_value(fixture["root"].clone()).unwrap(),
+        )
+        .unwrap(),
+    );
+    let snapshot = evidence.refresh(deadline()).await.unwrap();
     let appraisal = Arc::new(
         snapshot
             .verify_native_certificate(
@@ -26,16 +46,9 @@ fn fixture(maximum: usize) -> (Client, Arc<Owner>, SharedServer, Arc<RequestCont
                     .unwrap()
                     .try_into()
                     .unwrap(),
-                now,
+                fixture["verified_at_ms"].as_i64().unwrap(),
             )
             .unwrap(),
-    );
-    let evidence = Arc::new(
-        EvidenceClient::new(
-            Environment::Staging,
-            serde_json::from_value(fixture["root"].clone()).unwrap(),
-        )
-        .unwrap(),
     );
     let client = Client::new(
         evidence,
@@ -55,6 +68,7 @@ fn fixture(maximum: usize) -> (Client, Arc<Owner>, SharedServer, Arc<RequestCont
             appraisal,
         },
         Arc::clone(&client.inner.changed),
+        SystemTime::now(),
     ));
     client
         .inner
@@ -65,62 +79,116 @@ fn fixture(maximum: usize) -> (Client, Arc<Owner>, SharedServer, Arc<RequestCont
         .push(Arc::clone(&owner));
     (client, owner, shared(server), context)
 }
+// Another session, on the named gateway, after the existing ones.
+fn add_owner(
+    client: &Client,
+    context: &RequestContext,
+    node_id: &str,
+) -> (Arc<Owner>, SharedServer) {
+    let (session, server) = session();
+    let mut owner = Owner::new(
+        encrypted_setup::Connection {
+            session,
+            snapshot: Arc::clone(&context.snapshot),
+            appraisal: Arc::clone(&context.session),
+        },
+        Arc::clone(&client.inner.changed),
+        SystemTime::now(),
+    );
+    node_id.clone_into(&mut owner.node_id);
+    let owner = Arc::new(owner);
+    client
+        .inner
+        .state
+        .lock()
+        .unwrap()
+        .owners
+        .push(Arc::clone(&owner));
+    (owner, shared(server))
+}
 fn ready(client: &Client) -> (Lease, ClientRequest) {
     match client.select().unwrap() {
         Selection::Ready(selected) => *selected,
         _ => panic!("expected available session"),
     }
 }
+fn request() -> Request<Bytes> {
+    Request::post("/v1/responses")
+        .body(Bytes::from_static(b"{}"))
+        .unwrap()
+}
+fn deadline() -> Instant {
+    Instant::now() + Duration::from_secs(5)
+}
+fn id(owner: &Owner) -> [u8; 32] {
+    *owner.state.lock().unwrap().core.id()
+}
 
-async fn closing_peer(
-    peer: SharedServer,
-    closing: bool,
-) -> (Server, Arc<std::sync::atomic::AtomicUsize>) {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let calls = Arc::new(AtomicUsize::new(0));
-    let observed = Arc::clone(&calls);
+// Each session request as its session's position and node ID. `None` is a setup.
+type Arrivals = Arc<std::sync::Mutex<Vec<Option<(usize, String)>>>>;
+
+// Answers each request inside the session that sent it. `reply` receives the
+// session's position and the arrival order, and returns `None` to admit the
+// request or `Some(refused)` for a 503. No new session can start.
+async fn gateway(
+    sessions: Vec<([u8; 32], SharedServer)>,
+    reply: impl Fn(usize, usize) -> Option<bool> + Clone + Send + Sync + 'static,
+) -> (Server, Arrivals) {
+    let arrivals = Arrivals::default();
+    let observed = Arc::clone(&arrivals);
+    let sessions = Arc::new(sessions);
     let server = Server::new(Router::new().route(
         "/v1/session",
         post(move |request: Request<Body>| {
-            let peer = Arc::clone(&peer);
-            let calls = Arc::clone(&observed);
+            let sessions = Arc::clone(&sessions);
+            let arrivals = Arc::clone(&observed);
+            let reply = reply.clone();
             async move {
-                let index = calls.fetch_add(1, Ordering::SeqCst);
+                let Some(node) = request.headers().get("stogas-node-id") else {
+                    arrivals.lock().unwrap().push(None);
+                    return Response::builder().status(503).body(Body::empty()).unwrap();
+                };
+                let node = node.to_str().unwrap().to_owned();
                 let wire = to_bytes(request.into_body(), 65536).await.unwrap();
-                let number = u64::from_be_bytes(wire[38..46].try_into().unwrap());
-                let size = channel::record_size(&wire[46..50]).unwrap();
-                let (mut reader, mut writer, _) = peer
-                    .lock()
-                    .unwrap()
-                    .accept_start(number, &mut wire[46..46 + size].to_vec(), 0)
+                let target = sessions
+                    .iter()
+                    .position(|(id, _)| wire[6..38] == id[..])
                     .unwrap();
-                let mut rest = &wire[46 + size..];
+                let index = {
+                    let mut arrivals = arrivals.lock().unwrap();
+                    arrivals.push(Some((target, node)));
+                    arrivals.len() - 1
+                };
+                let mut records = Records::new(
+                    &sessions[target].1,
+                    u64::from_be_bytes(wire[38..46].try_into().unwrap()),
+                );
+                let mut rest = &wire[46..];
                 while !rest.is_empty() {
                     let size = channel::record_size(&rest[..4]).unwrap();
-                    reader.open(&mut rest[..size].to_vec()).unwrap();
+                    records.open(&rest[..size]);
                     rest = &rest[size..];
                 }
-                reader.complete().unwrap();
-                let metadata = serde_json::to_vec(&serde_json::json!({
-                    "status": if index == 0 { 200 } else { 503 },
+                let outcome = reply(target, index);
+                let mut metadata = serde_json::json!({
+                    "status": if outcome.is_some() { 503 } else { 200 },
                     "headers": {"retry-after": "1"},
-                    "closing": closing && index == 1,
-                }))
-                .unwrap();
+                });
+                if outcome == Some(true) {
+                    metadata["refused"] = true.into();
+                }
                 let bytes = [
-                    writer.seal(Kind::Keepalive, &[]).unwrap(),
-                    writer.seal(Kind::Metadata, &metadata).unwrap(),
-                    writer
-                        .seal(
-                            Kind::Data,
-                            if index == 0 {
-                                b"admitted"
-                            } else {
-                                b"unavailable"
-                            },
-                        )
-                        .unwrap(),
-                    writer.seal(Kind::Finished, &[]).unwrap(),
+                    records.seal(Kind::Keepalive, &[]),
+                    records.seal(Kind::Metadata, &serde_json::to_vec(&metadata).unwrap()),
+                    records.seal(
+                        Kind::Data,
+                        if outcome.is_some() {
+                            b"unavailable"
+                        } else {
+                            b"admitted"
+                        },
+                    ),
+                    records.seal(Kind::Finished, &[]),
                 ]
                 .concat();
                 Response::builder()
@@ -131,42 +199,41 @@ async fn closing_peer(
         }),
     ))
     .await;
-    (server, calls)
+    (server, arrivals)
 }
 
 #[tokio::test]
-async fn authenticated_session_closing_preserves_inflight_bodies_and_only_replaces_future_work() {
-    use std::sync::atomic::Ordering;
-    for closing in [false, true] {
-        let (mut client, owner, peer, context) = fixture(1);
-        let (server, calls) = closing_peer(peer, closing).await;
+async fn authenticated_refusal_preserves_inflight_bodies_and_only_replaces_future_work() {
+    for refused in [false, true] {
+        let (mut client, owner, peer, context) = fixture(1).await;
+        let (server, arrivals) = gateway(vec![(id(&owner), peer)], move |_, index| {
+            (index == 1).then_some(refused)
+        })
+        .await;
         Arc::get_mut(&mut client.inner).unwrap().endpoint = server.endpoint.clone();
         let mut responses = Vec::new();
         for _ in 0..2 {
             let (lease, exchange) = ready(&client);
             responses.push(
                 client
-                    .send_on_session(
-                        Request::post("/v1/responses")
-                            .body(Bytes::from_static(b"{}"))
-                            .unwrap(),
-                        Instant::now() + Duration::from_secs(5),
+                    .exchange(
+                        request(),
+                        deadline(),
                         (lease, exchange, Arc::clone(&context)),
-                        None,
                     )
                     .await
                     .unwrap(),
             );
         }
         assert_eq!(
-            calls.load(Ordering::SeqCst),
+            arrivals.lock().unwrap().len(),
             2,
             "inference must never be replayed"
         );
-        assert_eq!(owner.state.lock().unwrap().retired, closing);
+        assert_eq!(owner.state.lock().unwrap().retired, refused);
         assert_eq!(owner.state.lock().unwrap().active, 2);
         let future = client.select().unwrap();
-        if closing {
+        if refused {
             assert!(matches!(future, Selection::Opening(_)));
         } else {
             assert!(
@@ -175,14 +242,18 @@ async fn authenticated_session_closing_preserves_inflight_bodies_and_only_replac
             );
         }
         drop(future);
-        let unavailable = responses.pop().unwrap();
+        let unavailable = own(responses.pop().unwrap(), None, deadline())
+            .await
+            .unwrap();
         assert_eq!(unavailable.status(), 503);
         assert_eq!(unavailable.headers()[header::RETRY_AFTER], "1");
         assert_eq!(
             to_bytes(unavailable.into_body(), 1024).await.unwrap(),
             "unavailable"
         );
-        let admitted = responses.pop().unwrap();
+        let admitted = own(responses.pop().unwrap(), None, deadline())
+            .await
+            .unwrap();
         assert_eq!(admitted.status(), 200);
         assert_eq!(
             to_bytes(admitted.into_body(), 1024).await.unwrap(),
@@ -193,8 +264,93 @@ async fn authenticated_session_closing_preserves_inflight_bodies_and_only_replac
 }
 
 #[tokio::test]
+async fn a_refused_request_goes_once_to_a_session_on_another_gateway() {
+    let (mut client, first, first_peer, context) = fixture(4).await;
+    let (second, second_peer) = add_owner(&client, &context, &first.node_id);
+    let (other, other_peer) = add_owner(&client, &context, "other");
+    let (server, arrivals) = gateway(
+        vec![
+            (id(&first), first_peer),
+            (id(&second), second_peer),
+            (id(&other), other_peer),
+        ],
+        |session, _| (session != 2).then_some(true),
+    )
+    .await;
+    Arc::get_mut(&mut client.inner).unwrap().endpoint = server.endpoint.clone();
+    let response = client.send(request(), deadline()).await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(response.extensions().get::<Arc<RequestContext>>().is_some());
+    assert_eq!(
+        *arrivals.lock().unwrap(),
+        [
+            Some((0, first.node_id.clone())),
+            Some((2, "other".to_owned()))
+        ]
+    );
+    assert!(first.state.lock().unwrap().retired);
+    assert!(
+        second.state.lock().unwrap().retired,
+        "a draining gateway refuses on each of its sessions"
+    );
+    assert!(!other.state.lock().unwrap().retired);
+    assert_eq!(
+        to_bytes(response.into_body(), 1024).await.unwrap(),
+        "admitted"
+    );
+    drop(ready(&client));
+    assert_eq!(client.inner.state.lock().unwrap().owners.len(), 1);
+}
+
+#[tokio::test]
+async fn a_request_is_resent_at_most_once_and_never_after_an_ordinary_503() {
+    for refused in [true, false] {
+        let (mut client, first, first_peer, context) = fixture(2).await;
+        let (other, other_peer) = add_owner(&client, &context, "other");
+        let (server, arrivals) = gateway(
+            vec![(id(&first), first_peer), (id(&other), other_peer)],
+            move |_, _| Some(refused),
+        )
+        .await;
+        Arc::get_mut(&mut client.inner).unwrap().endpoint = server.endpoint.clone();
+        let response = client.send(request(), deadline()).await.unwrap();
+        assert_eq!(response.status(), 503);
+        assert_eq!(
+            to_bytes(response.into_body(), 1024).await.unwrap(),
+            "unavailable"
+        );
+        let mut expected = vec![Some((0, first.node_id.clone()))];
+        if refused {
+            expected.push(Some((1, "other".to_owned())));
+        }
+        assert_eq!(*arrivals.lock().unwrap(), expected);
+        assert_eq!(first.state.lock().unwrap().retired, refused);
+    }
+}
+
+#[tokio::test]
+async fn the_refusal_stands_when_no_other_session_can_start() {
+    let (mut client, owner, peer, _) = fixture(1).await;
+    let (server, arrivals) = gateway(vec![(id(&owner), peer)], |_, _| Some(true)).await;
+    Arc::get_mut(&mut client.inner).unwrap().endpoint = server.endpoint.clone();
+    let response = client.send(request(), deadline()).await.unwrap();
+    assert_eq!(response.status(), 503);
+    assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+    assert!(response.extensions().get::<Arc<RequestContext>>().is_some());
+    assert_eq!(
+        to_bytes(response.into_body(), 1024).await.unwrap(),
+        "unavailable"
+    );
+    assert_eq!(
+        *arrivals.lock().unwrap(),
+        [Some((0, owner.node_id.clone())), None],
+        "the resend tries one setup and sends nothing"
+    );
+}
+
+#[tokio::test]
 async fn pool_respects_acknowledgement_capacity_idle_hints_and_setup_cancellation() {
-    let (client, owner, server, _) = fixture(1);
+    let (client, owner, server, _) = fixture(1).await;
     let mut requests: Vec<_> = (0..256).map(|_| ready(&client)).collect();
     assert!(matches!(client.select().unwrap(), Selection::Wait));
     // An authenticated response acknowledges the first start before inference ends.
@@ -204,35 +360,41 @@ async fn pool_respects_acknowledgement_capacity_idle_hints_and_setup_cancellatio
         .1
         .open(&mut peer.seal(Kind::Keepalive, &[]), 0)
         .unwrap();
+    owner.state.lock().unwrap().dispatched = SystemTime::now() - Duration::from_secs(599);
     let next = ready(&client);
     assert_eq!(next.1.number(), 256);
-    {
-        let mut state = owner.state.lock().unwrap();
-        state.idle_since = Instant::now() - Duration::from_secs(601);
-    }
-    assert!(
-        !owner.state.lock().unwrap().retired,
-        "active requests never become idle"
-    );
-    drop(next);
-    drop(requests);
-    assert_eq!(owner.state.lock().unwrap().active, 0);
-    // The last response, not its start time, determines idle age.
-    assert!(owner.state.lock().unwrap().idle_since.elapsed() < Duration::from_secs(1));
-    owner.state.lock().unwrap().idle_since = Instant::now() - Duration::from_secs(601);
+    // Each request, not each response, renews the session.
+    assert!(owner.state.lock().unwrap().dispatched.elapsed().unwrap() < Duration::from_secs(1));
+    owner.state.lock().unwrap().dispatched = SystemTime::now() - Duration::from_mins(10);
+    // The gateway counts from the end of each request, so the client stops first,
+    // even while responses still arrive on the session.
     let Selection::Opening(opening) = client.select().unwrap() else {
-        panic!("expired idle owner was reused")
+        panic!("expired owner was reused")
     };
-    assert!(client.inner.state.lock().unwrap().owners.is_empty());
+    assert!(owner.state.lock().unwrap().retired);
+    assert_eq!(client.inner.state.lock().unwrap().owners.len(), 1);
     assert!(matches!(client.select().unwrap(), Selection::Wait));
     drop(opening);
     assert!(!client.inner.state.lock().unwrap().opening);
+    drop(next);
+    drop(requests);
+    assert_eq!(owner.state.lock().unwrap().active, 0);
     assert!(matches!(client.select().unwrap(), Selection::Opening(_)));
+    assert!(client.inner.state.lock().unwrap().owners.is_empty());
+}
+
+#[tokio::test]
+async fn a_session_dispatched_after_the_current_wall_time_is_not_reused() {
+    let (client, owner, _, _) = fixture(1).await;
+    owner.state.lock().unwrap().dispatched = SystemTime::now() + Duration::from_mins(1);
+    assert!(matches!(client.select().unwrap(), Selection::Opening(_)));
+    assert!(owner.state.lock().unwrap().retired);
+    assert!(client.inner.state.lock().unwrap().owners.is_empty());
 }
 
 #[tokio::test]
 async fn close_waits_for_response_owners_and_forces_only_at_deadline() {
-    let (client, owner, _, context) = fixture(1);
+    let (client, owner, _, context) = fixture(1).await;
     let (lease, request) = ready(&client);
     drop(request);
     let mut response = OwnedResponse {
@@ -261,7 +423,7 @@ async fn close_waits_for_response_owners_and_forces_only_at_deadline() {
 
 #[tokio::test]
 async fn graceful_close_authenticates_one_terminal_exchange_and_is_idempotent() {
-    let (mut client, owner, server, _) = fixture(1);
+    let (mut client, owner, server, _) = fixture(1).await;
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed = Arc::clone(&calls);
     let node_id = owner.node_id.clone();
@@ -316,7 +478,7 @@ async fn graceful_close_authenticates_one_terminal_exchange_and_is_idempotent() 
 
 #[tokio::test]
 async fn cancelled_start_gap_renews_without_cutting_off_an_admitted_response() {
-    let (client, owner, server, _) = fixture(1);
+    let (client, owner, server, _) = fixture(1).await;
     let (lease, mut active) = ready(&client);
     let mut peer = Records::new(&server, 0);
     peer.open(&active.seal(Kind::Metadata, b"{}").unwrap());

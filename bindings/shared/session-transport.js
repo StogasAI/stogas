@@ -6,6 +6,9 @@ import {
 } from './channel-http.js';
 import { SETUP_TIMEOUT_MS, deadlineSignal, waitWithSignal } from './evidence-client.js';
 
+// The gateway's refusal is a fixed error object of about 100 bytes.
+const MAX_REFUSAL_BYTES = 1024;
+
 // The injected setup constructor is the fixed Rust verification implementation.
 // This module only schedules requests and owns HTTP/session lifetimes.
 export class SessionTransport {
@@ -37,10 +40,39 @@ export class SessionTransport {
 		this.#onMetadata = onMetadata;
 	}
 
+	// A request the gateway refused without processing it goes once more through
+	// another session. The copy keeps the request body until the gateway answers.
 	async send(request, onProgress) {
-		let selected;
+		const copy = request.clone();
+		let resent = false;
 		try {
 			notifyRequestProgress(onProgress, 'securing');
+			const first = await this.#attempt(request, await this.#acquire(request), onProgress);
+			if (!first.refused) return first.response;
+			// Read the refusal, so its session holds no capacity the resend needs.
+			const refusal = await readBoundedBody(first.response, MAX_REFUSAL_BYTES, request.signal).then(
+				(body) => new Response(body, first.response),
+				() => undefined
+			);
+			let selected;
+			try {
+				selected = await this.#acquire(copy);
+			} catch (error) {
+				// A resend that cannot get a session sends nothing, so the refusal stands.
+				if (refusal) return refusal;
+				throw error;
+			}
+			resent = true;
+			// The first attempt already reported each progress phase.
+			return (await this.#attempt(copy, selected)).response;
+		} finally {
+			if (!resent) void copy.body?.cancel().catch(() => {});
+		}
+	}
+
+	async #acquire(request) {
+		let selected;
+		try {
 			selected = await this.#select(
 				request.signal,
 				request.headers.get('Stogas-Metadata') === 'v1'
@@ -48,13 +80,17 @@ export class SessionTransport {
 		} catch (error) {
 			throw new TransportError('Encrypted setup failed', 'not_sent', error);
 		}
-		const { owner, exchange } = selected;
 		if (this.#closed) {
-			exchange.free();
-			this.#release(owner);
+			selected.exchange.free();
+			this.#release(selected.owner);
 			throw new TransportError('Transport closed', 'not_sent');
 		}
-		return sendSessionRequest({
+		return selected;
+	}
+
+	async #attempt(request, { owner, exchange }, onProgress) {
+		let refused = false;
+		const response = await sendSessionRequest({
 			exchange,
 			nodeID: owner.core.node_id,
 			endpoint: this.#endpoint,
@@ -62,12 +98,20 @@ export class SessionTransport {
 			fetch: this.#fetch,
 			release: () => this.#release(owner),
 			retire: () => this.#retire(owner),
+			refuse: () => {
+				refused = true;
+				// A draining or paused gateway refuses on all of its sessions.
+				const nodeID = owner.core.node_id;
+				for (const other of [...this.#sessions])
+					if (other.core.node_id === nodeID) this.#retire(other);
+			},
 			onProgress: (phase) => {
 				if (phase === 'acknowledged') this.#notify();
 				notifyRequestProgress(onProgress, phase);
 			},
 			onMetadata: this.#onMetadata
 		});
+		return { response, refused };
 	}
 
 	async #select(signal, receipt) {
@@ -84,10 +128,11 @@ export class SessionTransport {
 					.filter((owner) => !owner.retired)
 					.sort((a, b) => a.active - b.active);
 				for (const owner of eligible) {
+					// The gateway counts the idle hint from the end of each request,
+					// so a session stops taking requests an idle hint after the last one began.
 					if (
-						owner.active === 0 &&
-						(Date.now() < owner.idleSince ||
-							Date.now() - owner.idleSince >= owner.core.idle_seconds * 1_000)
+						Date.now() < owner.dispatched ||
+						Date.now() - owner.dispatched >= owner.core.idle_seconds * 1_000
 					) {
 						this.#retire(owner);
 						continue;
@@ -106,6 +151,7 @@ export class SessionTransport {
 							throw new Error('Transport closed during setup');
 						}
 						owner.active++;
+						owner.dispatched = Date.now();
 						this.#notify();
 						return { owner, exchange };
 					} catch (error) {
@@ -145,6 +191,7 @@ export class SessionTransport {
 	}
 
 	async #open(signal) {
+		const started = Date.now();
 		const setup = new this.#Setup(this.#environment);
 		try {
 			// Initialize evidence before setup. Acquiring it does not release any
@@ -186,7 +233,7 @@ export class SessionTransport {
 				signal.throwIfAborted();
 				throw new Error('Transport closed');
 			}
-			this.#sessions.push({ core, active: 0, retired: false, idleSince: Date.now() });
+			this.#sessions.push({ core, active: 0, retired: false, dispatched: started });
 		} finally {
 			setup.free();
 		}
@@ -207,10 +254,7 @@ export class SessionTransport {
 	}
 	#release(owner) {
 		owner.active--;
-		if (owner.active === 0) {
-			owner.idleSince = Date.now();
-			if (owner.retired) this.#remove(owner);
-		}
+		if (owner.active === 0 && owner.retired) this.#remove(owner);
 		this.#notify();
 	}
 

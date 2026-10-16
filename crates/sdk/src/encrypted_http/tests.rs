@@ -107,7 +107,7 @@ impl Drop for Server {
 
 #[tokio::test]
 async fn acknowledged_response_waits_for_provider_status_and_preserves_retry_headers() {
-    for (status, closing) in [(200, false), (429, false), (503, false), (503, true)] {
+    for (status, refused) in [(200, false), (429, false), (503, false), (503, true)] {
         let (mut session, server) = session();
         let server = shared(server);
         let provider = Arc::new(Notify::new());
@@ -122,7 +122,7 @@ async fn acknowledged_response_waits_for_provider_status_and_preserves_retry_hea
                     let ack = records.seal(Kind::Keepalive, &[]);
                     let metadata = serde_json::to_vec(&json!({
                         "status": status,
-                        "closing": closing,
+                        "refused": refused,
                         "headers": {"content-type": "application/json", "retry-after": "7", "cache-control": "no-store"}
                     })).unwrap();
                     let (output, receiver) = tokio::sync::mpsc::channel(1);
@@ -175,10 +175,7 @@ async fn acknowledged_response_waits_for_provider_status_and_preserves_retry_hea
         provider.notify_one();
         let response = sending.await.unwrap().unwrap();
         assert_eq!(response.status().as_u16(), status);
-        assert_eq!(
-            response.extensions().get::<SessionClosing>().is_some(),
-            closing
-        );
+        assert_eq!(response.extensions().get::<Refused>().is_some(), refused);
         assert_eq!(response.headers()[header::RETRY_AFTER], "7");
         assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         assert_eq!(
@@ -409,8 +406,9 @@ fn metadata_rejects_transport_overrides_and_unsupported_paths_before_submission(
         br#"{"status":100,"headers":{}}"#.as_slice(),
         br#"{"status":200,"headers":{"Content-Type":"a","content-type":"b"}}"#,
         br#"{"status":200,"headers":{},"extra":true}"#,
-        br#"{"status":503,"headers":{},"closing":"true"}"#,
-        br#"{"status":503,"headers":{},"closing":null}"#,
+        br#"{"status":503,"headers":{},"refused":"true"}"#,
+        br#"{"status":503,"headers":{},"refused":null}"#,
+        br#"{"status":503,"headers":{},"closing":true}"#,
     ] {
         assert!(response_metadata(metadata).is_err());
     }
