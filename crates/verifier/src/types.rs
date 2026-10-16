@@ -87,6 +87,7 @@ pub type AllowedIgvm = ReleaseEvidence<GatewayReleaseManifest>;
 pub struct GatewayReleaseManifest {
     pub artifacts: GatewayReleaseArtifacts,
     pub build: GatewayReleaseBuild,
+    pub minimum_catalog_sequence: u64,
     pub source: ReleaseSource,
     pub schema: String,
     pub sequence: u64,
@@ -225,6 +226,7 @@ pub struct VerifiedRelease {
     pub igvm_sha256: String,
     pub launch_policies: LaunchPolicies,
     pub measurement: String,
+    pub minimum_catalog_sequence: u64,
     pub provenance: ReleaseProvenance,
     pub release_tag: String,
     pub release_manifest_sha256: String,

@@ -50,6 +50,8 @@ use x509_parser::{
 /// Maximum serialized evidence accepted by public adapters.
 pub const MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_NODES: usize = 1_024;
+/// Release sequences stay exact in every JSON consumer.
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 #[cfg(feature = "snp")]
 const MAX_VENDOR_COLLATERAL: usize = 4_096;
 #[cfg(feature = "snp")]
@@ -624,8 +626,6 @@ fn parse_u64_hex(value: &str, label: &str) -> Result<u64, Error> {
 }
 
 fn validate_catalog_shape(manifest: &CatalogReleaseManifest) -> Result<(), Error> {
-    const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-
     if manifest.schema != "stogas.catalog.release.v1"
         || manifest.minimum_gateway_sequence == 0
         || manifest.minimum_gateway_sequence > MAX_SAFE_INTEGER
@@ -680,6 +680,8 @@ fn gateway_release_manifest_shape_is_valid(manifest: &GatewayReleaseManifest) ->
     manifest.schema == "stogas.gateway.release.v1"
         && manifest.source.repository == "https://github.com/StogasAI/gateway"
         && gateway_release_sequence(&manifest.source.tag) == Some(manifest.sequence)
+        && manifest.minimum_catalog_sequence > 0
+        && manifest.minimum_catalog_sequence <= MAX_SAFE_INTEGER
         && manifest.source.tag.len() <= 100
         && is_lower_hex(&manifest.source.commit, 20)
         && is_lower_hex(&manifest.source.sha256, 32)
@@ -826,7 +828,6 @@ fn compatible_launch_policy<'a>(
 fn gateway_release_sequence(release_tag: &str) -> Option<u64> {
     const COMPONENT_BASE: u64 = 1_000_000;
     const MAJOR_BASE: u64 = COMPONENT_BASE * COMPONENT_BASE;
-    const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
     let mut parts = release_tag.strip_prefix('v')?.split('.');
     let parse = |part: &str| {
@@ -983,6 +984,7 @@ fn verify_gateway_release(
         igvm_sha256: manifest.artifacts.gateway_igvm.sha256.clone(),
         launch_policies: manifest.sev_snp.launch_policies.clone(),
         measurement: manifest.sev_snp.launch_measurement.clone(),
+        minimum_catalog_sequence: manifest.minimum_catalog_sequence,
         provenance,
         release_manifest_sha256: manifest_digest,
         release_tag: manifest.source.tag.clone(),
@@ -2073,6 +2075,7 @@ mod tests {
                     "sha256": "44".repeat(32),
                     "tag": "v0.0.1"
                 },
+                "minimum_catalog_sequence": 1,
                 "schema": "stogas.gateway.release.v1",
                 "sequence": 1,
                 "sev_snp": {

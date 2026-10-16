@@ -207,14 +207,18 @@ impl Snapshot {
             .map(|entry| entry.value.as_ref())
     }
 
-    /// Select the highest approved catalog compatible with this approved gateway release.
+    /// Select the highest approved catalog compatible with this approved gateway release. The
+    /// catalog names the oldest gateway that reads it, and the gateway the oldest catalog it reads.
     #[must_use]
     pub fn compatible_catalog(&self, gateway_id: &str) -> Option<(&str, &VerifiedCatalogRelease)> {
         self.require_current_keys().ok()?;
         let gateway = self.gateway(gateway_id)?;
         self.catalogs
             .iter()
-            .filter(|(_, entry)| entry.value.minimum_gateway_sequence <= gateway.sequence)
+            .filter(|(_, entry)| {
+                entry.value.minimum_gateway_sequence <= gateway.sequence
+                    && entry.value.sequence >= gateway.minimum_catalog_sequence
+            })
             .max_by_key(|(_, entry)| entry.value.sequence)
             .map(|(id, entry)| (id.as_str(), entry.value.as_ref()))
     }
