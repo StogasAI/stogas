@@ -94,8 +94,8 @@ mod staging {
         assert!(checks.iter().all(|check| !check.1));
         for step in [
             VerificationStep::Sigstore,
-            VerificationStep::SigningManifest,
-            VerificationStep::ReleasePolicy,
+            VerificationStep::KeyManifest,
+            VerificationStep::ApprovalManifest,
             VerificationStep::GatewayRelease,
             VerificationStep::CatalogRelease,
             VerificationStep::HardwarePolicy,
