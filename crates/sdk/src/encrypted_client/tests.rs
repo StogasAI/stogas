@@ -1,55 +1,13 @@
 use super::*;
-use crate::encrypted_http::tests::{Records, Server, SharedServer, session, shared};
-use axum::{
-    Router,
-    body::to_bytes,
-    http::header,
-    routing::{get, post},
+use crate::encrypted_http::tests::{
+    Records, Server, SharedServer, hardware_session, session, shared,
 };
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use axum::{Router, body::to_bytes, http::header, routing::post};
 use serde_json::Value;
 use stogas_verifier::channel::Kind;
 
 async fn fixture(maximum: usize) -> (Client, Arc<Owner>, SharedServer, Arc<RequestContext>) {
-    let fixture: Value = serde_json::from_str(include_str!(
-        "../../../../tests/fixtures/hardware-session-v1.json"
-    ))
-    .unwrap();
-    // Requests check their session against current evidence, so serve the fixture's.
-    let bundle = serde_json::to_vec(&fixture["bundle"]).unwrap();
-    let origin = Server::new(Router::new().route(
-        "/evidence",
-        get(move || {
-            let bundle = bundle.clone();
-            async move { bundle }
-        }),
-    ))
-    .await;
-    let origin = origin.endpoint.join("/evidence").unwrap();
-    let evidence = Arc::new(
-        EvidenceClient::from_parts(
-            evidence_client::https_client().unwrap(),
-            [origin.clone(), origin],
-            Environment::Staging,
-            serde_json::from_value(fixture["root"].clone()).unwrap(),
-        )
-        .unwrap(),
-    );
-    let snapshot = evidence.refresh(deadline()).await.unwrap();
-    let appraisal = Arc::new(
-        snapshot
-            .verify_native_certificate(
-                &URL_SAFE_NO_PAD
-                    .decode(fixture["certificate"].as_str().unwrap())
-                    .unwrap(),
-                hex::decode(fixture["challenge"].as_str().unwrap())
-                    .unwrap()
-                    .try_into()
-                    .unwrap(),
-                fixture["verified_at_ms"].as_i64().unwrap(),
-            )
-            .unwrap(),
-    );
+    let (evidence, snapshot, appraisal) = hardware_session().await;
     let client = Client::new(
         evidence,
         Url::parse("https://example.test/v1/session").unwrap(),
