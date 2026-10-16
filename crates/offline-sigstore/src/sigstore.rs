@@ -124,15 +124,38 @@ struct CertificateInfo {
     spki: Vec<u8>,
     identity: String,
     issuer: String,
+    extensions: Vec<(ObjectIdentifier, Vec<u8>)>,
     not_before: i64,
     not_after: i64,
+}
+
+impl CertificateInfo {
+    /// Reads a Fulcio extension from 1.3.6.1.4.1.57264.1.8 onward, each a DER `UTF8String`.
+    fn text_extension(&self, oid: ObjectIdentifier) -> Result<String, String> {
+        let mut values = self.extensions.iter().filter(|(id, _)| *id == oid);
+        let (Some((_, value)), None) = (values.next(), values.next()) else {
+            return Err(format!("Fulcio certificate requires one {oid} extension"));
+        };
+        der::asn1::Utf8StringRef::from_der(value)
+            .map(|text| text.to_string())
+            .map_err(|error| format!("malformed Fulcio {oid} extension: {error}"))
+    }
+}
+
+/// What a Fulcio certificate must say about its signer.
+pub struct CertificatePolicy<'a> {
+    /// The one URI SAN.
+    pub identity: &'a str,
+    /// The OIDC issuer extension.
+    pub issuer: &'a str,
+    /// Exact values of extensions from 1.3.6.1.4.1.57264.1.8 onward.
+    pub extensions: &'a [(ObjectIdentifier, &'a str)],
 }
 
 pub fn verify(
     root: &TrustedRoot,
     value: &serde_json::Value,
-    expected_identity: &str,
-    expected_issuer: &str,
+    policy: &CertificatePolicy<'_>,
     now_unix_ms: i64,
 ) -> Result<i64, String> {
     let bundle: Bundle = serde_json::from_value(value.clone())
@@ -149,8 +172,13 @@ pub fn verify(
         .decode(&bundle.verification_material.certificate.raw_bytes)
         .map_err(|error| format!("invalid Fulcio certificate encoding: {error}"))?;
     let certificate = parse_certificate(certificate_der)?;
-    if certificate.identity != expected_identity || certificate.issuer != expected_issuer {
+    if certificate.identity != policy.identity || certificate.issuer != policy.issuer {
         return Err("Fulcio identity or OIDC issuer differs from policy".into());
+    }
+    for (oid, expected) in policy.extensions {
+        if certificate.text_extension(*oid)? != *expected {
+            return Err(format!("Fulcio {oid} extension differs from policy"));
+        }
     }
 
     let entry = &bundle.verification_material.tlog_entries[0];
@@ -238,15 +266,17 @@ fn parse_certificate(der: Vec<u8>) -> Result<CertificateInfo, String> {
         return Err("Fulcio certificate requires one critical URI SAN".into());
     }
 
-    let issuers = certificate
+    let extensions = certificate
         .tbs_certificate
         .extensions
-        .as_ref()
-        .into_iter()
-        .flat_map(|extensions| extensions.iter())
-        .filter(|extension| extension.extn_id == FULCIO_ISSUER_OID)
-        .map(|extension| {
-            let bytes = extension.extn_value.as_bytes();
+        .iter()
+        .flatten()
+        .map(|extension| (extension.extn_id, extension.extn_value.as_bytes().to_vec()))
+        .collect::<Vec<_>>();
+    let issuers = extensions
+        .iter()
+        .filter(|(oid, _)| *oid == FULCIO_ISSUER_OID)
+        .map(|(_, bytes)| {
             der::asn1::Utf8StringRef::from_der(bytes)
                 .map(|issuer| issuer.to_string())
                 .or_else(|_| {
@@ -266,6 +296,7 @@ fn parse_certificate(der: Vec<u8>) -> Result<CertificateInfo, String> {
         spki,
         identity: identities.into_iter().next().unwrap_or_default(),
         issuer: issuers.into_iter().next().unwrap_or_default(),
+        extensions,
         not_before,
         not_after,
     })

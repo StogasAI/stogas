@@ -35,7 +35,6 @@ test('operator Worker verifies remote signatures, Rekor submissions, key manifes
 			policy: {
 				predicate_type: 'https://slsa.dev/provenance/v1',
 				repository: 'https://github.com/StogasAI/gateway',
-				require_github_hosted: true,
 				source_commit: '27eb4b954a372975c9e7c5dbc77fbf0d0ca53b3f',
 				source_ref: 'refs/tags/v0.0.1',
 				workflow_identity:

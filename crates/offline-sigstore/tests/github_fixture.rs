@@ -17,7 +17,6 @@ fn policy() -> GithubPolicy {
         source_ref: "refs/tags/v0.0.1".into(),
         source_commit: "27eb4b954a372975c9e7c5dbc77fbf0d0ca53b3f".into(),
         predicate_type: "https://slsa.dev/provenance/v1".into(),
-        require_github_hosted: true,
     }
 }
 
