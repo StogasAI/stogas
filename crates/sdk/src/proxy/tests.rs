@@ -84,8 +84,12 @@ fn loopback_capability_host_origin_and_route_checks_run_before_any_network_io() 
         route(&config, &refresh).unwrap_err().reason,
         "invalid_refresh"
     );
-    // Programs send no Origin and need no option; without one, every browser page is refused.
-    let config = self::config(None);
+}
+
+#[test]
+fn only_pages_with_the_printed_url_and_any_configured_origin_can_read_responses() {
+    // Without the option, any page with the printed URL can call the endpoint.
+    let config = config(None);
     let path = format!("/{}/v1/responses", config.client_capability);
     assert!(matches!(
         route(&config, &request(&config, &path)).unwrap(),
@@ -93,16 +97,44 @@ fn loopback_capability_host_origin_and_route_checks_run_before_any_network_io() 
     ));
     for origin in [
         HeaderValue::from_static("null"),
-        HeaderValue::from_static("http://127.0.0.1:1234"),
+        HeaderValue::from_static("https://any.example"),
         HeaderValue::from_bytes(b"\xff").unwrap(),
     ] {
         let mut request = request(&config, &path);
-        request.headers_mut().insert(header::ORIGIN, origin);
-        assert_eq!(
-            route(&config, &request).unwrap_err().reason,
-            "invalid_origin"
-        );
+        request.headers_mut().insert(header::ORIGIN, origin.clone());
+        assert!(matches!(
+            route(&config, &request).unwrap(),
+            Route::Inference(_)
+        ));
+        assert_eq!(browser_access(&config, &request).unwrap(), "*");
+        // A page without the random part cannot read even the error.
+        let mut guess = self::request(&config, "/v1/responses");
+        guess.headers_mut().insert(header::ORIGIN, origin);
+        assert_eq!(route(&config, &guess).unwrap_err().reason, "invalid_path");
+        assert_eq!(browser_access(&config, &guess), None);
     }
+    // The option narrows access to one origin.
+    let config = self::config(Some("https://client.example"));
+    let path = format!("/{}/v1/responses", config.client_capability);
+    let mut browser = request(&config, &path);
+    browser.headers_mut().insert(
+        header::ORIGIN,
+        HeaderValue::from_static("https://client.example"),
+    );
+    assert_eq!(
+        browser_access(&config, &browser).unwrap(),
+        "https://client.example"
+    );
+    browser.headers_mut().append(
+        header::ORIGIN,
+        HeaderValue::from_static("https://client.example"),
+    );
+    assert_eq!(browser_access(&config, &browser), None);
+    browser.headers_mut().insert(
+        header::ORIGIN,
+        HeaderValue::from_static("https://evil.example"),
+    );
+    assert_eq!(browser_access(&config, &browser), None);
 }
 
 #[test]

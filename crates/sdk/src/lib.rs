@@ -55,7 +55,7 @@ pub struct ServeOptions {
     pub transport: TransportOptions,
     /// Loopback listener address.
     pub listen: String,
-    /// One optional browser origin allowed to use the capability-protected local endpoint.
+    /// The only web origin that may call the endpoint. When unset, any page with the URL can.
     pub browser_origin: Option<String>,
     /// Close when a supervising parent's stdin pipe closes.
     pub exit_on_stdin_close: bool,
