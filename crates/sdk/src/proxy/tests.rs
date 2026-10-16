@@ -14,16 +14,16 @@ fn request(config: &ServeConfig, path: &str) -> Request {
 #[test]
 fn loopback_capability_host_origin_and_route_checks_run_before_any_network_io() {
     let config = config(Some("https://client.example"));
-    let path = format!("/{}/v1/chat/completions", config.capability());
+    let path = format!("/{}/v1/chat/completions", config.client_capability);
     let valid = request(&config, &path);
     assert!(
         matches!(route(&config, &valid).unwrap(), Route::Inference(value) if value == "/v1/chat/completions")
     );
     for path in [
         "/v1/chat/completions".to_owned(),
-        format!("/{}/v1/files", config.capability()),
+        format!("/{}/v1/files", config.client_capability),
         format!("{path}?key=secret"),
-        format!("/{}/v1/../chat/completions", config.capability()),
+        format!("/{}/v1/../chat/completions", config.client_capability),
     ] {
         let error = route(&config, &request(&config, &path)).unwrap_err();
         assert_eq!(error.submission, "not_sent");
@@ -84,6 +84,25 @@ fn loopback_capability_host_origin_and_route_checks_run_before_any_network_io() 
         route(&config, &refresh).unwrap_err().reason,
         "invalid_refresh"
     );
+    // Programs send no Origin and need no option; without one, every browser page is refused.
+    let config = self::config(None);
+    let path = format!("/{}/v1/responses", config.client_capability);
+    assert!(matches!(
+        route(&config, &request(&config, &path)).unwrap(),
+        Route::Inference(_)
+    ));
+    for origin in [
+        HeaderValue::from_static("null"),
+        HeaderValue::from_static("http://127.0.0.1:1234"),
+        HeaderValue::from_bytes(b"\xff").unwrap(),
+    ] {
+        let mut request = request(&config, &path);
+        request.headers_mut().insert(header::ORIGIN, origin);
+        assert_eq!(
+            route(&config, &request).unwrap_err().reason,
+            "invalid_origin"
+        );
+    }
 }
 
 #[test]
@@ -121,7 +140,10 @@ fn configuration_and_browser_preflight_cannot_expand_the_transport_scope() {
         "https://e2ee.stogas.ai/"
     );
     let config = config(Some("https://client.example"));
-    let mut preflight = request(&config, &format!("/{}/v1/responses", config.capability()));
+    let mut preflight = request(
+        &config,
+        &format!("/{}/v1/responses", config.client_capability),
+    );
     *preflight.method_mut() = Method::OPTIONS;
     preflight.headers_mut().insert(
         header::ORIGIN,

@@ -39,11 +39,7 @@ pub struct ServeConfig {
     expected_host: String,
     control_capability: String,
     client_capability: String,
-    browser: Option<BrowserAccess>,
-}
-struct BrowserAccess {
-    origin: String,
-    capability: String,
+    browser_origin: Option<String>,
 }
 impl ServeConfig {
     pub fn new(
@@ -63,23 +59,14 @@ impl ServeConfig {
             expected_host: listen.to_string(),
             control_capability: random_capability(),
             client_capability: random_capability(),
-            browser: browser_origin
-                .map(|origin| {
-                    Ok::<_, anyhow::Error>(BrowserAccess {
-                        origin: secure_browser_origin(origin)?,
-                        capability: random_capability(),
-                    })
-                })
-                .transpose()?,
+            browser_origin: browser_origin.map(secure_browser_origin).transpose()?,
         })
     }
-    fn capability(&self) -> &str {
-        self.browser
-            .as_ref()
-            .map_or(&self.client_capability, |browser| &browser.capability)
-    }
     fn base_url(&self) -> String {
-        format!("http://{}/{}/v1", self.expected_host, self.capability())
+        format!(
+            "http://{}/{}/v1",
+            self.expected_host, self.client_capability
+        )
     }
     fn refresh_url(&self) -> String {
         format!("http://{}{}", self.expected_host, self.refresh_path())
@@ -377,24 +364,31 @@ fn route(config: &ServeConfig, request: &Request) -> Result<Route, Failure> {
         }
         return Ok(Route::Refresh);
     }
-    let browser = match (origin, &config.browser) {
-        (Some(origin), Some(browser))
+    let browser = match origin {
+        None => false,
+        Some(origin)
             if request.headers().get_all(header::ORIGIN).iter().count() == 1
-                && origin.to_str().ok() == Some(browser.origin.as_str()) =>
+                && origin
+                    .to_str()
+                    .is_ok_and(|origin| config.browser_origin.as_deref() == Some(origin)) =>
         {
-            Some(browser)
+            true
         }
-        (Some(_), _) => {
+        Some(_) => {
             return Err(Failure::before(
                 StatusCode::FORBIDDEN,
                 "invalid_origin",
                 "browser origin is not allowed",
             ));
         }
-        (None, _) => None,
     };
-    let path = routed_path(request.uri().path(), browser, Some(config.capability()))
-        .map_err(|(status, message)| Failure::before(status, "invalid_path", message))?
+    let path = request
+        .uri()
+        .path()
+        .strip_prefix('/')
+        .and_then(|path| path.strip_prefix(config.client_capability.as_str()))
+        .filter(|path| path.starts_with("/v1/"))
+        .ok_or_else(|| Failure::before(StatusCode::NOT_FOUND, "invalid_path", "invalid base URL"))?
         .to_owned();
     if !matches!(
         path.as_str(),
@@ -403,10 +397,10 @@ fn route(config: &ServeConfig, request: &Request) -> Result<Route, Failure> {
         return Err(Failure::before(
             StatusCode::NOT_FOUND,
             "unsupported_path",
-            "only chat completions and responses are supported",
+            "only chat completions, responses and policy validation are supported",
         ));
     }
-    if request.method() == Method::OPTIONS && browser.is_some() {
+    if request.method() == Method::OPTIONS && browser {
         return Ok(Route::Preflight);
     }
     if request.method() != Method::POST {
@@ -588,23 +582,6 @@ fn random_capability() -> String {
     hex::encode(bytes)
 }
 
-fn routed_path<'a>(
-    path: &'a str,
-    browser: Option<&BrowserAccess>,
-    client_capability: Option<&str>,
-) -> Result<&'a str, (StatusCode, &'static str)> {
-    let capability = browser
-        .map(|browser| browser.capability.as_str())
-        .or(client_capability);
-    let Some(capability) = capability else {
-        return Ok(path);
-    };
-    let prefix = format!("/{capability}");
-    path.strip_prefix(&prefix)
-        .filter(|path| path.starts_with("/v1/"))
-        .ok_or((StatusCode::NOT_FOUND, "invalid browser base URL"))
-}
-
 fn browser_preflight(request: &Request) -> Result<Response<Body>, (StatusCode, &'static str)> {
     let method = request
         .headers()
@@ -666,9 +643,8 @@ fn allowed_browser_origin<'a>(
     config: &'a ServeConfig,
     headers: &axum::http::HeaderMap,
 ) -> Option<&'a str> {
-    let browser = config.browser.as_ref()?;
-    (headers.get(header::ORIGIN)?.to_str().ok()? == browser.origin)
-        .then_some(browser.origin.as_str())
+    let allowed = config.browser_origin.as_deref()?;
+    (headers.get(header::ORIGIN)?.to_str().ok()? == allowed).then_some(allowed)
 }
 
 fn add_browser_response_headers(response: &mut Response<Body>, origin: &str) {
