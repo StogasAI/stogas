@@ -569,6 +569,15 @@ pub struct OwnedBody<B> {
     body: B,
     lease: Option<Arc<Lease>>,
 }
+impl<B> OwnedBody<B> {
+    /// Assign no new streams to this body's connection. Its open streams finish.
+    pub fn retire(&self) {
+        if let Some(lease) = &self.lease {
+            lease.activity.retired.store(true, Ordering::Release);
+            lease.activity.changed.notify_waiters();
+        }
+    }
+}
 impl<B: Body + Unpin> Body for OwnedBody<B> {
     type Data = B::Data;
     type Error = B::Error;

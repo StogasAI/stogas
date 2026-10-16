@@ -26,14 +26,15 @@ use url::Url;
 const MAX_METADATA_BYTES: usize = 16 * 1024;
 const MAX_REQUEST_BYTES: usize = 128 * 1024 * 1024;
 
-/// Authenticated session retirement, independent of the application's HTTP result.
+/// The gateway authenticated this request and refused it without processing it.
+/// It refuses its other sessions too, so the request may go once to another.
 #[derive(Clone, Copy)]
-pub(crate) struct SessionClosing;
+pub(crate) struct Refused;
 
 struct ResponseMetadata {
     status: StatusCode,
     headers: HeaderMap,
-    closing: bool,
+    refused: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -159,8 +160,8 @@ pub async fn send(
     let mut response = Response::new(body);
     *response.status_mut() = metadata.status;
     *response.headers_mut() = metadata.headers;
-    if metadata.closing {
-        response.extensions_mut().insert(SessionClosing);
+    if metadata.refused {
+        response.extensions_mut().insert(Refused);
     }
     Ok(response)
 }
@@ -374,11 +375,11 @@ fn response_metadata(bytes: &[u8]) -> Result<ResponseMetadata, Error> {
     let object = value.as_object().ok_or(Error::Metadata)?;
     if object
         .keys()
-        .any(|key| !matches!(key.as_str(), "status" | "headers" | "closing"))
+        .any(|key| !matches!(key.as_str(), "status" | "headers" | "refused"))
     {
         return Err(Error::Metadata);
     }
-    let closing = match object.get("closing") {
+    let refused = match object.get("refused") {
         None => false,
         Some(Value::Bool(value)) => *value,
         _ => return Err(Error::Metadata),
@@ -411,7 +412,7 @@ fn response_metadata(bytes: &[u8]) -> Result<ResponseMetadata, Error> {
     Ok(ResponseMetadata {
         status,
         headers,
-        closing,
+        refused,
     })
 }
 

@@ -9,9 +9,12 @@ function fixture({
 	maxSessions = 1,
 	verify = () => {},
 	request = () => {},
-	fetchSetup
+	fetchSetup,
+	nodeID = (index) => `node-${index}`
 } = {}) {
 	const cores = [];
+	const exchanges = [];
+	const nodes = [];
 	let setups = 0;
 	let setupFreed = 0;
 	let requests = 0;
@@ -35,12 +38,14 @@ function fixture({
 			const owner = {
 				closed: false,
 				freed: false,
-				node_id: `node-${cores.length}`,
+				node_id: nodeID(cores.length),
 				idle_seconds: 10,
 				request(snapshot) {
 					assert.equal(this.closed, false);
 					request(snapshot, this);
-					return new Exchange();
+					const exchange = new Exchange();
+					exchanges.push(exchange);
+					return exchange;
 				},
 				close() {
 					this.closed = true;
@@ -83,6 +88,7 @@ function fixture({
 				return response([record(1, '{"status":204,"headers":{}}'), record(3)]);
 			}
 			requests++;
+			nodes.push(options.headers['Stogas-Node-ID']);
 			return fetchResponse
 				? fetchResponse(options, requests)
 				: response([
@@ -95,6 +101,8 @@ function fixture({
 	return {
 		transport,
 		cores,
+		exchanges,
+		nodes,
 		get setups() {
 			return setups;
 		},
@@ -110,14 +118,15 @@ function fixture({
 		get acquisitions() {
 			return acquisitions;
 		},
-		send(signal) {
+		send(signal, onProgress) {
 			return transport.send(
 				new Request('https://e2ee.example/v1/chat/completions', {
 					method: 'POST',
 					headers: { authorization: 'Bearer private-key' },
 					body: '{}',
 					signal
-				})
+				}),
+				onProgress
 			);
 		}
 	};
@@ -174,25 +183,138 @@ test('canceling the first waiter preserves shared setup for another request', as
 	await state.transport.close();
 });
 
-test('idle hints renew unsent work; an active stream keeps its session alive', async () => {
+test('a session takes requests for one idle hint after the last one began; open streams finish on it', async () => {
 	const originalNow = Date.now;
 	let now = 100_000;
 	Date.now = () => now;
 	try {
 		const state = fixture();
-		const active = await state.send();
-		now += 20_000;
+		const open = await state.send();
+		now += 9_999;
+		await (await state.send()).text();
+		now += 9_999;
 		await (await state.send()).text();
 		assert.equal(state.setups, 1);
-		await active.text();
-		now += 10_001;
-		await (await state.send()).text();
+		// The gateway may expire a session one idle hint after its last request
+		// ends, so an open stream does not make the session safe for new work.
+		now += 10_000;
+		const next = await state.send();
 		assert.equal(state.setups, 2);
+		assert.equal(state.cores[0].closed, true);
+		assert.equal(state.cores[0].freed, false);
+		assert.deepEqual(await open.json(), { ok: true });
 		assert.equal(state.cores[0].freed, true);
+		await next.text();
+		// A clock that moved back cannot show the session is still fresh.
+		now -= 1;
+		await (await state.send()).text();
+		assert.equal(state.setups, 3);
 		await state.transport.close();
 	} finally {
 		Date.now = originalNow;
 	}
+});
+
+const pending = () =>
+	Object.assign(new Error('pending'), { name: 'EncryptedChannelError', code: 'pending' });
+const refusal = () =>
+	response([
+		record(4),
+		record(1, '{"status":503,"headers":{"retry-after":"1"},"refused":true}'),
+		record(2, '{"error":"gateway_draining"}'),
+		record(3)
+	]);
+const admitted = () =>
+	response([record(1, '{"status":200,"headers":{}}'), record(2, 'admitted'), record(3)]);
+
+test('a refused request goes once through a new session and retires every session on the refusing gateway', async () => {
+	let output;
+	const state = fixture({
+		maxSessions: 3,
+		nodeID: (index) => (index < 2 ? 'draining' : 'other'),
+		// Each draining session takes one request, so the second request opens another.
+		request(_snapshot, core) {
+			if (core.node_id !== 'draining') return;
+			if (core.taken) throw pending();
+			core.taken = true;
+		},
+		fetchResponse(options, count) {
+			if (count === 1)
+				return new Response(
+					new ReadableStream({
+						start(controller) {
+							output = controller;
+							controller.enqueue(record(1, '{"status":200,"headers":{}}'));
+						}
+					}),
+					{ headers: { 'content-type': SESSION_CONTENT_TYPE } }
+				);
+			return options.headers['Stogas-Node-ID'] === 'draining' ? refusal() : admitted();
+		}
+	});
+	const open = await state.send();
+	const phases = [];
+	const resent = await state.send(undefined, (phase) => phases.push(phase));
+	assert.equal(resent.status, 200);
+	assert.equal(await resent.text(), 'admitted');
+	assert.deepEqual(state.nodes, ['draining', 'draining', 'other']);
+	assert.equal(state.setups, 3);
+	// The resend carries the same request, and progress reports each phase once.
+	assert.deepEqual(state.exchanges[2].sealed, state.exchanges[1].sealed);
+	assert.deepEqual(phases, ['securing', 'encrypting', 'sending', 'acknowledged']);
+	assert.deepEqual(
+		state.cores.map((core) => [core.closed, core.freed]),
+		[
+			[true, false],
+			[true, true],
+			[false, false]
+		]
+	);
+	// Work admitted before the refusal still finishes on its session.
+	output.enqueue(record(2, 'open'));
+	output.enqueue(record(3));
+	output.close();
+	assert.equal(await open.text(), 'open');
+	assert.equal(state.cores[0].freed, true);
+	await (await state.send()).text();
+	assert.equal(state.setups, 3);
+	await state.transport.close();
+});
+
+test('the refusal stands when no other session can start', async () => {
+	const state = fixture({
+		fetchSetup: () =>
+			state.setups === 1
+				? new Response(new Uint8Array([12]), { headers: { 'content-type': SESSION_CONTENT_TYPE } })
+				: new Response(null, { status: 503 }),
+		fetchResponse: refusal
+	});
+	const refused = await state.send();
+	assert.equal(refused.status, 503);
+	assert.equal(refused.headers.get('retry-after'), '1');
+	assert.deepEqual(await refused.json(), { error: 'gateway_draining' });
+	assert.equal(state.setups, 2);
+	assert.equal(state.requests, 1);
+	assert.equal(state.cores[0].freed, true);
+	await state.transport.close();
+});
+
+test('a request is resent at most once and never after an ordinary 503', async () => {
+	const state = fixture({ fetchResponse: refusal });
+	const refused = await state.send();
+	assert.equal(refused.status, 503);
+	await refused.text();
+	assert.deepEqual(state.nodes, ['node-0', 'node-1']);
+	await state.transport.close();
+
+	const busy = fixture({
+		fetchResponse: () =>
+			response([record(1, '{"status":503,"headers":{"retry-after":"1"}}'), record(3)])
+	});
+	assert.equal((await busy.send()).status, 503);
+	assert.equal(busy.requests, 1);
+	assert.equal(busy.cores[0].closed, false);
+	await busy.transport.close();
 });
 
 test('evidence recovery verifies the same setup before any application credentials leave', async () => {

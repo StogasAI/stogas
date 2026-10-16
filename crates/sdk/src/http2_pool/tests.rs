@@ -423,6 +423,50 @@ async fn goaway_proves_later_streams_unprocessed_and_retires_the_connection_at_o
 }
 
 #[tokio::test]
+async fn a_retired_body_finishes_while_new_streams_open_one_new_connection() {
+    let (pool, mut server) = harness(1, 4);
+    let refused = start(&pool, "/refused").await;
+    let refused_seen = next(&mut server).await;
+    let open = start(&pool, "/open").await;
+    let open_seen = next(&mut server).await;
+    assert_eq!((refused_seen.channel, open_seen.channel), (0, 0));
+    let mut refused_stream = refused_seen.respond(b"re", false);
+    let refused = refused.await.unwrap().unwrap();
+    refused.body().retire();
+    let resent = start(&pool, "/resent").await;
+    let resent_seen = next(&mut server).await;
+    assert_eq!(
+        resent_seen.channel, 1,
+        "a retired connection takes no new streams"
+    );
+    assert_eq!(server.calls.load(Ordering::SeqCst), 2);
+    refused_stream
+        .send_data(Bytes::from_static(b"fused"), true)
+        .unwrap();
+    open_seen.respond(b"open", true);
+    resent_seen.respond(b"resent", true);
+    assert_eq!(
+        refused.into_body().collect().await.unwrap().to_bytes(),
+        "refused"
+    );
+    for (handle, body) in [(open, "open"), (resent, "resent")] {
+        assert_eq!(
+            handle
+                .await
+                .unwrap()
+                .unwrap()
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes(),
+            body
+        );
+    }
+    pool.close(deadline()).await.unwrap();
+}
+
+#[tokio::test]
 async fn close_waits_for_body_completion_then_stops_all_channels() {
     let (pool, mut server) = harness(1, 2);
     let request = start(&pool, "/active").await;
