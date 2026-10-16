@@ -1,6 +1,6 @@
 {
-  "approvals": "f1eedefb739d96063456b60ba6503ef69f0a7fd64e9574031b61c99dbd809223",
-  "body_sha256": "498593c45d3b190197061f8f0f20ba30831149eb642d38cc3da487349a43f13a",
+  "approvals": "db297b1d94165a56b9d590152ecbd629b23de8c918cb84584f0cdd464bfb38ce",
+  "body_sha256": "5ad584e28ba23a707c1b0e51c8de4b05a8d83ff859ecd42a8907cbfcbe82522b",
   "keys": "bd2ad3bc8cac1ef8b773b635b3efbe86a17ea41cfcbb1a7ca1276adbb88dadf6",
   "schema": "stogas.evidence-archive.v1",
   "sigstore": "2bd8f485715eb029ab25c6282757d07058835b351d796e65897bf7daf8dc3a98",
@@ -9,9 +9,9 @@
     "4ba22b0b428118e9fe05fccb24f97d826072c5e0a39b3d6cad42c3c826ead24f": 2238,
     "b0ad898a33d2360e39f74bc234f5d2000771bd8b7bfd82b0572d2974e106cc87": 1157,
     "bd2ad3bc8cac1ef8b773b635b3efbe86a17ea41cfcbb1a7ca1276adbb88dadf6": 10452,
+    "db297b1d94165a56b9d590152ecbd629b23de8c918cb84584f0cdd464bfb38ce": 13992,
     "f0745ca730fce43fa4a0ad3fd46c088acfe9a5e0ecde8e89b3b3e79e1d723721": 2188,
-    "f1eedefb739d96063456b60ba6503ef69f0a7fd64e9574031b61c99dbd809223": 14262,
-    "f5f5e4db7a76fc207947314a4ff3a1eb270b32b75d06008152d88764e5822f08": 1804
+    "fc8a31a913d0bc2cdde1ebc7f2706786f24a5336de335e6129c35fc67f04afd4": 1804
   },
   "vendor_collateral": [
     {
@@ -54,17 +54,17 @@
       }
     },
     {
-      "der": "f5f5e4db7a76fc207947314a4ff3a1eb270b32b75d06008152d88764e5822f08",
+      "der": "fc8a31a913d0bc2cdde1ebc7f2706786f24a5336de335e6129c35fc67f04afd4",
       "metadata": {
         "ca_product_name": "Milan",
         "chip_id": "b2202e1f13696edf8e6f3e833df25da9278cfeb1105e70894a14452b2ec5fd2a263db3bdc596294925a01bfaff8b1dd65ad0dfb527a8e6381fed31f097d41e67",
         "collateral_type": "vcek",
-        "fetched_at": "2026-10-16T17:53:16.176Z",
+        "fetched_at": "2026-10-16T21:18:43.352Z",
         "hwid": "b2202e1f13696edf8e6f3e833df25da9278cfeb1105e70894a14452b2ec5fd2a263db3bdc596294925a01bfaff8b1dd65ad0dfb527a8e6381fed31f097d41e67",
         "product_name": "Milan",
         "reported_tcb": "0400000000001dde",
         "schema": "stogas.amd-kds-collateral.v1",
-        "sha256": "7e386b67b36066a32288917f519e2106ef630798109ef381f5084eb77c1f9adf",
+        "sha256": "06efe115d7d55a5cd050414303f04c7849bfab0bc3502ee38058c9f884dd1e94",
         "source": "amd-kds",
         "source_url": "https://kdsintf.amd.com/vcek/v1/Milan/b2202e1f13696edf8e6f3e833df25da9278cfeb1105e70894a14452b2ec5fd2a263db3bdc596294925a01bfaff8b1dd65ad0dfb527a8e6381fed31f097d41e67?blSPL=4&teeSPL=0&snpSPL=29&ucodeSPL=222",
         "tcb": {

@@ -509,11 +509,13 @@ fn verify_hardware_policy(policy: &HardwarePolicy) -> Result<VerifiedHardwarePol
         chip_ids,
         policy_count: policy.policies.len(),
         sha256: hex::encode(Sha256::digest(canonical.as_bytes())),
+        version: policy.version,
     })
 }
 
 fn validate_hardware_policy(policy: &HardwarePolicy) -> Result<String, Error> {
     if policy.schema != "stogas.hardware-policies.v1"
+        || !approvals::valid_revision(policy.version)
         || policy.policies.is_empty()
         || policy.policies.len() > MAX_NODES
     {
@@ -1859,9 +1861,14 @@ mod tests {
         invalid = policy.clone();
         invalid.policies[1].required_platform_info_mask = "0x0000000000000025".into();
         assert!(validate_hardware_policy(&invalid).is_err());
-        invalid = policy;
+        invalid = policy.clone();
         invalid.policies[1].cpuid_family = 0;
         assert!(validate_hardware_policy(&invalid).is_err());
+        for version in [0, 1 << 53] {
+            invalid = policy.clone();
+            invalid.version = version;
+            assert!(validate_hardware_policy(&invalid).is_err(), "{version}");
+        }
     }
 
     #[cfg(feature = "snp")]
@@ -1877,6 +1884,7 @@ mod tests {
         let transition = HardwarePolicy {
             policies: vec![smt_on.clone(), smt_off.clone()],
             schema: "stogas.hardware-policies.v1".into(),
+            version: 1,
         };
         let only_on = HardwarePolicy {
             policies: vec![smt_on],

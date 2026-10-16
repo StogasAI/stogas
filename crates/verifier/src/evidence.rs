@@ -38,10 +38,10 @@ pub use snp::{SnpHardwareFacts, VerifiedSnpReport};
 pub enum VerificationStep {
     Decode,
     Sigstore,
-    SigningManifest,
+    KeyManifest,
     VendorRevocations,
     Envelope,
-    ReleasePolicy,
+    ApprovalManifest,
     GatewayRelease,
     CatalogRelease,
     HardwarePolicy,
@@ -356,7 +356,7 @@ impl Verifier {
                 Ok((sigstore, keys))
             });
         if keys.is_ok() {
-            checked(VerificationStep::SigningManifest, None, false);
+            checked(VerificationStep::KeyManifest, None, false);
         }
         // Vendor revocation is an independent signed decision. Retain it even if a missing
         // release, altered approval or other malformed object prevents snapshot installation.
@@ -377,7 +377,7 @@ impl Verifier {
         let approvals =
             self.approvals
                 .verify_with_keys(keys, body.approvals, sigstore, now_unix_ms)?;
-        checked(VerificationStep::ReleasePolicy, None, false);
+        checked(VerificationStep::ApprovalManifest, None, false);
         let snapshot = Arc::new(self.verify_snapshot(
             Candidate {
                 body_sha256,

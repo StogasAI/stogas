@@ -172,7 +172,7 @@ test('measured checks follow actual verification and observer failures cannot re
 	const core = verifier();
 	const refresh = core.refresh.bind(core);
 	core.refresh = (bytes, observe) => {
-		observe({ step: 'signing_manifest', reference: null, cached: false });
+		observe({ step: 'key_manifest', reference: null, cached: false });
 		const snapshot = refresh(bytes);
 		observe({ step: 'accepted', reference: null, cached: false });
 		return snapshot;
@@ -198,7 +198,7 @@ test('measured checks follow actual verification and observer failures cannot re
 	);
 	assert.deepEqual(
 		snapshot.verificationChecks.map((check) => check.step),
-		['signing_manifest', 'accepted']
+		['key_manifest', 'accepted']
 	);
 	assert.ok(
 		snapshot.verificationChecks.every(

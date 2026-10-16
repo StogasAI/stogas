@@ -30,10 +30,10 @@ export interface StogasVerificationCheck {
 	step:
 		| 'decode'
 		| 'sigstore'
-		| 'signing_manifest'
+		| 'key_manifest'
 		| 'vendor_revocations'
 		| 'envelope'
-		| 'release_policy'
+		| 'approval_manifest'
 		| 'gateway_release'
 		| 'catalog_release'
 		| 'hardware_policy'

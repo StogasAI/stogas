@@ -24,6 +24,8 @@ pub struct ReleaseEvidence<T> {
 pub struct HardwarePolicy {
     pub policies: Vec<AmdSevSnpPolicy>,
     pub schema: String,
+    /// Increases by one whenever the rules change, so one version always names the same rules.
+    pub version: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -259,4 +261,5 @@ pub struct VerifiedHardwarePolicy {
     pub chip_ids: Vec<String>,
     pub policy_count: usize,
     pub sha256: String,
+    pub version: u64,
 }

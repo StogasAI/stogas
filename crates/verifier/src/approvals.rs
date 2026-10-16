@@ -284,7 +284,7 @@ pub enum Error {
     Signature,
     #[error("approval evidence rolls back an accepted decision")]
     Rollback,
-    #[error("different signed decisions use the same revision")]
+    #[error("different signed decisions use the same revision or hardware policy version")]
     Equivocation,
     #[error("{0} is not in the signed approval manifest")]
     NotApproved(&'static str),
@@ -560,6 +560,17 @@ impl ApprovalVerifier {
             {
                 return Err(Error::Equivocation);
             }
+            // Each hardware policy version names one set of rules, as a revision names one decision.
+            let hardware = &candidate.manifest().hardware_policy;
+            let accepted = &previous.manifest().hardware_policy;
+            if hardware.version < accepted.version {
+                return Err(Error::Rollback);
+            }
+            if hardware.version == accepted.version
+                && payload_sha256(hardware)? != payload_sha256(accepted)?
+            {
+                return Err(Error::Equivocation);
+            }
         }
         Ok(())
     }
@@ -748,7 +759,7 @@ fn sigstore(error: impl std::fmt::Display) -> Error {
     Error::Sigstore(error.to_string())
 }
 
-const fn valid_revision(revision: u64) -> bool {
+pub(crate) const fn valid_revision(revision: u64) -> bool {
     revision > 0 && revision <= MAX_REVISION
 }
 fn invalid(error: impl std::fmt::Display) -> Error {

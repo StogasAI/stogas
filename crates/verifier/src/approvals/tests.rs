@@ -337,6 +337,44 @@ fn revisions_detect_only_conflicting_decisions_and_reject_stale_concurrent_candi
 }
 
 #[test]
+fn a_hardware_policy_version_names_one_set_of_rules_and_never_decreases() {
+    let mut verifier = verifier();
+    let authority = verifier.authority;
+    let keys = keys(1, 2, &[]);
+    let approve = |revision: u64, version: u64, snp: u8| {
+        let mut document = signed(&keys, revision, 2).document;
+        document.hardware_policy.version = version;
+        document.hardware_policy.policies[0].minimum_tcb.snp = snp;
+        verify_online_approval(authority, keys.clone(), resign(document, 2), sigstore()).unwrap()
+    };
+    verifier.accept(approve(1, 1, 29)).unwrap();
+    verifier.accept(approve(2, 2, 30)).unwrap();
+    assert_eq!(
+        verifier.accept(approve(3, 1, 29)).unwrap_err(),
+        Error::Rollback
+    );
+    assert_eq!(
+        verifier.accept(approve(3, 2, 31)).unwrap_err(),
+        Error::Equivocation
+    );
+    // Renewal signs the same rules again under a new revision.
+    verifier.accept(approve(3, 2, 30)).unwrap();
+    // A new root-signed key manifest supersedes every number the old online key signed.
+    verifier
+        .accept(candidate(&verifier, 2, 1, 3, &[2]))
+        .unwrap();
+    assert_eq!(
+        verifier
+            .accepted()
+            .unwrap()
+            .manifest()
+            .hardware_policy
+            .version,
+        1
+    );
+}
+
+#[test]
 fn root_decisions_can_omit_retired_keys_without_authorizing_them() {
     let mut verifier = verifier();
     verifier.accept(candidate(&verifier, 1, 1, 2, &[])).unwrap();
