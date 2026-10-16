@@ -20,7 +20,7 @@ export async function runLoad(
 		slowReaderMs = 0,
 		stream = false,
 		cancelEvery = 0,
-		retireEvery = 0
+		drainAfter = 0
 	} = {}
 ) {
 	const peers = new Map();
@@ -36,6 +36,7 @@ export async function runLoad(
 		acknowledged: 0,
 		completed: 0,
 		cancelled: 0,
+		refused: 0,
 		peakRequests: 0
 	};
 	let active = 0;
@@ -45,6 +46,9 @@ export async function runLoad(
 			? `data: ${JSON.stringify({ choices: [{ delta: { content: 'r'.repeat(responseBytes) } }] })}\n\ndata: [DONE]\n\n`
 			: JSON.stringify({ output: 'r'.repeat(responseBytes) })
 	);
+	const contentType = stream ? 'text/event-stream' : 'application/json';
+	const refusal = encode('{"error":"gateway_draining"}');
+	let firstNodeRequests = 0;
 	class Setup {
 		hello = new Uint8Array([1]);
 		complete() {
@@ -78,7 +82,8 @@ export async function runLoad(
 				});
 			if (new Headers(options.headers).has('authorization'))
 				throw new Error('outer credential leak');
-			const peer = peers.get(new Headers(options.headers).get('stogas-node-id'));
+			const nodeID = new Headers(options.headers).get('stogas-node-id');
+			const peer = peers.get(nodeID);
 			const response = peer.accept(new Uint8Array(await options.body.arrayBuffer()));
 			if (response.close) counts.closes++;
 			else {
@@ -90,7 +95,19 @@ export async function runLoad(
 					throw new Error(`upload mismatch: ${actual} != ${encode(payload).length}`);
 				}
 			}
-			const closing = !response.close && retireEvery > 0 && counts.dispatched % retireEvery === 0;
+			// The first gateway drains after drainAfter requests. It refuses each later
+			// request without processing it, and the client resends it elsewhere.
+			const refused =
+				!response.close &&
+				drainAfter > 0 &&
+				nodeID === 'test-0' &&
+				++firstNodeRequests > drainAfter;
+			if (refused) counts.refused++;
+			const [metadata, body] = refused
+				? [{ status: 503, headers: { 'retry-after': '1' }, refused }, refusal]
+				: response.close
+					? [{ status: 204, headers: {} }, data]
+					: [{ status: 200, headers: { 'content-type': contentType } }, data];
 			let closed = false,
 				phase = 0,
 				offset = 0;
@@ -112,24 +129,10 @@ export async function runLoad(
 							} else if (phase === 1) {
 								phase++;
 								if (providerDelayMs) await delay(providerDelayMs);
-								if (!closed)
-									controller.enqueue(
-										response.seal(
-											1,
-											encode(
-												JSON.stringify({
-													status: response.close ? 204 : 200,
-													closing,
-													headers: response.close
-														? {}
-														: { 'content-type': stream ? 'text/event-stream' : 'application/json' }
-												})
-											)
-										)
-									);
-							} else if (!response.close && offset < data.length) {
-								const end = Math.min(offset + recordBytes, data.length);
-								controller.enqueue(response.seal(2, data.subarray(offset, end)));
+								if (!closed) controller.enqueue(response.seal(1, encode(JSON.stringify(metadata))));
+							} else if (!response.close && offset < body.length) {
+								const end = Math.min(offset + recordBytes, body.length);
+								controller.enqueue(response.seal(2, body.subarray(offset, end)));
 								offset = end;
 							} else {
 								controller.enqueue(response.seal(3, new Uint8Array()));

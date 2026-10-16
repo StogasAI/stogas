@@ -6,6 +6,7 @@ type LoadRuntime = typeof globalThis & {
 		failures: string[];
 		completed: number;
 		cancelled: number;
+		refused: number;
 		dispatched: number;
 		freed: number;
 		setups: number;
@@ -42,7 +43,7 @@ test('real encrypted Fetch requests wait for capacity, stream, cancel and releas
 						requests: 96,
 						responseBytes: 131072,
 						slowReaderMs: 2,
-						retireEvery: 8
+						drainAfter: 8
 					}
 				]) {
 					const result = await page.evaluate(
@@ -51,10 +52,14 @@ test('real encrypted Fetch requests wait for capacity, stream, cancel and releas
 					);
 					expect(result.failures, `${engine.name()}: ${JSON.stringify(options)}`).toEqual([]);
 					expect(result.completed + result.cancelled).toBe(options.requests);
-					expect(result.dispatched).toBe(options.requests);
+					// Each refused request is sent once more.
+					expect(result.dispatched).toBe(options.requests + result.refused);
 					expect(result.freed).toBe(result.setups);
 					if ('cancelEvery' in options) expect(result.setups).toBe(1);
-					if ('retireEvery' in options) expect(result.setups).toBeGreaterThan(1);
+					if ('drainAfter' in options) {
+						expect(result.refused).toBeGreaterThan(0);
+						expect(result.setups).toBeGreaterThan(1);
+					} else expect(result.refused).toBe(0);
 				}
 			} finally {
 				await browser.close();

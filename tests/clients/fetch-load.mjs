@@ -30,16 +30,18 @@ try {
 			requests: 96,
 			responseBytes: 131072,
 			slowReaderMs: 2,
-			retireEvery: 8
+			drainAfter: 8
 		}
 	]) {
 		const result = await runLoad(api, options);
 		assert.deepEqual(result.failures, []);
 		assert.equal(result.completed + result.cancelled, options.requests);
-		assert.equal(result.dispatched, options.requests);
+		// Each refused request is sent once more.
+		assert.equal(result.dispatched, options.requests + result.refused);
 		assert.equal(result.freed, result.setups);
 		if (options.cancelEvery) assert.equal(result.setups, 1);
-		if (options.retireEvery) assert.ok(result.setups > 1);
+		if (options.drainAfter) assert.ok(result.refused > 0 && result.setups > 1);
+		else assert.equal(result.refused, 0);
 		console.log(JSON.stringify({ options, ...result }));
 	}
 } finally {
