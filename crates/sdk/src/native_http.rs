@@ -320,3 +320,6 @@ impl Channel {
         .map_err(|_| Error::Evidence(evidence_client::Error::Deadline))?
     }
 }
+
+#[cfg(all(test, feature = "staging"))]
+mod tests;

@@ -105,6 +105,55 @@ impl Drop for Server {
     }
 }
 
+/// The recorded hardware session: an evidence client holding the fixture's snapshot, and the
+/// session that snapshot appraised. Requests check their session against current evidence.
+#[cfg(feature = "staging")]
+pub async fn hardware_session() -> (
+    Arc<crate::evidence_client::EvidenceClient>,
+    Arc<stogas_verifier::evidence::Snapshot>,
+    Arc<stogas_verifier::evidence::VerifiedSession>,
+) {
+    use axum::routing::get;
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../tests/fixtures/hardware-session-v1.json"
+    ))
+    .unwrap();
+    let bundle = serde_json::to_vec(&fixture["bundle"]).unwrap();
+    let origin = Server::new(Router::new().route(
+        "/evidence",
+        get(move || {
+            let bundle = bundle.clone();
+            async move { bundle }
+        }),
+    ))
+    .await;
+    let endpoint = origin.endpoint.join("/evidence").unwrap();
+    let evidence = Arc::new(
+        crate::evidence_client::EvidenceClient::from_parts(
+            crate::evidence_client::https_client().unwrap(),
+            [endpoint.clone(), endpoint],
+            Environment::Staging,
+            serde_json::from_value(fixture["root"].clone()).unwrap(),
+        )
+        .unwrap(),
+    );
+    let snapshot = evidence.refresh(deadline()).await.unwrap();
+    let session = snapshot
+        .verify_native_certificate(
+            &URL_SAFE_NO_PAD
+                .decode(fixture["certificate"].as_str().unwrap())
+                .unwrap(),
+            hex::decode(fixture["challenge"].as_str().unwrap())
+                .unwrap()
+                .try_into()
+                .unwrap(),
+            fixture["verified_at_ms"].as_i64().unwrap(),
+        )
+        .unwrap();
+    (evidence, snapshot, Arc::new(session))
+}
+
 #[tokio::test]
 async fn acknowledged_response_waits_for_provider_status_and_preserves_retry_headers() {
     for (status, refused) in [(200, false), (429, false), (503, false), (503, true)] {
