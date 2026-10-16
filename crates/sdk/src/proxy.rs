@@ -312,7 +312,7 @@ impl Failure {
 use crate::encrypted_http;
 
 async fn proxy_request(State(state): State<Arc<ProxyState>>, request: Request) -> Response {
-    let origin = allowed_browser_origin(&state.config, request.headers()).map(str::to_owned);
+    let browser = browser_access(&state.config, &request);
     let mut response = match proxy_request_inner(&state, request).await {
         Ok(response) => response,
         Err(error) => Response::builder().status(error.status)
@@ -321,8 +321,13 @@ async fn proxy_request(State(state): State<Arc<ProxyState>>, request: Request) -
             .body(Body::from(serde_json::json!({"error":{"type":"stogas_transport_error","message":error.message,"code":error.reason,"stogas":{"phase":error.phase,"submission":error.submission,"reason":error.reason}}}).to_string()))
             .unwrap_or_else(|_| Response::new(Body::empty())),
     };
-    if let Some(origin) = origin {
-        add_browser_response_headers(&mut response, &origin);
+    if let Some(origin) = browser {
+        response
+            .headers_mut()
+            .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+        response
+            .headers_mut()
+            .append(header::VARY, HeaderValue::from_static("Origin"));
     }
     response
 }
@@ -368,9 +373,10 @@ fn route(config: &ServeConfig, request: &Request) -> Result<Route, Failure> {
         None => false,
         Some(origin)
             if request.headers().get_all(header::ORIGIN).iter().count() == 1
-                && origin
-                    .to_str()
-                    .is_ok_and(|origin| config.browser_origin.as_deref() == Some(origin)) =>
+                && config
+                    .browser_origin
+                    .as_deref()
+                    .is_none_or(|allowed| origin == allowed) =>
         {
             true
         }
@@ -382,12 +388,7 @@ fn route(config: &ServeConfig, request: &Request) -> Result<Route, Failure> {
             ));
         }
     };
-    let path = request
-        .uri()
-        .path()
-        .strip_prefix('/')
-        .and_then(|path| path.strip_prefix(config.client_capability.as_str()))
-        .filter(|path| path.starts_with("/v1/"))
+    let path = client_path(config, request)
         .ok_or_else(|| Failure::before(StatusCode::NOT_FOUND, "invalid_path", "invalid base URL"))?
         .to_owned();
     if !matches!(
@@ -639,23 +640,29 @@ fn browser_preflight(request: &Request) -> Result<Response<Body>, (StatusCode, &
         .unwrap_or_else(|_| Response::new(Body::empty())))
 }
 
-fn allowed_browser_origin<'a>(
-    config: &'a ServeConfig,
-    headers: &axum::http::HeaderMap,
-) -> Option<&'a str> {
-    let allowed = config.browser_origin.as_deref()?;
-    (headers.get(header::ORIGIN)?.to_str().ok()? == allowed).then_some(allowed)
+/// The API path after the client capability, such as `/v1/responses`.
+fn client_path<'a>(config: &ServeConfig, request: &'a Request) -> Option<&'a str> {
+    request
+        .uri()
+        .path()
+        .strip_prefix('/')?
+        .strip_prefix(config.client_capability.as_str())
+        .filter(|path| path.starts_with("/v1/"))
 }
 
-fn add_browser_response_headers(response: &mut Response<Body>, origin: &str) {
-    if let Ok(origin) = HeaderValue::from_str(origin) {
-        response
-            .headers_mut()
-            .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
-        response
-            .headers_mut()
-            .append(header::VARY, HeaderValue::from_static("Origin"));
+/// The CORS origin for a web page that uses the printed URL: any page, or only the configured
+/// origin. The URL's random part is the credential, and the endpoint holds no API key of its
+/// own. A page without that part gets no CORS headers, so it cannot read even an error.
+fn browser_access(config: &ServeConfig, request: &Request) -> Option<HeaderValue> {
+    let mut origins = request.headers().get_all(header::ORIGIN).iter();
+    let origin = origins.next()?;
+    if origins.next().is_some() || client_path(config, request).is_none() {
+        return None;
     }
+    let Some(allowed) = config.browser_origin.as_deref() else {
+        return Some(HeaderValue::from_static("*"));
+    };
+    (origin == allowed).then(|| origin.clone())
 }
 
 #[cfg(test)]

@@ -189,7 +189,7 @@ struct ServeArgs {
     max_connections: usize,
     #[arg(long, value_parser = security_parser(), default_value = "tls")]
     security: SecurityMode,
-    /// Allow one browser origin to use the capability-protected local endpoint.
+    /// Let only this web origin call the endpoint. By default, any page with the printed URL can.
     #[arg(long)]
     browser_origin: Option<String>,
     /// Close when the parent closes stdin; intended for supervised child processes.
