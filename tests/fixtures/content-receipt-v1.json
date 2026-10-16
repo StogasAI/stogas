@@ -1,6 +1,6 @@
 {
   "hardware_receipt": {
-    "boot_sha256": "a2c8c529bb3c540a147ba4c76cfbbd14cfc4ef2b015a76213373ff6d4168d947",
+    "boot_sha256": "232abf5fe186894b5985a7feaa7c14ef7ae4405c63022bfacabc6c1fa13a3f07",
     "request_sha256": "3219e1b8e8a3a6329a3ed247a2e2a5cf74efa8843e59901c2fd138deac9f2bd2",
     "response_sha256": "21eae1c895638d0c3b0632c2e19c411aa2500d382043da580e3d59b82b1cbc62",
     "schema": "stogas.receipt.v1",
