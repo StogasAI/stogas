@@ -152,7 +152,6 @@ pub fn verify(
             source_ref: reference,
             source_commit: manifest.source.commit.clone(),
             predicate_type: "https://slsa.dev/provenance/v1".into(),
-            require_github_hosted: true,
         },
         now_unix_ms,
     )

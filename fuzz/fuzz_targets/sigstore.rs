@@ -48,7 +48,6 @@ fuzz_target!(|data: &[u8]| {
         source_ref: "refs/tags/v0.0.1".into(),
         source_commit: "27eb4b954a372975c9e7c5dbc77fbf0d0ca53b3f".into(),
         predicate_type: "https://slsa.dev/provenance/v1".into(),
-        require_github_hosted: true,
     };
     let trust = TRUST.as_ref().unwrap();
     let _ = verify_github_attestation(trust, &candidate, &subjects, &policy, NOW_UNIX_MS);

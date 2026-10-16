@@ -13,8 +13,10 @@ mod tuf;
 pub use trust_root::TrustedRoot;
 pub use tuf::{TrustUpdate, verify_current_trust_update, verify_trust_update};
 
+use const_oid::ObjectIdentifier;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sigstore::CertificatePolicy;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
@@ -27,8 +29,19 @@ const MAX_SUBJECTS: usize = 1024;
 const MAX_BUNDLES: usize = 16;
 const DSSE_PAYLOAD_TYPE: &str = "application/vnd.in-toto+json";
 const SIGSTORE_BUNDLE_MEDIA_TYPE: &str = "application/vnd.dev.sigstore.bundle.v0.3+json";
+const GITHUB_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.com";
+// Fulcio copies these claims from GitHub's OIDC token into the certificate. The workflow writes
+// the provenance predicate itself, so a workflow at a moved tag or on a self-hosted runner could
+// put anything there; the certificate is the only place GitHub vouches for them.
+const RUNNER_ENVIRONMENT: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.57264.1.11");
+const SOURCE_REPOSITORY_URI: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("1.3.6.1.4.1.57264.1.12");
+const SOURCE_REPOSITORY_DIGEST: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("1.3.6.1.4.1.57264.1.13");
+const SOURCE_REPOSITORY_REF: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("1.3.6.1.4.1.57264.1.14");
 
-/// Policy for one GitHub Actions build attestation.
+/// Policy for one build attestation from a GitHub-hosted Actions runner.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GithubPolicy {
@@ -42,8 +55,6 @@ pub struct GithubPolicy {
     pub source_commit: String,
     /// Required in-toto predicate type.
     pub predicate_type: String,
-    /// Require GitHub-hosted runner provenance.
-    pub require_github_hosted: bool,
 }
 
 /// Generic identity policy for the supported Sigstore v0.3 DSSE profile.
@@ -124,9 +135,9 @@ pub enum Error {
 
 /// Verify one Sigstore v0.3 bundle without network access.
 ///
-/// The upstream verifier validates Fulcio, Rekor, SCT, inclusion material, authenticated signing
-/// time, and the artifact signature. This function additionally pins the exact GitHub in-toto
-/// policy and every expected artifact subject.
+/// Validates Fulcio, Rekor, SCT, inclusion material, authenticated signing time and the artifact
+/// signature, then requires the exact predicate type and artifact subjects. The repository, commit,
+/// ref and GitHub-hosted runner come from the certificate, never from the workflow's predicate.
 ///
 /// # Errors
 ///
@@ -196,37 +207,18 @@ fn verify_dsse_attestation_value(
     policy: &IdentityPolicy,
     now_unix_ms: i64,
 ) -> Result<VerifiedAttestation, Error> {
-    check_bundle_shape(value)?;
-    let payload = decode_dsse_payload(value)?;
-    let statement_value = strict_json::from_slice(&payload)
-        .map_err(|error| Error::InvalidBundle(format!("invalid DSSE statement: {error}")))?;
-    let statement: Statement = serde_json::from_value(statement_value)
-        .map_err(|error| Error::InvalidBundle(format!("invalid DSSE statement: {error}")))?;
-    check_subjects(&statement, expected_subjects)?;
-    if statement.kind != "https://in-toto.io/Statement/v1"
-        || statement.predicate_type != policy.predicate_type
-    {
-        return Err(Error::Policy(
-            "in-toto statement or predicate type differs".into(),
-        ));
-    }
-    let integrated_time = sigstore::verify(
+    verify_statement(
         trust,
         value,
-        &policy.certificate_identity,
-        &policy.certificate_oidc_issuer,
+        expected_subjects,
+        &policy.predicate_type,
+        &CertificatePolicy {
+            identity: &policy.certificate_identity,
+            issuer: &policy.certificate_oidc_issuer,
+            extensions: &[],
+        },
         now_unix_ms,
     )
-    .map_err(Error::Cryptographic)?;
-    Ok(VerifiedAttestation {
-        integrated_time,
-        predicate_type: statement.predicate_type,
-        subjects: statement
-            .subject
-            .into_iter()
-            .map(|subject| (subject.name, subject.digest.sha256))
-            .collect(),
-    })
 }
 
 fn verify_github_attestation_value(
@@ -236,30 +228,49 @@ fn verify_github_attestation_value(
     policy: &GithubPolicy,
     now_unix_ms: i64,
 ) -> Result<VerifiedAttestation, Error> {
+    verify_statement(
+        trust,
+        value,
+        expected_subjects,
+        &policy.predicate_type,
+        &CertificatePolicy {
+            identity: &policy.workflow_identity,
+            issuer: GITHUB_OIDC_ISSUER,
+            extensions: &[
+                (SOURCE_REPOSITORY_URI, &policy.repository),
+                (SOURCE_REPOSITORY_DIGEST, &policy.source_commit),
+                (SOURCE_REPOSITORY_REF, &policy.source_ref),
+                (RUNNER_ENVIRONMENT, "github-hosted"),
+            ],
+        },
+        now_unix_ms,
+    )
+}
+
+fn verify_statement(
+    trust: &TrustedRoot,
+    value: &Value,
+    expected_subjects: &[Subject<'_>],
+    predicate_type: &str,
+    certificate: &CertificatePolicy<'_>,
+    now_unix_ms: i64,
+) -> Result<VerifiedAttestation, Error> {
     check_bundle_shape(value)?;
     let payload = decode_dsse_payload(value)?;
     let statement_value = strict_json::from_slice(&payload)
         .map_err(|error| Error::InvalidBundle(format!("invalid DSSE statement: {error}")))?;
     let statement: Statement = serde_json::from_value(statement_value)
         .map_err(|error| Error::InvalidBundle(format!("invalid DSSE statement: {error}")))?;
-    check_statement(&statement, expected_subjects, policy)?;
-
-    // Keep all Sigstore parsing and cryptography in the community verifier. The concrete API is
-    // isolated here so SDKs never duplicate or weaken its policy.
-    let integrated_time = sigstore::verify(
-        trust,
-        value,
-        &policy.workflow_identity,
-        "https://token.actions.githubusercontent.com",
-        now_unix_ms,
-    )
-    .map_err(Error::Cryptographic)?;
-    if integrated_time <= 0 {
-        return Err(Error::Cryptographic(
-            "Rekor integrated time must be positive".into(),
+    check_subjects(&statement, expected_subjects)?;
+    if statement.kind != "https://in-toto.io/Statement/v1"
+        || statement.predicate_type != predicate_type
+    {
+        return Err(Error::Policy(
+            "in-toto statement or predicate type differs".into(),
         ));
     }
-
+    let integrated_time =
+        sigstore::verify(trust, value, certificate, now_unix_ms).map_err(Error::Cryptographic)?;
     Ok(VerifiedAttestation {
         integrated_time,
         predicate_type: statement.predicate_type,
@@ -361,7 +372,9 @@ struct Statement {
     subject: Vec<StatementSubject>,
     #[serde(rename = "predicateType")]
     predicate_type: String,
-    predicate: Value,
+    // Required but unread: whoever controls the workflow writes it.
+    #[serde(rename = "predicate")]
+    _predicate: Value,
 }
 
 #[derive(Deserialize)]
@@ -375,21 +388,6 @@ struct StatementSubject {
 #[serde(deny_unknown_fields)]
 struct StatementDigest {
     sha256: String,
-}
-
-fn check_statement(
-    statement: &Statement,
-    expected_subjects: &[Subject<'_>],
-    policy: &GithubPolicy,
-) -> Result<(), Error> {
-    check_subjects(statement, expected_subjects)?;
-    if statement.kind != "https://in-toto.io/Statement/v1" {
-        return Err(Error::Policy("unsupported in-toto statement type".into()));
-    }
-    if statement.predicate_type != policy.predicate_type {
-        return Err(Error::Policy("predicate type differs".into()));
-    }
-    check_github_build(statement, policy)
 }
 
 fn check_subjects(statement: &Statement, expected_subjects: &[Subject<'_>]) -> Result<(), Error> {
@@ -439,67 +437,6 @@ fn check_subjects(statement: &Statement, expected_subjects: &[Subject<'_>]) -> R
     Ok(())
 }
 
-fn check_github_build(statement: &Statement, policy: &GithubPolicy) -> Result<(), Error> {
-    let invocation = statement
-        .predicate
-        .pointer("/buildDefinition/externalParameters/workflow")
-        .ok_or_else(|| Error::Policy("missing GitHub workflow invocation".into()))?;
-    let dependencies = statement
-        .predicate
-        .pointer("/buildDefinition/resolvedDependencies")
-        .and_then(Value::as_array)
-        .ok_or_else(|| Error::Policy("missing source repository".into()))?;
-    if dependencies.len() != 1 {
-        return Err(Error::Policy(
-            "GitHub profile requires exactly one source dependency".into(),
-        ));
-    }
-    let repository = invocation
-        .get("repository")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::Policy("missing workflow repository".into()))?;
-    let workflow_path = invocation
-        .get("path")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::Policy("missing workflow path".into()))?;
-    let dependency_uri = statement
-        .predicate
-        .pointer("/buildDefinition/resolvedDependencies/0/uri")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::Policy("missing source repository".into()))?;
-    let commit = statement
-        .predicate
-        .pointer("/buildDefinition/resolvedDependencies/0/digest/gitCommit")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::Policy("missing source commit".into()))?;
-    let workflow_ref = invocation
-        .get("ref")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::Policy("missing workflow ref".into()))?;
-    let expected_identity = format!("{}/{}@{}", policy.repository, workflow_path, workflow_ref);
-    if repository != policy.repository
-        || dependency_uri != format!("git+{}@{}", policy.repository, policy.source_ref)
-        || commit != policy.source_commit
-        || workflow_ref != policy.source_ref
-        || expected_identity != policy.workflow_identity
-    {
-        return Err(Error::Policy(
-            "repository, workflow, commit, or ref differs".into(),
-        ));
-    }
-    let runner = statement
-        .predicate
-        .pointer("/buildDefinition/internalParameters/github/runner_environment")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if policy.require_github_hosted && runner != "github-hosted" {
-        return Err(Error::Policy(
-            "build did not use the required hosted runner".into(),
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,7 +449,6 @@ mod tests {
             source_ref: "refs/tags/v0.0.1".into(),
             source_commit: "27eb4b954a372975c9e7c5dbc77fbf0d0ca53b3f".into(),
             predicate_type: "https://slsa.dev/provenance/v1".into(),
-            require_github_hosted: true,
         }
     }
 
@@ -521,26 +457,7 @@ mod tests {
             kind: "https://in-toto.io/Statement/v1".into(),
             subject,
             predicate_type: "https://slsa.dev/provenance/v1".into(),
-            predicate: json!({
-                "buildDefinition": {
-                    "externalParameters": {
-                        "workflow": {
-                            "repository": "https://github.com/StogasAI/gateway",
-                            "path": ".github/workflows/gateway-igvm-release.yml",
-                            "ref": "refs/tags/v0.0.1"
-                        }
-                    },
-                    "internalParameters": {
-                        "github": { "runner_environment": "github-hosted" }
-                    },
-                    "resolvedDependencies": [{
-                        "uri": "git+https://github.com/StogasAI/gateway@refs/tags/v0.0.1",
-                        "digest": {
-                            "gitCommit": "27eb4b954a372975c9e7c5dbc77fbf0d0ca53b3f"
-                        }
-                    }]
-                }
-            }),
+            _predicate: json!({}),
         }
     }
 
@@ -593,7 +510,7 @@ mod tests {
             subject("unexpected", DIGEST),
         ]);
         assert!(matches!(
-            check_statement(&extra, &expected, &policy()),
+            check_subjects(&extra, &expected),
             Err(Error::Policy(message)) if message.contains("unexpected subjects")
         ));
 
@@ -612,7 +529,7 @@ mod tests {
             },
         ];
         assert!(matches!(
-            check_statement(&duplicate, &duplicate_expected, &policy()),
+            check_subjects(&duplicate, &duplicate_expected),
             Err(Error::Policy(message)) if message.contains("unique names")
         ));
     }
@@ -625,7 +542,7 @@ mod tests {
             subject("gateway.igvm", IGVM),
             subject("release-manifest.json", MANIFEST),
         ]);
-        check_statement(
+        check_subjects(
             &statement,
             &[
                 Subject {
@@ -637,7 +554,6 @@ mod tests {
                     sha256: MANIFEST,
                 },
             ],
-            &policy(),
         )
         .unwrap();
     }
