@@ -307,6 +307,49 @@ mod staging {
         );
     }
 
+    #[test]
+    fn catalog_selection_needs_each_release_to_meet_the_minimum_of_the_other() {
+        let (mut verifier, body, now) = fixture();
+        let snapshot = verifier.refresh(&encode(&body), now).unwrap();
+        drop(verifier);
+        let mut snapshot = Arc::try_unwrap(snapshot).unwrap();
+        let id = gateway_id(&body);
+        let sequences: Vec<u64> = snapshot
+            .catalogs
+            .values()
+            .map(|entry| entry.value.sequence)
+            .collect();
+        let (oldest, newest) = (
+            *sequences.iter().min().unwrap(),
+            *sequences.iter().max().unwrap(),
+        );
+        assert!(oldest < newest);
+        let selected = |snapshot: &Snapshot| {
+            snapshot
+                .compatible_catalog(&id)
+                .map(|(_, catalog)| catalog.sequence)
+        };
+        let set_minimum = |snapshot: &mut Snapshot, minimum| {
+            Arc::make_mut(&mut snapshot.gateways.get_mut(&id).unwrap().value)
+                .minimum_catalog_sequence = minimum;
+        };
+        assert_eq!(selected(&snapshot), Some(newest));
+        set_minimum(&mut snapshot, newest + 1);
+        assert_eq!(selected(&snapshot), None);
+        // A gateway that reads only the newest catalog gets no older one when the newest needs a
+        // newer gateway.
+        set_minimum(&mut snapshot, newest);
+        let gateway_sequence = snapshot.gateway(&id).unwrap().sequence;
+        for entry in snapshot.catalogs.values_mut() {
+            if entry.value.sequence == newest {
+                Arc::make_mut(&mut entry.value).minimum_gateway_sequence = gateway_sequence + 1;
+            }
+        }
+        assert_eq!(selected(&snapshot), None);
+        set_minimum(&mut snapshot, oldest);
+        assert_eq!(selected(&snapshot), Some(oldest));
+    }
+
     #[cfg(feature = "snp")]
     fn registered_report() -> Vec<u8> {
         let registration: Value = serde_json::from_str(include_str!(
