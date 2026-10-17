@@ -2,7 +2,12 @@ import { EvidenceClient } from './evidence-client.js';
 import { SessionTransport } from './session-transport.js';
 import { TransportError } from './http.js';
 
-const PATHS = new Set(['/v1/chat/completions', '/v1/responses', '/v1/policies/validate']);
+const PATHS = new Set([
+	'/v1/chat/completions',
+	'/v1/responses',
+	'/v1/policies/validate',
+	'/v1/policies/simulate'
+]);
 const OPTIONS = new Set(['environment', 'baseURL', 'maxConnections', 'fetch', 'onMetadata']);
 
 function baseURL(value) {
