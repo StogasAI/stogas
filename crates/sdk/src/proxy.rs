@@ -393,12 +393,15 @@ fn route(config: &ServeConfig, request: &Request) -> Result<Route, Failure> {
         .to_owned();
     if !matches!(
         path.as_str(),
-        "/v1/chat/completions" | "/v1/responses" | "/v1/policies/validate"
+        "/v1/chat/completions"
+            | "/v1/responses"
+            | "/v1/policies/validate"
+            | "/v1/policies/simulate"
     ) {
         return Err(Failure::before(
             StatusCode::NOT_FOUND,
             "unsupported_path",
-            "only chat completions, responses and policy validation are supported",
+            "only chat completions, responses, policy validation and routing simulation are supported",
         ));
     }
     if request.method() == Method::OPTIONS && browser {

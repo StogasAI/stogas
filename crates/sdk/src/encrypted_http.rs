@@ -173,7 +173,10 @@ fn request_metadata(request: &Request<Bytes>) -> Result<Vec<u8>, Error> {
         || !((request.method() == "POST"
             && matches!(
                 path,
-                "/v1/chat/completions" | "/v1/responses" | "/v1/policies/validate"
+                "/v1/chat/completions"
+                    | "/v1/responses"
+                    | "/v1/policies/validate"
+                    | "/v1/policies/simulate"
             ))
             || (request.method() == "DELETE" && path == "/v1/session" && request.body().is_empty()))
     {
