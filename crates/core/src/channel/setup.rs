@@ -3,11 +3,11 @@ use super::{
     ratchet::{InitialKey, PUBLIC_KEY_BYTES},
 };
 use crate::{
-    approvals::Environment,
     attestation::{
         Binding,
         evidence::{MAX_EVIDENCE_BYTES, SessionEvidence},
     },
+    authority::Environment,
     kem::XWing,
 };
 use hpke::{
@@ -192,7 +192,7 @@ impl PendingSetup {
     }
 
     /// Finish setup only after the caller's hardware, boot-inclusion and current
-    /// approval verifier accepts this exact evidence. The public SDK supplies its
+    /// evidence verifier accepts this exact evidence. The public SDK supplies its
     /// fixed verifier here; this primitive is not an SDK option to skip checks.
     ///
     /// # Errors
@@ -211,7 +211,7 @@ impl PendingSetup {
     /// Establish a session using the current evidence verifier, before releasing application data.
     ///
     /// # Errors
-    /// Preserves hardware/approval failures and rejects another environment or incomplete setup.
+    /// Preserves hardware and evidence failures and rejects another environment or incomplete setup.
     #[cfg(feature = "snp")]
     pub fn complete_verified(
         &mut self,
@@ -246,9 +246,9 @@ impl PendingSetup {
         snapshot: &crate::evidence::Snapshot,
         now_unix_ms: i64,
     ) -> Result<(SetupEvidence<'a>, crate::evidence::VerifiedSession), SetupError> {
-        if self.environment != snapshot.approvals().keys().environment {
+        if self.environment != snapshot.evidence().document().environment {
             return Err(
-                crate::evidence::Error::Approval(crate::approvals::Error::Authority).into(),
+                crate::evidence::Error::Authority(crate::authority::Error::Authority).into(),
             );
         }
         let parsed = self.inspect(response)?;

@@ -46,12 +46,12 @@ impl PythonTransport {
             .ok_or_else(|| PyValueError::new_err("Stogas transport is closed"))
     }
 
-    fn refresh_bundle(&self, py: Python<'_>) -> PyResult<bool> {
+    fn refresh_evidence(&self, py: Python<'_>) -> PyResult<bool> {
         let inner = self
             .inner
             .as_ref()
             .ok_or_else(|| PyValueError::new_err("Stogas transport is closed"))?;
-        py.detach(|| inner.refresh_bundle())
+        py.detach(|| inner.refresh_evidence())
             .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 

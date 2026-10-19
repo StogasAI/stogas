@@ -1,78 +1,120 @@
 {
-  "approvals": "e3117778c930c98b48e7ec8536e8281f79e720807c946c308e17bd22e9a66b79",
-  "body_sha256": "fe7de74e780d312a2520f5e9abecded1f29794c628d2ea59e773dcf93cc9c47f",
+  "catalogs": [
+    "89faa2ef38c6671c6b9f3c25c2d4022522d3b8593164e14af6fa952faaa3d9a5",
+    "1f517a90f61f47c9896a238d74bf5dc3a2231a01441728a6e9467f3fc8949e91"
+  ],
+  "environment": "staging",
+  "evidence_sha256": "c8a97872d35ee6abbacf6587092c19240ac29a4fc4f12120b0b3c591af8b9aed",
+  "gateways": [
+    "49fff676b6208c1b8983d371043eee259e999f9e7a1aa79a96f68a2c800a9818"
+  ],
+  "hardware_policies": "23ee9de2e0a2e6c39ce2a9ec0b02261483b8ae406d3920e8390e5ed12577dff2",
+  "inclusion": {
+    "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+    "messageSignature": {
+      "messageDigest": {
+        "algorithm": "SHA2_512",
+        "digest": "nz8oUxXtnj5prB1KiJGujD3xKS4jgD0tQooPO+6axqDyKA3T2MG1pfcLjgkNOzfAsdn873ntV/ECzzBX7tqvEw=="
+      },
+      "signature": "lQSpYqHiXWIwVvQH+HJZEmiE3YhEq9+vyjmqod7Y+1ULk3hLpNkay2fjZixvpOkaRyhcf2SIl/95IHwiWOE/Cg=="
+    },
+    "verificationMaterial": {
+      "publicKey": {
+        "hint": "a4f4f2b6325f6c234d50860704327d77bc2848cb8fbdf3e5321740509ba868c8"
+      },
+      "timestampVerificationData": {},
+      "tlogEntries": [
+        {
+          "canonicalizedBody": "eyJhcGlWZXJzaW9uIjoiMC4wLjEiLCJraW5kIjoiaGFzaGVkcmVrb3JkIiwic3BlYyI6eyJkYXRhIjp7Imhhc2giOnsiYWxnb3JpdGhtIjoic2hhNTEyIiwidmFsdWUiOiI5ZjNmMjg1MzE1ZWQ5ZTNlNjlhYzFkNGE4ODkxYWU4YzNkZjEyOTJlMjM4MDNkMmQ0MjhhMGYzYmVlOWFjNmEwZjIyODBkZDNkOGMxYjVhNWY3MGI4ZTA5MGQzYjM3YzBiMWQ5ZmNlZjc5ZWQ1N2YxMDJjZjMwNTdlZWRhYWYxMyJ9fSwic2lnbmF0dXJlIjp7ImNvbnRlbnQiOiJsUVNwWXFIaVhXSXdWdlFIK0hKWkVtaUUzWWhFcTkrdnlqbXFvZDdZKzFVTGszaExwTmtheTJmalppeHZwT2thUnloY2YyU0lsLzk1SUh3aVdPRS9DZz09IiwicHVibGljS2V5Ijp7ImNvbnRlbnQiOiJMUzB0TFMxQ1JVZEpUaUJRVlVKTVNVTWdTMFZaTFMwdExTMEtUVU52ZDBKUldVUkxNbFozUVhsRlFTdEZRbmd6TjJ4VFVFNU1TRlJYT1dsV1ptcFBSWE5GV25ScmMzSkxaVU5HVXpjeVMwc3hjREJZUjFFOUNpMHRMUzB0UlU1RUlGQlZRa3hKUXlCTFJWa3RMUzB0TFFvPSJ9fX19",
+          "inclusionPromise": {
+            "signedEntryTimestamp": "MEUCIAQAU4eSmU/hPWnXnC+qAiov6AgSbZz8AJicDUeY9NmuAiEAqD0sffma33HTct/u9D/7AbJZs4pK9yxDjfbUAP6oI+U="
+          },
+          "inclusionProof": {
+            "checkpoint": {
+              "envelope": "rekor.sigstore.dev - 1193050959916656506\n3197441089\n98PmXgKu2hcL3HHZbyqoIaPcrFtVTGxHXOiUKfXhpmI=\n\n— rekor.sigstore.dev wNI9ajBGAiEA8M0Wodit76bfgRqK+e8KfaCXiI2YfsX/BNycpm1H84sCIQDT8PWtEM6bYkmpJV4Wlqhcwdavx0Y3pS+F99H95fdz0Q==\n"
+            },
+            "hashes": [
+              "4UhQD+xfoKhbIbxOdhu8ptiT9/rE1OUgqQlmxBqUAFo=",
+              "zc+5gZOhnTIWdopuPuGi+gv+s25u0LRXZvQaPJ+LPwE=",
+              "cZKtwKxWoPSf1owQ/cu29JRjsA18OKWrT/XjZ3GQBQg=",
+              "9BlXr5SNN9sZUySWwSZwd6pab4hUUEynoXRVuvDCmVk=",
+              "hR5PcA6yKFxwiu6kt+/H2tSMQvTHRHHXQzzxWpuOW6M=",
+              "LxS3WKos1jRB6C0FLY/mWTbpPZS/HouMJ8cjHMe5+DM=",
+              "nyQV/+cWQUG5Hb2PKjQQNkQIJmz2qzAZKBQlkHGIknM=",
+              "G+nk7mgE5h6dUmv2UY7NDJrY3WvrZY31raaO1AETt+o=",
+              "qlTWNDzERnTBQVcHHXXVPjiUP0SsikGxfcxVlgqVFDo=",
+              "gg9GNApNke3+zNhl4tsWtmIycCFrOMCB3lys6XuSQNQ=",
+              "NlOclldmKPA1tMKIskqHAwuQDYHp31YwpK+OOMrMccc=",
+              "qxzHanAzz57SDdmJe0B7bJK72NTIBbwEMGBBKvDOROw=",
+              "xH/DCseLHr9eKoYT8qsORZK7zVdEGYWHuVtsVrD95wY="
+            ],
+            "logIndex": "3197441088",
+            "rootHash": "98PmXgKu2hcL3HHZbyqoIaPcrFtVTGxHXOiUKfXhpmI=",
+            "treeSize": "3197441089"
+          },
+          "integratedTime": "1792385095",
+          "kindVersion": {
+            "kind": "hashedrekord",
+            "version": "0.0.1"
+          },
+          "logId": {
+            "keyId": "wNI9atQGlz+VWfO6LRygH4QUfY/8W4RFwiT5i5WRgB0="
+          },
+          "logIndex": "3319345350"
+        }
+      ]
+    }
+  },
   "keys": "bd2ad3bc8cac1ef8b773b635b3efbe86a17ea41cfcbb1a7ca1276adbb88dadf6",
+  "revision": 1,
   "schema": "stogas.evidence-archive.v1",
+  "signature": {
+    "key_id": "stogas-fixture-online-20260920",
+    "signature": "uoHrP-bzzlojZYgGuiDBMLk4da_bLKjVydcAU6ryjYKyQdPL_Jx9_o0tJY0XQT6hXguEL22ak-LvC-Hrz-2YRptFYV5Of0w6Br6DaCX__4G-t8H3W8MH1V0ooROK8crgEmAyeDNxhU84HsKRT-pv6so9MmK1YnqDBTSTwDeVWekokH2eaGmI3VxkCxyJxxmEgCtKk6qxPP3GbvVyxlDUazcLPKENVA_vR_kDqEtEE8AF3ERAoQtYwU01-yQ6zKTFkXXqj4OnE1n4KTajT8TRtEWUWjAhzTqdnz9lBJNNpYrrCC-gX2xbZ9QkQoo9E7uqUWNvCD9OKua6c2w7Wzxj2bJZyR1jyJyF-xSbFTccyASWpoW5bBS2jT7M0Vc06qiWHJkcma0pgcYEB42F-exdfx60RN9Q1-P4cmCLnA_x0HHlcztVipxMnchJurF8QVociD_4Ctj5N1UJ4gWBIDEOjUG3To0kuXLilnQzI-ZD4q6YRm5CG5Qqt6_UJLWaI9aT3Uy5IfbNeX9RZOg1-TdfViPcs3pbH5crEBXTL7KAVXshXNje9XBq2M1U4bUyAw5mdblHaEmBwZ8mC8sGm15m-qviZS4vgNLdb0o9sn1clPKpxB4-To-EerR6vJ3IMgle08s5jJETYcoAWhtP4HnFt1z8UJfA8Cu8Dysg03pNQTY5beHdaHa9QfDcszteQGjDz0kM2LC2B4gn_9TDHsoGa52x8cMNhzaLE2j1X6JVUwJKzfLFUdxka7MnK4nM29P8gtU1eLskIimme0j_13dZ0QlwHssIs-jrJvLot1lybvzo2tkkCfh3Srfl0roweiX0hyM5WQ0BiMeH4vfnSGeFE4AtzDZ_g2KR93pIni0FJ2TgmpcIqGGKVHtE5ekcEqBld6Vqin7No6fjqE4UHqZZNs_n8CGRPWecsZhwPa3b8TsCxVcv52P1ap5lNtYPNtw-l7B3YsCptoC7vYC7YYu_bAbA-_bxbmS44g1C3VvSt1rmI-YbQGKzdBmi-Njk1Ek0UWaOpuZT5G_bR6ILA3NaDF3z8SG0UAhQno5pqghvXqjB8iubcZawb4v9DwvL0-S-iFuDX5yjUJ-CnStUQI4EdLRMxGdxh98v1xxjILv9Tg6Mwax6q6JhPQrUy4D02lQqSUe0gh7Kn0pRP6sMareXf87I_mOvY5TQCEA_PYwy9VofAXeFT57Qmh4URUxKcwcSd3jqOWlDRtL4T9n_Ys-vNM6Mdvq2jIh90j9zirI4h4zgQdxqL1G8maD3NGtzaSa5l8nfyOwB35hcdw4f3IXpDGYzMitSngvHe0a3mC7L9Y8kFwtfo1Gq0Y3cQlkUKKhA1C7gnoWLKZSNhS1WS86HqItU37IEivXp8-lSb4t1FOxCE1SRdZo7TkCh0FiPw6YkgRi4b4VsyyjwS45B4yeNI2uLNjzrwCWTL5D3IjJu6PRchw5_lUc69JiNQJASZ8-BxhV0dZSa83lVtenkycryMbIAy5ls-FuG4FNfHqB8A7HHvKfyRiH-cBZvqvGNl4iJWHMpc6tCQVAReTtpymE0qf0XOt-hn32VzwlOEmif51hBnSAQ1r_ryQz_RgNSg0xjHCx9PibRlVcv-ASzyQueGUwYd8Ys1YBURsk8sRh1R-FaxumMnkPKbOGsSzzjKpOXFz4gD7iE0JrIOKYqN826VdJI70YNRZwo8WtodPcEH7V82bX6Dh1P5mX1IAVqZMBeZuNo0n0P2k-AFDytXFnSZej6g1xw2iKBTgAMx6J-GwKDFNKLPQEB-odGpp0Kw_d6J63P7ekSoo-D57yDWLwm4reHTO0z001WPyB1W69fqsMsRLrlA96GxCucyq0pukbpFXWIzeryTndLUw7wpaRfzPLp1NxdJr2naX-FUTY1VNzVZXkU5TH81fiy1qIZzr3OIXlYIhhg-Gj1iY7s1UkJ1NaNfEG9ihbXm5nnXYTjQ1rJIq3sld5ic7UgqHEv7AnzeoGyus6uI3vWW4OOk9I0CZ96eIpBxVzhoss2SI5tcUoqB4rnJgYrpTJMhyljXym3vDzjZ0irAEsdJJ8STmX5d0dMfViOYM5KWhM6dxiJlUduPAD43Jo7DdIOu4vnh3KeY-Qzj7RIdbsAC7-E3cCZ8V0k3N2fiQkD_Rn0_bzmYK3WJ6SeTMKio1C-MwjOnJXWdHek9mEBlQWTyKC_4sTaVARYN-6zt3ePqYKtGKYSca6renwS_RYuMs7fmAoIkX0W0Ag81uEaoWis2-frQIpx2apWXVTgNlzYGX9EFXXVtiJjCAM8XwNr45hYYQgPyx9ub4w6pNsS1cesewSdDERj4-7goTnwS0_7zRi1rD1m2c8Qk9G-3QaOPLwgSAJqgMhNeJ6tiShLP9EjpNga6aJNA2KDHalvPpUjZSYhpzaOfJdgzoCS2kfitoNcadu_sYf5HZmmsYVYzZZgUKkEq4NtMNhsYU3go0DUMaPc_VJ5Vqe3sYuLTlYpOdiuofOMiYio0R-x4KJFob4ChWPJvCUmixjgvQSroODlIGFjDMCYJokN6mquHOxCne8OD4vU3Q6CNRu7JMkUT76BXCeXn5RqW9JImThybVDFDRvYoZTwJLBsvtSaNn37YyYu1UA4An4GqTOmdp1SiqlL-m8iuxYlzchn6wZN6LZpEytOyQhDvfxZ7zjDX-ToNkgDaCgCcVPZXCUVjUjKuMhr2RW-KNZGprjz0w1f7fFxvMjAjfE0oLfnagOt5FYvMFavTJKLS_-Gqd7wXw88LGMsqZ9k_y9EorjYqJ-MZv1S4pMglJx7kjZK6oeXiWvygEWD_qGDd1cyYA7nDKAkXMbdvzleueT0RzpbVUqKpk5yjk0Q70fLQScpqzgpBsg2V6CjGKjUeatLJx2tBPhi2ZetOQ9Cnlqhb-9M4JszDN8hxnP0nIJlHnqvJMov4-x5yLg7bhmK2UVYFeFNabNnDufYXvKzpmwCRr_bQzaP6WM56IIVENHRKtRLeeFjE1Kn3PzAS7ZtEhWULyqOSWjZT7_EKQ9Z_s6ffz3Ghg6M3mYC8edUUoNs8ae15j34RGWXwKtf69vlm_rJVfNDYyFWHB7fs8TL4uRkHdhPHU9lUi6lBUsF21jImjVV4N7yHp75ve9lvqa2cXc2h6IyQFeLh4oYE3i7hchQxwNU-kCioPnW-6hvlQuoQd6ZnUCkS9BizeNuVB7zHomGQO2JSK06LNtGAqSWlhdTkWzesTKtpDcScIkZEiG2TZS6ZYy2KWYgT5E792vNYjozDytyaAB4F1NMz7Ia7WgdgpALEacTTNkbAY15xmMV8IMbFG0VgRoazWgUY6TehkmxrFsR_15JZW1o6V2Fg_iSbWpXDom9fCnoOEpQ9xUJVFAfnccSF_x--6eJrCMv0A3UUniV08246FHvcr-IhnNYHNTYRJoiAjzqV-tIGoNcJF6bSe4aIPifMnJZ7JqV9dYsGfkZR1Q8IOn8YvbXnnSCRpCDLDQqw_oa85DPRK1dW-g0n74rU0x2lUW-F-nviRo8VLlEmh6by3Y6ey37YExqL3H_dXyJkR9qDN_dDyTJRpKsYWwVNn-W7IXMNH0vcRoNYtXXK_njxGU_A6YriPPFU2SCfFeC0InHHzZPNAFvlVFn2X5BVSDgiYw0xJOjwlaUq1BdW_XrI_Pb0i4R4eL5sAuHcnmqNFuiK1Eox3yGsnv0BLP4VWd5ooCxSUZ7qW0aDN7RTZEdBEAIXjj-NJq239OCQ5pzycgWwu8sMftEZ04aeIGqK5gloyf_l70FJIH6qkEBOqSJMOFCz3dbn8M7x1-ppDYnrNZiKGDxl0zHkGbOKqjPvh5fZJVNyWZOWbR9UvX3dv_l6NTcAYUYFeX8IHViO46R3GdbAdh8n9nkXdzXhsZ3x0Q6LSlb72TNTuzoTlVqDNt-MGMdSp-gthfgw0bgdmzcsNDl6cuGKqIuTVHm17JByj8YVy6S2hZVKOv0hjIDbDKAtuH7crFKIsAO6yNabjYozP9DLc7XItnS0ASaUWnbqLvnhF29T0c5wfEnTwckgRssLnXjtBWYPZvtoEVeJiPHiKFKTLnP4mGyoMS_TrxPSA64cQ-tHq-BTe55_YVQ6SUf2XBVlQDH5mNtWBbXhFuJ5cuIXDH6rm_Cp5W4XTSCgovvFHvmik7LqxAl5RqrH6Fjrl-zbGcTg8I6n6UKdeVYQ6OWBoiFIIiNZ12wmwDf0PX-Sa3NGPrdRSyfk6UPTgbF8bhVtW5N8EuBDSgvRdUniaV396rFZhpzXMavjJ4JQz-FmSLWqfzd0wDFijPy1iR924NSx3S7d1IIzTkP9zlfFxJL42PeVDELgwkVOE1rqvX7KSqQk5-o6PYiOk1XcZyepakGLENbdpSYrrT7BA0tnKPFx-3xTFZylbgAAAAAAAAABw8YIiswBre80dOWQWZX1lk1ksbTyXSHmWXPz9BaDq7zbHnoRqopck5s53af02VhQu7nh0w2RlQtiJ4xBx_gunq1lUjfAQ"
+  },
   "sigstore": "2bd8f485715eb029ab25c6282757d07058835b351d796e65897bf7daf8dc3a98",
   "sizes": {
+    "1f517a90f61f47c9896a238d74bf5dc3a2231a01441728a6e9467f3fc8949e91": 1094,
+    "23ee9de2e0a2e6c39ce2a9ec0b02261483b8ae406d3920e8390e5ed12577dff2": 478,
     "2bd8f485715eb029ab25c6282757d07058835b351d796e65897bf7daf8dc3a98": 15687,
+    "49fff676b6208c1b8983d371043eee259e999f9e7a1aa79a96f68a2c800a9818": 3703,
     "4ba22b0b428118e9fe05fccb24f97d826072c5e0a39b3d6cad42c3c826ead24f": 2238,
-    "974e021c60d066c1718e3f2d2879b6831d59a3db632274dce05ded2bddbb5ebf": 1804,
+    "89faa2ef38c6671c6b9f3c25c2d4022522d3b8593164e14af6fa952faaa3d9a5": 1094,
     "b0ad898a33d2360e39f74bc234f5d2000771bd8b7bfd82b0572d2974e106cc87": 1157,
     "bd2ad3bc8cac1ef8b773b635b3efbe86a17ea41cfcbb1a7ca1276adbb88dadf6": 10452,
-    "e3117778c930c98b48e7ec8536e8281f79e720807c946c308e17bd22e9a66b79": 14274,
+    "daeb12a346cbcd9acec0d45419a3e91f1d77885888c1a5e340e45485bb2de494": 1804,
     "f0745ca730fce43fa4a0ad3fd46c088acfe9a5e0ecde8e89b3b3e79e1d723721": 2188
   },
   "vendor_collateral": [
     {
+      "der": "daeb12a346cbcd9acec0d45419a3e91f1d77885888c1a5e340e45485bb2de494",
+      "metadata": {
+        "ca_product_name": "Milan",
+        "chip_id": "b2202e1f13696edf8e6f3e833df25da9278cfeb1105e70894a14452b2ec5fd2a263db3bdc596294925a01bfaff8b1dd65ad0dfb527a8e6381fed31f097d41e67",
+        "collateral_type": "vcek",
+        "product_name": "Milan",
+        "reported_tcb": "0400000000001dde"
+      }
+    },
+    {
       "der": "f0745ca730fce43fa4a0ad3fd46c088acfe9a5e0ecde8e89b3b3e79e1d723721",
       "metadata": {
         "ca_product_name": "Milan",
-        "collateral_type": "ark",
-        "fetched_at": "2026-09-21T13:11:56.561Z",
-        "product_name": "Milan",
-        "schema": "stogas.amd-kds-collateral.v1",
-        "sha256": "69d063b45344d26a2e94e1f4210de49ef555308287d4c174445c95639a540bcd",
-        "source": "amd-kds",
-        "source_url": "https://kdsintf.amd.com/vcek/v1/Milan/cert_chain"
+        "collateral_type": "ark"
       }
     },
     {
       "der": "4ba22b0b428118e9fe05fccb24f97d826072c5e0a39b3d6cad42c3c826ead24f",
       "metadata": {
         "ca_product_name": "Milan",
-        "collateral_type": "ask",
-        "fetched_at": "2026-09-21T13:11:56.561Z",
-        "product_name": "Milan",
-        "schema": "stogas.amd-kds-collateral.v1",
-        "sha256": "67d303bd3905fd38db8b20e0793699870e7fa612eaad5dec358293fd8c0bac1b",
-        "source": "amd-kds",
-        "source_url": "https://kdsintf.amd.com/vcek/v1/Milan/cert_chain"
+        "collateral_type": "ask"
       }
     },
     {
       "der": "b0ad898a33d2360e39f74bc234f5d2000771bd8b7bfd82b0572d2974e106cc87",
       "metadata": {
         "ca_product_name": "Milan",
-        "collateral_type": "crl",
-        "fetched_at": "2026-09-30T17:11:35.469Z",
-        "product_name": "Milan",
-        "schema": "stogas.amd-kds-collateral.v1",
-        "sha256": "dd68e9e3feb97dd0e95135feeae47d9cc193c73239a6281ec9884c00d5e6a525",
-        "source": "amd-kds",
-        "source_url": "https://kdsintf.amd.com/vcek/v1/Milan/crl"
-      }
-    },
-    {
-      "der": "974e021c60d066c1718e3f2d2879b6831d59a3db632274dce05ded2bddbb5ebf",
-      "metadata": {
-        "ca_product_name": "Milan",
-        "chip_id": "b2202e1f13696edf8e6f3e833df25da9278cfeb1105e70894a14452b2ec5fd2a263db3bdc596294925a01bfaff8b1dd65ad0dfb527a8e6381fed31f097d41e67",
-        "collateral_type": "vcek",
-        "fetched_at": "2026-10-18T01:48:55.815Z",
-        "hwid": "b2202e1f13696edf8e6f3e833df25da9278cfeb1105e70894a14452b2ec5fd2a263db3bdc596294925a01bfaff8b1dd65ad0dfb527a8e6381fed31f097d41e67",
-        "product_name": "Milan",
-        "reported_tcb": "0400000000001dde",
-        "schema": "stogas.amd-kds-collateral.v1",
-        "sha256": "0b34bbf9c8e373e68a2caa2787b2b39e022978c4802452ff6e50ddb89c6a62c6",
-        "source": "amd-kds",
-        "source_url": "https://kdsintf.amd.com/vcek/v1/Milan/b2202e1f13696edf8e6f3e833df25da9278cfeb1105e70894a14452b2ec5fd2a263db3bdc596294925a01bfaff8b1dd65ad0dfb527a8e6381fed31f097d41e67?blSPL=4&teeSPL=0&snpSPL=29&ucodeSPL=222",
-        "tcb": {
-          "blSPL": 4,
-          "snpSPL": 29,
-          "teeSPL": 0,
-          "ucodeSPL": 222
-        }
+        "collateral_type": "crl"
       }
     }
   ]

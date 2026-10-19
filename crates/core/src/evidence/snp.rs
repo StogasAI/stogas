@@ -203,8 +203,8 @@ impl Snapshot {
         if report.len() != 0x4a0 {
             return Err(Error::Attestation("SNP report has the wrong size".into()));
         }
-        let release = self.gateway(release_id).ok_or(Error::Approval(
-            crate::approvals::Error::NotApproved("gateway"),
+        let release = self.gateway(release_id).ok_or(Error::Authority(
+            crate::authority::Error::NotApproved("gateway"),
         ))?;
         let report_id = report[0x140..0x160].try_into().map_err(attestation_error)?;
         let node_id = crate::attestation::snp_node_id(&report_id);
@@ -225,7 +225,7 @@ impl Snapshot {
             &release.measurement,
             launch,
             report,
-            Some(&self.approvals.manifest().hardware_policy),
+            Some(&self.evidence.document().hardware_policies),
         )
         .map_err(attestation_error)?;
         crate::verify_raw_snp_report_signature_with_vcek(report, vcek, &node_id)

@@ -9,7 +9,7 @@ use reqwest::{
 };
 use stogas_core::{
     MAX_INPUT_BYTES,
-    approvals::{Environment, RootKey},
+    authority::{Environment, RootKey},
     evidence::{self, Snapshot, VerifiedSession},
 };
 use tokio::{
@@ -207,7 +207,7 @@ impl EvidenceClient {
             let checked = run_cpu(Arc::clone(&self.cpu), move || {
                 current.require_current_keys()?;
                 current
-                    .approvals()
+                    .evidence()
                     .valid_until(wall_clock_ms()?)
                     .map_err(evidence::Error::from)?;
                 check(&current)?;
@@ -251,7 +251,7 @@ impl EvidenceClient {
                     run_cpu(Arc::clone(&self.cpu), move || {
                         owned.require_current_keys()?;
                         owned
-                            .approvals()
+                            .evidence()
                             .valid_until(wall_clock_ms()?)
                             .map_err(evidence::Error::from)?;
                         check(&owned)?;

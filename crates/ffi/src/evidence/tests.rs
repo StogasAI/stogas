@@ -111,7 +111,7 @@ fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
     let fixture = hardware_fixture();
     let configuration =
         serde_json::to_vec(&json!({"environment":"staging", "root":fixture["root"]})).unwrap();
-    let bundle = serde_json::to_vec(&fixture["bundle"]).unwrap();
+    let signed_evidence = serde_json::to_vec(&fixture["evidence"]).unwrap();
     let now = fixture["verified_at_ms"].as_i64().unwrap();
     let certificate = URL_SAFE_NO_PAD
         .decode(fixture["certificate"].as_str().unwrap())
@@ -131,8 +131,8 @@ fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
         );
         let refreshed = take_json(stogas_evidence_refresh(
             handle,
-            bundle.as_ptr(),
-            bundle.len(),
+            signed_evidence.as_ptr(),
+            signed_evidence.len(),
             now,
             &raw mut snapshot,
         ));
@@ -172,8 +172,8 @@ fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
             handle,
             archive.as_ptr(),
             archive.len(),
-            bundle.as_ptr(),
-            bundle.len(),
+            signed_evidence.as_ptr(),
+            signed_evidence.len(),
             later,
         ));
         assert_eq!(archived["ok"], true, "{archived}");
@@ -184,8 +184,8 @@ fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
         assert_eq!(
             take_json(stogas_evidence_verify_archive(
                 handle,
-                bundle.as_ptr(),
-                bundle.len(),
+                signed_evidence.as_ptr(),
+                signed_evidence.len(),
                 later
             ))["ok"],
             true
@@ -195,8 +195,8 @@ fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
                 handle,
                 ptr::null(),
                 evidence::MAX_ARCHIVE_BYTES + 1,
-                bundle.as_ptr(),
-                bundle.len(),
+                signed_evidence.as_ptr(),
+                signed_evidence.len(),
                 later
             ))["code"],
             "invalid_operation"
@@ -215,8 +215,8 @@ fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
                 handle,
                 archive.as_ptr(),
                 archive.len(),
-                bundle.as_ptr(),
-                bundle.len(),
+                signed_evidence.as_ptr(),
+                signed_evidence.len(),
                 ptr::null(),
                 0,
                 ptr::null(),

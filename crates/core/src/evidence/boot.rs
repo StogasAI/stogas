@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 
 use super::{Error, Snapshot, SnpHardwareFacts, VerifiedSnpReport};
-use crate::approvals::Environment;
+use crate::authority::Environment;
 
 pub const BOOT_SCHEMA: &str = "stogas.node-boot.v1";
 pub const BOOT_PUBLICATION_SCHEMA: &str = "stogas.node-registration.v1";
@@ -281,7 +281,7 @@ impl BootReportData {
 impl Snapshot {
     /// Appraise facts from an authority's trusted registration database. Initial
     /// verification already checked the immutable release's launch policy. A new
-    /// approval may withdraw that release or change the hardware requirements.
+    /// evidence revision may withdraw that release or change the hardware requirements.
     /// This method does not authenticate evidence, requests or sessions.
     ///
     /// # Errors
@@ -293,11 +293,11 @@ impl Snapshot {
     ) -> Result<(), Error> {
         self.require_current_keys()?;
         self.gateway(&facts.gateway_release_id)
-            .ok_or(Error::Approval(crate::approvals::Error::NotApproved(
+            .ok_or(Error::Authority(crate::authority::Error::NotApproved(
                 "gateway",
             )))?;
         crate::appraise_hardware(
-            &self.approvals.manifest().hardware_policy,
+            &self.evidence.document().hardware_policies,
             &facts.chip_id,
             |profile| facts.hardware.appraise(profile, &facts.node_id),
         )
@@ -376,28 +376,28 @@ impl Snapshot {
         {
             return Err(invalid("invalid initial evidence identity"));
         }
-        let keys = self.approvals.keys();
+        let keys = self.evidence.keys();
         let signer = std::iter::once(&keys.active_key)
             .chain(&keys.retired_keys)
             .find(|key| key.key_id == proof.signature.key_id)
-            .ok_or(Error::Approval(crate::approvals::Error::InactiveKey))?;
+            .ok_or(Error::Authority(crate::authority::Error::InactiveKey))?;
         let publication = serde_json::to_value(BootPublication {
             schema: BOOT_PUBLICATION_SCHEMA.into(),
             boot: record.clone(),
             evidence_sha256: proof.evidence_sha256,
         })
         .map_err(invalid)?;
-        crate::approvals::verify_signature(
+        crate::authority::verify_signature(
             &publication,
             &proof.signature,
             &signer.key_id,
             &signer.public_key,
         )?;
-        let integrated = crate::approvals::verify_document_inclusion(
+        let integrated = crate::authority::verify_document_inclusion(
             &publication,
             &proof.signature,
             &proof.inclusion,
-            self.approvals.sigstore().trusted_root(),
+            self.evidence.sigstore().trusted_root(),
             now_unix_ms,
         )?;
         let identity = self.verify_boot_report(document, record, now_unix_ms)?;
@@ -415,8 +415,8 @@ impl Snapshot {
         record: BootRecord,
         now_unix_ms: i64,
     ) -> Result<VerifiedRegistration, Error> {
-        if record.report_data.environment != self.approvals.keys().environment {
-            return Err(Error::Approval(crate::approvals::Error::Authority));
+        if record.report_data.environment != self.evidence.document().environment {
+            return Err(Error::Authority(crate::authority::Error::Authority));
         }
         let report = decode(&record.report, 0x4a0)?;
         let hardware = self.verify_snp_report(

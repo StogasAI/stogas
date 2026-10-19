@@ -1,46 +1,53 @@
 use super::*;
 
-// The index is the ledger's published split of the hardware session bundle.
+// The index is the ledger's published split of the hardware session evidence.
 const INDEX: &[u8] = include_bytes!("../../../../tests/fixtures/evidence-archive-v1.json");
 
-fn bundle() -> Value {
+fn evidence() -> Value {
     let session: Value = serde_json::from_str(include_str!(
         "../../../../tests/fixtures/hardware-session-v1.json"
     ))
     .unwrap();
-    session["bundle"].clone()
+    session["evidence"].clone()
 }
 
-fn objects(body: &Value) -> BTreeMap<String, Value> {
-    [&body["sigstore"], &body["keys"], &body["approvals"]]
+fn objects(document: &Value) -> BTreeMap<String, Value> {
+    let releases = ["gateways", "catalogs"]
         .into_iter()
-        .chain(
-            body["vendor_collateral"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|entry| &entry["der_base64url"]),
-        )
-        .map(|value| (payload_sha256(value).unwrap(), value.clone()))
-        .collect()
+        .flat_map(|field| document[field].as_array().unwrap());
+    let collateral = document["vendor_collateral"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| &row["der_base64url"]);
+    [
+        &document["keys"],
+        &document["sigstore"],
+        &document["hardware_policies"],
+    ]
+    .into_iter()
+    .chain(releases)
+    .chain(collateral)
+    .map(|value| (payload_sha256(value).unwrap(), value.clone()))
+    .collect()
 }
 
 #[test]
-fn rebuilds_the_published_bundle() {
-    let bundle = bundle();
-    let index = Index::parse(INDEX, bundle["body_sha256"].as_str().unwrap()).unwrap();
-    let evidence = index.assemble(&objects(&bundle["body"])).unwrap();
-    assert_eq!(serde_json::from_slice::<Value>(&evidence).unwrap(), bundle);
+fn rebuilds_the_published_evidence() {
+    let evidence = evidence();
+    let index = Index::parse(INDEX, &payload_sha256(&evidence["document"]).unwrap()).unwrap();
+    let rebuilt = index.assemble(&objects(&evidence["document"])).unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&rebuilt).unwrap(), evidence);
 }
 
 #[test]
 fn rejects_substituted_indexes_and_objects() {
-    let bundle = bundle();
-    let expected = bundle["body_sha256"].as_str().unwrap();
+    let evidence = evidence();
+    let expected = payload_sha256(&evidence["document"]).unwrap();
     let index: Value = serde_json::from_slice(INDEX).unwrap();
     let mut changes = Vec::new();
     for (field, value) in [
-        ("body_sha256", json!("f".repeat(64))),
+        ("evidence_sha256", json!("f".repeat(64))),
         ("keys", json!("../outside")),
         ("sizes", json!({})),
         ("unknown", json!(true)),
@@ -55,16 +62,15 @@ fn rejects_substituted_indexes_and_objects() {
     }
     changes.push(oversized);
     for change in changes {
-        assert!(Index::parse(&serde_json::to_vec(&change).unwrap(), expected).is_err());
+        assert!(Index::parse(&serde_json::to_vec(&change).unwrap(), &expected).is_err());
     }
 
-    let mut objects = objects(&bundle["body"]);
-    let approvals = objects
-        .get_mut(index["approvals"].as_str().unwrap())
+    let mut objects = objects(&evidence["document"]);
+    let gateway = objects
+        .get_mut(index["gateways"][0].as_str().unwrap())
         .unwrap();
-    approvals["document"]["revision"] =
-        json!(approvals["document"]["revision"].as_u64().unwrap() + 1);
-    let error = Index::parse(INDEX, expected)
+    gateway["document"]["sequence"] = json!(gateway["document"]["sequence"].as_u64().unwrap() + 1);
+    let error = Index::parse(INDEX, &expected)
         .unwrap()
         .assemble(&objects)
         .unwrap_err();

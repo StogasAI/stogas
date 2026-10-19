@@ -14,14 +14,14 @@ typedef struct StogasEvidenceSnapshot StogasEvidenceSnapshot;
 
 /* Offline evidence. Configuration: {"environment":"staging"|"prod", "root"?:
  * {"key_id":"...", "public_key":"..."}}. Omit root for the compiled Stogas authority.
- * An explicit root is local caller configuration, never downloaded bundle input.
+ * An explicit root is local caller configuration, never downloaded evidence input.
  * Calls return the same owned JSON envelope, with a fixed `code` on errors.
  * Snapshots own their verified state and may outlive refresh or the verifier.
  * Free handles exactly once, after their concurrent operations finish.
  */
 char *stogas_evidence_new(const uint8_t *configuration, size_t configuration_len, StogasEvidence **output);
 void stogas_evidence_free(StogasEvidence *handle);
-char *stogas_evidence_refresh(const StogasEvidence *handle, const uint8_t *bundle, size_t bundle_len, int64_t now_unix_ms, StogasEvidenceSnapshot **output);
+char *stogas_evidence_refresh(const StogasEvidence *handle, const uint8_t *evidence, size_t evidence_len, int64_t now_unix_ms, StogasEvidenceSnapshot **output);
 void stogas_evidence_snapshot_free(StogasEvidenceSnapshot *handle);
 char *stogas_evidence_verify_logged_boot(const StogasEvidenceSnapshot *handle, const uint8_t *document, size_t document_len, const uint8_t *inclusion, size_t inclusion_len, int64_t now_unix_ms);
 /* Request/response hashes are exactly 32 binary bytes computed from the signed content.
@@ -31,9 +31,9 @@ char *stogas_evidence_verify_receipt(const StogasEvidenceSnapshot *handle, const
 
 /* Historical appraisal authenticates the archive at its log-inclusion time.
  * These operations never install current permission or alter learned revocations. */
-char *stogas_evidence_verify_archive(const StogasEvidence *handle, const uint8_t *bundle, size_t bundle_len, int64_t now_unix_ms);
-char *stogas_evidence_verify_boot_archive(const StogasEvidence *handle, const uint8_t *archive, size_t archive_len, const uint8_t *bundle, size_t bundle_len, int64_t now_unix_ms);
-char *stogas_evidence_verify_receipt_archive(const StogasEvidence *handle, const uint8_t *archive, size_t archive_len, const uint8_t *bundle, size_t bundle_len, const uint8_t *receipt, size_t receipt_len, const uint8_t *request_hash, size_t request_hash_len, const uint8_t *response_hash, size_t response_hash_len, int64_t now_unix_ms);
+char *stogas_evidence_verify_archive(const StogasEvidence *handle, const uint8_t *evidence, size_t evidence_len, int64_t now_unix_ms);
+char *stogas_evidence_verify_boot_archive(const StogasEvidence *handle, const uint8_t *archive, size_t archive_len, const uint8_t *evidence, size_t evidence_len, int64_t now_unix_ms);
+char *stogas_evidence_verify_receipt_archive(const StogasEvidence *handle, const uint8_t *archive, size_t archive_len, const uint8_t *evidence, size_t evidence_len, const uint8_t *receipt, size_t receipt_len, const uint8_t *request_hash, size_t request_hash_len, const uint8_t *response_hash, size_t response_hash_len, int64_t now_unix_ms);
 
 #define STOGAS_ABI_VERSION 1
 uint32_t stogas_abi_version(void);
@@ -57,7 +57,7 @@ char *stogas_transport_start(
     size_t configuration_len,
     StogasTransport **transport_out
 );
-/* Manual refresh returns whether the verified bundle contents changed. */
+/* Manual refresh returns whether the verified evidence changed. */
 char *stogas_transport_refresh(const StogasTransport *transport);
 /* Explicit graceful close waits up to five seconds for active work; it retains the handle. */
 void stogas_transport_close(const StogasTransport *transport);

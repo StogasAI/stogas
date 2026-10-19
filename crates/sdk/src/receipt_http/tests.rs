@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use std::time::Duration;
 use stogas_core::signing::SigningKey;
-use stogas_core::{approvals::Environment, evidence};
+use stogas_core::{authority::Environment, evidence};
 
 fn peer() -> Arc<VerifiedSession> {
     let fixture: Value = serde_json::from_str(include_str!(
@@ -20,7 +20,7 @@ fn peer() -> Arc<VerifiedSession> {
     .unwrap();
     let now = fixture["verified_at_ms"].as_i64().unwrap();
     let snapshot = verifier
-        .refresh(&serde_json::to_vec(&fixture["bundle"]).unwrap(), now)
+        .refresh(&serde_json::to_vec(&fixture["evidence"]).unwrap(), now)
         .unwrap();
     Arc::new(
         snapshot

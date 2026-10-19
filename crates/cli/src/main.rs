@@ -111,7 +111,7 @@ enum Command {
         #[arg(long)]
         output: PathBuf,
     },
-    /// Verify a bundle without network access.
+    /// Verify saved evidence without network access.
     Verify(VerifyArgs),
     /// Save the archived boot and evidence that a receipt names, for checks without network access.
     DownloadEvidence {
@@ -132,8 +132,8 @@ enum Command {
 
 #[derive(Args)]
 struct VerifyArgs {
-    /// Bundle path, or `-` for stdin.
-    bundle: PathBuf,
+    /// Evidence path, or `-` for stdin.
+    evidence: PathBuf,
     #[arg(long, default_value = "prod", value_parser = parse_environment)]
     environment: stogas::Environment,
     /// Emit stable JSON.
@@ -158,12 +158,12 @@ struct ProofArgs {
     /// Buffered JSON with metadata, complete SSE, or detached signed response bytes.
     #[arg(long)]
     response: PathBuf,
-    /// Saved evidence bundle identified by the boot archive. Without --bundle and
-    /// --boot, the command downloads both.
+    /// Saved evidence identified by the boot archive. Without --evidence and --boot, the
+    /// command downloads both.
     #[arg(long, requires = "boot")]
-    bundle: Option<PathBuf>,
+    evidence: Option<PathBuf>,
     /// Saved boot archive containing its quote, inclusion and evidence digest.
-    #[arg(long, requires = "bundle")]
+    #[arg(long, requires = "evidence")]
     boot: Option<PathBuf>,
     #[arg(long, default_value = "prod", value_parser = parse_environment)]
     environment: stogas::Environment,
@@ -287,7 +287,7 @@ async fn run_api(method: Method, path: &str, input: Option<&Path>) -> Result<()>
 }
 
 async fn run_verify(input: VerifyArgs) -> Result<()> {
-    let bytes = read_bounded_input(&input.bundle, MAX_INPUT_BYTES, "bundle").await?;
+    let bytes = read_bounded_input(&input.evidence, MAX_INPUT_BYTES, "evidence").await?;
     let mut verifier = stogas_core::evidence::Verifier::stogas(input.environment)?;
     let now = input.now_unix_ms.unwrap_or_else(wall_clock_ms);
     let output = verifier.refresh(&bytes, now)?;
@@ -314,10 +314,10 @@ async fn verify_proof_files(input: &ProofArgs, verifier: &Verifier) -> Result<Ve
     let now = input.now_unix_ms.unwrap_or_else(wall_clock_ms);
     let request = hash_file(&input.request, "request body").await?;
     let signed = read_signed_response(input, request).await?;
-    let (archive, bundle) = if let (Some(boot), Some(bundle)) = (&input.boot, &input.bundle) {
+    let (archive, evidence) = if let (Some(boot), Some(evidence)) = (&input.boot, &input.evidence) {
         (
             read_bounded_file(boot, MAX_ARCHIVE_BYTES, "boot archive").await?,
-            read_bounded_file(bundle, MAX_INPUT_BYTES, "bundle").await?,
+            read_bounded_file(evidence, MAX_INPUT_BYTES, "evidence").await?,
         )
     } else {
         let boot = signed
@@ -326,7 +326,7 @@ async fn verify_proof_files(input: &ProofArgs, verifier: &Verifier) -> Result<Ve
         let archive = stogas::evidence_archive::download(input.environment, boot).await?;
         (archive.boot, archive.evidence)
     };
-    let boot = verifier.verify_boot_archive(&archive, &bundle, now)?;
+    let boot = verifier.verify_boot_archive(&archive, &evidence, now)?;
     Ok(signed.verify(&boot)?.receipt)
 }
 
@@ -423,15 +423,14 @@ async fn read_bounded_file(path: &Path, maximum: usize, label: &str) -> Result<V
 fn print_output(output: &stogas_core::evidence::Snapshot, json: bool, now: i64) {
     if json {
         let mut summary = output.summary();
-        summary["body_sha256"] = serde_json::json!(output.body_sha256());
         summary["collateral"] = serde_json::json!(output.collateral_summary(now));
         println!("{summary}");
         return;
     }
-    let approvals = output.approvals().manifest();
-    println!("Verified approval revision {}", approvals.revision);
-    println!("  gateway releases: {}", approvals.gateways.len());
-    println!("  catalogs: {}", approvals.catalogs.len());
+    let document = output.evidence().document();
+    println!("Verified evidence revision {}", document.revision);
+    println!("  gateway releases: {}", document.gateways.len());
+    println!("  catalogs: {}", document.catalogs.len());
 }
 
 fn wall_clock_ms() -> i64 {
@@ -467,13 +466,13 @@ mod tests {
         assert!(upstream.is_none());
         assert!(Cli::try_parse_from(["stogas", "serve", "--security", "both"]).is_err());
         assert!(
-            Cli::try_parse_from(["stogas", "serve", "--bundle-refresh-seconds", "300"]).is_err()
+            Cli::try_parse_from(["stogas", "serve", "--evidence-refresh-seconds", "300"]).is_err()
         );
         assert!(
             Cli::try_parse_from([
                 "stogas",
                 "serve",
-                "--bundle-url",
+                "--evidence-url",
                 "https://untrusted.example"
             ])
             .is_err()
@@ -486,7 +485,7 @@ mod tests {
             Cli::try_parse_from([
                 "stogas",
                 "verify",
-                "bundle.json",
+                "evidence.json",
                 "--environment",
                 "staging"
             ])
@@ -497,7 +496,7 @@ mod tests {
             Cli::try_parse_from([
                 "stogas",
                 "verify",
-                "bundle.json",
+                "evidence.json",
                 "--policy",
                 "unsigned-policy.json"
             ])
@@ -515,7 +514,7 @@ mod tests {
             "--response",
             "response",
         ];
-        let evidence = ["--bundle", "bundle.json", "--boot", "boot.json"];
+        let evidence = ["--evidence", "evidence.json", "--boot", "boot.json"];
         assert!(Cli::try_parse_from(base.into_iter().chain(evidence)).is_ok());
         for framing in [vec!["--stream"], vec!["--proof", "receipt.json"]] {
             assert!(Cli::try_parse_from(base.into_iter().chain(evidence).chain(framing)).is_ok());

@@ -95,12 +95,12 @@ class PackageTests(unittest.TestCase):
                         self.assertEqual(response.code, 401)
                         self.assertEqual(json.loads(response.read())["error"]["type"], "authentication_error")
                     with ThreadPoolExecutor(3) as pool:
-                        list(pool.map(lambda _: transport.refresh_bundle(), range(3)))
+                        list(pool.map(lambda _: transport.refresh_evidence(), range(3)))
                 finally:
                     transport.close()
                 transport.close()
                 with self.assertRaises(ValueError):
-                    transport.refresh_bundle()
+                    transport.refresh_evidence()
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use stogas_core::{
-    approvals::{Environment, RootKey},
+    authority::{Environment, RootKey},
     evidence,
 };
 
@@ -86,8 +86,8 @@ pub unsafe extern "C" fn stogas_evidence_free(handle: *mut StogasEvidence) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stogas_evidence_refresh(
     handle: *const StogasEvidence,
-    bundle: *const u8,
-    bundle_len: usize,
+    evidence: *const u8,
+    evidence_len: usize,
     now_unix_ms: i64,
     output: *mut *mut StogasEvidenceSnapshot,
 ) -> *mut c_char {
@@ -103,8 +103,8 @@ pub unsafe extern "C" fn stogas_evidence_refresh(
         // SAFETY: the caller owns readable bytes; the bound is checked before constructing a slice.
         let bytes = unsafe {
             input_slice(
-                bundle,
-                bundle_len,
+                evidence,
+                evidence_len,
                 stogas_core::MAX_INPUT_BYTES,
                 "evidence",
             )?
@@ -179,7 +179,7 @@ pub unsafe extern "C" fn stogas_evidence_verify_registration(
     })
 }
 
-/// Verify exact logged boot bytes using current approvals and vendor collateral.
+/// Verify exact logged boot bytes against the current evidence.
 ///
 /// # Safety
 /// Snapshot must be live. Every input must address its declared readable length.

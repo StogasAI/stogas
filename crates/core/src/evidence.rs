@@ -2,15 +2,15 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    VerifiedCatalogRelease, VerifiedHardwarePolicy, VerifiedRelease,
-    approvals::{
-        self, ApprovalVerifier, Environment, RootKey, SignedApprovalManifest, SignedKeyManifest,
-        SigstoreFiles, VerifiedApprovals, VerifiedSigstore, payload_sha256,
+    VerifiedCatalogRelease, VerifiedRelease,
+    authority::{
+        self, Authority, Environment, EvidenceDocument, KeyManifest, RootKey, SignedEvidence,
+        SigstoreFiles, VerifiedEvidence, VerifiedKeys, VerifiedSigstore, payload_sha256,
     },
 };
 
@@ -40,8 +40,7 @@ pub enum VerificationStep {
     Sigstore,
     KeyManifest,
     VendorRevocations,
-    Envelope,
-    ApprovalManifest,
+    Signature,
     GatewayRelease,
     CatalogRelease,
     HardwarePolicy,
@@ -57,25 +56,6 @@ pub struct VerificationCheck<'a> {
     pub cached: bool,
 }
 
-/// The replacement body of `evidence/latest.json`. Boot records travel with session evidence.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Bundle {
-    pub schema: String,
-    pub sigstore: SigstoreFiles,
-    pub keys: SignedKeyManifest,
-    pub approvals: SignedApprovalManifest,
-    pub vendor_collateral: Vec<BTreeMap<String, Value>>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Envelope {
-    pub schema: String,
-    pub body_sha256: String,
-    pub body: Bundle,
-}
-
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("current evidence exceeds the input limit")]
@@ -83,7 +63,7 @@ pub enum Error {
     #[error("invalid current evidence: {0}")]
     Invalid(String),
     #[error(transparent)]
-    Approval(#[from] approvals::Error),
+    Authority(#[from] authority::Error),
     #[error("invalid vendor collateral: {0}")]
     Collateral(String),
     #[error("the required vendor collateral is absent")]
@@ -103,26 +83,26 @@ impl Error {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::TooLarge | Self::Approval(approvals::Error::TooLarge) => "evidence_too_large",
+            Self::TooLarge | Self::Authority(authority::Error::TooLarge) => "evidence_too_large",
             Self::MissingCollateral => "missing_collateral",
             Self::CollateralExpired => "expired_collateral",
             Self::Revoked => "revoked",
             Self::CrlOrder => "crl_order",
-            Self::Approval(approvals::Error::Rollback) => "rollback",
-            Self::Approval(approvals::Error::Equivocation) => "conflicting_approval",
-            Self::Approval(approvals::Error::NotApproved(_)) => "not_approved",
-            Self::Approval(approvals::Error::InactiveKey) => "key_rejected",
-            Self::Approval(approvals::Error::Authority) => "wrong_authority",
-            Self::Approval(approvals::Error::Expired) => "expired_key_authorization",
+            Self::Authority(authority::Error::Rollback) => "rollback",
+            Self::Authority(authority::Error::Equivocation) => "conflicting_evidence",
+            Self::Authority(authority::Error::NotApproved(_)) => "not_approved",
+            Self::Authority(authority::Error::InactiveKey) => "key_rejected",
+            Self::Authority(authority::Error::Authority) => "wrong_authority",
+            Self::Authority(authority::Error::Expired) => "expired_key_authorization",
             Self::Attestation(_) => "invalid_attestation",
             Self::Invalid(_)
             | Self::Collateral(_)
-            | Self::Approval(
-                approvals::Error::Invalid(_)
-                | approvals::Error::Transparency(_)
-                | approvals::Error::Sigstore(_)
-                | approvals::Error::Signature
-                | approvals::Error::Evidence(_),
+            | Self::Authority(
+                authority::Error::Invalid(_)
+                | authority::Error::Transparency(_)
+                | authority::Error::Sigstore(_)
+                | authority::Error::Signature
+                | authority::Error::Evidence(_),
             ) => "invalid_evidence",
         }
     }
@@ -139,16 +119,12 @@ struct Cached<T> {
 /// with active users; each new connection still checks current authorization and vendor validity.
 #[derive(Debug)]
 pub struct Snapshot {
-    body_sha256: String,
     #[cfg(feature = "snp")]
     identity: Arc<()>,
-    approvals: VerifiedApprovals,
-    keys_evidence: SignedKeyManifest,
-    key_state: Arc<approvals::KeyState>,
+    evidence: VerifiedEvidence,
+    key_state: Arc<authority::KeyState>,
     gateways: BTreeMap<String, Cached<VerifiedRelease>>,
     catalogs: BTreeMap<String, Cached<VerifiedCatalogRelease>>,
-    hardware: VerifiedHardwarePolicy,
-    collateral_evidence: Vec<BTreeMap<String, Value>>,
     collateral: collateral::Store,
 }
 
@@ -159,22 +135,25 @@ impl Snapshot {
         self.collateral.summary(now_unix_ms)
     }
 
-    /// Identity of the complete verified evidence contents, including collateral.
+    /// SHA-256 of the canonical evidence document, which includes the keys and vendor collateral.
     #[must_use]
-    pub fn body_sha256(&self) -> &str {
-        &self.body_sha256
+    pub fn evidence_sha256(&self) -> &str {
+        self.evidence.digest()
     }
 
     /// Verified public configuration for bindings. This does not appraise a live node.
-    /// Releases follow the approval manifest's sequence order.
+    /// Releases follow their sequence order. An operator's unsigned candidate has no signature.
     #[must_use]
     pub fn summary(&self) -> Value {
+        let proof = self.evidence.proof();
         serde_json::json!({
-            "sigstore": self.approvals.sigstore().summary(),
-            "keys": self.keys_evidence, "approvals": self.approvals.evidence(),
+            "evidence_sha256": self.evidence.digest(),
+            "document": self.evidence.document(),
+            "signature": proof.map(|proof| &proof.signature),
+            "inclusion": proof.map(|proof| &proof.inclusion),
+            "sigstore": self.evidence.sigstore().summary(),
             "gateways": by_sequence(&self.gateways, |release| release.sequence),
-            "catalogs": by_sequence(&self.catalogs, |release| release.sequence),
-            "hardware_policy": self.hardware, "vendor_collateral": self.collateral_evidence
+            "catalogs": by_sequence(&self.catalogs, |release| release.sequence)
         })
     }
 
@@ -185,12 +164,13 @@ impl Snapshot {
     /// Rejects an older root generation or an authenticated conflicting root decision.
     pub fn require_current_keys(&self) -> Result<(), Error> {
         self.key_state
-            .require_current(self.approvals.keys())
+            .require_current(self.evidence.keys())
             .map_err(Error::from)
     }
+
     #[must_use]
-    pub const fn approvals(&self) -> &VerifiedApprovals {
-        &self.approvals
+    pub const fn evidence(&self) -> &VerifiedEvidence {
+        &self.evidence
     }
 
     #[must_use]
@@ -223,13 +203,7 @@ impl Snapshot {
             .map(|(id, entry)| (id.as_str(), entry.value.as_ref()))
     }
 
-    #[must_use]
-    pub const fn hardware_policy(&self) -> &VerifiedHardwarePolicy {
-        &self.hardware
-    }
-
     /// The vendor-signed interval for one chip/TCB, capped by the root authorization deadline.
-    /// Fetch timestamps never extend either limit.
     ///
     /// # Errors
     /// Missing or expired material blocks only operations requiring that platform.
@@ -248,7 +222,7 @@ impl Snapshot {
     ) -> Result<Validity, Error> {
         #[cfg(feature = "snp")]
         {
-            let expires = self.approvals.valid_until(now_unix_ms)?;
+            let expires = self.evidence.valid_until(now_unix_ms)?;
             let mut validity = self
                 .collateral
                 .validity(chip_id, reported_tcb, now_unix_ms)?;
@@ -265,7 +239,7 @@ impl Snapshot {
 
 /// Networkless verifier. The connector owns fetching, origin-specific `ETags` and acquisition bounds.
 pub struct Verifier {
-    approvals: ApprovalVerifier,
+    authority: Authority,
     current: Option<Arc<Snapshot>>,
     revocations: Arc<collateral::Revocations>,
 }
@@ -277,8 +251,8 @@ impl Verifier {
         Self::new(environment, environment.stogas_root()?)
     }
 
-    /// Learn a root-signed key manifest without requiring the rest of the bundle. Its log
-    /// proof uses the current snapshot's Sigstore keys, or the compiled ones before any.
+    /// Learn a root-signed key manifest without requiring complete evidence. Its log proof
+    /// uses the current snapshot's Sigstore keys, or the compiled ones before any.
     ///
     /// # Errors
     /// Rejects unauthenticated or conflicting root decisions.
@@ -286,14 +260,14 @@ impl Verifier {
         &self,
         bytes: &[u8],
         now_unix_ms: i64,
-    ) -> Result<crate::approvals::KeyManifest, Error> {
+    ) -> Result<KeyManifest, Error> {
         let trust = match &self.current {
-            Some(snapshot) => snapshot.approvals.sigstore().trusted_root(),
+            Some(snapshot) => snapshot.evidence.sigstore().trusted_root(),
             None => stogas_sigstore::TrustedRoot::embedded()
-                .map_err(|error| approvals::Error::Sigstore(error.to_string()))?,
+                .map_err(|error| authority::Error::Sigstore(error.to_string()))?,
         };
         Ok(self
-            .approvals
+            .authority
             .verify_key_manifest(bytes, trust, now_unix_ms)?)
     }
 
@@ -301,7 +275,7 @@ impl Verifier {
     /// Rejects an invalid locally configured trust root.
     pub fn new(environment: Environment, root: RootKey) -> Result<Self, Error> {
         Ok(Self {
-            approvals: ApprovalVerifier::new(environment, root)?,
+            authority: Authority::new(environment, root)?,
             current: None,
             revocations: Arc::default(),
         })
@@ -342,140 +316,151 @@ impl Verifier {
         };
         let value = parse_json(bytes)?;
         checked(VerificationStep::Decode, None, false);
-        // Sigstore's own signatures authenticate its keys, so they can check the root's log
-        // proof before the approval that names them is verified.
-        let keys = self
-            .sigstore(&value["body"]["sigstore"])
-            .and_then(|(sigstore, reused)| {
-                checked(VerificationStep::Sigstore, None, reused);
-                let keys = self.approvals.observe_keys(
-                    &serde_json::to_vec(&value["body"]["keys"]).map_err(invalid)?,
-                    sigstore.trusted_root(),
-                    now_unix_ms,
-                )?;
-                Ok((sigstore, keys))
-            });
-        if keys.is_ok() {
-            checked(VerificationStep::KeyManifest, None, false);
-        }
-        // Vendor revocation is an independent signed decision. Retain it even if a missing
-        // release, altered approval or other malformed object prevents snapshot installation.
-        #[cfg(feature = "snp")]
-        let vendor = self.revocations.observe(&value["body"], now_unix_ms);
-        #[cfg(feature = "snp")]
-        if keys.is_ok() && vendor.is_ok() {
-            checked(VerificationStep::VendorRevocations, None, false);
-        }
-        // Process both independent authorities before returning either delivery failure.
-        let (sigstore, keys) = keys?;
-        #[cfg(feature = "snp")]
-        vendor?;
-        let Envelope {
-            body_sha256, body, ..
-        } = parse_envelope(value)?;
-        checked(VerificationStep::Envelope, None, false);
-        let approvals =
-            self.approvals
-                .verify_with_keys(keys, body.approvals, sigstore, now_unix_ms)?;
-        checked(VerificationStep::ApprovalManifest, None, false);
-        let snapshot = Arc::new(self.verify_snapshot(
-            Candidate {
-                body_sha256,
-                keys: body.keys,
-                approvals,
-                vendor_collateral: body.vendor_collateral,
-            },
+        let (keys, sigstore) = self.observe(&value["document"], now_unix_ms, &mut checked)?;
+        let signed: SignedEvidence = serde_json::from_value(value).map_err(invalid)?;
+        let mut candidate = self
+            .authority
+            .check(keys, signed.document, sigstore, now_unix_ms)?;
+        authority::verify_proof(
+            &mut candidate,
+            signed.signature,
+            signed.inclusion,
             now_unix_ms,
-            &mut checked,
-        )?);
-        self.approvals.accept(snapshot.approvals.clone())?;
+        )?;
+        checked(VerificationStep::Signature, None, false);
+        let snapshot = Arc::new(self.verify_snapshot(candidate, now_unix_ms, &mut checked)?);
+        self.authority.accept(snapshot.evidence.clone())?;
         self.current = Some(Arc::clone(&snapshot));
         checked(VerificationStep::Accepted, None, false);
         Ok(snapshot)
     }
 
+    /// Check an unsigned evidence document as [`Self::refresh`] would, so an operator never
+    /// signs and logs a revision that clients reject. The result has no signature and is never
+    /// accepted; root decisions and vendor revocation it carries are still learned.
+    ///
+    /// # Errors
+    /// Rejects everything [`Self::refresh`] rejects, except the missing signature.
+    pub fn check_unsigned(&self, bytes: &[u8], now_unix_ms: i64) -> Result<Arc<Snapshot>, Error> {
+        let value = parse_json(bytes)?;
+        let (keys, sigstore) = self.observe(&value, now_unix_ms, &mut |_, _, _| {})?;
+        let document: EvidenceDocument = serde_json::from_value(value).map_err(invalid)?;
+        let candidate = self
+            .authority
+            .check(keys, document, sigstore, now_unix_ms)?;
+        Ok(Arc::new(self.verify_snapshot(
+            candidate,
+            now_unix_ms,
+            &mut |_, _, _| {},
+        )?))
+    }
+
+    /// Verify the document's Sigstore files and root-signed key manifest, and learn its
+    /// authenticated vendor revocation even when another part of the document is invalid.
+    fn observe(
+        &self,
+        document: &Value,
+        now_unix_ms: i64,
+        checked: &mut impl FnMut(VerificationStep, Option<&str>, bool),
+    ) -> Result<(VerifiedKeys, Arc<VerifiedSigstore>), Error> {
+        // Sigstore's own signatures authenticate its keys, so they can check the root's log
+        // proof before the online signature over the whole document is verified.
+        let keys = self
+            .sigstore(&document["sigstore"])
+            .and_then(|(sigstore, reused)| {
+                checked(VerificationStep::Sigstore, None, reused);
+                let keys = self.authority.observe_keys(
+                    &serde_json::to_vec(&document["keys"]).map_err(invalid)?,
+                    sigstore.trusted_root(),
+                    now_unix_ms,
+                )?;
+                Ok((keys, sigstore))
+            });
+        if keys.is_ok() {
+            checked(VerificationStep::KeyManifest, None, false);
+        }
+        // Vendor revocation is an independent signed decision. Retain it even if a missing
+        // release, altered signature or other malformed object prevents acceptance.
+        #[cfg(feature = "snp")]
+        let vendor = self.revocations.observe(document, now_unix_ms);
+        #[cfg(feature = "snp")]
+        if keys.is_ok() && vendor.is_ok() {
+            checked(VerificationStep::VendorRevocations, None, false);
+        }
+        // Process both independent authorities before returning either failure.
+        let keys = keys?;
+        #[cfg(feature = "snp")]
+        vendor?;
+        Ok(keys)
+    }
+
     fn verify_snapshot(
         &self,
-        candidate: Candidate,
+        evidence: VerifiedEvidence,
         now_unix_ms: i64,
         checked: &mut impl FnMut(VerificationStep, Option<&str>, bool),
     ) -> Result<Snapshot, Error> {
-        let approvals = candidate.approvals;
         let prior = self.current.as_deref();
         // A release check depends only on its bytes, the fixed environment and the Sigstore
-        // keys, so unchanged entries reuse earlier results. The approval manifest still
-        // decides what is listed.
-        let releases = prior
-            .filter(|snapshot| Arc::ptr_eq(snapshot.approvals.sigstore(), approvals.sigstore()));
+        // keys, so unchanged entries reuse earlier results. The signed document still decides
+        // what is listed.
+        let releases =
+            prior.filter(|snapshot| Arc::ptr_eq(snapshot.evidence.sigstore(), evidence.sigstore()));
         let mut gateways = BTreeMap::new();
-        for gateway in &approvals.manifest().gateways {
+        for gateway in &evidence.document().gateways {
             let id = payload_sha256(&gateway.document)?;
             let (entry, reused) = cached(
                 releases.and_then(|snapshot| snapshot.gateways.get(&id)),
                 payload_sha256(gateway)?,
                 now_unix_ms,
-                || approvals.verify_gateway(gateway, now_unix_ms),
+                || evidence.verify_gateway(gateway, now_unix_ms),
             )?;
             checked(VerificationStep::GatewayRelease, Some(id.as_str()), reused);
             gateways.insert(id, entry);
         }
         let mut catalogs = BTreeMap::new();
-        for catalog in &approvals.manifest().catalogs {
+        for catalog in &evidence.document().catalogs {
             let id = payload_sha256(&catalog.document)?;
             let (entry, reused) = cached(
                 releases.and_then(|snapshot| snapshot.catalogs.get(&id)),
                 payload_sha256(catalog)?,
                 now_unix_ms,
-                || approvals.verify_catalog(catalog, now_unix_ms),
+                || evidence.verify_catalog(catalog, now_unix_ms),
             )?;
             checked(VerificationStep::CatalogRelease, Some(id.as_str()), reused);
             catalogs.insert(id, entry);
         }
-        let hardware = approvals.verify_hardware_policy()?;
+        evidence.verify_hardware_policies()?;
         checked(VerificationStep::HardwarePolicy, None, false);
         let collateral = collateral::Store::verify(
-            &candidate.vendor_collateral,
+            &evidence.document().vendor_collateral,
             prior.map(|snapshot| &snapshot.collateral),
             Arc::clone(&self.revocations),
         )?;
         checked(VerificationStep::VendorCollateral, None, false);
         Ok(Snapshot {
-            body_sha256: candidate.body_sha256,
             #[cfg(feature = "snp")]
             identity: Arc::new(()),
-            approvals,
-            keys_evidence: candidate.keys,
-            key_state: self.approvals.key_state(),
+            evidence,
+            key_state: self.authority.key_state(),
             gateways,
             catalogs,
-            hardware,
-            collateral_evidence: candidate.vendor_collateral,
             collateral,
         })
     }
-}
 
-impl Verifier {
     /// Verify the evidence's Sigstore files, reusing the current snapshot's result for the
     /// same files.
     fn sigstore(&self, files: &Value) -> Result<(Arc<VerifiedSigstore>, bool), Error> {
         let files: SigstoreFiles = serde_json::from_value(files.clone()).map_err(invalid)?;
         let digest = payload_sha256(&files)?;
         if let Some(snapshot) = &self.current
-            && snapshot.approvals.sigstore().digest() == digest
+            && snapshot.evidence.sigstore().digest() == digest
         {
-            return Ok((Arc::clone(snapshot.approvals.sigstore()), true));
+            return Ok((Arc::clone(snapshot.evidence.sigstore()), true));
         }
         Ok((Arc::new(VerifiedSigstore::verify(&files)?), false))
     }
-}
-
-/// An envelope whose approval decision passed; its listed objects are not yet verified.
-struct Candidate {
-    body_sha256: String,
-    keys: SignedKeyManifest,
-    approvals: VerifiedApprovals,
-    vendor_collateral: Vec<BTreeMap<String, Value>>,
 }
 
 fn by_sequence<T: Serialize>(
@@ -494,7 +479,7 @@ fn cached<T>(
     prior: Option<&Cached<T>>,
     digest: String,
     now_unix_ms: i64,
-    verify: impl FnOnce() -> Result<T, approvals::Error>,
+    verify: impl FnOnce() -> Result<T, authority::Error>,
 ) -> Result<(Cached<T>, bool), Error> {
     let (value, verified_at, reused) =
         match prior.filter(|entry| entry.digest == digest && now_unix_ms >= entry.verified_at) {
@@ -516,20 +501,6 @@ fn parse_json(bytes: &[u8]) -> Result<Value, Error> {
         return Err(Error::TooLarge);
     }
     crate::strict_json::from_slice(bytes).map_err(invalid)
-}
-
-fn parse_envelope(value: Value) -> Result<Envelope, Error> {
-    let digest = payload_sha256(&value["body"])?;
-    let envelope: Envelope = serde_json::from_value(value).map_err(invalid)?;
-    if envelope.schema != crate::BUNDLE_ENVELOPE_SCHEMA
-        || envelope.body.schema != "stogas.confidential-bundle.v1"
-    {
-        return Err(Error::Invalid("unsupported bundle schema".into()));
-    }
-    if digest != envelope.body_sha256 {
-        return Err(Error::Invalid("bundle body checksum differs".into()));
-    }
-    Ok(envelope)
 }
 
 fn invalid(error: impl std::fmt::Display) -> Error {

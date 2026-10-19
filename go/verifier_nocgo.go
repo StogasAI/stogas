@@ -34,8 +34,8 @@ func (*Transport) BaseURL() (string, error) {
 	return "", ErrNativeLibraryUnavailable
 }
 
-// RefreshBundle reports that the packaged native SDK is unavailable.
-func (*Transport) RefreshBundle() (bool, error) {
+// RefreshEvidence reports that the packaged native SDK is unavailable.
+func (*Transport) RefreshEvidence() (bool, error) {
 	return false, ErrNativeLibraryUnavailable
 }
 

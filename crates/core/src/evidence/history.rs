@@ -14,7 +14,7 @@ type Archive = crate::LoggedDocument<super::boot::BootPublication>;
 #[cfg(all(test, feature = "staging"))]
 mod tests {
     use super::*;
-    use crate::{approvals::Environment, attestation::certificate::ParsedNativeCertificate};
+    use crate::{attestation::certificate::ParsedNativeCertificate, authority::Environment};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use serde_json::json;
 
@@ -45,7 +45,7 @@ mod tests {
         (
             verifier,
             archive,
-            fixture["bundle"].clone(),
+            fixture["evidence"].clone(),
             fixture["verified_at_ms"].as_i64().unwrap(),
         )
     }
@@ -56,37 +56,34 @@ mod tests {
 
     #[test]
     fn history_survives_expiry_and_cannot_restore_current_key_authorization() {
-        let (mut verifier, archive, bundle, now) = fixture();
-        let current = verifier.refresh(&bytes(&bundle), now).unwrap();
-        let rotation: Value = serde_json::from_str(include_str!(
+        let (mut verifier, archive, evidence, now) = fixture();
+        let current = verifier.refresh(&bytes(&evidence), now).unwrap();
+        let rotated: Value = serde_json::from_str(include_str!(
             "../../../../tests/fixtures/hardware-session-rotated-v1.json"
         ))
         .unwrap();
         let later = now + 366 * 24 * 60 * 60 * 1000;
         verifier
-            .verify_key_manifest(&bytes(&rotation["body"]["keys"]), later)
+            .verify_key_manifest(&bytes(&rotated["document"]["keys"]), later)
             .unwrap();
         assert!(current.require_current_keys().is_err());
-        let approvals = verifier
-            .verify_evidence_archive(&bytes(&bundle), later)
+        let summary = verifier
+            .verify_evidence_archive(&bytes(&evidence), later)
             .unwrap();
-        assert_eq!(approvals["body_sha256"], bundle["body_sha256"]);
-        assert_eq!(
-            approvals["evidence"]["approvals"],
-            bundle["body"]["approvals"]
-        );
+        assert_eq!(summary["evidence_sha256"], current.evidence_sha256());
+        assert_eq!(summary["document"], evidence["document"]);
         let boot = verifier
-            .verify_boot_archive(&bytes(&archive), &bytes(&bundle), later)
+            .verify_boot_archive(&bytes(&archive), &bytes(&evidence), later)
             .unwrap();
         assert!(boot.hardware().validity().not_after_unix_ms < later);
         assert!(Arc::ptr_eq(verifier.current().unwrap(), &current));
         assert!(current.require_current_keys().is_err());
-        assert!(verifier.refresh(&bytes(&bundle), later).is_err());
+        assert!(verifier.refresh(&bytes(&evidence), later).is_err());
         assert!(
             verifier
                 .verify_boot_archive(
                     &bytes(&archive),
-                    &bytes(&bundle),
+                    &bytes(&evidence),
                     boot.integrated_time_unix_ms() - 1
                 )
                 .is_err()
@@ -95,9 +92,9 @@ mod tests {
 
     #[test]
     fn history_rejects_substituted_dependencies_signatures_times_and_hardware() {
-        let (verifier, archive, bundle, now) = fixture();
+        let (verifier, archive, evidence, now) = fixture();
         verifier
-            .verify_boot_archive(&bytes(&archive), &bytes(&bundle), now)
+            .verify_boot_archive(&bytes(&archive), &bytes(&evidence), now)
             .unwrap();
         for (pointer, replacement) in [
             ("/document/evidence_sha256", json!("0".repeat(64))),
@@ -119,14 +116,14 @@ mod tests {
             *changed.pointer_mut(pointer).unwrap() = replacement;
             assert!(
                 verifier
-                    .verify_boot_archive(&bytes(&changed), &bytes(&bundle), now)
+                    .verify_boot_archive(&bytes(&changed), &bytes(&evidence), now)
                     .is_err(),
                 "{pointer}"
             );
             assert!(verifier.current().is_none());
         }
-        let mut changed = bundle.clone();
-        changed["body"]["approvals"]["document"]["gateways"] = json!([]);
+        let mut changed = evidence.clone();
+        changed["document"]["gateways"] = json!([]);
         assert!(
             verifier
                 .verify_boot_archive(&bytes(&archive), &bytes(&changed), now)
@@ -136,7 +133,7 @@ mod tests {
         extra["current"] = json!(true);
         assert!(
             verifier
-                .verify_boot_archive(&bytes(&extra), &bytes(&bundle), now)
+                .verify_boot_archive(&bytes(&extra), &bytes(&evidence), now)
                 .is_err()
         );
         for malformed in [
@@ -146,7 +143,7 @@ mod tests {
         ] {
             assert!(
                 verifier
-                    .verify_boot_archive(malformed, &bytes(&bundle), now)
+                    .verify_boot_archive(malformed, &bytes(&evidence), now)
                     .is_err()
             );
         }
@@ -155,8 +152,8 @@ mod tests {
 }
 
 impl Verifier {
-    /// Verify archived approval and build evidence without installing it as current trust.
-    /// Collateral is authenticated here; boot-specific historical validity is checked by
+    /// Verify archived evidence without installing it as current trust. Collateral is
+    /// authenticated here; boot-specific historical validity is checked by
     /// `verify_boot_archive`. The returned summary cannot establish a live connection.
     ///
     /// # Errors
@@ -166,23 +163,22 @@ impl Verifier {
         evidence: &[u8],
         now_unix_ms: i64,
     ) -> Result<Value, Error> {
-        let snapshot = self.historical_verifier()?.refresh(evidence, now_unix_ms)?;
-        Ok(serde_json::json!({
-            "body_sha256": snapshot.body_sha256(),
-            "evidence": snapshot.summary()
-        }))
+        Ok(self
+            .historical_verifier()?
+            .refresh(evidence, now_unix_ms)?
+            .summary())
     }
 
     fn historical_verifier(&self) -> Result<Self, Error> {
         Ok(Self {
-            approvals: self.approvals.historical_authority()?,
+            authority: self.authority.historical_authority()?,
             current: None,
             revocations: Arc::default(),
         })
     }
 
     /// Appraise an archived boot at its authenticated log-inclusion time using the exact
-    /// referenced evidence bundle. This proves historical evidence, not current permission
+    /// evidence it names. This proves historical evidence, not current permission
     /// or that any particular HTTPS connection reached the node.
     ///
     /// # Errors
@@ -215,7 +211,7 @@ impl Verifier {
             .ok_or_else(|| super::invalid("invalid boot archive log time"))?;
         let snapshot = self.historical_verifier()?.refresh(evidence, at)?;
         if archive.document.schema != super::boot::BOOT_PUBLICATION_SCHEMA
-            || snapshot.body_sha256() != archive.document.evidence_sha256
+            || snapshot.evidence_sha256() != archive.document.evidence_sha256
         {
             return Err(super::invalid("boot archive evidence identity differs"));
         }

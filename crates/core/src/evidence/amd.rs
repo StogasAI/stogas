@@ -37,8 +37,8 @@ pub(in crate::evidence) struct Revocations {
 }
 
 impl Revocations {
-    pub(in crate::evidence) fn observe(&self, body: &Value, now: i64) -> Result<(), Error> {
-        let Some(rows) = body.get("vendor_collateral").and_then(Value::as_array) else {
+    pub(in crate::evidence) fn observe(&self, document: &Value, now: i64) -> Result<(), Error> {
+        let Some(rows) = document.get("vendor_collateral").and_then(Value::as_array) else {
             return Ok(());
         };
         if rows.len() > crate::MAX_VENDOR_COLLATERAL {
@@ -350,27 +350,26 @@ impl Store {
     }
 
     pub(in crate::evidence) fn verify(
-        rows: &[BTreeMap<String, Value>],
+        rows: &[crate::AmdCollateral],
         prior: Option<&Self>,
         revocations: Arc<Revocations>,
     ) -> Result<Self, Error> {
         if rows.len() > crate::MAX_VENDOR_COLLATERAL {
             return Err(Error::TooLarge);
         }
-        let expanded = crate::expand_bundle_vendor_collateral(rows).map_err(collateral_error)?;
         let (common, vceks) =
-            crate::parse_amd_collateral_entries(&expanded).map_err(collateral_error)?;
+            crate::parse_amd_collateral_entries(rows).map_err(collateral_error)?;
         let mut used = BTreeSet::new();
         let mut platforms = BTreeMap::new();
         for (id, vek) in vceks {
-            let get = |kind: &str| {
+            let get = |kind| {
                 common
-                    .get(&(vek.ca_product_name.clone(), kind.into()))
+                    .get(&(vek.ca_product_name.clone(), kind))
                     .ok_or(Error::MissingCollateral)
             };
-            let ark = get("ark")?;
-            let ask = get("ask")?;
-            let crl = get("crl")?;
+            let ark = get(crate::AmdCollateralType::Ark)?;
+            let ask = get(crate::AmdCollateralType::Ask)?;
+            let crl = get(crate::AmdCollateralType::Crl)?;
             used.extend([&ark.sha256, &ask.sha256, &crl.sha256]);
             // CRL freshness and revocation are checked independently on every use.
             let digest = format!("{}{}{}", ark.sha256, ask.sha256, vek.sha256);
@@ -480,11 +479,7 @@ fn row_der(row: &Value) -> Result<Vec<u8>, Error> {
     let encoded = row["der_base64url"]
         .as_str()
         .ok_or_else(|| collateral_error("missing DER"))?;
-    let der = URL_SAFE_NO_PAD.decode(encoded).map_err(collateral_error)?;
-    if row["sha256"] != hex::encode(Sha256::digest(&der)) {
-        return Err(collateral_error("DER digest differs"));
-    }
-    Ok(der)
+    URL_SAFE_NO_PAD.decode(encoded).map_err(collateral_error)
 }
 
 fn serial_bytes(serial: &[u8]) -> &[u8] {

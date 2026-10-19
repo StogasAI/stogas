@@ -184,7 +184,7 @@ pub fn public_key_from_spki(der: &[u8]) -> Result<&[u8; PUBLIC_KEY_BYTES], Error
 
 /// A Rekor compatibility key for a publisher whose signing key cannot be exported.
 ///
-/// It grants no Stogas approval authority. Bind its public key to the composite key
+/// It grants no Stogas signing authority. Bind its public key to the composite key
 /// in authenticated metadata; document verification must require both proofs.
 pub struct RekorSubmissionKey(ed25519_dalek::SigningKey);
 

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 use stogas_core::{
-    approvals::RootKey,
+    authority::RootKey,
     evidence::{self, Snapshot},
 };
 use wasm_bindgen::prelude::*;
@@ -13,7 +13,7 @@ use wasm_bindgen::prelude::*;
 /// Rejects environments absent from this build or failed output conversion.
 #[wasm_bindgen]
 pub fn transport_configuration(environment: &str) -> Result<JsValue, JsError> {
-    let environment: stogas_core::approvals::Environment =
+    let environment: stogas_core::authority::Environment =
         serde_json::from_value(json!(environment))
             .map_err(|_| JsError::new("unsupported verification environment"))?;
     super::to_js_value(&json!({
@@ -24,7 +24,7 @@ pub fn transport_configuration(environment: &str) -> Result<JsValue, JsError> {
     }))
 }
 
-/// Stateful offline verifier. The trust seed comes from local configuration, never the bundle.
+/// Stateful offline verifier. The trust seed comes from local configuration, never the evidence.
 #[wasm_bindgen(js_name = EvidenceVerifier)]
 pub struct EvidenceVerifier {
     core: evidence::Verifier,
@@ -38,7 +38,7 @@ pub struct EvidenceSnapshot {
 
 #[wasm_bindgen(js_class = EvidenceVerifier)]
 impl EvidenceVerifier {
-    /// Inspect immutable approval history without changing current trust.
+    /// Inspect archived evidence without changing current trust.
     ///
     /// # Errors
     /// Rejects incomplete, altered or unauthenticated evidence.
@@ -50,7 +50,7 @@ impl EvidenceVerifier {
         Ok(super::to_js_value(&summary)?)
     }
 
-    /// Verify immutable boot history without changing current approvals.
+    /// Verify immutable boot history without changing current trust.
     ///
     /// # Errors
     /// Rejects altered history or evidence invalid at the authenticated log-inclusion time.
@@ -100,12 +100,12 @@ impl EvidenceVerifier {
     /// Rejects an invalid candidate. Authenticated revocations still constrain retained snapshots.
     pub fn refresh(
         &mut self,
-        bundle: &[u8],
+        evidence: &[u8],
         observer: Option<js_sys::Function>,
     ) -> Result<EvidenceSnapshot, JsValue> {
         let now = super::wall_clock_ms()?;
         self.core
-            .refresh_observed(bundle, now, move |check| {
+            .refresh_observed(evidence, now, move |check| {
                 if let Some(observer) = &observer
                     && let Ok(value) = super::to_js_value(&check)
                 {
@@ -120,10 +120,10 @@ impl EvidenceVerifier {
 
 #[wasm_bindgen(js_class = EvidenceSnapshot)]
 impl EvidenceSnapshot {
-    /// Digest of the complete verified bundle, for immutable archive references.
+    /// SHA-256 of the verified evidence document, for immutable archive references.
     #[must_use]
-    pub fn body_sha256(&self) -> String {
-        self.core.body_sha256().to_owned()
+    pub fn evidence_sha256(&self) -> String {
+        self.core.evidence_sha256().to_owned()
     }
 
     /// # Errors
@@ -139,7 +139,7 @@ impl EvidenceSnapshot {
             .require_current_keys()
             .map_err(|error| verification_error(&error))?;
         self.core
-            .approvals()
+            .evidence()
             .valid_until(super::wall_clock_ms()?)
             .map_err(|error| verification_error(&evidence::Error::from(error)))?;
         Ok(())
@@ -173,6 +173,18 @@ impl EvidenceVerifier {
             .verify_key_manifest(bytes, super::wall_clock_ms()?)
             .map_err(|error| verification_error(&error))?;
         Ok(super::to_js_value(&keys)?)
+    }
+
+    /// Check an unsigned evidence document as a refresh would, before anyone signs it. The
+    /// result has no signature and never becomes current evidence.
+    ///
+    /// # Errors
+    /// Rejects everything a refresh rejects, except the missing signature.
+    pub fn check_unsigned(&self, document: &[u8]) -> Result<EvidenceSnapshot, JsValue> {
+        self.core
+            .check_unsigned(document, super::wall_clock_ms()?)
+            .map(|core| EvidenceSnapshot { core })
+            .map_err(|error| verification_error(&error))
     }
 }
 

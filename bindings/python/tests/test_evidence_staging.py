@@ -30,13 +30,13 @@ class StagingEvidenceTests(unittest.TestCase):
             "signature": registration["inclusion"]["signature"],
             "inclusion": registration["inclusion"]["inclusion"],
         }
-        bundle = json.dumps(fixture["bundle"]).encode()
-        summary = json.loads(verifier.verify_evidence_archive(bundle))
-        self.assertEqual(summary["body_sha256"], archive["document"]["evidence_sha256"])
-        verified = verifier.verify_boot_archive(json.dumps(archive).encode(), bundle)
+        evidence = json.dumps(fixture["evidence"]).encode()
+        summary = json.loads(verifier.verify_evidence_archive(evidence))
+        self.assertEqual(summary["evidence_sha256"], archive["document"]["evidence_sha256"])
+        verified = verifier.verify_boot_archive(json.dumps(archive).encode(), evidence)
         archive["document"]["evidence_sha256"] = "0" * 64
         with self.assertRaises(VerificationError):
-            verifier.verify_boot_archive(json.dumps(archive).encode(), bundle)
+            verifier.verify_boot_archive(json.dumps(archive).encode(), evidence)
         del verifier
         gc.collect()
         self.assertEqual(json.loads(verified.summary())["boot_sha256"], hashlib.sha256(boot_bytes).hexdigest())
@@ -64,7 +64,7 @@ class StagingEvidenceTests(unittest.TestCase):
             root_key_id=fixture["root"]["key_id"],
             root_public_key=fixture["root"]["public_key"],
         )
-        snapshot = verifier.refresh(json.dumps(fixture["bundle"]).encode())
+        snapshot = verifier.refresh(json.dumps(fixture["evidence"]).encode())
         expected = json.loads(snapshot.summary())
         self.assertEqual(len(expected["gateways"]), 1)
         self.assertEqual(len(expected["catalogs"]), 2)

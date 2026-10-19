@@ -49,7 +49,7 @@ impl Store {
     }
 
     pub(super) fn verify(
-        rows: &[std::collections::BTreeMap<String, serde_json::Value>],
+        rows: &[crate::AmdCollateral],
         _prior: Option<&Self>,
         _revocations: std::sync::Arc<Revocations>,
     ) -> Result<Self, Error> {

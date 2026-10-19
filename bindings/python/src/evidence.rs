@@ -3,7 +3,7 @@
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyBytes};
 use std::sync::Arc;
 use stogas_core::{
-    approvals::{Environment, RootKey},
+    authority::{Environment, RootKey},
     evidence::{self, boot::VerifiedBoot},
     receipt,
 };
@@ -55,16 +55,16 @@ impl EvidenceVerifier {
     fn refresh(
         &mut self,
         py: Python<'_>,
-        bundle: &Bound<'_, PyBytes>,
+        evidence: &Bound<'_, PyBytes>,
     ) -> PyResult<EvidenceSnapshot> {
-        let bytes = bundle.as_bytes();
+        let bytes = evidence.as_bytes();
         let now = super::wall_clock_ms()?;
         py.detach(|| self.core.refresh(bytes, now))
             .map(|core| EvidenceSnapshot { core })
             .map_err(|error| evidence_error(py, &error))
     }
 
-    /// Authenticate archived approvals without installing them as current permission.
+    /// Authenticate archived evidence without installing it as current permission.
     fn verify_evidence_archive<'py>(
         &self,
         py: Python<'py>,
@@ -105,7 +105,7 @@ impl EvidenceSnapshot {
             .require_current_keys()
             .map_err(|error| evidence_error(py, &error))?;
         self.core
-            .approvals()
+            .evidence()
             .valid_until(super::wall_clock_ms()?)
             .map_err(|error| evidence_error(py, &evidence::Error::from(error)))?;
         Ok(())

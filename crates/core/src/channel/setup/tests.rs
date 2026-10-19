@@ -104,7 +104,7 @@ fn incompatible_setup_is_rejected_even_with_genuine_hardware_evidence() {
     )
     .unwrap();
     let snapshot = verifier
-        .refresh(&serde_json::to_vec(&fixture["bundle"]).unwrap(), now)
+        .refresh(&serde_json::to_vec(&fixture["evidence"]).unwrap(), now)
         .unwrap();
     // The immutable v1 capture has genuine hardware evidence, but cannot
     // authorize the current key schedule. Native certificate verification is unchanged.
@@ -161,7 +161,7 @@ fn go_setup_matches_rust_exporter_and_session_keys() {
             );
             checks.set(checks.get() + 1);
             // This fixture intentionally tests framing and key agreement only.
-            // Production supplies hardware/boot/current-approval verification here.
+            // Production supplies hardware, boot and current evidence verification here.
             Ok(())
         })
         .unwrap();

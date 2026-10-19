@@ -2,7 +2,7 @@ use super::*;
 use axum::{Router, body::to_bytes, routing::post};
 use sha2::{Digest as _, Sha256};
 use std::time::Duration;
-use stogas_core::{approvals::Environment, channel::setup::PendingSetup};
+use stogas_core::{authority::Environment, channel::setup::PendingSetup};
 
 mod clients;
 
@@ -119,12 +119,12 @@ pub async fn hardware_session() -> (
         "../../../../tests/fixtures/hardware-session-v1.json"
     ))
     .unwrap();
-    let bundle = serde_json::to_vec(&fixture["bundle"]).unwrap();
+    let evidence = serde_json::to_vec(&fixture["evidence"]).unwrap();
     let origin = Server::new(Router::new().route(
         "/evidence",
         get(move || {
-            let bundle = bundle.clone();
-            async move { bundle }
+            let evidence = evidence.clone();
+            async move { evidence }
         }),
     ))
     .await;

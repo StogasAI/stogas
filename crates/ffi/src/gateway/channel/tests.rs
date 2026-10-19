@@ -2,7 +2,7 @@ use super::*;
 use crate::gateway::stogas_buffer_free;
 use sha2::{Digest as _, Sha256};
 use stogas_core::{
-    approvals::Environment,
+    authority::Environment,
     channel::{ClientSession, setup::PendingSetup},
 };
 

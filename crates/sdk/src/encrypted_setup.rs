@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 use stogas_core::{
-    approvals::Environment,
+    authority::Environment,
     channel::{
         ClientSession,
         setup::{MAX_SERVER_SETUP_BYTES, PendingSetup, SetupError},

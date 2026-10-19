@@ -10,9 +10,9 @@ export interface StogasTransportOptions {
 	onMetadata?: (metadata: unknown) => void;
 }
 
-export interface StogasBundleSnapshot {
-	bundle: unknown | null;
-	bundleURL: string | null;
+export interface StogasEvidenceSnapshot {
+	evidence: unknown | null;
+	evidenceURL: string | null;
 	error: string | null;
 	fetchedAtUnixMs: number | null;
 	status: 'idle' | 'refreshing' | 'ready' | 'error';
@@ -21,19 +21,18 @@ export interface StogasBundleSnapshot {
 	/** Local verifier work across attempted origins, excluding progress observers. May reuse authenticated artifacts. */
 	verificationDurationMs: number | null;
 	verificationChecks: StogasVerificationCheck[];
-	/** In-progress candidate checks; never a substitute for the accepted bundle. */
+	/** In-progress candidate checks; never a substitute for the accepted evidence. */
 	verificationProgress: StogasVerificationCheck[] | null;
 }
 
-/** A completed local check; only an accepted snapshot establishes complete bundle trust. */
+/** A completed local check; only an accepted snapshot establishes complete evidence trust. */
 export interface StogasVerificationCheck {
 	step:
 		| 'decode'
 		| 'sigstore'
 		| 'key_manifest'
 		| 'vendor_revocations'
-		| 'envelope'
-		| 'approval_manifest'
+		| 'signature'
 		| 'gateway_release'
 		| 'catalog_release'
 		| 'hardware_policy'
@@ -66,12 +65,12 @@ export declare class StogasTransport {
 	constructor(options?: StogasTransportOptions);
 	static create(options?: StogasTransportOptions): Promise<StogasTransport>;
 	readonly baseURL: string;
-	readonly bundleSnapshot: StogasBundleSnapshot;
-	readonly bundleURLs: string[];
+	readonly evidenceSnapshot: StogasEvidenceSnapshot;
+	readonly evidenceURLs: string[];
 	readonly fetch: (input: RequestInfo | URL, init?: StogasRequestInit) => Promise<Response>;
 	openAIOptions(apiKey: string): StogasOpenAIOptions;
-	refreshBundle(): Promise<unknown>;
-	subscribe(listener: (snapshot: StogasBundleSnapshot) => void): () => void;
+	refreshEvidence(): Promise<unknown>;
+	subscribe(listener: (snapshot: StogasEvidenceSnapshot) => void): () => void;
 	close(): Promise<void>;
 }
 

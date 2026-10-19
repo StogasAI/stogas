@@ -68,11 +68,11 @@ test('browser boot history remains offline and separate from current evidence', 
 			const previousNow = Date.now;
 			Date.now = () => fixture.verified_at_ms + 366 * 24 * 60 * 60 * 1000;
 			try {
-				const verified = core.verify_boot_archive(encode(archive), encode(fixture.bundle));
+				const verified = core.verify_boot_archive(encode(archive), encode(fixture.evidence));
 				archive.document.evidence_sha256 = '0'.repeat(64);
 				let rejected = false;
 				try {
-					core.verify_boot_archive(encode(archive), encode(fixture.bundle));
+					core.verify_boot_archive(encode(archive), encode(fixture.evidence));
 				} catch {
 					rejected = true;
 				}
@@ -117,7 +117,7 @@ test('encrypted setup cannot release a browser session without its own verified 
 		let pending: InstanceType<typeof api.EncryptedSetup> | undefined;
 		let second: InstanceType<typeof api.EncryptedSetup> | undefined;
 		try {
-			snapshot = verifier.refresh(new TextEncoder().encode(JSON.stringify(fixture.bundle)));
+			snapshot = verifier.refresh(new TextEncoder().encode(JSON.stringify(fixture.evidence)));
 			pending = new api.EncryptedSetup('staging');
 			second = new api.EncryptedSetup('staging');
 			const hello = pending.hello;

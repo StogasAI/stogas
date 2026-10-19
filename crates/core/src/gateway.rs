@@ -3,11 +3,11 @@
 //! Only the gateway's native build enables this module.
 
 use crate::{
-    approvals::Environment,
     attestation::{
         BatchProof, Binding, MAX_BATCH_LEAVES,
         evidence::{REPORT_BYTES, SessionEvidence},
     },
+    authority::Environment,
     evidence::boot::{self, BootRecord, BootReportData, BootRequestPurpose},
     kem::{PrivateKey, XWing},
     receipt::{self, Receipt},

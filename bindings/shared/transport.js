@@ -45,8 +45,8 @@ export function createTransportClass({
 		#closing;
 		#refresh;
 		#snapshot = Object.freeze({
-			bundle: null,
-			bundleURL: null,
+			evidence: null,
+			evidenceURL: null,
 			error: null,
 			fetchedAtUnixMs: null,
 			fetchDurationMs: null,
@@ -100,7 +100,7 @@ export function createTransportClass({
 		static async create(options = {}) {
 			const transport = new this(options);
 			try {
-				await transport.refreshBundle();
+				await transport.refreshEvidence();
 				return transport;
 			} catch (error) {
 				await transport.close();
@@ -111,10 +111,10 @@ export function createTransportClass({
 		get baseURL() {
 			return this.#baseURL;
 		}
-		get bundleURLs() {
+		get evidenceURLs() {
 			return [...this.#origins];
 		}
-		get bundleSnapshot() {
+		get evidenceSnapshot() {
 			return structuredClone(this.#snapshot);
 		}
 
@@ -134,14 +134,14 @@ export function createTransportClass({
 			if (typeof listener !== 'function') throw new TypeError('listener must be a function');
 			this.#listeners.add(listener);
 			try {
-				listener(this.bundleSnapshot);
+				listener(this.evidenceSnapshot);
 			} catch {
 				this.#listeners.delete(listener);
 			}
 			return () => this.#listeners.delete(listener);
 		}
 
-		async refreshBundle() {
+		async refreshEvidence() {
 			this.#assertOpen();
 			if (this.#refresh) return this.#refresh;
 			this.#publish({
@@ -210,7 +210,7 @@ export function createTransportClass({
 			this.#snapshot = Object.freeze(snapshot);
 			for (const listener of this.#listeners) {
 				try {
-					listener(this.bundleSnapshot);
+					listener(this.evidenceSnapshot);
 				} catch {
 					this.#listeners.delete(listener);
 				}

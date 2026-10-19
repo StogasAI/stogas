@@ -4,7 +4,7 @@ use super::*;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::Value;
 use stogas_core::{
-    approvals::Environment,
+    authority::Environment,
     channel::{self, Kind},
     evidence,
 };
@@ -24,7 +24,7 @@ fn appraisal() -> (Arc<Snapshot>, Arc<VerifiedSession>) {
     .unwrap();
     let now = fixture["verified_at_ms"].as_i64().unwrap();
     let snapshot = verifier
-        .refresh(&serde_json::to_vec(&fixture["bundle"]).unwrap(), now)
+        .refresh(&serde_json::to_vec(&fixture["evidence"]).unwrap(), now)
         .unwrap();
     let appraisal = snapshot
         .verify_native_certificate(

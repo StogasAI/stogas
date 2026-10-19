@@ -52,8 +52,8 @@ impl KeyState {
         }
         if keys.generation != learned.keys.document.generation {
             let current = &learned.keys.document;
-            // A root renewal with unchanged keys may arrive before its complete
-            // approval package. Keep existing work eligible until its original
+            // A root renewal with unchanged keys may arrive before complete evidence
+            // that carries it. Keep existing work eligible until its original
             // deadline; never accept the older document as a new candidate.
             if keys.generation > current.generation
                 || !keys.active_key.same_signer(&current.active_key)
@@ -90,10 +90,10 @@ mod tests {
         .unwrap();
         // Key state compares generations, digests and deadlines, so a production build can use
         // the staging sample under the production environment name.
-        let mut document = session["bundle"]["body"]["keys"]["document"].clone();
+        let mut document = session["evidence"]["document"]["keys"]["document"].clone();
         document["environment"] = "prod".into();
         VerifiedKeys {
-            digest: crate::approvals::payload_sha256(&document).unwrap(),
+            digest: crate::authority::payload_sha256(&document).unwrap(),
             document: serde_json::from_value(document).unwrap(),
         }
     }

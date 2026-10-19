@@ -70,12 +70,12 @@ fn live(environment: Environment) {
         );
         thread::scope(|scope| {
             for _ in 0..3 {
-                scope.spawn(|| transport.refresh_bundle().unwrap());
+                scope.spawn(|| transport.refresh_evidence().unwrap());
             }
         });
         transport.close();
         transport.close();
-        assert!(transport.refresh_bundle().is_err());
+        assert!(transport.refresh_evidence().is_err());
     }
     println!("Installed Rust SDK reached the gateway through attested TLS and E2EE");
 }

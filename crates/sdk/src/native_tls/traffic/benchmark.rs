@@ -1,6 +1,6 @@
 //! Opt-in warm-path comparison with the Go channel benchmark peer.
 //! The peer's local CA and synthetic evidence are test fixtures; these timings
-//! exclude hardware attestation, approval verification, JSON parsing and inference.
+//! exclude hardware attestation, evidence verification, JSON parsing and inference.
 
 use super::*;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -22,7 +22,7 @@ use std::{
     time::Instant as WallClock,
 };
 use stogas_core::{
-    approvals::Environment,
+    authority::Environment,
     channel::{ClientSession, Kind, MAX_RECORD_PLAINTEXT, ResponseDecoder, setup::PendingSetup},
 };
 use tokio::{net::TcpStream, task::JoinHandle};

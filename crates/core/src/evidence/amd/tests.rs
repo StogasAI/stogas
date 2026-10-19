@@ -13,7 +13,7 @@ fn der(value: &Value, field: &str) -> Vec<u8> {
 }
 
 fn row(der: &[u8], kind: &str) -> Value {
-    serde_json::json!({"collateral_type":kind,"der_base64url":URL_SAFE_NO_PAD.encode(der),"sha256":hex::encode(Sha256::digest(der))})
+    serde_json::json!({"collateral_type":kind,"der_base64url":URL_SAFE_NO_PAD.encode(der)})
 }
 
 fn trusted_fixture() -> (Value, IssuerId, Revocations) {
@@ -40,7 +40,7 @@ fn forged_root_metadata_cannot_poison_later_authentic_crl_delivery() {
         "../../../../../tests/fixtures/hardware-session-v1.json"
     ))
     .unwrap();
-    let rows = fixture["bundle"]["body"]["vendor_collateral"]
+    let rows = fixture["evidence"]["document"]["vendor_collateral"]
         .as_array()
         .unwrap();
     let original = rows
@@ -178,7 +178,7 @@ fn forged_future_scoped_or_untrusted_crls_cannot_advance_state() {
 fn malformed_neighbor_does_not_discard_authentic_revocation() {
     let (value, id, state) = trusted_fixture();
     let now = value["now"].as_i64().unwrap();
-    let invalid = serde_json::json!({"collateral_type":"crl","der_base64url":"bad","sha256":"bad"});
+    let invalid = serde_json::json!({"collateral_type":"crl","der_base64url":"bad"});
     for rows in [
         vec![invalid.clone(), row(&der(&value, "revoked"), "crl")],
         vec![row(&der(&value, "revoked"), "crl"), invalid],
@@ -243,8 +243,8 @@ fn signed_crl_extensions_and_entries_enforce_the_supported_scope() {
 
 #[cfg(feature = "staging")]
 #[test]
-fn incomplete_bundle_cannot_hide_authenticated_negative_appraisal() {
-    use crate::{approvals::Environment, evidence::Verifier};
+fn incomplete_evidence_cannot_hide_authenticated_negative_appraisal() {
+    use crate::{authority::Environment, evidence::Verifier};
     let (value, id, state) = trusted_fixture();
     let now = value["now"].as_i64().unwrap();
     let roots: Value = serde_json::from_str(include_str!(
@@ -257,11 +257,11 @@ fn incomplete_bundle_cannot_hide_authenticated_negative_appraisal() {
     )
     .unwrap();
     verifier.revocations = Arc::new(state);
-    let body =
-        serde_json::json!({"body":{"vendor_collateral":[row(&der(&value,"revoked"),"crl")]}});
+    let evidence =
+        serde_json::json!({"document":{"vendor_collateral":[row(&der(&value,"revoked"),"crl")]}});
     assert!(
         verifier
-            .refresh(&serde_json::to_vec(&body).unwrap(), now)
+            .refresh(&serde_json::to_vec(&evidence).unwrap(), now)
             .is_err()
     );
     assert!(verifier.current().is_none());

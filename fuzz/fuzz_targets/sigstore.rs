@@ -51,12 +51,7 @@ fuzz_target!(|data: &[u8]| {
     };
     let trust = TRUST.as_ref().unwrap();
     let _ = verify_github_attestation(trust, &candidate, &subjects, &policy, NOW_UNIX_MS);
-    let _ = stogas_sigstore::verify_rekor_document_inclusion(
-        trust,
-        &candidate,
-        data,
-        NOW_UNIX_MS,
-    );
+    let _ = stogas_sigstore::verify_rekor_document_inclusion(trust, &candidate, data, NOW_UNIX_MS);
 });
 
 fn mutate_fixture_or_raw(fixture: &[u8], data: &[u8]) -> Vec<u8> {

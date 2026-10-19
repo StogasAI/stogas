@@ -9,7 +9,7 @@ fn fixture() -> (super::super::Verifier, Value, Vec<u8>, [u8; 32], i64) {
     ))
     .unwrap();
     let verifier = super::super::Verifier::new(
-        crate::approvals::Environment::Staging,
+        crate::authority::Environment::Staging,
         serde_json::from_value(fixture["root"].clone()).unwrap(),
     )
     .unwrap();
@@ -23,7 +23,7 @@ fn fixture() -> (super::super::Verifier, Value, Vec<u8>, [u8; 32], i64) {
     let now = fixture["verified_at_ms"].as_i64().unwrap();
     (
         verifier,
-        fixture["bundle"].clone(),
+        fixture["evidence"].clone(),
         certificate,
         challenge,
         now,
@@ -32,14 +32,14 @@ fn fixture() -> (super::super::Verifier, Value, Vec<u8>, [u8; 32], i64) {
 
 #[test]
 fn genuine_registration_binds_csr_possession_to_the_quoted_key() {
-    let (mut verifier, bundle, _, _, _) = fixture();
+    let (mut verifier, evidence, _, _, _) = fixture();
     let registration: Value = serde_json::from_str(include_str!(
         "../../../../../tests/fixtures/hardware-registration-v1.json"
     ))
     .unwrap();
     let now = registration["verified_at_ms"].as_i64().unwrap();
     let snapshot = verifier
-        .refresh(&serde_json::to_vec(&bundle).unwrap(), now)
+        .refresh(&serde_json::to_vec(&evidence).unwrap(), now)
         .unwrap();
     let document = crate::canonical_json(&registration["boot"]).unwrap();
     let challenge = hex::decode(
@@ -81,7 +81,7 @@ fn genuine_registration_binds_csr_possession_to_the_quoted_key() {
 
 #[test]
 fn registered_facts_recheck_current_policy_collateral_and_release_membership() {
-    let (mut verifier, bundle, _, _, now) = fixture();
+    let (mut verifier, evidence, _, _, now) = fixture();
     let registration: Value = serde_json::from_str(include_str!(
         "../../../../../tests/fixtures/hardware-registration-v1.json"
     ))
@@ -89,7 +89,7 @@ fn registered_facts_recheck_current_policy_collateral_and_release_membership() {
     let facts: super::super::boot::RegisteredBootFacts =
         serde_json::from_value(registration["policy_facts"].clone()).unwrap();
     let snapshot = verifier
-        .refresh(&serde_json::to_vec(&bundle).unwrap(), now)
+        .refresh(&serde_json::to_vec(&evidence).unwrap(), now)
         .unwrap();
     snapshot.appraise_registered_boot(&facts, now).unwrap();
     let validity = snapshot
@@ -103,7 +103,7 @@ fn registered_facts_recheck_current_policy_collateral_and_release_membership() {
     unknown.gateway_release_id = "ff".repeat(32);
     assert!(matches!(
         snapshot.appraise_registered_boot(&unknown, now),
-        Err(Error::Approval(crate::approvals::Error::NotApproved(
+        Err(Error::Authority(crate::authority::Error::NotApproved(
             "gateway"
         )))
     ));
@@ -115,23 +115,23 @@ fn registered_facts_recheck_current_policy_collateral_and_release_membership() {
     drop(verifier);
     let mut snapshot = std::sync::Arc::try_unwrap(snapshot)
         .unwrap_or_else(|_| panic!("exclusive fixture snapshot"));
-    let original = snapshot.approvals.clone();
-    snapshot.approvals = original.clone().edited(|manifest| {
-        manifest.hardware_policy.policies[0].minimum_tcb.snp = 255;
+    let original = snapshot.evidence.clone();
+    snapshot.evidence = original.clone().edited(|document| {
+        document.hardware_policies[0].minimum_tcb.snp = 255;
     });
     assert!(snapshot.appraise_registered_boot(&facts, now).is_err());
-    snapshot.approvals = original.clone().edited(|manifest| {
-        manifest.hardware_policy.policies[0].required_current_mitigation_mask =
+    snapshot.evidence = original.clone().edited(|document| {
+        document.hardware_policies[0].required_current_mitigation_mask =
             "0xffffffffffffffff".into();
     });
     assert!(snapshot.appraise_registered_boot(&facts, now).is_err());
-    snapshot.approvals = original;
+    snapshot.evidence = original;
     snapshot.appraise_registered_boot(&facts, now).unwrap();
 }
 
 #[test]
 fn hardware_alternatives_apply_to_quotes_registered_facts_and_fresh_sessions() {
-    let (mut verifier, bundle, certificate, challenge, now) = fixture();
+    let (mut verifier, evidence, certificate, challenge, now) = fixture();
     let registration: Value = serde_json::from_str(include_str!(
         "../../../../../tests/fixtures/hardware-registration-v1.json"
     ))
@@ -141,25 +141,25 @@ fn hardware_alternatives_apply_to_quotes_registered_facts_and_fresh_sessions() {
     let document = crate::canonical_json(&registration["boot"]).unwrap();
     let digest = sha2::Sha256::digest(document.as_bytes()).into();
     let snapshot = verifier
-        .refresh(&serde_json::to_vec(&bundle).unwrap(), now)
+        .refresh(&serde_json::to_vec(&evidence).unwrap(), now)
         .unwrap();
     // Acquisition/signature tests own policy authenticity. Exercise the complete
     // appraisal paths with genuine hardware evidence and validated alternatives.
     drop(verifier);
     let mut snapshot = std::sync::Arc::try_unwrap(snapshot).ok().unwrap();
-    let original = snapshot.approvals.clone();
+    let original = snapshot.evidence.clone();
     let alternatives = |policies: Vec<crate::AmdSevSnpPolicy>| {
-        let approvals = original.clone().edited(|manifest| {
-            manifest.hardware_policy.policies = policies;
+        let evidence = original.clone().edited(|document| {
+            document.hardware_policies = policies;
         });
-        crate::validate_hardware_policy(&approvals.manifest().hardware_policy).unwrap();
-        approvals
+        crate::validate_hardware_policies(&evidence.document().hardware_policies).unwrap();
+        evidence
     };
-    let mut smt_on = original.manifest().hardware_policy.policies[0].clone();
+    let mut smt_on = original.document().hardware_policies[0].clone();
     smt_on.required_platform_info_mask = "0x0000000000000025".into();
-    let mut smt_off = original.manifest().hardware_policy.policies[0].clone();
+    let mut smt_off = original.document().hardware_policies[0].clone();
     smt_off.forbidden_platform_info_mask = "0x0000000000000001".into();
-    snapshot.approvals = alternatives(vec![smt_on.clone(), smt_off.clone()]);
+    snapshot.evidence = alternatives(vec![smt_on.clone(), smt_off.clone()]);
     snapshot
         .verify_registered_boot(document.as_bytes(), &digest, now)
         .unwrap();
@@ -171,7 +171,7 @@ fn hardware_alternatives_apply_to_quotes_registered_facts_and_fresh_sessions() {
     // Retiring the SMT-on alternative immediately rejects that configuration in
     // all three paths. Another chip's matching configuration grants no permission.
     smt_on.chip_ids = vec!["ff".repeat(64)];
-    snapshot.approvals = alternatives(vec![smt_off, smt_on]);
+    snapshot.evidence = alternatives(vec![smt_off, smt_on]);
     assert!(
         snapshot
             .verify_registered_boot(document.as_bytes(), &digest, now)
@@ -188,14 +188,14 @@ fn hardware_alternatives_apply_to_quotes_registered_facts_and_fresh_sessions() {
 #[test]
 fn registered_boot_reappraisal_requires_its_digest_and_an_approved_release() {
     use sha2::{Digest as _, Sha256};
-    let (mut verifier, bundle, _, _, _) = fixture();
+    let (mut verifier, evidence, _, _, _) = fixture();
     let registration: Value = serde_json::from_str(include_str!(
         "../../../../../tests/fixtures/hardware-registration-v1.json"
     ))
     .unwrap();
     let now = registration["verified_at_ms"].as_i64().unwrap();
     let snapshot = verifier
-        .refresh(&serde_json::to_vec(&bundle).unwrap(), now)
+        .refresh(&serde_json::to_vec(&evidence).unwrap(), now)
         .unwrap();
     // The genuine SNP report must still satisfy today's policy, and the registered
     // document cannot change.
@@ -256,9 +256,9 @@ fn registered_boot_reappraisal_requires_its_digest_and_an_approved_release() {
 
 #[test]
 fn genuine_hardware_boot_and_fresh_native_evidence_verify_as_one_guest() {
-    let (mut verifier, bundle, certificate, challenge, now) = fixture();
+    let (mut verifier, evidence, certificate, challenge, now) = fixture();
     let snapshot = verifier
-        .refresh(&serde_json::to_vec(&bundle).unwrap(), now)
+        .refresh(&serde_json::to_vec(&evidence).unwrap(), now)
         .unwrap();
     let peer = snapshot
         .verify_native_certificate(&certificate, challenge, now)
@@ -318,19 +318,18 @@ fn genuine_hardware_boot_and_fresh_native_evidence_verify_as_one_guest() {
 
 #[test]
 fn online_key_rotation_keeps_the_same_hardware_boot_and_release_verifiable() {
-    let (mut verifier, mut bundle, certificate, challenge, now) = fixture();
+    let (mut verifier, evidence, certificate, challenge, now) = fixture();
     let before = verifier
-        .refresh(&serde_json::to_vec(&bundle).unwrap(), now)
+        .refresh(&serde_json::to_vec(&evidence).unwrap(), now)
         .unwrap();
     let original = before
         .verify_native_certificate(&certificate, challenge, now)
         .unwrap();
-    bundle = serde_json::from_str(include_str!(
-        "../../../../../tests/fixtures/hardware-session-rotated-v1.json"
-    ))
-    .unwrap();
     let after = verifier
-        .refresh(&serde_json::to_vec(&bundle).unwrap(), now)
+        .refresh(
+            include_bytes!("../../../../../tests/fixtures/hardware-session-rotated-v1.json"),
+            now,
+        )
         .unwrap();
     assert!(before.require_current_keys().is_err());
     assert!(before.check_session(&original, now).is_err());
@@ -355,24 +354,19 @@ fn online_key_rotation_keeps_the_same_hardware_boot_and_release_verifiable() {
         "../../../../../tests/fixtures/key-omission-v1.json"
     ))
     .unwrap();
-    bundle["body"]["keys"] = pruning["keys"].clone();
-    bundle["body"]["approvals"] = pruning["approvals"].clone();
-    bundle["body_sha256"] =
-        serde_json::json!(crate::approvals::payload_sha256(&bundle["body"]).unwrap());
-    let now = now.max(pruning["verified_at_ms"].as_i64().unwrap());
-    let bytes = serde_json::to_vec(&bundle).unwrap();
+    let bytes = serde_json::to_vec(&pruning["evidence"]).unwrap();
     let pruned = verifier.refresh(&bytes, now).unwrap();
-    assert!(pruned.approvals().keys().retired_keys.is_empty());
+    assert!(pruned.evidence().keys().retired_keys.is_empty());
     // Removing historical public keys does not change the active signer or
     // shorten its deadline. Existing request-owned evidence remains usable.
     after.require_current_keys().unwrap();
     after.check_session(&updated, now).unwrap();
     assert!(matches!(
         pruned.reappraise_session(&updated, now),
-        Err(Error::Approval(crate::approvals::Error::InactiveKey))
+        Err(Error::Authority(crate::authority::Error::InactiveKey))
     ));
 
-    let (mut fresh, historical_bundle, _, _, _) = fixture();
+    let (mut fresh, historical, _, _, _) = fixture();
     let cold = fresh.refresh(&bytes, now).unwrap();
     let parsed = ParsedNativeCertificate::parse(&certificate).unwrap();
     // The verifier accepts the new manifest without knowing fleet membership.
@@ -383,7 +377,7 @@ fn online_key_rotation_keeps_the_same_hardware_boot_and_release_verifiable() {
             parsed.evidence.boot_inclusion,
             now
         ),
-        Err(Error::Approval(crate::approvals::Error::InactiveKey))
+        Err(Error::Authority(crate::authority::Error::InactiveKey))
     ));
     let proof: Value = serde_json::from_slice(parsed.evidence.boot_inclusion).unwrap();
     let archive = serde_json::json!({
@@ -395,7 +389,7 @@ fn online_key_rotation_keeps_the_same_hardware_boot_and_release_verifiable() {
         "signature": proof["signature"],
         "inclusion": proof["inclusion"]
     });
-    let historical_bytes = serde_json::to_vec(&historical_bundle).unwrap();
+    let historical_bytes = serde_json::to_vec(&historical).unwrap();
     let archived = fresh
         .verify_boot_archive(
             &serde_json::to_vec(&archive).unwrap(),
@@ -415,29 +409,23 @@ fn online_key_rotation_keeps_the_same_hardware_boot_and_release_verifiable() {
 fn learned_release_withdrawal_blocks_warm_reappraisal_but_keeps_owned_request_evidence() {
     use crate::signing::SigningKey;
     use serde_json::json;
-    let (mut verifier, mut bundle, certificate, challenge, now) = fixture();
+    let (mut verifier, evidence, certificate, challenge, now) = fixture();
     let original = verifier
-        .refresh(&serde_json::to_vec(&bundle).unwrap(), now)
+        .refresh(&serde_json::to_vec(&evidence).unwrap(), now)
         .unwrap();
     let session = original
         .verify_native_certificate(&certificate, challenge, now)
         .unwrap();
-    let mut approval = bundle["body"]["approvals"]["document"].clone();
-    approval["revision"] = json!(approval["revision"].as_u64().unwrap() + 1);
-    approval["gateways"] = json!([]);
-    bundle["body"]["approvals"] = super::super::tests::logged_approval(&approval);
-    let variants: Value = serde_json::from_str(include_str!(
-        "../../../../../tests/fixtures/logged-approval-variants.json"
-    ))
-    .unwrap();
-    let refresh_time = now.max(variants["verified_at_ms"].as_i64().unwrap());
-    bundle["body_sha256"] = json!(crate::approvals::payload_sha256(&bundle["body"]).unwrap());
+    let mut document = evidence["document"].clone();
+    document["revision"] = json!(document["revision"].as_u64().unwrap() + 1);
+    document["gateways"] = json!([]);
+    let withdrawal = super::super::tests::logged_evidence(&document);
     let current = verifier
-        .refresh(&serde_json::to_vec(&bundle).unwrap(), refresh_time)
+        .refresh(&serde_json::to_vec(&withdrawal).unwrap(), now)
         .unwrap();
     assert!(matches!(
         current.reappraise_session(&session, now),
-        Err(Error::Approval(crate::approvals::Error::NotApproved(
+        Err(Error::Authority(crate::authority::Error::NotApproved(
             "gateway"
         )))
     ));
@@ -448,7 +436,7 @@ fn learned_release_withdrawal_blocks_warm_reappraisal_but_keeps_owned_request_ev
             .is_some()
     );
     assert!(!session.artifacts.boot_document.is_empty());
-    // An approval update must not replace the retained identity of an admitted request.
+    // An evidence update must not replace the retained identity of an admitted request.
     let request = [1; 32];
     let response = [2; 32];
     let metadata = serde_json::json!({});

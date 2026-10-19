@@ -2,7 +2,7 @@
 //! used by Stogas's own services and CLI. Customer packages never enable it.
 use serde::Deserialize;
 use stogas_core::{
-    approvals::{SigstoreFiles, VerifiedSigstore},
+    authority::{SigstoreFiles, VerifiedSigstore},
     secret_release,
 };
 use stogas_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};

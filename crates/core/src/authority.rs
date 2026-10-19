@@ -1,5 +1,9 @@
-//! Offline authorization of current evidence. Delivery and evidence appraisal remain separate.
+//! Offline authorization of current evidence.
+//!
+//! The root-signed key manifest authorizes an online key, and that key signs each evidence
+//! revision. Release, hardware and vendor appraisal remain in `evidence`.
 
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -14,18 +18,17 @@ use stogas_sigstore::TrustedRoot;
 use thiserror::Error;
 
 use crate::{
-    AllowedCatalog, AllowedIgvm, HardwarePolicy, MAX_INPUT_BYTES, STOGAS_SIGNATURE_DOMAIN,
-    StogasSignature, VerifiedCatalogRelease, VerifiedHardwarePolicy, VerifiedRelease,
+    AllowedCatalog, AllowedIgvm, AmdCollateral, AmdSevSnpPolicy, MAX_INPUT_BYTES,
+    STOGAS_SIGNATURE_DOMAIN, StogasSignature, VerifiedCatalogRelease, VerifiedRelease,
     canonical_json, strict_json,
 };
 
 pub const KEY_MANIFEST_SCHEMA: &str = "stogas.keys.v1";
-pub const APPROVAL_MANIFEST_SCHEMA: &str = "stogas.approvals.v1";
+pub const EVIDENCE_SCHEMA: &str = "stogas.evidence.v1";
 const MAX_REVISION: u64 = (1 << 53) - 1;
 
 mod keys;
-pub(crate) use keys::KeyState;
-use keys::VerifiedKeys;
+pub(crate) use keys::{KeyState, VerifiedKeys};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub enum Environment {
@@ -101,7 +104,7 @@ pub struct OnlineKey {
     pub key_id: String,
     /// Canonical standard-base64 composite ML-DSA-65 and Ed25519 `SubjectPublicKeyInfo` DER.
     pub public_key: String,
-    /// Root-authenticated Ed25519 publisher association for Rekor searches, not approval authority.
+    /// Root-authenticated Ed25519 publisher association for Rekor searches, not signing authority.
     pub rekor_public_key: String,
 }
 
@@ -141,25 +144,26 @@ impl KeyManifest {
 
 pub type SignedKeyManifest = crate::LoggedDocument<KeyManifest>;
 
-/// Everything Stogas currently approves, under one online-key signature. The exact key
-/// manifest digest makes that manifest's root-signed expiry the expiry of the whole decision.
+/// Everything Stogas currently approves, with the keys and vendor material that verify it, under
+/// one online-key signature. The embedded root-signed key manifest's expiry bounds the document.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ApprovalManifest {
+pub struct EvidenceDocument {
     pub schema: String,
     pub environment: Environment,
     pub revision: u64,
-    pub key_manifest_sha256: String,
-    /// Digest of the evidence's Sigstore files, so this decision selects the Sigstore keys.
-    pub sigstore_sha256: String,
+    pub keys: SignedKeyManifest,
+    pub sigstore: SigstoreFiles,
     /// Ordered by strictly increasing release sequence.
     pub gateways: Vec<AllowedIgvm>,
     /// Ordered by strictly increasing catalog sequence.
     pub catalogs: Vec<AllowedCatalog>,
-    pub hardware_policy: HardwarePolicy,
+    pub hardware_policies: Vec<AmdSevSnpPolicy>,
+    pub vendor_collateral: Vec<AmdCollateral>,
 }
 
-pub type SignedApprovalManifest = crate::LoggedDocument<ApprovalManifest>;
+/// The published `evidence/latest.json`.
+pub type SignedEvidence = crate::LoggedDocument<EvidenceDocument>;
 
 /// Sigstore's exact TUF files as standard base64: every root after the verifier's compiled
 /// root in version order, the current targets metadata, and the trusted root it lists.
@@ -171,8 +175,8 @@ pub struct SigstoreFiles {
     pub trusted_root: String,
 }
 
-/// Sigstore keys that Sigstore's own signatures authorize. They verify an approval's
-/// transparency proofs only when that approval names their digest.
+/// Sigstore keys that Sigstore's own signatures authorize. They verify transparency proofs only
+/// for the evidence that carries them.
 #[derive(Debug)]
 pub struct VerifiedSigstore {
     digest: String,
@@ -218,10 +222,7 @@ impl VerifiedSigstore {
             &[&[u8]],
             &[u8],
             &[u8],
-        ) -> Result<
-            stogas_sigstore::TrustUpdate,
-            stogas_sigstore::Error,
-        >,
+        ) -> Result<stogas_sigstore::TrustUpdate, stogas_sigstore::Error>,
     ) -> Result<Self, Error> {
         let decode = |text: &String| STANDARD.decode(text).map_err(|_| sigstore("base64"));
         let roots = files
@@ -266,45 +267,54 @@ impl VerifiedSigstore {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum Error {
-    #[error("approval evidence exceeds the input limit")]
+    #[error("signed evidence exceeds the input limit")]
     TooLarge,
-    #[error("invalid approval evidence: {0}")]
+    #[error("invalid signed evidence: {0}")]
     Invalid(String),
-    #[error("approval evidence belongs to another authority or environment")]
+    #[error("signed evidence belongs to another authority or environment")]
     Authority,
     #[error("transparency log verification failed: {0}")]
     Transparency(String),
     #[error("Sigstore keys failed verification: {0}")]
     Sigstore(String),
-    #[error("approval signing key is not active")]
+    #[error("signing key is not active")]
     InactiveKey,
     #[error("root key authorization has expired")]
     Expired,
-    #[error("approval signature is invalid")]
+    #[error("signature is invalid")]
     Signature,
-    #[error("approval evidence rolls back an accepted decision")]
+    #[error("signed evidence rolls back an accepted revision")]
     Rollback,
-    #[error("different signed decisions use the same revision or hardware policy version")]
+    #[error("different signed documents use the same revision or generation")]
     Equivocation,
-    #[error("{0} is not in the signed approval manifest")]
+    #[error("{0} is not in the signed evidence")]
     NotApproved(&'static str),
-    #[error("approved evidence failed verification: {0}")]
+    #[error("listed evidence failed verification: {0}")]
     Evidence(String),
 }
 
-/// Holds only authenticated decisions, never CRLs, checkpoints, compression or HTTP `ETags`.
+/// The online signature and Rekor entry that publish one evidence document.
+#[derive(Clone, Debug, Serialize)]
+pub struct Proof {
+    pub signature: StogasSignature,
+    pub inclusion: Value,
+}
+
+/// Authenticated evidence contents. Never holds CRL state, checkpoints or HTTP `ETags`.
 #[derive(Clone, Debug)]
-pub struct VerifiedApprovals {
-    authority: [u8; 32],
-    keys: KeyManifest,
-    approvals: SignedApprovalManifest,
+pub struct VerifiedEvidence {
+    /// SHA-256 of the root key that authorized this evidence.
+    root_sha256: [u8; 32],
+    document: EvidenceDocument,
+    /// Absent only for an operator's unsigned candidate, which is never accepted.
+    proof: Option<Proof>,
     sigstore: Arc<VerifiedSigstore>,
     keys_digest: String,
-    approvals_digest: String,
+    digest: String,
     expires_unix_ms: i64,
 }
 
-impl VerifiedApprovals {
+impl VerifiedEvidence {
     /// Check the root deadline without redoing immutable signature verification.
     ///
     /// # Errors
@@ -319,21 +329,25 @@ impl VerifiedApprovals {
 
     #[must_use]
     pub const fn keys(&self) -> &KeyManifest {
-        &self.keys
+        &self.document.keys.document
     }
 
     #[must_use]
-    pub const fn manifest(&self) -> &ApprovalManifest {
-        &self.approvals.document
+    pub const fn document(&self) -> &EvidenceDocument {
+        &self.document
     }
 
-    /// The approval manifest with its signature and Rekor inclusion proof.
     #[must_use]
-    pub const fn evidence(&self) -> &SignedApprovalManifest {
-        &self.approvals
+    pub const fn proof(&self) -> Option<&Proof> {
+        self.proof.as_ref()
     }
 
-    /// The Sigstore keys this decision selected.
+    /// SHA-256 of the canonical document: the identity of this evidence revision.
+    #[must_use]
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+
     #[must_use]
     pub const fn sigstore(&self) -> &Arc<VerifiedSigstore> {
         &self.sigstore
@@ -377,14 +391,14 @@ impl VerifiedApprovals {
 
     /// # Errors
     /// Rejects invalid hardware rules.
-    pub(crate) fn verify_hardware_policy(&self) -> Result<VerifiedHardwarePolicy, Error> {
-        crate::verify_hardware_policy(&self.approvals.document.hardware_policy)
+    pub(crate) fn verify_hardware_policies(&self) -> Result<(), Error> {
+        crate::validate_hardware_policies(&self.document.hardware_policies)
             .map_err(|error| Error::Evidence(error.to_string()))
     }
 
     // A staging-capable binary must still reject placeholders when its selected context is production.
     const fn accepts_provenance(&self, provenance: &crate::ReleaseProvenance) -> bool {
-        match (self.keys.environment, provenance) {
+        match (self.document.environment, provenance) {
             (Environment::Production, crate::ReleaseProvenance::Github) => true,
             #[cfg(feature = "staging")]
             (Environment::Staging, _) => true,
@@ -394,25 +408,25 @@ impl VerifiedApprovals {
     }
 }
 
-/// The caller selects this root from its trusted environment configuration, never the bundle.
-/// A candidate does not replace learned decisions until every referenced evidence object passes.
+/// The caller selects this root from its trusted environment configuration, never the evidence.
+/// A candidate does not replace accepted evidence until every listed object passes.
 #[derive(Debug)]
-pub struct ApprovalVerifier {
+pub struct Authority {
     environment: Environment,
     root: RootKey,
-    authority: [u8; 32],
-    accepted: Option<VerifiedApprovals>,
+    root_sha256: [u8; 32],
+    accepted: Option<VerifiedEvidence>,
     key_state: Arc<KeyState>,
 }
 
-impl ApprovalVerifier {
+impl Authority {
     /// Separate historical appraisal from all learned current decisions.
     #[cfg(feature = "snp")]
     pub(crate) fn historical_authority(&self) -> Result<Self, Error> {
         Self::new(self.environment, self.root.clone())
     }
 
-    /// Verify and retain a root decision independently of approval/artifact delivery.
+    /// Verify and retain a root decision independently of the evidence that carries it.
     ///
     /// # Errors
     /// Rejects invalid inclusion, signatures, environments, conflicts or rollback.
@@ -433,11 +447,10 @@ impl ApprovalVerifier {
     /// Rejects malformed or weak root keys and ambiguous key identifiers.
     pub fn new(environment: Environment, root: RootKey) -> Result<Self, Error> {
         let root_der = decode_key(&root.key_id, &root.public_key)?;
-        let authority = Sha256::digest(&root_der).into();
         Ok(Self {
             environment,
             root,
-            authority,
+            root_sha256: Sha256::digest(&root_der).into(),
             accepted: None,
             key_state: Arc::default(),
         })
@@ -496,35 +509,33 @@ impl ApprovalVerifier {
         Arc::clone(&self.key_state)
     }
 
-    pub(crate) fn verify_with_keys(
+    /// Check a document whose embedded key manifest and Sigstore files the caller verified,
+    /// without its signature. Rejects anything that could not follow the accepted evidence.
+    pub(crate) fn check(
         &self,
         keys: VerifiedKeys,
-        approvals: SignedApprovalManifest,
+        document: EvidenceDocument,
         sigstore: Arc<VerifiedSigstore>,
         now_unix_ms: i64,
-    ) -> Result<VerifiedApprovals, Error> {
-        verify_document_inclusion(
-            &serde_json::to_value(&approvals.document).map_err(invalid)?,
-            &approvals.signature,
-            &approvals.inclusion,
-            sigstore.trusted_root(),
-            now_unix_ms,
-        )?;
-        let candidate = verify_online_approval(self.authority, keys.document, approvals, sigstore)?;
+    ) -> Result<VerifiedEvidence, Error> {
+        let candidate = check_document(self.root_sha256, keys, document, sigstore)?;
         candidate.valid_until(now_unix_ms)?;
         self.check_update(&candidate)?;
         Ok(candidate)
     }
 
-    /// Call only after the complete candidate bundle passes artifact and collateral checks.
-    /// Rechecks ordering so overlapping acquisitions cannot undo a newer accepted decision.
+    /// Call only after the complete candidate passes release, hardware and collateral checks.
+    /// Rechecks ordering so overlapping acquisitions cannot undo newer accepted evidence.
     ///
     /// # Errors
-    /// Rejects a candidate from another authority, rollback or equivocation.
-    pub fn accept(&mut self, candidate: VerifiedApprovals) -> Result<(), Error> {
+    /// Rejects unsigned evidence, another authority, rollback or equivocation.
+    pub(crate) fn accept(&mut self, candidate: VerifiedEvidence) -> Result<(), Error> {
+        if candidate.proof.is_none() {
+            return Err(Error::Signature);
+        }
         self.check_update(&candidate)?;
         self.key_state.learn(VerifiedKeys {
-            document: candidate.keys.clone(),
+            document: candidate.keys().clone(),
             digest: candidate.keys_digest.clone(),
         })?;
         self.accepted = Some(candidate);
@@ -532,51 +543,60 @@ impl ApprovalVerifier {
     }
 
     #[must_use]
-    pub const fn accepted(&self) -> Option<&VerifiedApprovals> {
+    pub const fn accepted(&self) -> Option<&VerifiedEvidence> {
         self.accepted.as_ref()
     }
 
-    fn check_update(&self, candidate: &VerifiedApprovals) -> Result<(), Error> {
-        if candidate.authority != self.authority || candidate.keys.environment != self.environment {
+    fn check_update(&self, candidate: &VerifiedEvidence) -> Result<(), Error> {
+        if candidate.root_sha256 != self.root_sha256
+            || candidate.document.environment != self.environment
+        {
             return Err(Error::Authority);
         }
+        // Rejects an older generation and a different manifest with the same generation.
         self.key_state
-            .check(&candidate.keys, &candidate.keys_digest)?;
+            .check(candidate.keys(), &candidate.keys_digest)?;
         let Some(previous) = &self.accepted else {
             return Ok(());
         };
-        if candidate.keys.generation < previous.keys.generation {
-            return Err(Error::Rollback);
+        // A newer root-signed generation supersedes every revision the earlier one allowed, so
+        // a compromised online key that signed the maximum revision cannot block recovery.
+        if candidate.keys().generation > previous.keys().generation {
+            return Ok(());
         }
-        if candidate.keys.generation == previous.keys.generation {
-            if candidate.keys_digest != previous.keys_digest {
-                return Err(Error::Equivocation);
-            }
-            if candidate.manifest().revision < previous.manifest().revision {
-                return Err(Error::Rollback);
-            }
-            if candidate.manifest().revision == previous.manifest().revision
-                && candidate.approvals_digest != previous.approvals_digest
-            {
-                return Err(Error::Equivocation);
-            }
-            // Each hardware policy version names one set of rules, as a revision names one decision.
-            let hardware = &candidate.manifest().hardware_policy;
-            let accepted = &previous.manifest().hardware_policy;
-            if hardware.version < accepted.version {
-                return Err(Error::Rollback);
-            }
-            if hardware.version == accepted.version
-                && payload_sha256(hardware)? != payload_sha256(accepted)?
-            {
-                return Err(Error::Equivocation);
-            }
+        match candidate.document.revision.cmp(&previous.document.revision) {
+            Ordering::Less => Err(Error::Rollback),
+            Ordering::Equal if candidate.digest != previous.digest => Err(Error::Equivocation),
+            _ => Ok(()),
         }
-        Ok(())
     }
 }
 
-/// Stable payload identity. Approval signatures and supporting evidence are not part of it.
+/// Verify the online signature and Rekor entry that publish a checked document.
+pub(crate) fn verify_proof(
+    candidate: &mut VerifiedEvidence,
+    signature: StogasSignature,
+    inclusion: Value,
+    now_unix_ms: i64,
+) -> Result<(), Error> {
+    let document = serde_json::to_value(&candidate.document).map_err(invalid)?;
+    let key = &candidate.document.keys.document.active_key;
+    verify_signature(&document, &signature, &key.key_id, &key.public_key)?;
+    verify_document_inclusion(
+        &document,
+        &signature,
+        &inclusion,
+        candidate.sigstore.trusted_root(),
+        now_unix_ms,
+    )?;
+    candidate.proof = Some(Proof {
+        signature,
+        inclusion,
+    });
+    Ok(())
+}
+
+/// Stable payload identity. Signatures and log proofs are not part of it.
 ///
 /// # Errors
 /// Returns an error if the payload cannot be serialized as canonical JSON.
@@ -585,34 +605,34 @@ pub fn payload_sha256(payload: &impl Serialize) -> Result<String, Error> {
     Ok(hex::encode(Sha256::digest(canonical_payload(&value)?)))
 }
 
-fn verify_online_approval(
-    authority: [u8; 32],
-    keys: KeyManifest,
-    signed: SignedApprovalManifest,
+fn check_document(
+    root_sha256: [u8; 32],
+    keys: VerifiedKeys,
+    document: EvidenceDocument,
     sigstore: Arc<VerifiedSigstore>,
-) -> Result<VerifiedApprovals, Error> {
-    let approvals = &signed.document;
-    if approvals.schema != APPROVAL_MANIFEST_SCHEMA || !valid_revision(approvals.revision) {
-        return Err(Error::Invalid("approval schema or revision".into()));
+) -> Result<VerifiedEvidence, Error> {
+    if document.schema != EVIDENCE_SCHEMA || !valid_revision(document.revision) {
+        return Err(Error::Invalid("evidence schema or revision".into()));
     }
-    if approvals.environment != keys.environment {
+    // The caller verified these parts of the same delivery; the document must carry them.
+    if payload_sha256(&document.keys.document)? != keys.digest
+        || payload_sha256(&document.sigstore)? != sigstore.digest()
+    {
+        return Err(Error::Invalid(
+            "verified keys or Sigstore files differ".into(),
+        ));
+    }
+    if document.environment != keys.document.environment {
         return Err(Error::Authority);
-    }
-    let keys_digest = payload_sha256(&keys)?;
-    if approvals.key_manifest_sha256 != keys_digest {
-        return Err(Error::Invalid("key manifest digest mismatch".into()));
-    }
-    if approvals.sigstore_sha256 != sigstore.digest {
-        return Err(Error::Invalid("Sigstore files digest mismatch".into()));
     }
     // One release per sequence keeps release selection and history unambiguous.
     if !increasing(
-        approvals
+        document
             .gateways
             .iter()
             .map(|release| release.document.sequence),
     ) || !increasing(
-        approvals
+        document
             .catalogs
             .iter()
             .map(|release| release.document.sequence),
@@ -621,23 +641,14 @@ fn verify_online_approval(
             "approved releases must be ordered by unique sequence".into(),
         ));
     }
-    let document = serde_json::to_value(approvals).map_err(invalid)?;
-    verify_signature(
-        &document,
-        &signed.signature,
-        &keys.active_key.key_id,
-        &keys.active_key.public_key,
-    )?;
-    let approvals_digest = hex::encode(Sha256::digest(canonical_payload(&document)?));
-    let expires_unix_ms = keys.expiry_unix_ms()?;
-    Ok(VerifiedApprovals {
-        authority,
-        keys,
-        approvals: signed,
+    Ok(VerifiedEvidence {
+        root_sha256,
+        digest: payload_sha256(&document)?,
+        expires_unix_ms: keys.document.expiry_unix_ms()?,
+        document,
+        proof: None,
         sigstore,
-        keys_digest,
-        approvals_digest,
-        expires_unix_ms,
+        keys_digest: keys.digest,
     })
 }
 
