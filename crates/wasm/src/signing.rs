@@ -88,13 +88,9 @@ pub fn verify_rekor_document_inclusion(
     let now = super::parse_unix_ms(now_unix_ms, "now_unix_ms")?;
     let trust = stogas_sigstore::TrustedRoot::embedded()
         .map_err(|error| JsError::new(&error.to_string()))?;
-    let time = stogas_sigstore::verify_rekor_document_inclusion(
-        trust,
-        bundle,
-        signed_document,
-        now,
-    )
-    .map_err(|error| JsError::new(&error.to_string()))?;
+    let time =
+        stogas_sigstore::verify_rekor_document_inclusion(trust, bundle, signed_document, now)
+            .map_err(|error| JsError::new(&error.to_string()))?;
     // A verified seconds value is bounded by the safe-integer millisecond input above.
     #[allow(clippy::cast_precision_loss)]
     Ok(time as f64)
