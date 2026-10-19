@@ -1,5 +1,5 @@
 //! The same bounded binary evidence is used by TLS certificates and E2EE setup.
-//! Parsing supplies untrusted bytes; hardware, boot and approval appraisal follow.
+//! Parsing supplies untrusted bytes; hardware, boot and current evidence appraisal follow.
 
 use super::BatchProof;
 use thiserror::Error;

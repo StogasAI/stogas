@@ -33,7 +33,7 @@ struct StartedTransport {
     base_url: String,
 }
 
-/// Start an in-process managed transport and verify its initial bundle.
+/// Start an in-process managed transport and verify its initial evidence.
 ///
 /// `configuration` is bounded JSON. `transport_out` is set only on success. The returned JSON
 /// contains the capability-protected loopback `base_url`.
@@ -94,7 +94,7 @@ pub unsafe extern "C" fn stogas_transport_start(
     })
 }
 
-/// Refresh the managed transport's evidence bundle immediately.
+/// Refresh the managed transport's evidence immediately.
 ///
 /// # Safety
 ///
@@ -112,7 +112,7 @@ pub unsafe extern "C" fn stogas_transport_refresh(
             .lock()
             .map_err(|_| "transport lock is poisoned".to_owned())?;
         transport
-            .refresh_bundle()
+            .refresh_evidence()
             .map_err(|error| error.to_string())
     })
 }

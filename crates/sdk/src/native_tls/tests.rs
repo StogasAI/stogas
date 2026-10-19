@@ -17,12 +17,12 @@ fn snapshot() -> Arc<Snapshot> {
     ))
     .unwrap();
     evidence::Verifier::new(
-        stogas_core::approvals::Environment::Staging,
+        stogas_core::authority::Environment::Staging,
         serde_json::from_value(fixture["root"].clone()).unwrap(),
     )
     .unwrap()
     .refresh(
-        &serde_json::to_vec(&fixture["bundle"]).unwrap(),
+        &serde_json::to_vec(&fixture["evidence"]).unwrap(),
         fixture["verified_at_ms"].as_i64().unwrap(),
     )
     .unwrap()

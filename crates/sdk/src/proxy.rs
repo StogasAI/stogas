@@ -432,7 +432,8 @@ async fn proxy_request_inner(
                 .refresh(Instant::now() + SETUP_BUDGET)
                 .await
                 .map_err(|error| Failure::evidence(&error))?;
-            let changed = original.is_none_or(|old| old.body_sha256() != snapshot.body_sha256());
+            let changed =
+                original.is_none_or(|old| old.evidence_sha256() != snapshot.evidence_sha256());
             Ok(Response::builder()
                 .status(if changed {
                     StatusCode::OK

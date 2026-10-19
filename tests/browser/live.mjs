@@ -17,12 +17,12 @@ export async function checkLiveGateway(StogasTransport, environment) {
 		const body = await response.json();
 		if (response.status !== 401 || body.error?.type !== 'authentication_error')
 			throw new Error(`The gateway did not reject the invalid key: ${response.status}`);
-		await Promise.all([transport.refreshBundle(), transport.refreshBundle()]);
+		await Promise.all([transport.refreshEvidence(), transport.refreshEvidence()]);
 	} finally {
 		await transport.close();
 	}
 	await transport.close();
-	const refused = await transport.refreshBundle().then(
+	const refused = await transport.refreshEvidence().then(
 		() => false,
 		(error) => error.message === 'Transport closed'
 	);

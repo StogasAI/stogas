@@ -9,14 +9,14 @@ typedef struct StogasEvidence StogasEvidence;
 typedef struct StogasEvidenceSnapshot StogasEvidenceSnapshot;
 char *stogas_evidence_new(const uint8_t *configuration, size_t configuration_len, StogasEvidence **output);
 void stogas_evidence_free(StogasEvidence *handle);
-char *stogas_evidence_refresh(const StogasEvidence *handle, const uint8_t *bundle, size_t bundle_len, int64_t now_unix_ms, StogasEvidenceSnapshot **output);
+char *stogas_evidence_refresh(const StogasEvidence *handle, const uint8_t *evidence, size_t evidence_len, int64_t now_unix_ms, StogasEvidenceSnapshot **output);
 void stogas_evidence_snapshot_free(StogasEvidenceSnapshot *handle);
 char *stogas_evidence_verify_logged_boot(const StogasEvidenceSnapshot *handle, const uint8_t *document, size_t document_len, const uint8_t *inclusion, size_t inclusion_len, int64_t now_unix_ms);
 char *stogas_evidence_verify_receipt(const StogasEvidenceSnapshot *handle, const uint8_t *document, size_t document_len, const uint8_t *inclusion, size_t inclusion_len, const uint8_t *receipt, size_t receipt_len, const uint8_t *request_hash, size_t request_hash_len, const uint8_t *response_hash, size_t response_hash_len, int64_t now_unix_ms);
 
-char *stogas_evidence_verify_archive(const StogasEvidence *handle, const uint8_t *bundle, size_t bundle_len, int64_t now_unix_ms);
-char *stogas_evidence_verify_boot_archive(const StogasEvidence *handle, const uint8_t *archive, size_t archive_len, const uint8_t *bundle, size_t bundle_len, int64_t now_unix_ms);
-char *stogas_evidence_verify_receipt_archive(const StogasEvidence *handle, const uint8_t *archive, size_t archive_len, const uint8_t *bundle, size_t bundle_len, const uint8_t *receipt, size_t receipt_len, const uint8_t *request_hash, size_t request_hash_len, const uint8_t *response_hash, size_t response_hash_len, int64_t now_unix_ms);
+char *stogas_evidence_verify_archive(const StogasEvidence *handle, const uint8_t *evidence, size_t evidence_len, int64_t now_unix_ms);
+char *stogas_evidence_verify_boot_archive(const StogasEvidence *handle, const uint8_t *archive, size_t archive_len, const uint8_t *evidence, size_t evidence_len, int64_t now_unix_ms);
+char *stogas_evidence_verify_receipt_archive(const StogasEvidence *handle, const uint8_t *archive, size_t archive_len, const uint8_t *evidence, size_t evidence_len, const uint8_t *receipt, size_t receipt_len, const uint8_t *request_hash, size_t request_hash_len, const uint8_t *response_hash, size_t response_hash_len, int64_t now_unix_ms);
 */
 import "C"
 
@@ -64,26 +64,26 @@ func NewEvidence(options EvidenceOptions) (*Evidence, error) {
 	return &Evidence{handle: handle}, nil
 }
 
-// Refresh verifies one complete bundle at the captured wall clock.
+// Refresh verifies signed evidence at the captured wall clock.
 // Invalid delivery preserves prior evidence; authenticated revocations remain learned.
-func (e *Evidence) Refresh(bundle []byte) (*EvidenceSnapshot, error) {
-	return e.refreshAt(bundle, time.Now().UnixMilli())
+func (e *Evidence) Refresh(evidence []byte) (*EvidenceSnapshot, error) {
+	return e.refreshAt(evidence, time.Now().UnixMilli())
 }
 
 // RefreshAt verifies with a caller-owned clock, for offline appraisal. Never
 // substitute a timestamp supplied by the peer for the verifier's trusted time.
-func (e *Evidence) RefreshAt(bundle []byte, now time.Time) (*EvidenceSnapshot, error) {
-	return e.refreshAt(bundle, now.UnixMilli())
+func (e *Evidence) RefreshAt(evidence []byte, now time.Time) (*EvidenceSnapshot, error) {
+	return e.refreshAt(evidence, now.UnixMilli())
 }
 
-func (e *Evidence) refreshAt(bundle []byte, now int64) (*EvidenceSnapshot, error) {
+func (e *Evidence) refreshAt(evidence []byte, now int64) (*EvidenceSnapshot, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.handle == nil {
 		return nil, ErrClosed
 	}
 	var handle *C.StogasEvidenceSnapshot
-	response := C.stogas_evidence_refresh(e.handle, bytePointer(bundle), C.size_t(len(bundle)), C.int64_t(now), &handle)
+	response := C.stogas_evidence_refresh(e.handle, bytePointer(evidence), C.size_t(len(evidence)), C.int64_t(now), &handle)
 	var summary json.RawMessage
 	if err := decodeResponse(response, &summary); err != nil {
 		if handle != nil {
@@ -108,22 +108,22 @@ func (e *Evidence) Close() error {
 	return nil
 }
 
-// VerifyEvidenceArchive authenticates archived approvals without changing current trust.
-func (e *Evidence) VerifyEvidenceArchive(bundle []byte) (json.RawMessage, error) {
+// VerifyEvidenceArchive authenticates archived evidence without changing current trust.
+func (e *Evidence) VerifyEvidenceArchive(evidence []byte) (json.RawMessage, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.handle == nil {
 		return nil, ErrClosed
 	}
 	var summary json.RawMessage
-	response := C.stogas_evidence_verify_archive(e.handle, bytePointer(bundle), C.size_t(len(bundle)), C.int64_t(time.Now().UnixMilli()))
+	response := C.stogas_evidence_verify_archive(e.handle, bytePointer(evidence), C.size_t(len(evidence)), C.int64_t(time.Now().UnixMilli()))
 	err := decodeResponse(response, &summary)
 	return summary, err
 }
 
 // VerifyBootArchive appraises the boot at its authenticated log time.
 // It grants no current serving permission and changes no live verification state.
-func (e *Evidence) VerifyBootArchive(archive, bundle []byte) (BootIdentity, error) {
+func (e *Evidence) VerifyBootArchive(archive, evidence []byte) (BootIdentity, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	var identity BootIdentity
@@ -131,7 +131,7 @@ func (e *Evidence) VerifyBootArchive(archive, bundle []byte) (BootIdentity, erro
 		return identity, ErrClosed
 	}
 	response := C.stogas_evidence_verify_boot_archive(e.handle,
-		bytePointer(archive), C.size_t(len(archive)), bytePointer(bundle), C.size_t(len(bundle)),
+		bytePointer(archive), C.size_t(len(archive)), bytePointer(evidence), C.size_t(len(evidence)),
 		C.int64_t(time.Now().UnixMilli()))
 	err := decodeResponse(response, &identity)
 	return identity, err
@@ -139,7 +139,7 @@ func (e *Evidence) VerifyBootArchive(archive, bundle []byte) (BootIdentity, erro
 
 // VerifyReceiptArchive verifies exact content using the archived boot at its log time.
 // This does not establish when inference occurred or grant current serving permission.
-func (e *Evidence) VerifyReceiptArchive(archive, bundle, receipt []byte, requestHash, responseHash [32]byte) (VerifiedReceipt, error) {
+func (e *Evidence) VerifyReceiptArchive(archive, evidence, receipt []byte, requestHash, responseHash [32]byte) (VerifiedReceipt, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	var verified VerifiedReceipt
@@ -147,7 +147,7 @@ func (e *Evidence) VerifyReceiptArchive(archive, bundle, receipt []byte, request
 		return verified, ErrClosed
 	}
 	response := C.stogas_evidence_verify_receipt_archive(e.handle,
-		bytePointer(archive), C.size_t(len(archive)), bytePointer(bundle), C.size_t(len(bundle)),
+		bytePointer(archive), C.size_t(len(archive)), bytePointer(evidence), C.size_t(len(evidence)),
 		bytePointer(receipt), C.size_t(len(receipt)), bytePointer(requestHash[:]), 32, bytePointer(responseHash[:]), 32,
 		C.int64_t(time.Now().UnixMilli()))
 	err := decodeResponse(response, &verified)
@@ -165,7 +165,7 @@ func (s *EvidenceSnapshot) Summary() (json.RawMessage, error) {
 	return append(json.RawMessage(nil), s.summary...), nil
 }
 
-// VerifyLoggedBoot checks exact logged boot bytes against current hardware and release approvals.
+// VerifyLoggedBoot checks exact logged boot bytes against the current hardware policies and releases.
 func (s *EvidenceSnapshot) VerifyLoggedBoot(document, inclusion []byte) (BootIdentity, error) {
 	return s.loggedBootAt(document, inclusion, time.Now().UnixMilli())
 }

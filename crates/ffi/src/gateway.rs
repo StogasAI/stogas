@@ -7,7 +7,7 @@ use std::{
     ptr, slice,
 };
 use stogas_core::{
-    approvals::Environment,
+    authority::Environment,
     evidence::boot::BootRequestPurpose,
     gateway::{self, Error, NodeKeys, TlsKey},
     signing::{SIGNATURE_BYTES, mldsa},

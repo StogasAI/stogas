@@ -30,15 +30,15 @@ impl Files {
             stream: false,
             request: directory.join("request"),
             response: directory.join("response"),
-            bundle: Some(directory.join("bundle")),
+            evidence: Some(directory.join("evidence")),
             boot: Some(directory.join("boot")),
             environment: stogas::Environment::Staging,
             json: false,
             now_unix_ms: fixture["verified_at_ms"].as_i64(),
         };
         std::fs::write(
-            directory.join("bundle"),
-            serde_json::to_vec(&fixture["bundle"]).unwrap(),
+            directory.join("evidence"),
+            serde_json::to_vec(&fixture["evidence"]).unwrap(),
         )
         .unwrap();
         let proof: Value = serde_json::from_slice(parsed.evidence.boot_inclusion).unwrap();
@@ -115,7 +115,7 @@ async fn offline_files_verify_exact_buffered_streamed_and_detached_content() {
     .concat();
     std::fs::write(&files.input.response, &buffered).unwrap();
     // Receipt audit remains valid after archived collateral expires; this does not
-    // install those approvals for new sessions or assert a request execution time.
+    // install that evidence for new sessions or assert a request execution time.
     files.input.now_unix_ms = files
         .input
         .now_unix_ms
@@ -179,7 +179,7 @@ async fn offline_files_fail_closed_on_changed_evidence_content_and_oversized_rec
     std::fs::write(&files.input.response, response).unwrap();
     files.verify().await.unwrap();
     for path in [
-        &files.directory.join("bundle"),
+        &files.directory.join("evidence"),
         &files.directory.join("boot"),
         &files.input.request,
         &files.input.response,

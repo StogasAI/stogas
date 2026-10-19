@@ -3,9 +3,11 @@ use crate::signing::SigningKey;
 use serde_json::json;
 use std::sync::LazyLock;
 
+const NOW: i64 = 1_789_900_000_000;
+
 /// Sigstore files with no roots after the compiled one.
-fn sigstore() -> Arc<VerifiedSigstore> {
-    static SIGSTORE: LazyLock<Arc<VerifiedSigstore>> = LazyLock::new(|| {
+fn sigstore() -> &'static (SigstoreFiles, Arc<VerifiedSigstore>) {
+    static SIGSTORE: LazyLock<(SigstoreFiles, Arc<VerifiedSigstore>)> = LazyLock::new(|| {
         let files = SigstoreFiles {
             roots: vec![],
             targets: STANDARD.encode(include_bytes!(
@@ -15,9 +17,10 @@ fn sigstore() -> Arc<VerifiedSigstore> {
                 "../../../../tests/fixtures/sigstore-tuf/trusted_root.json"
             )),
         };
-        Arc::new(VerifiedSigstore::verify(&files).unwrap())
+        let verified = Arc::new(VerifiedSigstore::verify(&files).unwrap());
+        (files, verified)
     });
-    Arc::clone(&SIGSTORE)
+    &SIGSTORE
 }
 
 fn key(seed: u8) -> (OnlineKey, SigningKey) {
@@ -58,30 +61,24 @@ fn keys(generation: u64, seed: u8, retired: &[u8]) -> KeyManifest {
     }
 }
 
-fn signed(keys: &KeyManifest, revision: u64, seed: u8) -> SignedApprovalManifest {
-    resign(
-        ApprovalManifest {
-            schema: APPROVAL_MANIFEST_SCHEMA.into(),
-            environment: keys.environment,
-            revision,
-            key_manifest_sha256: payload_sha256(keys).unwrap(),
-            sigstore_sha256: sigstore().digest().into(),
-            gateways: vec![crate::tests::release_fixture()],
-            catalogs: vec![crate::tests::catalog_fixture()],
-            hardware_policy: serde_json::from_str(include_str!(
-                "../../tests/fixtures/milan-hardware-policy.json"
-            ))
-            .unwrap(),
+fn document(keys: &KeyManifest, revision: u64) -> EvidenceDocument {
+    EvidenceDocument {
+        schema: EVIDENCE_SCHEMA.into(),
+        environment: keys.environment,
+        revision,
+        keys: SignedKeyManifest {
+            signature: sign(&serde_json::to_value(keys).unwrap(), 1),
+            document: keys.clone(),
+            inclusion: Value::Null,
         },
-        seed,
-    )
-}
-
-fn resign(document: ApprovalManifest, seed: u8) -> SignedApprovalManifest {
-    SignedApprovalManifest {
-        signature: sign(&serde_json::to_value(&document).unwrap(), seed),
-        document,
-        inclusion: Value::Null,
+        sigstore: sigstore().0.clone(),
+        gateways: vec![crate::tests::release_fixture()],
+        catalogs: vec![crate::tests::catalog_fixture()],
+        hardware_policies: serde_json::from_str(include_str!(
+            "../../tests/fixtures/milan-hardware-policy.json"
+        ))
+        .unwrap(),
+        vendor_collateral: vec![],
     }
 }
 
@@ -95,30 +92,43 @@ fn sign(document: &Value, seed: u8) -> StogasSignature {
     }
 }
 
-// Exercises decision installation independently of Rekor's existing cryptographic test suite.
-// Production candidates can only be constructed after the root signature and inclusion pass.
-fn candidate(
-    verifier: &ApprovalVerifier,
-    generation: u64,
-    revision: u64,
-    seed: u8,
-    retired: &[u8],
-) -> VerifiedApprovals {
-    let keys = keys(generation, seed, retired);
-    validate_keys(&keys, verifier.environment, &verifier.root).unwrap();
-    let signed = signed(&keys, revision, seed);
-    verify_online_approval(verifier.authority, keys, signed, sigstore()).unwrap()
+fn verified_keys(keys: &KeyManifest) -> VerifiedKeys {
+    VerifiedKeys {
+        digest: payload_sha256(keys).unwrap(),
+        document: keys.clone(),
+    }
 }
 
-fn verifier() -> ApprovalVerifier {
-    ApprovalVerifier::new(Environment::Production, root(1)).unwrap()
+fn check(authority: &Authority, document: EvidenceDocument) -> Result<VerifiedEvidence, Error> {
+    let keys = verified_keys(&document.keys.document);
+    check_document(
+        authority.root_sha256,
+        keys,
+        document,
+        Arc::clone(&sigstore().1),
+    )
+}
+
+// Exercises acceptance independently of Rekor's existing cryptographic test suite. Production
+// candidates carry a proof only after the signature and the log inclusion pass.
+fn candidate(authority: &Authority, document: EvidenceDocument, seed: u8) -> VerifiedEvidence {
+    let mut candidate = check(authority, document).unwrap();
+    candidate.proof = Some(Proof {
+        signature: sign(&serde_json::to_value(&candidate.document).unwrap(), seed),
+        inclusion: Value::Null,
+    });
+    candidate
+}
+
+fn authority() -> Authority {
+    Authority::new(Environment::Production, root(1)).unwrap()
 }
 
 #[cfg(all(feature = "snp", feature = "staging"))]
-impl VerifiedApprovals {
+impl VerifiedEvidence {
     /// Appraisal tests vary already authenticated content without a signing authority.
-    pub(crate) fn edited(mut self, edit: impl FnOnce(&mut ApprovalManifest)) -> Self {
-        edit(&mut self.approvals.document);
+    pub(crate) fn edited(mut self, edit: impl FnOnce(&mut EvidenceDocument)) -> Self {
+        edit(&mut self.document);
         self
     }
 }
@@ -131,54 +141,59 @@ fn session() -> Value {
     .unwrap()
 }
 
-/// Verify a logged key manifest and the approval in `body` without installing them.
+/// Verify logged evidence as a refresh does, without installing it.
 #[cfg(feature = "staging")]
 fn verify_logged(
-    verifier: &ApprovalVerifier,
-    body: &Value,
-    keys: &Value,
+    authority: &Authority,
+    evidence: &Value,
     now: i64,
-) -> Result<VerifiedApprovals, Error> {
+) -> Result<VerifiedEvidence, Error> {
+    let document = &evidence["document"];
     let sigstore = Arc::new(VerifiedSigstore::verify(
-        &serde_json::from_value(body["sigstore"].clone()).unwrap(),
+        &serde_json::from_value(document["sigstore"].clone()).unwrap(),
     )?);
-    let keys = verifier.verify_keys(
-        &serde_json::to_vec(keys).unwrap(),
+    let keys = authority.verify_keys(
+        &serde_json::to_vec(&document["keys"]).unwrap(),
         sigstore.trusted_root(),
         now,
     )?;
-    let approvals = serde_json::from_value(body["approvals"].clone()).unwrap();
-    verifier.verify_with_keys(keys, approvals, sigstore, now)
+    let signed: SignedEvidence = serde_json::from_value(evidence.clone()).map_err(invalid)?;
+    let mut candidate = authority.check(keys, signed.document, sigstore, now)?;
+    verify_proof(&mut candidate, signed.signature, signed.inclusion, now)?;
+    Ok(candidate)
 }
 
 #[cfg(feature = "staging")]
 #[test]
-fn actual_logged_root_manifest_verifies_and_rejects_substituted_material() {
+fn actual_logged_evidence_verifies_and_rejects_substituted_material() {
     let session = session();
-    let body = &session["bundle"]["body"];
+    let evidence = &session["evidence"];
     let root: RootKey = serde_json::from_value(session["root"].clone()).unwrap();
-    let mut verifier = ApprovalVerifier::new(Environment::Staging, root).unwrap();
+    let mut authority = Authority::new(Environment::Staging, root).unwrap();
     let now = session["verified_at_ms"].as_i64().unwrap();
-    let candidate = verify_logged(&verifier, body, &body["keys"], now).unwrap();
+    let candidate = verify_logged(&authority, evidence, now).unwrap();
     assert_eq!(candidate.keys().generation, 1);
-    verifier.accept(candidate).unwrap();
+    authority.accept(candidate).unwrap();
     for pointer in [
-        "/document/active_key/public_key",
-        "/document/active_key/rekor_public_key",
+        "/document/keys/document/active_key/public_key",
+        "/document/keys/document/active_key/rekor_public_key",
+        "/document/keys/signature/signature",
+        "/document/keys/inclusion/verificationMaterial/publicKey/hint",
+        "/document/keys/inclusion/verificationMaterial/tlogEntries/0/canonicalizedBody",
+        "/document/keys/inclusion/verificationMaterial/tlogEntries/0/inclusionPromise/signedEntryTimestamp",
+        "/document/keys/inclusion/verificationMaterial/tlogEntries/0/inclusionProof/rootHash",
+        "/document/keys/inclusion/verificationMaterial/tlogEntries/0/inclusionProof/checkpoint/envelope",
         "/signature/signature",
-        "/inclusion/verificationMaterial/publicKey/hint",
         "/inclusion/verificationMaterial/tlogEntries/0/canonicalizedBody",
-        "/inclusion/verificationMaterial/tlogEntries/0/inclusionPromise/signedEntryTimestamp",
         "/inclusion/verificationMaterial/tlogEntries/0/inclusionProof/rootHash",
-        "/inclusion/verificationMaterial/tlogEntries/0/inclusionProof/checkpoint/envelope",
     ] {
-        let mut changed = body["keys"].clone();
+        let mut changed = evidence.clone();
         *changed.pointer_mut(pointer).unwrap() = Value::String("invalid".into());
         assert!(
-            verify_logged(&verifier, body, &changed, now).is_err(),
+            verify_logged(&authority, &changed, now).is_err(),
             "accepted {pointer}"
         );
-        assert_eq!(verifier.accepted().unwrap().keys().generation, 1);
+        assert_eq!(authority.accepted().unwrap().keys().generation, 1);
     }
 }
 
@@ -186,24 +201,24 @@ fn actual_logged_root_manifest_verifies_and_rejects_substituted_material() {
 #[test]
 fn another_publisher_can_log_the_same_root_authorization() {
     let session = session();
-    let body = &session["bundle"]["body"];
-    let mut keys = body["keys"].clone();
+    let mut keys = session["evidence"]["document"]["keys"].clone();
     let republication: Value = serde_json::from_str(include_str!(
         "../../../../tests/fixtures/rekor-republication-v1.json"
     ))
     .unwrap();
     let root: RootKey = serde_json::from_value(session["root"].clone()).unwrap();
-    let verifier = ApprovalVerifier::new(Environment::Staging, root).unwrap();
+    let authority = Authority::new(Environment::Staging, root).unwrap();
     let now = session["verified_at_ms"].as_i64().unwrap();
-    let original = verify_logged(&verifier, body, &keys, now).unwrap();
+    let trust = stogas_sigstore::TrustedRoot::embedded().unwrap();
+    let verify =
+        |keys: &Value| authority.verify_keys(&serde_json::to_vec(keys).unwrap(), trust, now);
+    let original = verify(&keys).unwrap();
     keys["inclusion"] = republication["inclusion"].clone();
-    let republished = verify_logged(&verifier, body, &keys, now).unwrap();
-    assert_eq!(original.keys_digest, republished.keys_digest);
-    assert_eq!(original.approvals_digest, republished.approvals_digest);
+    assert_eq!(verify(&keys).unwrap().digest, original.digest);
 
     // The manifest's publisher association is still root-signed public metadata.
     keys["document"]["active_key"]["rekor_public_key"] = json!(key(187).0.rekor_public_key);
-    assert!(verify_logged(&verifier, body, &keys, now).is_err());
+    assert!(verify(&keys).is_err());
 }
 
 #[test]
@@ -233,60 +248,73 @@ fn unsigned_payload_identity_ignores_wrapping_signatures_and_key_order() {
 }
 
 #[test]
-fn rotation_supersedes_a_compromised_max_revision() {
-    let mut verifier = verifier();
-    let original = candidate(&verifier, 1, MAX_REVISION, 2, &[]);
-    verifier.accept(original.clone()).unwrap();
-    verifier
-        .accept(candidate(&verifier, 2, 1, 3, &[2]))
+fn unsigned_candidates_are_checked_but_never_accepted() {
+    let mut authority = authority();
+    let keys = keys(1, 2, &[]);
+    let unsigned = authority
+        .check(
+            verified_keys(&keys),
+            document(&keys, 1),
+            Arc::clone(&sigstore().1),
+            NOW,
+        )
         .unwrap();
-    assert_eq!(verifier.accept(original).unwrap_err(), Error::Rollback);
-    assert_eq!(verifier.accepted().unwrap().keys().generation, 2);
+    assert!(unsigned.proof().is_none());
+    assert_eq!(authority.accept(unsigned).unwrap_err(), Error::Signature);
+    assert!(authority.accepted().is_none());
 }
 
 #[test]
-fn root_expiry_bounds_online_updates_and_renewal_requires_a_new_approval() {
-    let mut verifier = verifier();
-    let original = candidate(&verifier, 1, 1, 2, &[]);
-    let deadline = original.keys.expiry_unix_ms().unwrap();
+fn rotation_supersedes_a_compromised_max_revision() {
+    let mut authority = authority();
+    let original = candidate(&authority, document(&keys(1, 2, &[]), MAX_REVISION), 2);
+    authority.accept(original.clone()).unwrap();
+    authority
+        .accept(candidate(&authority, document(&keys(2, 3, &[2]), 1), 3))
+        .unwrap();
+    assert_eq!(authority.accept(original).unwrap_err(), Error::Rollback);
+    assert_eq!(authority.accepted().unwrap().keys().generation, 2);
+}
+
+#[test]
+fn root_expiry_bounds_every_revision_and_renewal_needs_a_new_generation() {
+    let mut authority = authority();
+    let keys = keys(1, 2, &[]);
+    let original = candidate(&authority, document(&keys, 1), 2);
+    let deadline = keys.expiry_unix_ms().unwrap();
     assert_eq!(original.valid_until(deadline - 1).unwrap(), deadline);
     assert_eq!(original.valid_until(deadline), Err(Error::Expired));
     assert_eq!(original.valid_until(deadline + 1), Err(Error::Expired));
-    let online_update = candidate(&verifier, 1, MAX_REVISION, 2, &[]);
+    let online_update = candidate(&authority, document(&keys, MAX_REVISION), 2);
     assert_eq!(online_update.valid_until(deadline), Err(Error::Expired));
-    verifier.accept(original.clone()).unwrap();
-
-    let mut renewed_keys = original.keys.clone();
-    renewed_keys.expires_at = "2100-02-01T00:00:00Z".into();
-    // An approval names one exact key manifest, so a renewal cannot extend an older decision.
+    authority.accept(original.clone()).unwrap();
     assert_eq!(
-        verify_online_approval(
-            verifier.authority,
-            renewed_keys.clone(),
-            original.approvals.clone(),
-            sigstore()
-        )
-        .unwrap_err(),
-        Error::Invalid("key manifest digest mismatch".into())
+        authority
+            .check(
+                verified_keys(&keys),
+                document(&keys, 2),
+                Arc::clone(&sigstore().1),
+                deadline
+            )
+            .unwrap_err(),
+        Error::Expired
     );
-    let approval = signed(&renewed_keys, 1, 2);
-    let conflict = verify_online_approval(
-        verifier.authority,
-        renewed_keys.clone(),
-        approval,
-        sigstore(),
-    )
-    .unwrap();
-    assert_eq!(verifier.accept(conflict).unwrap_err(), Error::Equivocation);
 
-    renewed_keys.generation += 1;
-    let approval = signed(&renewed_keys, 1, 2);
-    let renewed =
-        verify_online_approval(verifier.authority, renewed_keys, approval, sigstore()).unwrap();
-    renewed.valid_until(deadline).unwrap();
-    assert_eq!(renewed.keys.active_key, original.keys.active_key);
-    verifier.accept(renewed).unwrap();
-    assert_eq!(verifier.accept(original).unwrap_err(), Error::Rollback);
+    // Another root decision under the same generation conflicts with the accepted one.
+    let mut renewed = keys;
+    renewed.expires_at = "2100-02-01T00:00:00Z".into();
+    assert_eq!(
+        authority
+            .accept(candidate(&authority, document(&renewed, 2), 2))
+            .unwrap_err(),
+        Error::Equivocation
+    );
+    renewed.generation += 1;
+    let renewal = candidate(&authority, document(&renewed, 2), 2);
+    renewal.valid_until(deadline).unwrap();
+    assert_eq!(renewal.keys().active_key, original.keys().active_key);
+    authority.accept(renewal).unwrap();
+    assert_eq!(authority.accept(original).unwrap_err(), Error::Rollback);
 }
 
 #[test]
@@ -312,162 +340,135 @@ fn root_expiry_has_one_unambiguous_timestamp_representation() {
 
 #[test]
 fn revisions_detect_only_conflicting_decisions_and_reject_stale_concurrent_candidates() {
-    let mut verifier = verifier();
-    let first = candidate(&verifier, 1, 1, 2, &[]);
-    verifier.accept(first.clone()).unwrap();
-    verifier.accept(first.clone()).unwrap();
-    let mut conflict = signed(first.keys(), 1, 2);
-    conflict.document.gateways.clear();
-    conflict.signature = sign(&serde_json::to_value(&conflict.document).unwrap(), 2);
-    let conflicting =
-        verify_online_approval(verifier.authority, first.keys.clone(), conflict, sigstore())
-            .unwrap();
-    assert_eq!(
-        verifier.accept(conflicting).unwrap_err(),
-        Error::Equivocation
-    );
-    let same_generation_other_key = candidate(&verifier, 1, 2, 3, &[2]);
-    assert_eq!(
-        verifier.accept(same_generation_other_key).unwrap_err(),
-        Error::Equivocation
-    );
-    verifier.accept(candidate(&verifier, 1, 2, 2, &[])).unwrap();
-    assert_eq!(verifier.accept(first).unwrap_err(), Error::Rollback);
-    assert_eq!(verifier.accepted().unwrap().manifest().revision, 2);
-}
-
-#[test]
-fn a_hardware_policy_version_names_one_set_of_rules_and_never_decreases() {
-    let mut verifier = verifier();
-    let authority = verifier.authority;
+    let mut authority = authority();
     let keys = keys(1, 2, &[]);
-    let approve = |revision: u64, version: u64, snp: u8| {
-        let mut document = signed(&keys, revision, 2).document;
-        document.hardware_policy.version = version;
-        document.hardware_policy.policies[0].minimum_tcb.snp = snp;
-        verify_online_approval(authority, keys.clone(), resign(document, 2), sigstore()).unwrap()
-    };
-    verifier.accept(approve(1, 1, 29)).unwrap();
-    verifier.accept(approve(2, 2, 30)).unwrap();
+    let first = candidate(&authority, document(&keys, 1), 2);
+    authority.accept(first.clone()).unwrap();
+    authority.accept(first.clone()).unwrap();
+    let mut conflict = document(&keys, 1);
+    conflict.gateways.clear();
     assert_eq!(
-        verifier.accept(approve(3, 1, 29)).unwrap_err(),
-        Error::Rollback
-    );
-    assert_eq!(
-        verifier.accept(approve(3, 2, 31)).unwrap_err(),
+        authority
+            .accept(candidate(&authority, conflict, 2))
+            .unwrap_err(),
         Error::Equivocation
     );
-    // Renewal signs the same rules again under a new revision.
-    verifier.accept(approve(3, 2, 30)).unwrap();
-    // A new root-signed key manifest supersedes every number the old online key signed.
-    verifier
-        .accept(candidate(&verifier, 2, 1, 3, &[2]))
-        .unwrap();
+    let other_key = self::keys(1, 3, &[2]);
     assert_eq!(
-        verifier
-            .accepted()
-            .unwrap()
-            .manifest()
-            .hardware_policy
-            .version,
-        1
+        authority
+            .accept(candidate(&authority, document(&other_key, 2), 3))
+            .unwrap_err(),
+        Error::Equivocation
     );
+    authority
+        .accept(candidate(&authority, document(&keys, 2), 2))
+        .unwrap();
+    assert_eq!(authority.accept(first).unwrap_err(), Error::Rollback);
+    assert_eq!(authority.accepted().unwrap().document().revision, 2);
 }
 
 #[test]
 fn root_decisions_can_omit_retired_keys_without_authorizing_them() {
-    let mut verifier = verifier();
-    verifier.accept(candidate(&verifier, 1, 1, 2, &[])).unwrap();
-    verifier
-        .accept(candidate(&verifier, 2, 1, 3, &[2]))
+    let mut authority = authority();
+    authority
+        .accept(candidate(&authority, document(&keys(1, 2, &[]), 1), 2))
         .unwrap();
-    let pruned = candidate(&verifier, 3, 1, 3, &[]);
-    verifier.accept(pruned.clone()).unwrap();
-    let mut fresh = self::verifier();
-    fresh.accept(candidate(&fresh, 3, 1, 3, &[])).unwrap();
+    authority
+        .accept(candidate(&authority, document(&keys(2, 3, &[2]), 1), 3))
+        .unwrap();
+    let pruned = keys(3, 3, &[]);
+    authority
+        .accept(candidate(&authority, document(&pruned, 1), 3))
+        .unwrap();
+    let mut fresh = self::authority();
+    fresh
+        .accept(candidate(&fresh, document(&pruned, 1), 3))
+        .unwrap();
+    let mut unsigned = check(&authority, document(&pruned, 2)).unwrap();
+    let value = serde_json::to_value(unsigned.document()).unwrap();
     for signer in [1, 2, 4] {
         assert_eq!(
-            verify_online_approval(
-                verifier.authority,
-                pruned.keys.clone(),
-                signed(pruned.keys(), 2, signer),
-                sigstore()
-            )
-            .unwrap_err(),
+            verify_proof(&mut unsigned, sign(&value, signer), Value::Null, NOW).unwrap_err(),
             Error::InactiveKey
         );
     }
     // The root can also rotate without carrying earlier public keys forward.
-    verifier.accept(candidate(&verifier, 4, 1, 4, &[])).unwrap();
+    authority
+        .accept(candidate(&authority, document(&keys(4, 4, &[]), 1), 4))
+        .unwrap();
 }
 
 #[test]
-fn signatures_are_bound_to_active_key_payload_purpose_and_delegation() {
+fn signatures_are_bound_to_the_active_key_document_and_purpose() {
+    let authority = authority();
     let keys = keys(2, 3, &[2]);
-    let valid = signed(&keys, 1, 3);
-    assert!(verify_online_approval([0; 32], keys.clone(), valid.clone(), sigstore()).is_ok());
+    let original = document(&keys, 1);
+    let value = serde_json::to_value(&original).unwrap();
+    let verify = |document: EvidenceDocument, signature: StogasSignature| {
+        let mut candidate = check(&authority, document)?;
+        verify_proof(&mut candidate, signature, Value::Null, NOW)
+    };
+    // The signature passes; only the absent unit-test log entry remains.
+    assert!(matches!(
+        verify(original.clone(), sign(&value, 3)),
+        Err(Error::Transparency(_))
+    ));
     for seed in [1, 2, 4] {
         assert_eq!(
-            verify_online_approval([0; 32], keys.clone(), signed(&keys, 1, seed), sigstore())
-                .unwrap_err(),
+            verify(original.clone(), sign(&value, seed)).unwrap_err(),
             Error::InactiveKey
         );
     }
-    let mut invalid_signature = valid.clone();
-    invalid_signature.signature.signature =
-        sign(&serde_json::to_value(&valid.document).unwrap(), 4).signature;
+    let mut other_signer = sign(&value, 3);
+    other_signer.signature = sign(&value, 4).signature;
     assert_eq!(
-        verify_online_approval([0; 32], keys.clone(), invalid_signature, sigstore()).unwrap_err(),
+        verify(original.clone(), other_signer).unwrap_err(),
         Error::Signature
     );
-    for mutation in [
-        "revision",
-        "hardware",
-        "delegation",
-        "sigstore",
-        "purpose",
-        "gateway",
-    ] {
-        let mut tampered = valid.clone();
-        match mutation {
-            "revision" => tampered.document.revision += 1,
-            "hardware" => {
-                tampered.document.hardware_policy.policies[0]
-                    .minimum_tcb
-                    .snp -= 1;
-            }
-            "delegation" => tampered.document.key_manifest_sha256 = "4".repeat(64),
-            "sigstore" => tampered.document.sigstore_sha256 = "4".repeat(64),
-            "purpose" => tampered.document.schema = KEY_MANIFEST_SCHEMA.into(),
-            _ => tampered.document.gateways.clear(),
-        }
-        assert!(
-            verify_online_approval([0; 32], keys.clone(), tampered, sigstore()).is_err(),
-            "{mutation}"
+    let without_domain = StogasSignature {
+        key_id: keys.active_key.key_id.clone(),
+        signature: URL_SAFE_NO_PAD
+            .encode(key(3).1.sign(&canonical_payload(&value).unwrap()).unwrap()),
+    };
+    assert_eq!(
+        verify(original.clone(), without_domain).unwrap_err(),
+        Error::Signature
+    );
+    let edits: [fn(&mut EvidenceDocument); 4] = [
+        |document| document.revision += 1,
+        |document| document.hardware_policies[0].minimum_tcb.snp -= 1,
+        |document| document.gateways.clear(),
+        |document| document.keys.signature.signature.clear(),
+    ];
+    for edit in edits {
+        let mut tampered = original.clone();
+        edit(&mut tampered);
+        assert_eq!(
+            verify(tampered, sign(&value, 3)).unwrap_err(),
+            Error::Signature
         );
     }
-    let mut wrong_purpose = valid.clone();
-    wrong_purpose.signature.signature = URL_SAFE_NO_PAD.encode(
-        key(3)
-            .1
-            .sign(&canonical_payload(&serde_json::to_value(&valid.document).unwrap()).unwrap())
-            .unwrap(),
-    );
-    assert_eq!(
-        verify_online_approval([0; 32], keys.clone(), wrong_purpose, sigstore()).unwrap_err(),
-        Error::Signature
-    );
-    // A validly signed approval selects only the Sigstore files it names.
-    let mut other_sigstore = valid.document;
-    other_sigstore.sigstore_sha256 = "5".repeat(64);
-    assert_eq!(
-        verify_online_approval([0; 32], keys, resign(other_sigstore, 3), sigstore()).unwrap_err(),
-        Error::Invalid("Sigstore files digest mismatch".into())
-    );
+    // The document must carry exactly the key manifest and Sigstore files the caller verified.
+    let mut other_sigstore = original.clone();
+    other_sigstore.sigstore.roots.push(String::new());
+    let mut other_keys = original;
+    other_keys.keys.document.generation += 1;
+    for substituted in [other_sigstore, other_keys] {
+        assert_eq!(
+            check_document(
+                authority.root_sha256,
+                verified_keys(&keys),
+                substituted,
+                Arc::clone(&sigstore().1)
+            )
+            .unwrap_err(),
+            Error::Invalid("verified keys or Sigstore files differ".into())
+        );
+    }
 }
 
 #[test]
-fn manifests_reject_ambiguous_ids_keys_versions_and_counters() {
+fn documents_reject_ambiguous_ids_keys_versions_and_counters() {
     let root = root(1);
     for generation in [0, MAX_REVISION + 1, u64::MAX] {
         assert!(validate_keys(&keys(generation, 2, &[]), Environment::Production, &root).is_err());
@@ -490,20 +491,16 @@ fn manifests_reject_ambiguous_ids_keys_versions_and_counters() {
         invalid_key.key_id = id.into();
         assert!(decode_key(&invalid_key.key_id, &invalid_key.public_key).is_err());
     }
+    let authority = authority();
     let keys = keys(1, 2, &[]);
     for revision in [0, MAX_REVISION + 1, u64::MAX] {
-        assert!(
-            verify_online_approval(
-                [0; 32],
-                keys.clone(),
-                signed(&keys, revision, 2),
-                sigstore()
-            )
-            .is_err()
-        );
+        assert!(check(&authority, document(&keys, revision)).is_err());
     }
+    let mut other_schema = document(&keys, 1);
+    other_schema.schema = KEY_MANIFEST_SCHEMA.into();
+    assert!(check(&authority, other_schema).is_err());
     for sequences in [[1, 1], [2, 1]] {
-        let mut gateways = signed(&keys, 1, 2).document;
+        let mut gateways = document(&keys, 1);
         gateways.gateways = sequences
             .iter()
             .map(|sequence| {
@@ -512,7 +509,7 @@ fn manifests_reject_ambiguous_ids_keys_versions_and_counters() {
                 release
             })
             .collect();
-        let mut catalogs = signed(&keys, 1, 2).document;
+        let mut catalogs = document(&keys, 1);
         catalogs.catalogs = sequences
             .iter()
             .map(|sequence| {
@@ -523,8 +520,7 @@ fn manifests_reject_ambiguous_ids_keys_versions_and_counters() {
             .collect();
         for invalid in [gateways, catalogs] {
             assert_eq!(
-                verify_online_approval([0; 32], keys.clone(), resign(invalid, 2), sigstore())
-                    .unwrap_err(),
+                check(&authority, invalid).unwrap_err(),
                 Error::Invalid("approved releases must be ordered by unique sequence".into())
             );
         }
@@ -533,60 +529,62 @@ fn manifests_reject_ambiguous_ids_keys_versions_and_counters() {
 
 #[test]
 fn root_inclusion_is_mandatory_and_failure_never_advances_state() {
-    let mut verifier = verifier();
-    verifier.accept(candidate(&verifier, 1, 1, 2, &[])).unwrap();
+    let mut authority = authority();
+    authority
+        .accept(candidate(&authority, document(&keys(1, 2, &[]), 1), 2))
+        .unwrap();
     let keys = SignedKeyManifest {
         signature: sign(&serde_json::to_value(keys(2, 3, &[2])).unwrap(), 1),
         document: keys(2, 3, &[2]),
         inclusion: json!({}),
     };
-    let error = verifier
+    let error = authority
         .observe_keys(
             &serde_json::to_vec(&keys).unwrap(),
-            sigstore().trusted_root(),
-            1_789_900_000_000,
+            sigstore().1.trusted_root(),
+            NOW,
         )
         .unwrap_err();
     assert!(matches!(error, Error::Transparency(_)));
-    assert_eq!(verifier.accepted().unwrap().keys().generation, 1);
+    assert_eq!(authority.accepted().unwrap().keys().generation, 1);
 }
 
 #[test]
 fn strict_boundary_rejects_unknown_duplicate_trailing_and_oversized_inputs() {
-    let verifier = verifier();
+    let authority = authority();
     let keys = SignedKeyManifest {
         signature: sign(&serde_json::to_value(keys(1, 2, &[])).unwrap(), 1),
         document: keys(1, 2, &[]),
         inclusion: json!({}),
     };
     let valid = serde_json::to_string(&keys).unwrap();
-    let trust = sigstore();
+    let trust = sigstore().1.trusted_root();
     for input in [
         format!("{valid}{{}}"),
         valid.replacen("\"generation\":1", "\"generation\":1,\"generation\":2", 1),
         valid.replacen("\"generation\":1", "\"generation\":1,\"extra\":true", 1),
     ] {
         assert!(matches!(
-            verifier.observe_keys(input.as_bytes(), trust.trusted_root(), 0),
+            authority.observe_keys(input.as_bytes(), trust, 0),
             Err(Error::Invalid(_))
         ));
     }
     assert_eq!(
-        verifier
-            .observe_keys(&vec![b' '; MAX_INPUT_BYTES + 1], trust.trusted_root(), 0)
+        authority
+            .observe_keys(&vec![b' '; MAX_INPUT_BYTES + 1], trust, 0)
             .unwrap_err(),
         Error::TooLarge
     );
-    assert!(verifier.accepted().is_none());
+    assert!(authority.accepted().is_none());
 }
 
 #[test]
 fn a_candidate_from_another_root_cannot_be_installed() {
-    let mut verifier = verifier();
-    let other = ApprovalVerifier::new(Environment::Production, root(5)).unwrap();
+    let mut authority = authority();
+    let other = Authority::new(Environment::Production, root(5)).unwrap();
     assert_eq!(
-        verifier
-            .accept(candidate(&other, 1, 1, 2, &[]))
+        authority
+            .accept(candidate(&other, document(&keys(1, 2, &[]), 1), 2))
             .unwrap_err(),
         Error::Authority
     );
@@ -618,17 +616,15 @@ fn staging_capable_verifier_rejects_placeholders_in_a_production_context() {
             { "name": "catalog.public.json", "digest": { "sha256": &catalog.document.artifacts.public.sha256 } }
         ]
     });
-    let now = 1_789_900_000_000;
     for (environment, allowed) in [
         (Environment::Staging, true),
         (Environment::Production, false),
     ] {
         let mut keys = keys(1, 2, &[]);
         keys.environment = environment;
-        let approvals =
-            verify_online_approval([0; 32], keys.clone(), signed(&keys, 1, 2), sigstore()).unwrap();
-        let gateway = approvals.verify_gateway(&gateway, now);
-        let catalog = approvals.verify_catalog(&catalog, now);
+        let evidence = check(&authority(), document(&keys, 1)).unwrap();
+        let gateway = evidence.verify_gateway(&gateway, NOW);
+        let catalog = evidence.verify_catalog(&catalog, NOW);
         if allowed {
             gateway.unwrap();
             catalog.unwrap();
@@ -642,24 +638,20 @@ fn staging_capable_verifier_rejects_placeholders_in_a_production_context() {
 #[cfg(feature = "staging")]
 #[test]
 fn environments_are_signed_and_cannot_share_candidates() {
-    let verifier = verifier();
+    let authority = authority();
     let mut manifest = keys(1, 2, &[]);
     manifest.environment = Environment::Staging;
     assert_eq!(
-        validate_keys(&manifest, verifier.environment, &verifier.root).unwrap_err(),
+        validate_keys(&manifest, authority.environment, &authority.root).unwrap_err(),
         Error::Authority
     );
-    let mut signed = signed(&manifest, 1, 2);
-    signed.document.environment = Environment::Production;
-    signed.signature = sign(&serde_json::to_value(&signed.document).unwrap(), 2);
-    assert_eq!(
-        verify_online_approval(verifier.authority, manifest, signed, sigstore()).unwrap_err(),
-        Error::Authority
-    );
-    let mut staging = ApprovalVerifier::new(Environment::Staging, root(1)).unwrap();
+    let mut production = document(&manifest, 1);
+    production.environment = Environment::Production;
+    assert_eq!(check(&authority, production).unwrap_err(), Error::Authority);
+    let mut staging = Authority::new(Environment::Staging, root(1)).unwrap();
     assert_eq!(
         staging
-            .accept(candidate(&verifier, 1, 1, 2, &[]))
+            .accept(candidate(&authority, document(&keys(1, 2, &[]), 1), 2))
             .unwrap_err(),
         Error::Authority
     );

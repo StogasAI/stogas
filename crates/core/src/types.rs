@@ -10,22 +10,13 @@ pub struct LoggedDocument<T> {
     pub inclusion: Value,
 }
 
-/// A release manifest and the build proof that names its files. The signed approval
-/// manifest that lists it is the only Stogas signature over it.
+/// A release manifest and the build proof that names its files. The signed evidence that
+/// lists it is the only Stogas signature over it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReleaseEvidence<T> {
     pub document: T,
     pub provenance: Value,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct HardwarePolicy {
-    pub policies: Vec<AmdSevSnpPolicy>,
-    pub schema: String,
-    /// Increases by one whenever the rules change, so one version always names the same rules.
-    pub version: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -201,16 +192,30 @@ pub struct InspectedSnpQuote {
     pub reported_tcb: String,
 }
 
+/// One AMD KDS object: a product's ARK, ASK or CRL, or one platform's VCEK.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct VendorCollateral {
+pub struct AmdCollateral {
+    pub collateral_type: AmdCollateralType,
+    /// The product whose ARK and ASK issue this object.
+    pub ca_product_name: String,
+    pub der_base64url: String,
+    /// A VCEK's own KDS product, chip and reported TCB; product rows omit them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub product_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chip_id: Option<String>,
-    pub collateral_type: String,
-    pub fetched_at: String,
-    pub payload: BTreeMap<String, Value>,
-    pub sha256: String,
-    pub source_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_tcb: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq, Ord, PartialOrd)]
+#[serde(rename_all = "lowercase")]
+pub enum AmdCollateralType {
+    Ark,
+    Ask,
+    Crl,
+    Vcek,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -254,12 +259,4 @@ pub struct VerifiedCatalogRelease {
     pub source_repository: String,
     pub source_sha256: String,
     pub source_tag: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct VerifiedHardwarePolicy {
-    pub chip_ids: Vec<String>,
-    pub policy_count: usize,
-    pub sha256: String,
-    pub version: u64,
 }

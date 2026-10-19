@@ -11,7 +11,7 @@ function binding() {
 			return {
 				environment,
 				e2ee_origin: 'https://e2ee.example',
-				evidence_origins: ['https://r2.example/bundle', 'https://aws.example/bundle']
+				evidence_origins: ['https://r2.example/evidence', 'https://aws.example/evidence']
 			};
 		},
 		EvidenceVerifier: class {
@@ -21,7 +21,7 @@ function binding() {
 			refresh(bytes) {
 				assert.equal(new TextDecoder().decode(bytes), '{}');
 				return {
-					summary: () => ({ approvals: { revision: 1 } }),
+					summary: () => ({ document: { revision: 1 } }),
 					require_current_keys() {},
 					free() {}
 				};
@@ -112,15 +112,15 @@ test('explicit refresh shares acquisition, exposes copied evidence, and isolates
 		observed++;
 		if (observed > 1) throw new Error('observer');
 	});
-	const [first, second] = await Promise.all([transport.refreshBundle(), transport.refreshBundle()]);
+	const [first, second] = await Promise.all([transport.refreshEvidence(), transport.refreshEvidence()]);
 	assert.deepEqual(first, second);
-	assert.deepEqual(attempts, ['https://r2.example/bundle', 'https://aws.example/bundle']);
+	assert.deepEqual(attempts, ['https://r2.example/evidence', 'https://aws.example/evidence']);
 	assert.equal(observed, 2);
-	const snapshot = transport.bundleSnapshot;
+	const snapshot = transport.evidenceSnapshot;
 	assert.equal(snapshot.status, 'ready');
-	snapshot.bundle.approvals.revision = 999;
-	assert.equal(transport.bundleSnapshot.bundle.approvals.revision, 1);
-	assert.deepEqual(transport.bundleURLs, attempts);
+	snapshot.evidence.document.revision = 999;
+	assert.equal(transport.evidenceSnapshot.evidence.document.revision, 1);
+	assert.deepEqual(transport.evidenceURLs, attempts);
 	await transport.close();
 	await transport.close();
 	assert.equal(fixture.freed, 1);
@@ -147,7 +147,7 @@ test('disposal aborts acquisition and failed creation frees the compiled verifie
 				started();
 			})
 	});
-	const refresh = transport.refreshBundle();
+	const refresh = transport.refreshEvidence();
 	await waiting;
 	await transport.close();
 	await assert.rejects(refresh, /closed/i);

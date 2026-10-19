@@ -29,7 +29,7 @@ mod upstream;
 const MAX_MANAGED_RESPONSE_LINE_BYTES: usize = 8 * 1024;
 const MAX_MANAGED_ERROR_BYTES: usize = 8 * 1024;
 
-pub use stogas_core::approvals::Environment;
+pub use stogas_core::authority::Environment;
 
 /// The two independently verified transport profiles.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,11 +95,11 @@ pub struct Transport {
 }
 
 impl Transport {
-    /// Start a transport and verify the first bundle before returning.
+    /// Start a transport and verify the first evidence before returning.
     ///
     /// # Errors
     ///
-    /// Returns an error when configuration is invalid, the first bundle cannot be verified, or the
+    /// Returns an error when configuration is invalid, the first evidence cannot be verified, or the
     /// local transport runtime cannot start.
     pub fn start(options: &TransportOptions) -> Result<Self> {
         options.validate()?;
@@ -191,15 +191,15 @@ impl Transport {
         &self.base_url
     }
 
-    /// Fetch and atomically activate a newer bundle now.
+    /// Fetch and atomically activate newer evidence now.
     ///
-    /// Returns `true` when the verified bundle contents changed.
+    /// Returns `true` when the verified evidence changed.
     ///
     /// # Errors
     ///
     /// Returns an error when the local transport is unavailable or the fetched replacement fails
     /// verification.
-    pub fn refresh_bundle(&self) -> Result<bool> {
+    pub fn refresh_evidence(&self) -> Result<bool> {
         self.ensure_running()?;
         let mut stream = TcpStream::connect_timeout(&self.refresh_address, Duration::from_secs(5))
             .map_err(|error| self.io_error(error))?;
@@ -251,10 +251,10 @@ impl Transport {
                     .read_to_end(&mut remainder)
                     .map_err(|error| self.io_error(error))?;
                 if remainder.len() > MAX_MANAGED_ERROR_BYTES {
-                    bail!("bundle refresh failed with HTTP {status}");
+                    bail!("evidence refresh failed with HTTP {status}");
                 }
                 bail!(
-                    "bundle refresh failed with HTTP {status}: {}",
+                    "evidence refresh failed with HTTP {status}: {}",
                     String::from_utf8_lossy(&remainder).trim()
                 );
             }
@@ -401,7 +401,7 @@ mod tests {
         let transport = stopped_transport(Some("managed transport stopped: verification failed"));
 
         let error = transport
-            .refresh_bundle()
+            .refresh_evidence()
             .expect_err("a stopped transport must reject refresh");
 
         assert_eq!(
@@ -417,7 +417,7 @@ mod tests {
         transport.close();
 
         let error = transport
-            .refresh_bundle()
+            .refresh_evidence()
             .expect_err("a closed transport must reject refresh");
         assert_eq!(error.to_string(), "managed transport is closed");
     }

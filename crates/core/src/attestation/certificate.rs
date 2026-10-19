@@ -6,7 +6,7 @@ use x509_parser::parse_x509_certificate;
 
 pub use super::evidence::MAX_EVIDENCE_BYTES;
 use super::{Binding, evidence::SessionEvidence};
-use crate::approvals::Environment;
+use crate::authority::Environment;
 
 pub const MEDIA_TYPE: &[u8] = b"application/vnd.stogas.native-tls.v1";
 pub const MAX_CERTIFICATE_BYTES: usize = 64 * 1024 - 13;

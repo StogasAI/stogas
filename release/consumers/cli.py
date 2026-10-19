@@ -31,10 +31,10 @@ def offline(cli, version, fixtures, work):
         raise SystemExit("The CLI reported a different version")
     # Staging evidence fails only on its authority at its own verification time.
     fixture = json.loads((fixtures / "hardware-session-v1.json").read_text())
-    bundle = work / "staging-bundle.json"
-    bundle.write_text(json.dumps(fixture["bundle"]))
-    run(cli, "verify", "--environment", "staging", str(bundle), accepted=False)
-    run(cli, "verify", "--now-unix-ms", str(fixture["verified_at_ms"]), str(bundle), accepted=False)
+    evidence = work / "staging-evidence.json"
+    evidence.write_text(json.dumps(fixture["evidence"]))
+    run(cli, "verify", "--environment", "staging", str(evidence), accepted=False)
+    run(cli, "verify", "--now-unix-ms", str(fixture["verified_at_ms"]), str(evidence), accepted=False)
     key = work / "organization.key"
     key_id = run(cli, "encryption-key", "--output", str(key)).strip()
     plaintext = work / "plugins.json"
@@ -52,10 +52,10 @@ def live(cli, environment, work):
         run(cli, "probe", "--environment", environment, "--security", security)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     for index, origin in enumerate(ORIGINS[environment]):
-        bundle = work / f"current-{index}.json"
+        evidence = work / f"current-{index}.json"
         with opener.open(f"{origin}/evidence/latest.json", timeout=30) as response:
-            bundle.write_bytes(response.read())
-        run(cli, "verify", "--environment", environment, "--json", str(bundle))
+            evidence.write_bytes(response.read())
+        run(cli, "verify", "--environment", environment, "--json", str(evidence))
 
 
 if __name__ == "__main__":

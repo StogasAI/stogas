@@ -71,9 +71,9 @@ pub unsafe extern "C" fn stogas_channel_setup(
             return Err(Error::Record);
         }
         let environment = match environment {
-            1 => stogas_core::approvals::Environment::Production,
+            1 => stogas_core::authority::Environment::Production,
             #[cfg(feature = "staging")]
-            2 => stogas_core::approvals::Environment::Staging,
+            2 => stogas_core::authority::Environment::Staging,
             _ => return Err(Error::Record),
         };
         // SAFETY: non-null inputs have the readable sizes specified by the ABI.

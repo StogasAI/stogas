@@ -17,7 +17,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 use stogas_core::{
-    approvals::Environment,
+    authority::Environment,
     channel::{self, ClientRequest, ClientSession},
 };
 use tokio::{

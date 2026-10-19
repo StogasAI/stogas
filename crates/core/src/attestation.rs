@@ -3,7 +3,7 @@
 use sha2::{Digest, Sha512};
 use thiserror::Error;
 
-use crate::approvals::Environment;
+use crate::authority::Environment;
 
 mod identity;
 pub use identity::snp_node_id;

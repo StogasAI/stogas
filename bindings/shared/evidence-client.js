@@ -1,6 +1,6 @@
 import { readBoundedBody } from './http.js';
 
-const MAX_BUNDLE_BYTES = 16 * 1024 * 1024;
+const MAX_EVIDENCE_BYTES = 16 * 1024 * 1024;
 const ORIGIN_TIMEOUT_MS = 5_000;
 export const SETUP_TIMEOUT_MS = 15_000;
 
@@ -155,8 +155,8 @@ export class EvidenceClient {
 				old?.free(); // Requests own independent Arc-backed snapshot handles.
 				try {
 					this.#onSnapshot({
-						bundle: snapshot.summary(),
-						bundleURL: this.#origins[index],
+						evidence: snapshot.summary(),
+						evidenceURL: this.#origins[index],
 						fetchedAtUnixMs: Date.now(),
 						fetchDurationMs,
 						verificationDurationMs,
@@ -202,7 +202,7 @@ export class EvidenceClient {
 			return cached;
 		}
 		if (response.status === 200) {
-			const bytes = await readBoundedBody(response, MAX_BUNDLE_BYTES, signal);
+			const bytes = await readBoundedBody(response, MAX_EVIDENCE_BYTES, signal);
 			return { bytes, etag: response.headers.get('etag') };
 		}
 		await response.body?.cancel().catch(() => {});

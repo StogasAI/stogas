@@ -56,7 +56,7 @@ impl Snapshot {
             )?))
     }
 
-    /// Recheck an existing channel under updated approvals/collateral, retaining its original
+    /// Recheck an existing channel under updated evidence and collateral, retaining its original
     /// verified challenge/key binding. This does not authenticate a new transport connection.
     ///
     /// # Errors
@@ -85,7 +85,7 @@ impl Snapshot {
         parsed
             .evidence
             .verify_channel_binding(
-                self.approvals.keys().environment,
+                self.evidence.document().environment,
                 challenge,
                 parsed.signer_spki_sha256,
             )

@@ -79,7 +79,7 @@ func TestLiveGatewayRejectsAnInvalidKeyThroughEachSecurityMode(t *testing.T) {
 			var refreshes sync.WaitGroup
 			for range 3 {
 				refreshes.Go(func() {
-					if _, err := transport.RefreshBundle(); err != nil {
+					if _, err := transport.RefreshEvidence(); err != nil {
 						t.Error(err)
 					}
 				})
@@ -87,7 +87,7 @@ func TestLiveGatewayRejectsAnInvalidKeyThroughEachSecurityMode(t *testing.T) {
 			refreshes.Wait()
 			_ = transport.Close()
 			_ = transport.Close()
-			if _, err := transport.RefreshBundle(); !errors.Is(err, ErrTransportClosed) {
+			if _, err := transport.RefreshEvidence(); !errors.Is(err, ErrTransportClosed) {
 				t.Fatalf("closed transport refresh: %v", err)
 			}
 		})

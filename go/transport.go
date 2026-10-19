@@ -85,8 +85,8 @@ func (transport *Transport) BaseURL() (string, error) {
 	return transport.baseURL, nil
 }
 
-// RefreshBundle fetches and atomically activates a newer bundle now.
-func (transport *Transport) RefreshBundle() (bool, error) {
+// RefreshEvidence fetches and atomically activates newer evidence now.
+func (transport *Transport) RefreshEvidence() (bool, error) {
 	transport.mu.Lock()
 	defer transport.mu.Unlock()
 	if transport.handle == nil {

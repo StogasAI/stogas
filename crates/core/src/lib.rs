@@ -1,11 +1,11 @@
-//! Deterministic, networkless verification for Stogas confidential bundles.
+//! Deterministic, networkless verification for Stogas confidential evidence.
 
 pub(crate) use stogas_sigstore::strict_json;
 mod kem;
 mod types;
 
-pub mod approvals;
 pub mod attestation;
+pub mod authority;
 pub mod channel;
 pub mod evidence;
 #[cfg(feature = "gateway")]
@@ -21,8 +21,6 @@ use base64::{
     Engine as _,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
-#[cfg(any(feature = "snp", all(test, feature = "staging")))]
-use chrono::{DateTime, Utc};
 #[cfg(feature = "snp")]
 use p256::ecdsa::{
     Signature as P256Signature, VerifyingKey as P256VerifyingKey, signature::Verifier as _,
@@ -70,7 +68,6 @@ const SNP_POLICY_COMMON_FORBIDDEN: u64 =
 #[cfg(feature = "staging")]
 const STAGING_PROVENANCE_TYPE: &str = "https://stogas.ai/attestations/staging-development/v1";
 const STOGAS_SIGNATURE_DOMAIN: &[u8] = b"stogas signed document v1\n";
-const BUNDLE_ENVELOPE_SCHEMA: &str = "stogas.confidential-bundle-envelope.v1";
 const SNP_PLATFORM_INFO_KNOWN_MASK: u64 = 0xbf;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -234,14 +231,12 @@ struct StagingDevelopmentSubject {
 /// Failure to authenticate or appraise supplied evidence.
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("bundle exceeds {MAX_INPUT_BYTES} bytes")]
+    #[error("input exceeds {MAX_INPUT_BYTES} bytes")]
     TooLarge,
-    #[error("invalid bundle JSON: {0}")]
+    #[error("invalid JSON: {0}")]
     InvalidJson(String),
-    #[error("unsupported or invalid bundle: {0}")]
-    InvalidBundle(String),
-    #[error("bundle checksum failed: {0}")]
-    BundleChecksum(String),
+    #[error("unsupported or invalid evidence: {0}")]
+    InvalidEvidence(String),
     #[error("release verification failed: {0}")]
     Release(String),
     #[error("node verification failed: {0}")]
@@ -496,37 +491,16 @@ fn verify_raw_snp_report_signature(
         .map_err(|error| Error::Node(format!("{label} SNP signature: {error}")))
 }
 
-fn verify_hardware_policy(policy: &HardwarePolicy) -> Result<VerifiedHardwarePolicy, Error> {
-    let canonical = validate_hardware_policy(policy)?;
-    let mut chip_ids = policy
-        .policies
-        .iter()
-        .flat_map(|policy| policy.chip_ids.iter().cloned())
-        .collect::<Vec<_>>();
-    chip_ids.sort_unstable();
-    chip_ids.dedup();
-    Ok(VerifiedHardwarePolicy {
-        chip_ids,
-        policy_count: policy.policies.len(),
-        sha256: hex::encode(Sha256::digest(canonical.as_bytes())),
-        version: policy.version,
-    })
-}
-
-fn validate_hardware_policy(policy: &HardwarePolicy) -> Result<String, Error> {
-    if policy.schema != "stogas.hardware-policies.v1"
-        || !approvals::valid_revision(policy.version)
-        || policy.policies.is_empty()
-        || policy.policies.len() > MAX_NODES
-    {
-        return Err(Error::InvalidBundle(
-            "unsupported or invalid hardware policy".into(),
+fn validate_hardware_policies(policies: &[AmdSevSnpPolicy]) -> Result<(), Error> {
+    if policies.is_empty() || policies.len() > MAX_NODES {
+        return Err(Error::InvalidEvidence(
+            "hardware policy is empty or too large".into(),
         ));
     }
     let mut previous_group: Option<String> = None;
-    for profile in &policy.policies {
+    for profile in policies {
         if profile.chip_ids.is_empty() || profile.chip_ids.len() > MAX_NODES {
-            return Err(Error::InvalidBundle(
+            return Err(Error::InvalidEvidence(
                 "hardware policy group has no chip ids or is too large".into(),
             ));
         }
@@ -535,7 +509,7 @@ fn validate_hardware_policy(policy: &HardwarePolicy) -> Result<String, Error> {
             if !is_lower_hex(chip_id, 64)
                 || previous_chip.is_some_and(|previous| previous >= chip_id.as_str())
             {
-                return Err(Error::InvalidBundle(
+                return Err(Error::InvalidEvidence(
                     "hardware policy has an invalid, unsorted, or duplicate chip id".into(),
                 ));
             }
@@ -543,23 +517,23 @@ fn validate_hardware_policy(policy: &HardwarePolicy) -> Result<String, Error> {
         }
         let group = canonical_json(
             &serde_json::to_value(profile)
-                .map_err(|error| Error::InvalidBundle(format!("hardware policy: {error}")))?,
+                .map_err(|error| Error::InvalidEvidence(format!("hardware policy: {error}")))?,
         )?;
         if previous_group
             .as_ref()
             .is_some_and(|previous| previous >= &group)
         {
-            return Err(Error::InvalidBundle(
+            return Err(Error::InvalidEvidence(
                 "hardware policy groups are duplicated or not canonically ordered".into(),
             ));
         }
         previous_group = Some(group);
         let built_in = amd_product_from_cpuid(profile.cpuid_family, profile.cpuid_model)
             .ok_or_else(|| {
-                Error::InvalidBundle("hardware policy has an unsupported CPUID".into())
+                Error::InvalidEvidence("hardware policy has an unsupported CPUID".into())
             })?;
         if built_in.tcb_layout != AmdTcbLayout::Family19h {
-            return Err(Error::InvalidBundle(
+            return Err(Error::InvalidEvidence(
                 "hardware policy CPUID is not supported by this policy format".into(),
             ));
         }
@@ -575,7 +549,7 @@ fn validate_hardware_policy(policy: &HardwarePolicy) -> Result<String, Error> {
             || required_platform & !SNP_PLATFORM_INFO_KNOWN_MASK != 0
             || forbidden_platform & !SNP_PLATFORM_INFO_KNOWN_MASK != 0
         {
-            return Err(Error::InvalidBundle(
+            return Err(Error::InvalidEvidence(
                 "hardware policy has invalid platform-info masks".into(),
             ));
         }
@@ -588,20 +562,18 @@ fn validate_hardware_policy(policy: &HardwarePolicy) -> Result<String, Error> {
             "required current mitigation mask",
         )?;
     }
-    let value = serde_json::to_value(policy)
-        .map_err(|error| Error::InvalidBundle(format!("hardware policy: {error}")))?;
-    canonical_json(&value)
+    Ok(())
 }
 #[cfg(any(feature = "snp", test))]
 fn appraise_hardware(
-    policy: &HardwarePolicy,
+    policies: &[AmdSevSnpPolicy],
     chip_id: &str,
     appraise: impl Fn(&AmdSevSnpPolicy) -> Result<(), Error>,
 ) -> Result<(), Error> {
     // A chip may have several approved configurations during a transition. Each
     // must pass as a whole; never combine fields from separate configurations.
     let mut first_error = None;
-    for profile in policy.policies.iter().filter(|policy| {
+    for profile in policies.iter().filter(|policy| {
         policy
             .chip_ids
             .iter()
@@ -622,9 +594,9 @@ fn parse_u64_hex(value: &str, label: &str) -> Result<u64, Error> {
     let hex = value
         .strip_prefix("0x")
         .filter(|hex| is_lower_hex(hex, 8))
-        .ok_or_else(|| Error::InvalidBundle(format!("hardware policy {label} is invalid")))?;
+        .ok_or_else(|| Error::InvalidEvidence(format!("hardware policy {label} is invalid")))?;
     u64::from_str_radix(hex, 16)
-        .map_err(|_| Error::InvalidBundle(format!("hardware policy {label} is invalid")))
+        .map_err(|_| Error::InvalidEvidence(format!("hardware policy {label} is invalid")))
 }
 
 fn validate_catalog_shape(manifest: &CatalogReleaseManifest) -> Result<(), Error> {
@@ -640,7 +612,9 @@ fn validate_catalog_shape(manifest: &CatalogReleaseManifest) -> Result<(), Error
         || !valid_artifact(&manifest.artifacts.runtime, 64 * 1024 * 1024)
         || !valid_artifact(&manifest.artifacts.public, 64 * 1024 * 1024)
     {
-        return Err(Error::InvalidBundle("invalid catalog release shape".into()));
+        return Err(Error::InvalidEvidence(
+            "invalid catalog release shape".into(),
+        ));
     }
     Ok(())
 }
@@ -651,7 +625,7 @@ fn valid_artifact(artifact: &ReleaseArtifact, maximum_bytes: u64) -> bool {
 
 fn validate_gateway_release_manifest(manifest: &GatewayReleaseManifest) -> Result<(), Error> {
     if !gateway_release_manifest_shape_is_valid(manifest) {
-        return Err(Error::InvalidBundle(
+        return Err(Error::InvalidEvidence(
             "invalid gateway release manifest shape".into(),
         ));
     }
@@ -659,7 +633,7 @@ fn validate_gateway_release_manifest(manifest: &GatewayReleaseManifest) -> Resul
     validate_gateway_launch_policies(&manifest.sev_snp.launch_policies)?;
     let launch_policies = canonical_json(
         &serde_json::to_value(&manifest.sev_snp.launch_policies).map_err(|error| {
-            Error::InvalidBundle(format!("launch policy serialization: {error}"))
+            Error::InvalidEvidence(format!("launch policy serialization: {error}"))
         })?,
     )?;
     let launch_policies_sha256 = hex::encode(Sha256::digest(launch_policies.as_bytes()));
@@ -669,7 +643,7 @@ fn validate_gateway_release_manifest(manifest: &GatewayReleaseManifest) -> Resul
         .get("stogas/release/snp-launch-policies.json")
         != Some(&launch_policies_sha256)
     {
-        return Err(Error::InvalidBundle(
+        return Err(Error::InvalidEvidence(
             "gateway launch policy artifact does not match the release manifest".into(),
         ));
     }
@@ -727,7 +701,7 @@ fn validate_gateway_release_build(build: &GatewayReleaseBuild) -> Result<(), Err
         "stogas/release/pins.lock.json",
     ] {
         if !build.input_sha256.contains_key(path) {
-            return Err(Error::InvalidBundle(format!(
+            return Err(Error::InvalidEvidence(format!(
                 "gateway build input is absent: {path}"
             )));
         }
@@ -742,7 +716,7 @@ fn validate_gateway_release_build(build: &GatewayReleaseBuild) -> Result<(), Err
         &build.uki_sha256,
     ] {
         if !is_lower_hex(digest, 32) {
-            return Err(Error::InvalidBundle(
+            return Err(Error::InvalidEvidence(
                 "gateway release build digest is invalid".into(),
             ));
         }
@@ -752,7 +726,7 @@ fn validate_gateway_release_build(build: &GatewayReleaseBuild) -> Result<(), Err
         .iter()
         .any(|(name, digest)| name.is_empty() || name.len() > 256 || !is_lower_hex(digest, 32))
     {
-        return Err(Error::InvalidBundle(
+        return Err(Error::InvalidEvidence(
             "gateway release build input is invalid".into(),
         ));
     }
@@ -761,7 +735,7 @@ fn validate_gateway_release_build(build: &GatewayReleaseBuild) -> Result<(), Err
 
 fn validate_gateway_launch_policies(policies: &LaunchPolicies) -> Result<(), Error> {
     if policies.schema != "stogas.snp-launch-policies.v1" || policies.policies.is_empty() {
-        return Err(Error::InvalidBundle(
+        return Err(Error::InvalidEvidence(
             "invalid gateway launch policies".into(),
         ));
     }
@@ -769,7 +743,7 @@ fn validate_gateway_launch_policies(policies: &LaunchPolicies) -> Result<(), Err
     for policy in &policies.policies {
         let product_name = policy.product_name.as_str();
         if previous_product.is_some_and(|previous| previous >= product_name) {
-            return Err(Error::InvalidBundle(
+            return Err(Error::InvalidEvidence(
                 "gateway launch policies are duplicated or not sorted by product".into(),
             ));
         }
@@ -778,7 +752,7 @@ fn validate_gateway_launch_policies(policies: &LaunchPolicies) -> Result<(), Err
             .iter()
             .find(|profile| profile.product_name == product_name)
             .ok_or_else(|| {
-                Error::InvalidBundle(
+                Error::InvalidEvidence(
                     "gateway launch policy names an unsupported AMD product".into(),
                 )
             })?;
@@ -799,12 +773,14 @@ fn validate_gateway_launch_policy(
         || launch.vmpl != 0
         || !is_prefixed_lower_hex(&launch.policy, 8)
     {
-        return Err(Error::InvalidBundle("invalid gateway launch policy".into()));
+        return Err(Error::InvalidEvidence(
+            "invalid gateway launch policy".into(),
+        ));
     }
     let launch_policy = u64::from_str_radix(&launch.policy[2..], 16)
-        .map_err(|_| Error::InvalidBundle("invalid SNP launch policy".into()))?;
+        .map_err(|_| Error::InvalidEvidence("invalid SNP launch policy".into()))?;
     validate_snp_launch_policy(launch_policy, product)
-        .map_err(|error| Error::InvalidBundle(format!("invalid gateway launch policy: {error}")))
+        .map_err(|error| Error::InvalidEvidence(format!("invalid gateway launch policy: {error}")))
 }
 
 /// Launch values depend on the processor generation, not on the individual chip, so a new host
@@ -1123,7 +1099,6 @@ fn is_staging_development_provenance(
 #[derive(Clone, Debug)]
 struct AmdCollateralEntry {
     ca_product_name: String,
-    collateral_type: String,
     der: Vec<u8>,
     sha256: String,
     chip_id: Option<String>,
@@ -1144,135 +1119,62 @@ struct AmdCollateralStack {
     vek: Vec<u8>,
 }
 #[cfg(feature = "snp")]
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AmdKdsPayload {
-    ca_product_name: String,
-    #[serde(default)]
-    chip_id: Option<String>,
-    collateral_type: String,
-    der_base64url: String,
-    fetched_at: String,
-    #[serde(default)]
-    hwid: Option<String>,
-    product_name: String,
-    #[serde(default)]
-    reported_tcb: Option<String>,
-    schema: String,
-    sha256: String,
-    source: String,
-    source_url: String,
-    #[serde(default)]
-    tcb: Option<Value>,
-}
-#[cfg(feature = "snp")]
-fn expand_bundle_vendor_collateral(
-    rows: &[BTreeMap<String, Value>],
-) -> Result<Vec<VendorCollateral>, Error> {
-    rows.iter()
-        .map(|payload| {
-            let parsed: AmdKdsPayload =
-                serde_json::from_value(Value::Object(payload.clone().into_iter().collect()))
-                    .map_err(|error| {
-                        Error::InvalidBundle(format!("invalid AMD collateral: {error}"))
-                    })?;
-            Ok(VendorCollateral {
-                chip_id: parsed.chip_id,
-                collateral_type: parsed.collateral_type,
-                fetched_at: parsed.fetched_at,
-                payload: payload.clone(),
-                sha256: parsed.sha256,
-                source_url: parsed.source_url,
-            })
-        })
-        .collect()
-}
-#[cfg(feature = "snp")]
-type AmdCommonCollateral = BTreeMap<(String, String), AmdCollateralEntry>;
+type AmdCommonCollateral = BTreeMap<(String, AmdCollateralType), AmdCollateralEntry>;
 #[cfg(feature = "snp")]
 type AmdVcekCollateral = BTreeMap<String, AmdCollateralEntry>;
 #[cfg(feature = "snp")]
-// Fetch times describe delivery. Vendor signatures and validity are checked separately.
 fn parse_amd_collateral_entries(
-    rows: &[VendorCollateral],
+    rows: &[AmdCollateral],
 ) -> Result<(AmdCommonCollateral, AmdVcekCollateral), Error> {
-    let mut common = BTreeMap::<(String, String), AmdCollateralEntry>::new();
-    let mut vceks = BTreeMap::<String, AmdCollateralEntry>::new();
+    let mut common = AmdCommonCollateral::new();
+    let mut vceks = AmdVcekCollateral::new();
     let mut hashes = BTreeSet::new();
-
     for row in rows {
-        let payload: AmdKdsPayload = serde_json::from_value(
-            serde_json::to_value(&row.payload)
-                .map_err(|error| Error::InvalidBundle(error.to_string()))?,
-        )
-        .map_err(|error| Error::InvalidBundle(format!("invalid AMD collateral: {error}")))?;
-        let _ = (&payload.hwid, &payload.product_name, &payload.tcb);
-        if payload.schema != "stogas.amd-kds-collateral.v1"
-            || payload.source != "amd-kds"
-            || payload.collateral_type != row.collateral_type
-            || payload.fetched_at != row.fetched_at
-            || payload.sha256 != row.sha256
-            || payload.source_url != row.source_url
-            || payload.chip_id.as_deref() != row.chip_id.as_deref()
-        {
-            return Err(Error::InvalidBundle(
-                "AMD collateral envelope and payload differ".into(),
-            ));
-        }
-        if !matches!(row.collateral_type.as_str(), "ark" | "ask" | "crl" | "vcek") {
-            return Err(Error::InvalidBundle(
-                "unsupported AMD collateral type".into(),
-            ));
-        }
-        parse_time(&row.fetched_at)?;
         let der = URL_SAFE_NO_PAD
-            .decode(&payload.der_base64url)
-            .map_err(|_| Error::InvalidBundle("AMD collateral DER is not base64url".into()))?;
-        if hex::encode(Sha256::digest(&der)) != row.sha256 || !hashes.insert(row.sha256.clone()) {
-            return Err(Error::InvalidBundle(
-                "AMD collateral digest differs or is duplicated".into(),
-            ));
+            .decode(&row.der_base64url)
+            .map_err(|_| Error::InvalidEvidence("AMD collateral DER is not base64url".into()))?;
+        let sha256 = hex::encode(Sha256::digest(&der));
+        if !hashes.insert(sha256.clone()) {
+            return Err(Error::InvalidEvidence("duplicate AMD collateral".into()));
         }
         let entry = AmdCollateralEntry {
-            ca_product_name: payload.ca_product_name,
-            collateral_type: row.collateral_type.clone(),
+            ca_product_name: row.ca_product_name.clone(),
             der,
-            sha256: row.sha256.clone(),
+            sha256,
             chip_id: row.chip_id.clone(),
-            reported_tcb: payload.reported_tcb.map(|value| value.to_lowercase()),
+            reported_tcb: row.reported_tcb.as_deref().map(str::to_lowercase),
         };
-        if entry.collateral_type == "vcek" {
-            let chip_id = entry
-                .chip_id
-                .as_deref()
-                .ok_or_else(|| Error::InvalidBundle("AMD VCEK has no chip id".into()))?;
-            let reported_tcb = entry
-                .reported_tcb
-                .as_deref()
-                .ok_or_else(|| Error::InvalidBundle("AMD VCEK has no reported TCB".into()))?;
+        if row.collateral_type == AmdCollateralType::Vcek {
+            let (Some(chip_id), Some(reported_tcb), Some(_)) =
+                (&entry.chip_id, &entry.reported_tcb, &row.product_name)
+            else {
+                return Err(Error::InvalidEvidence(
+                    "AMD VCEK lacks its product, chip id or reported TCB".into(),
+                ));
+            };
             if vceks
                 .insert(amd_platform_key(chip_id, reported_tcb), entry)
                 .is_some()
             {
-                return Err(Error::InvalidBundle(
+                return Err(Error::InvalidEvidence(
                     "duplicate AMD VCEK platform evidence".into(),
                 ));
             }
         } else {
-            if entry.chip_id.is_some() || entry.reported_tcb.is_some() {
-                return Err(Error::InvalidBundle(
+            if row.product_name.is_some() || entry.chip_id.is_some() || entry.reported_tcb.is_some()
+            {
+                return Err(Error::InvalidEvidence(
                     "product-scoped AMD evidence has node identity".into(),
                 ));
             }
-            let key = (entry.ca_product_name.clone(), entry.collateral_type.clone());
+            let key = (entry.ca_product_name.clone(), row.collateral_type);
             if common.insert(key, entry).is_some() {
-                return Err(Error::InvalidBundle(
+                return Err(Error::InvalidEvidence(
                     "duplicate product-scoped AMD evidence".into(),
                 ));
             }
         }
     }
-
     Ok((common, vceks))
 }
 #[cfg(feature = "snp")]
@@ -1299,7 +1201,7 @@ fn check_raw_report_bindings(
     measurement: &str,
     launch: &LaunchValues,
     report: &[u8],
-    hardware_policy: Option<&HardwarePolicy>,
+    hardware_policies: Option<&[AmdSevSnpPolicy]>,
 ) -> Result<(), Error> {
     fn bytes<const N: usize>(value: &str, label: &str) -> Result<[u8; N], Error> {
         let decoded = hex::decode(value).map_err(|_| Error::Node(format!("invalid {label}")))?;
@@ -1386,8 +1288,8 @@ fn check_raw_report_bindings(
             return Err(Error::Node(format!("{} SNP {label} differs", node.node_id)));
         }
     }
-    if let Some(hardware_policy) = hardware_policy {
-        appraise_hardware(hardware_policy, node.chip_id, |profile| {
+    if let Some(hardware_policies) = hardware_policies {
+        appraise_hardware(hardware_policies, node.chip_id, |profile| {
             appraise_snp_report(report, report_product, profile, node.node_id)
         })?;
     }
@@ -1486,8 +1388,8 @@ fn verify_amd_certificates(
     collateral: &AmdCollateralStack,
     chip_id: &str,
     reported_tcb: &str,
-    bundle_created_at: i64,
-    bundle_expires_at: i64,
+    valid_from: i64,
+    valid_until: i64,
 ) -> Result<(), Error> {
     use sev::certs::snp::{Chain, Verifiable};
     use sha2::Sha384;
@@ -1504,11 +1406,11 @@ fn verify_amd_certificates(
         ));
     }
     for (label, cert) in [("ARK", &ark), ("ASK", &ask), ("VEK", &vek)] {
-        if cert.validity().not_before.timestamp() * 1000 > bundle_created_at
-            || cert.validity().not_after.timestamp() * 1000 < bundle_expires_at
+        if cert.validity().not_before.timestamp() * 1000 > valid_from
+            || cert.validity().not_after.timestamp() * 1000 < valid_until
         {
             return Err(Error::Node(format!(
-                "AMD {label} is not valid for the complete bundle interval"
+                "AMD {label} is not valid for the whole interval"
             )));
         }
     }
@@ -1775,12 +1677,6 @@ fn parse_der_octet_string(value: &[u8]) -> Option<&[u8]> {
         _ => None,
     }
 }
-#[cfg(any(feature = "snp", all(test, feature = "staging")))]
-fn parse_time(value: &str) -> Result<i64, Error> {
-    DateTime::parse_from_rfc3339(value)
-        .map(|value| value.with_timezone(&Utc).timestamp_millis())
-        .map_err(|_| Error::InvalidBundle(format!("invalid timestamp: {value}")))
-}
 
 fn verify_stogas_signature(
     public_der_b64: &str,
@@ -1807,7 +1703,7 @@ fn verify_stogas_signature(
 
 fn canonical_json(value: &Value) -> Result<String, Error> {
     let mut output = serde_json_canonicalizer::to_string(value)
-        .map_err(|error| Error::InvalidBundle(format!("canonical JSON: {error}")))?;
+        .map_err(|error| Error::InvalidEvidence(format!("canonical JSON: {error}")))?;
     output.push('\n');
     Ok(output)
 }
@@ -1823,52 +1719,46 @@ mod tests {
 
     #[test]
     fn groups_exact_chip_ids_under_shared_hardware_requirements() {
-        let policy: HardwarePolicy =
+        let policies: Vec<AmdSevSnpPolicy> =
             serde_json::from_str(include_str!("../tests/fixtures/milan-hardware-policy.json"))
                 .unwrap();
-        validate_hardware_policy(&policy).unwrap();
-        let chip_id = &policy.policies[0].chip_ids[0];
-        appraise_hardware(&policy, chip_id, |profile| {
+        validate_hardware_policies(&policies).unwrap();
+        let chip_id = &policies[0].chip_ids[0];
+        appraise_hardware(&policies, chip_id, |profile| {
             assert_eq!(profile.chip_ids, vec![chip_id.clone()]);
             Ok(())
         })
         .unwrap();
-        assert!(appraise_hardware(&policy, &"00".repeat(64), |_| Ok(())).is_err());
+        assert!(appraise_hardware(&policies, &"00".repeat(64), |_| Ok(())).is_err());
     }
 
     #[test]
     fn hardware_policy_alternatives_are_unique_canonical_and_individually_valid() {
-        let mut policy: HardwarePolicy =
+        let mut policies: Vec<AmdSevSnpPolicy> =
             serde_json::from_str(include_str!("../tests/fixtures/milan-hardware-policy.json"))
                 .unwrap();
-        let mut alternative = policy.policies[0].clone();
+        let mut alternative = policies[0].clone();
         alternative.forbidden_platform_info_mask = "0x0000000000000001".into();
-        policy.policies.push(alternative);
-        let summary = verify_hardware_policy(&policy).unwrap();
-        assert_eq!(summary.chip_ids, policy.policies[0].chip_ids);
-        assert_eq!(summary.policy_count, 2);
+        policies.push(alternative);
+        validate_hardware_policies(&policies).unwrap();
 
-        let mut invalid = policy.clone();
-        invalid.policies.reverse();
-        assert!(validate_hardware_policy(&invalid).is_err());
-        invalid = policy.clone();
-        invalid.policies[1] = invalid.policies[0].clone();
-        assert!(validate_hardware_policy(&invalid).is_err());
-        invalid = policy.clone();
-        let repeated_chip = invalid.policies[0].chip_ids[0].clone();
-        invalid.policies[1].chip_ids.push(repeated_chip);
-        assert!(validate_hardware_policy(&invalid).is_err());
-        invalid = policy.clone();
-        invalid.policies[1].required_platform_info_mask = "0x0000000000000025".into();
-        assert!(validate_hardware_policy(&invalid).is_err());
-        invalid = policy.clone();
-        invalid.policies[1].cpuid_family = 0;
-        assert!(validate_hardware_policy(&invalid).is_err());
-        for version in [0, 1 << 53] {
-            invalid = policy.clone();
-            invalid.version = version;
-            assert!(validate_hardware_policy(&invalid).is_err(), "{version}");
-        }
+        let mut invalid = policies.clone();
+        invalid.reverse();
+        assert!(validate_hardware_policies(&invalid).is_err());
+        invalid = policies.clone();
+        invalid[1] = invalid[0].clone();
+        assert!(validate_hardware_policies(&invalid).is_err());
+        invalid = policies.clone();
+        let repeated_chip = invalid[0].chip_ids[0].clone();
+        invalid[1].chip_ids.push(repeated_chip);
+        assert!(validate_hardware_policies(&invalid).is_err());
+        invalid = policies.clone();
+        invalid[1].required_platform_info_mask = "0x0000000000000025".into();
+        assert!(validate_hardware_policies(&invalid).is_err());
+        invalid = policies;
+        invalid[1].cpuid_family = 0;
+        assert!(validate_hardware_policies(&invalid).is_err());
+        assert!(validate_hardware_policies(&[]).is_err());
     }
 
     #[cfg(feature = "snp")]
@@ -1881,21 +1771,11 @@ mod tests {
         smt_on.minimum_tcb.microcode = 223;
         let mut smt_off = profile;
         smt_off.forbidden_platform_info_mask = "0x0000000000000001".into();
-        let transition = HardwarePolicy {
-            policies: vec![smt_on.clone(), smt_off.clone()],
-            schema: "stogas.hardware-policies.v1".into(),
-            version: 1,
-        };
-        let only_on = HardwarePolicy {
-            policies: vec![smt_on],
-            ..transition.clone()
-        };
-        let only_off = HardwarePolicy {
-            policies: vec![smt_off],
-            ..transition.clone()
-        };
-        for (policy, platform, microcode, allowed) in [
-            (&transition, 0x25_u64, 223, true),
+        let transition = [smt_on.clone(), smt_off.clone()];
+        let only_on = [smt_on];
+        let only_off = [smt_off];
+        for (policies, platform, microcode, allowed) in [
+            (&transition[..], 0x25_u64, 223, true),
             (&transition, 0x24, 222, true), // The first configuration fails, the second passes.
             (&transition, 0x25, 222, false), // Cannot borrow the SMT-off TCB minimum.
             (&transition, 0x24, 221, false),
@@ -1904,17 +1784,17 @@ mod tests {
             (&only_on, 0x24, 223, false),
             (&only_on, 0x25, 223, true),
         ] {
-            validate_hardware_policy(policy).unwrap();
+            validate_hardware_policies(policies).unwrap();
             let mut quote = report.clone();
             quote[0x40..0x48].copy_from_slice(&platform.to_le_bytes());
             for offset in [0x3f, 0x187, 0x1e7, 0x1f7] {
                 quote[offset] = microcode;
             }
-            let raw = appraise_hardware(policy, &chip, |rule| {
+            let raw = appraise_hardware(policies, &chip, |rule| {
                 appraise_snp_report(&quote, Some(product), rule, "node")
             });
             let facts = evidence::SnpHardwareFacts::from_report(&quote);
-            let retained = appraise_hardware(policy, &chip, |rule| facts.appraise(rule, "node"));
+            let retained = appraise_hardware(policies, &chip, |rule| facts.appraise(rule, "node"));
             assert_eq!(
                 raw.is_ok(),
                 allowed,
@@ -1930,7 +1810,7 @@ mod tests {
 
     #[cfg(feature = "snp")]
     fn appraisable_milan_report() -> (Vec<u8>, AmdSevSnpPolicy, &'static AmdProductProfile) {
-        let policy: HardwarePolicy =
+        let policies: Vec<AmdSevSnpPolicy> =
             serde_json::from_str(include_str!("../tests/fixtures/milan-hardware-policy.json"))
                 .unwrap();
         let profile = amd_product_from_cpuid(0x19, 0x01).unwrap();
@@ -1944,7 +1824,7 @@ mod tests {
         report[0x188..0x18b].copy_from_slice(&[0x19, 0x01, 0x01]);
         report[0x1f8..0x200].copy_from_slice(&0x0b_u64.to_le_bytes());
         report[0x200..0x208].copy_from_slice(&0x0b_u64.to_le_bytes());
-        (report, policy.policies[0].clone(), profile)
+        (report, policies[0].clone(), profile)
     }
 
     #[cfg(feature = "snp")]

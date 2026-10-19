@@ -1,12 +1,13 @@
 use super::*;
 use axum::{
     Router,
-    body::Body,
+    body::{Body, Bytes, to_bytes},
     extract::{Path, State},
-    http::{HeaderMap, Response},
-    routing::get,
+    http::{HeaderMap, Request, Response},
+    routing::{get, post},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use futures_util::stream;
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -104,23 +105,28 @@ fn fixture() -> (RootKey, Value) {
     let fixture = hardware_fixture();
     (
         serde_json::from_value(fixture["root"].clone()).unwrap(),
-        fixture["bundle"]["body"].clone(),
+        fixture["evidence"]["document"].clone(),
     )
 }
 
-/// Replaces edited approvals with their logged fixture signature; unchanged ones keep theirs.
-fn signed(mut body: Value) -> Vec<u8> {
-    let variants: Value = serde_json::from_str(include_str!(
-        "../../../../tests/fixtures/logged-approval-variants.json"
+/// Attaches the logged proof of the fixture evidence or of an edited variant.
+fn signed(document: &Value) -> Vec<u8> {
+    let proofs: Value = serde_json::from_str(include_str!(
+        "../../../../tests/fixtures/evidence-proofs-v1.json"
     ))
     .unwrap();
-    let digest =
-        stogas_core::approvals::payload_sha256(&body["approvals"]["document"]).unwrap();
-    if let Some(logged) = variants["approvals"].get(&digest) {
-        body["approvals"]["signature"] = logged["signature"].clone();
-        body["approvals"]["inclusion"] = logged["inclusion"].clone();
-    }
-    serde_json::to_vec(&json!({"schema":"stogas.confidential-bundle-envelope.v1", "body_sha256":stogas_core::approvals::payload_sha256(&body).unwrap(),"body":body})).unwrap()
+    let digest = stogas_core::authority::payload_sha256(document).unwrap();
+    let proof = &proofs["proofs"][&digest];
+    assert!(
+        proof.is_object(),
+        "missing logged evidence fixture {digest}"
+    );
+    serde_json::to_vec(&json!({
+        "document": document,
+        "signature": proof["signature"],
+        "inclusion": proof["inclusion"]
+    }))
+    .unwrap()
 }
 
 const fn reply(body: Vec<u8>, etag: &'static str) -> Reply {
@@ -186,23 +192,16 @@ async fn compression_cannot_bypass_the_decoded_evidence_limit() {
 #[tokio::test]
 async fn stale_success_falls_through_to_replica_and_etags_never_cross_origins() {
     let (root, mut latest) = fixture();
-    let target = stogas_core::approvals::payload_sha256(
-        &latest["approvals"]["document"]["catalogs"]
-            .as_array()
-            .unwrap()
-            .last()
-            .unwrap()["document"],
+    let target = stogas_core::authority::payload_sha256(
+        &latest["catalogs"].as_array().unwrap().last().unwrap()["document"],
     )
     .unwrap();
     let mut old = latest.clone();
-    old["approvals"]["document"]["catalogs"]
-        .as_array_mut()
-        .unwrap()
-        .pop();
-    latest["approvals"]["document"]["revision"] = json!(2);
+    old["catalogs"].as_array_mut().unwrap().pop();
+    latest["revision"] = json!(2);
     let server = Server::new([
-        reply(signed(old), "\"r2-old\""),
-        reply(signed(latest), "\"aws-new\""),
+        reply(signed(&old), "\"r2-old\""),
+        reply(signed(&latest), "\"aws-new\""),
     ])
     .await;
     let client = server.client(root);
@@ -213,7 +212,7 @@ async fn stale_success_falls_through_to_replica_and_etags_never_cross_origins() 
         .recover(deadline(), move |snapshot| {
             snapshot
                 .catalog(&required)
-                .ok_or_else(|| stogas_core::approvals::Error::NotApproved("catalog").into())
+                .ok_or_else(|| stogas_core::authority::Error::NotApproved("catalog").into())
                 .map(|_| ())
         })
         .await
@@ -235,10 +234,10 @@ async fn stale_success_falls_through_to_replica_and_etags_never_cross_origins() 
 
 #[tokio::test]
 async fn concurrent_recovery_shares_success_and_failed_recovery_has_one_cooldown() {
-    let (root, body) = fixture();
+    let (root, document) = fixture();
     let server = Server::new([
-        reply(signed(body.clone()), "\"one\""),
-        reply(signed(body), "\"two\""),
+        reply(signed(&document), "\"one\""),
+        reply(signed(&document), "\"two\""),
     ])
     .await;
     let client = Arc::new(server.client(root));
@@ -247,8 +246,7 @@ async fn concurrent_recovery_shares_success_and_failed_recovery_has_one_cooldown
     let (first, second) = tokio::join!(first, second);
     assert!(Arc::ptr_eq(&first.unwrap(), &second.unwrap()));
     assert_eq!(server.state.requests.lock().unwrap().len(), 1);
-    let missing =
-        |_: &Snapshot| Err(stogas_core::approvals::Error::NotApproved("gateway").into());
+    let missing = |_: &Snapshot| Err(stogas_core::authority::Error::NotApproved("gateway").into());
     assert!(matches!(
         client.recover(deadline(), missing).await,
         Err(Error::Verification(_))
@@ -270,11 +268,11 @@ async fn concurrent_recovery_shares_success_and_failed_recovery_has_one_cooldown
 
 #[tokio::test]
 async fn bad_or_oversized_delivery_preserves_snapshot_and_never_caches_the_candidate_etag() {
-    let (root, body) = fixture();
+    let (root, document) = fixture();
     for hostile in [b"{malformed".to_vec(), vec![b' '; MAX_INPUT_BYTES + 1]] {
         let server = Server::new([
-            reply(signed(body.clone()), "\"good\""),
-            reply(signed(body.clone()), "\"backup\""),
+            reply(signed(&document), "\"good\""),
+            reply(signed(&document), "\"backup\""),
         ])
         .await;
         let client = server.client(root.clone());
@@ -331,7 +329,7 @@ async fn native_setup_sends_nothing_before_evidence_and_never_redials_an_unresol
     use rustls::pki_types::ServerName;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let (root, body) = fixture();
+    let (root, document) = fixture();
     let server = Server::new([
         Reply {
             body: vec![],
@@ -363,8 +361,8 @@ async fn native_setup_sends_nothing_before_evidence_and_never_redials_an_unresol
     assert_eq!(dials.load(Ordering::SeqCst), 0);
 
     *server.state.replies.write().unwrap() = [
-        reply(signed(body.clone()), "\"primary\""),
-        reply(signed(body), "\"replica\""),
+        reply(signed(&document), "\"primary\""),
+        reply(signed(&document), "\"replica\""),
     ];
     server.state.requests.lock().unwrap().clear();
     let client = server.client(root.clone());
@@ -403,10 +401,10 @@ async fn native_pool_never_assigns_an_unattested_connection() {
     use crate::native_tls;
     use rustls::pki_types::ServerName;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let (root, body) = fixture();
+    let (root, document) = fixture();
     let server = Server::new([
-        reply(signed(body.clone()), "primary"),
-        reply(signed(body), "replica"),
+        reply(signed(&document), "primary"),
+        reply(signed(&document), "replica"),
     ])
     .await;
     let acceptor = unattested_peer();
@@ -437,9 +435,9 @@ async fn native_pool_never_assigns_an_unattested_connection() {
     );
     let result = pool
         .send(
-            axum::http::Request::builder()
+            Request::builder()
                 .uri("https://api.example.test/v1/chat/completions")
-                .body(axum::body::Bytes::from_static(b"never sent"))
+                .body(Bytes::from_static(b"never sent"))
                 .unwrap(),
             deadline(),
         )
@@ -498,7 +496,7 @@ fn hardware_channel(client: &EvidenceClient, fixture: &Value) -> crate::native_h
         .verifier
         .lock()
         .unwrap()
-        .refresh(&serde_json::to_vec(&fixture["bundle"]).unwrap(), now)
+        .refresh(&serde_json::to_vec(&fixture["evidence"]).unwrap(), now)
         .unwrap();
     let certificate = URL_SAFE_NO_PAD
         .decode(fixture["certificate"].as_str().unwrap())
@@ -524,7 +522,7 @@ fn hardware_fixture() -> Value {
 }
 
 #[tokio::test]
-async fn cold_session_uses_current_bundle_without_boot_archive_on_either_origin() {
+async fn cold_session_uses_current_evidence_without_boot_archive_on_either_origin() {
     let fixture = hardware_fixture();
     let now = fixture["verified_at_ms"].as_i64().unwrap();
     let certificate = URL_SAFE_NO_PAD
@@ -534,10 +532,10 @@ async fn cold_session_uses_current_bundle_without_boot_archive_on_either_origin(
         .unwrap()
         .try_into()
         .unwrap();
-    // The current bundle retains the old boot's public signing identity after rotation.
-    let bundle = include_bytes!("../../../../tests/fixtures/hardware-session-rotated-v1.json");
+    // The current evidence retains the old boot's public signing identity after rotation.
+    let evidence = include_bytes!("../../../../tests/fixtures/hardware-session-rotated-v1.json");
     for primary_available in [true, false] {
-        // This server exposes only current-bundle URLs; every archive URL returns 404.
+        // This server exposes only current evidence URLs; every archive URL returns 404.
         let server = Server::new([
             Reply {
                 status: if primary_available {
@@ -545,9 +543,9 @@ async fn cold_session_uses_current_bundle_without_boot_archive_on_either_origin(
                 } else {
                     StatusCode::SERVICE_UNAVAILABLE
                 },
-                ..compressed_reply(bundle, "\"r2-current\"", "br")
+                ..compressed_reply(evidence, "\"r2-current\"", "br")
             },
-            compressed_reply(bundle, "\"aws-current\"", "gzip"),
+            compressed_reply(evidence, "\"aws-current\"", "gzip"),
         ])
         .await;
         let client = server.client(serde_json::from_value(fixture["root"].clone()).unwrap());
@@ -573,7 +571,7 @@ async fn warm_appraisal_reuses_context_and_rotation_preserves_inflight_snapshot(
     let now = fixture["verified_at_ms"].as_i64().unwrap();
     let server = Server::new([
         reply(
-            serde_json::to_vec(&fixture["bundle"]).unwrap(),
+            serde_json::to_vec(&fixture["evidence"]).unwrap(),
             "\"original\"",
         ),
         reply(vec![], "\"unused\""),
@@ -593,12 +591,12 @@ async fn warm_appraisal_reuses_context_and_rotation_preserves_inflight_snapshot(
     assert!(Arc::ptr_eq(&original, &reused));
     drop(occupied_cpu);
 
-    let bundle: Value = serde_json::from_str(include_str!(
+    let rotated: Value = serde_json::from_str(include_str!(
         "../../../../tests/fixtures/hardware-session-rotated-v1.json"
     ))
     .unwrap();
     *server.state.replies.write().unwrap() = [
-        reply(serde_json::to_vec(&bundle).unwrap(), "\"rotation\""),
+        reply(serde_json::to_vec(&rotated).unwrap(), "\"rotation\""),
         reply(vec![], "\"unused\""),
     ];
     let updated = client.refresh(deadline()).await.unwrap();
@@ -624,23 +622,16 @@ async fn warm_appraisal_reuses_context_and_rotation_preserves_inflight_snapshot(
 }
 
 #[tokio::test]
-async fn warm_rejection_preserves_cause_and_old_requests_without_reusing_stale_approval() {
+async fn warm_rejection_preserves_cause_and_old_requests_without_reusing_stale_evidence() {
     let fixture = hardware_fixture();
-    let variants: Value = serde_json::from_str(include_str!(
-        "../../../../tests/fixtures/logged-approval-variants.json"
-    ))
-    .unwrap();
-    let now = fixture["verified_at_ms"]
-        .as_i64()
-        .unwrap()
-        .max(variants["verified_at_ms"].as_i64().unwrap());
+    let now = fixture["verified_at_ms"].as_i64().unwrap();
     let server = Server::new([
         reply(
-            serde_json::to_vec(&fixture["bundle"]).unwrap(),
+            serde_json::to_vec(&fixture["evidence"]).unwrap(),
             "\"old-r2\"",
         ),
         reply(
-            serde_json::to_vec(&fixture["bundle"]).unwrap(),
+            serde_json::to_vec(&fixture["evidence"]).unwrap(),
             "\"old-aws\"",
         ),
     ])
@@ -670,23 +661,22 @@ async fn warm_rejection_preserves_cause_and_old_requests_without_reusing_stale_a
             .await,
         Err(Error::Deadline)
     ));
-    let mut body = fixture["bundle"]["body"].clone();
-    body["approvals"]["document"]["revision"] =
-        json!(body["approvals"]["document"]["revision"].as_u64().unwrap() + 1);
-    body["approvals"]["document"]["gateways"] = json!([]);
+    let mut document = fixture["evidence"]["document"].clone();
+    document["revision"] = json!(document["revision"].as_u64().unwrap() + 1);
+    document["gateways"] = json!([]);
     let withdrawn = client
         .verifier
         .lock()
         .unwrap()
-        .refresh(&signed(body), now)
+        .refresh(&signed(&document), now)
         .unwrap();
     *client.current.write().unwrap() = Some(Arc::clone(&withdrawn));
     for _ in 0..2 {
         assert!(matches!(
             channel.prepare(&client, deadline(), move || Ok(now)).await,
             Err(crate::native_http::Error::Recovery {
-                verification: evidence::Error::Approval(
-                    stogas_core::approvals::Error::NotApproved("gateway")
+                verification: evidence::Error::Authority(
+                    stogas_core::authority::Error::NotApproved("gateway")
                 ),
                 ..
             })
@@ -712,14 +702,14 @@ async fn warm_rejection_preserves_cause_and_old_requests_without_reusing_stale_a
 #[tokio::test]
 async fn encrypted_setup_bounds_delivery_and_never_recovers_invalid_protocol_data() {
     use crate::encrypted_setup::{self, CONTENT_TYPE, Error};
-    use axum::body::{Bytes, to_bytes};
-    use axum::http::Request;
-    use axum::routing::post;
-    use futures_util::stream;
     use stogas_core::channel::setup::{CLIENT_SETUP_BYTES, MAX_SERVER_SETUP_BYTES};
 
-    let (root, body) = fixture();
-    let origins = Server::new([reply(signed(body), "\"evidence\""), reply(vec![], "unused")]).await;
+    let (root, document) = fixture();
+    let origins = Server::new([
+        reply(signed(&document), "\"evidence\""),
+        reply(vec![], "unused"),
+    ])
+    .await;
     let evidence = origins.client(root);
     evidence.refresh(deadline()).await.unwrap();
     let calls = Arc::new(AtomicUsize::new(0));

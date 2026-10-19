@@ -16,7 +16,7 @@ const { root } = JSON.parse(
 );
 const verifier = new EvidenceVerifier('prod', root.key_id, root.public_key);
 try {
-	assert.throws(() => verifier.refresh(new TextEncoder().encode('{"body":')));
+	assert.throws(() => verifier.refresh(new TextEncoder().encode('{"document":')));
 } finally {
 	verifier.free();
 }

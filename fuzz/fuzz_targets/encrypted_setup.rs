@@ -3,7 +3,7 @@
 use libfuzzer_sys::fuzz_target;
 use std::sync::OnceLock;
 use stogas_core::{
-    approvals::Environment,
+    authority::Environment,
     channel::{
         record_size,
         setup::{PendingSetup, prepare_server_setup},

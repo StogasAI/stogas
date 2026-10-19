@@ -7,7 +7,7 @@ use stogas_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestat
 
 use crate::{
     MAX_INPUT_BYTES, StogasSignature,
-    approvals::{self, ApprovalVerifier, Environment, SignedKeyManifest},
+    authority::{self, Authority, Environment, SignedKeyManifest},
     strict_json,
 };
 
@@ -73,7 +73,7 @@ pub fn verify(
     qualification: &[u8],
     signature_bytes: &[u8],
     now_unix_ms: i64,
-) -> Result<Manifest, approvals::Error> {
+) -> Result<Manifest, authority::Error> {
     if [
         manifest_bytes.len(),
         github_attestation.len(),
@@ -83,7 +83,7 @@ pub fn verify(
     .into_iter()
     .any(|length| length > MAX_INPUT_BYTES)
     {
-        return Err(approvals::Error::TooLarge);
+        return Err(authority::Error::TooLarge);
     }
     let manifest: Manifest =
         serde_json::from_value(strict_json::from_slice(manifest_bytes).map_err(invalid)?)
@@ -95,8 +95,8 @@ pub fn verify(
     let document = serde_json::to_value(&manifest).map_err(invalid)?;
     // Without current evidence, the Sigstore keys compiled into this release check its successors.
     let trust =
-        TrustedRoot::embedded().map_err(|error| approvals::Error::Sigstore(error.to_string()))?;
-    let published = approvals::verify_document_inclusion(
+        TrustedRoot::embedded().map_err(|error| authority::Error::Sigstore(error.to_string()))?;
+    let published = authority::verify_document_inclusion(
         &document,
         &signed.signature,
         &signed.inclusion,
@@ -106,7 +106,7 @@ pub fn verify(
     let published_ms = published
         .checked_mul(1000)
         .ok_or_else(|| invalid("log time overflow"))?;
-    let authority = ApprovalVerifier::new(
+    let authority = Authority::new(
         Environment::Production,
         Environment::Production.stogas_root()?,
     )?;
@@ -115,7 +115,7 @@ pub fn verify(
         trust,
         published_ms,
     )?;
-    approvals::verify_signature(
+    authority::verify_signature(
         &document,
         &signed.signature,
         &keys.active_key.key_id,
@@ -159,7 +159,7 @@ pub fn verify(
     Ok(manifest)
 }
 
-fn validate_manifest(manifest: &Manifest) -> Result<(), approvals::Error> {
+fn validate_manifest(manifest: &Manifest) -> Result<(), authority::Error> {
     if manifest.schema != "stogas.sdk-release.v1"
         || manifest.environment != Environment::Production
         || manifest.source.dirty
@@ -208,6 +208,6 @@ fn hex_digest(value: &str, length: usize) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn invalid(error: impl std::fmt::Display) -> approvals::Error {
-    approvals::Error::Invalid(error.to_string())
+fn invalid(error: impl std::fmt::Display) -> authority::Error {
+    authority::Error::Invalid(error.to_string())
 }

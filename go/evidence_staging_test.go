@@ -21,9 +21,9 @@ func TestEvidenceSnapshotsRetainOwnershipAcrossRefreshAndClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	var fixture struct {
-		Root   TrustRoot       `json:"root"`
-		Bundle json.RawMessage `json:"bundle"`
-		Now    int64           `json:"verified_at_ms"`
+		Root     TrustRoot       `json:"root"`
+		Evidence json.RawMessage `json:"evidence"`
+		Now      int64           `json:"verified_at_ms"`
 	}
 	if err := json.Unmarshal(bytes, &fixture); err != nil {
 		t.Fatal(err)
@@ -33,7 +33,7 @@ func TestEvidenceSnapshotsRetainOwnershipAcrossRefreshAndClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = owner.Close() })
-	snapshot, err := owner.refreshAt(fixture.Bundle, fixture.Now)
+	snapshot, err := owner.refreshAt(fixture.Evidence, fixture.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestEvidenceSnapshotsRetainOwnershipAcrossRefreshAndClose(t *testing.T) {
 		t.Fatalf("invalid candidate accepted: %v", err)
 	}
 	_ = owner.Close()
-	_, err = owner.Refresh(fixture.Bundle)
+	_, err = owner.Refresh(fixture.Evidence)
 	if !errors.Is(err, ErrClosed) {
 		t.Fatalf("closed verifier: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestOfflineReceiptUsesLoggedHardwareKeyAndExactContentHashes(t *testing.T) 
 	}
 	var fixture struct {
 		Root        TrustRoot       `json:"root"`
-		Bundle      json.RawMessage `json:"bundle"`
+		Evidence    json.RawMessage `json:"evidence"`
 		Certificate string          `json:"certificate"`
 		Now         int64           `json:"verified_at_ms"`
 	}
@@ -98,7 +98,7 @@ func TestOfflineReceiptUsesLoggedHardwareKeyAndExactContentHashes(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer owner.Close()
-	snapshot, err := owner.RefreshAt(fixture.Bundle, time.UnixMilli(fixture.Now))
+	snapshot, err := owner.RefreshAt(fixture.Evidence, time.UnixMilli(fixture.Now))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,10 +130,14 @@ func TestOfflineReceiptUsesLoggedHardwareKeyAndExactContentHashes(t *testing.T) 
 	if err != nil || verified.BootSHA256 != receipt["boot_sha256"] || verified.RequestSHA256 != receipt["request_sha256"] || verified.ResponseSHA256 != receipt["response_sha256"] || verified.NodeID == "" {
 		t.Fatalf("valid content receipt rejected: %+v %v", verified, err)
 	}
-	var envelope struct {
-		Digest string `json:"body_sha256"`
+	summary, err := snapshot.Summary()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := json.Unmarshal(fixture.Bundle, &envelope); err != nil {
+	var current struct {
+		Digest string `json:"evidence_sha256"`
+	}
+	if err := json.Unmarshal(summary, &current); err != nil {
 		t.Fatal(err)
 	}
 	var proof struct {
@@ -144,22 +148,22 @@ func TestOfflineReceiptUsesLoggedHardwareKeyAndExactContentHashes(t *testing.T) 
 		t.Fatal(err)
 	}
 	archive, err := json.Marshal(map[string]any{
-		"document":  map[string]any{"schema": "stogas.node-registration.v1", "boot": json.RawMessage(boot), "evidence_sha256": envelope.Digest},
+		"document":  map[string]any{"schema": "stogas.node-registration.v1", "boot": json.RawMessage(boot), "evidence_sha256": current.Digest},
 		"signature": proof.Signature, "inclusion": proof.Inclusion,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary, err := owner.VerifyEvidenceArchive(fixture.Bundle); err != nil || !json.Valid(summary) {
-		t.Fatalf("archive approval verification: %s %v", summary, err)
+	if summary, err := owner.VerifyEvidenceArchive(fixture.Evidence); err != nil || !json.Valid(summary) {
+		t.Fatalf("archive evidence verification: %s %v", summary, err)
 	}
-	if identity, err := owner.VerifyBootArchive(archive, fixture.Bundle); err != nil || identity.NodeID != verified.NodeID {
+	if identity, err := owner.VerifyBootArchive(archive, fixture.Evidence); err != nil || identity.NodeID != verified.NodeID {
 		t.Fatalf("archive boot verification: %+v %v", identity, err)
 	}
-	if historical, err := owner.VerifyReceiptArchive(archive, fixture.Bundle, encoded, request, response); err != nil || historical != verified {
+	if historical, err := owner.VerifyReceiptArchive(archive, fixture.Evidence, encoded, request, response); err != nil || historical != verified {
 		t.Fatalf("archive receipt verification: %+v %v", historical, err)
 	}
-	if _, err := owner.VerifyReceiptArchive(archive, fixture.Bundle, encoded, response, response); err == nil {
+	if _, err := owner.VerifyReceiptArchive(archive, fixture.Evidence, encoded, response, response); err == nil {
 		t.Fatal("archive accepted substituted content")
 	}
 	for _, change := range []struct {
@@ -197,13 +201,13 @@ func TestOfflineReceiptUsesLoggedHardwareKeyAndExactContentHashes(t *testing.T) 
 		t.Fatalf("closed snapshot: %v", err)
 	}
 	_ = owner.Close()
-	if _, err := owner.VerifyEvidenceArchive(fixture.Bundle); !errors.Is(err, ErrClosed) {
+	if _, err := owner.VerifyEvidenceArchive(fixture.Evidence); !errors.Is(err, ErrClosed) {
 		t.Fatalf("closed archive verifier: %v", err)
 	}
-	if _, err := owner.VerifyBootArchive(archive, fixture.Bundle); !errors.Is(err, ErrClosed) {
+	if _, err := owner.VerifyBootArchive(archive, fixture.Evidence); !errors.Is(err, ErrClosed) {
 		t.Fatalf("closed boot verifier: %v", err)
 	}
-	if _, err := owner.VerifyReceiptArchive(archive, fixture.Bundle, encoded, request, response); !errors.Is(err, ErrClosed) {
+	if _, err := owner.VerifyReceiptArchive(archive, fixture.Evidence, encoded, request, response); !errors.Is(err, ErrClosed) {
 		t.Fatalf("closed receipt verifier: %v", err)
 	}
 }

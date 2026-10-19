@@ -1,8 +1,8 @@
 //! Archived evidence for offline receipt checks.
 //!
-//! The public ledger stores each evidence bundle as an index of content-addressed
-//! objects, so bundles share unchanged signed documents and certificates. This rebuilds
-//! the bundle; `stogas proof` performs the appraisal.
+//! The public ledger stores each evidence revision as an index of content-addressed
+//! objects, so revisions share unchanged releases, keys and certificates. This rebuilds
+//! the signed evidence; `stogas proof` performs the appraisal.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -17,7 +17,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 use stogas_core::{
     MAX_INPUT_BYTES,
-    approvals::{Environment, payload_sha256},
+    authority::{EVIDENCE_SCHEMA, Environment, payload_sha256},
     evidence::MAX_ARCHIVE_BYTES,
 };
 use tokio::time::timeout;
@@ -27,7 +27,7 @@ const MAX_INDEX_BYTES: usize = 128 * 1024;
 const MAX_OBJECTS: usize = 1024;
 const ORIGIN_DEADLINE: Duration = Duration::from_secs(30);
 
-/// A boot archive and the complete evidence bundle it names.
+/// A boot archive and the signed evidence it names.
 pub struct Archive {
     pub boot: Vec<u8>,
     pub evidence: Vec<u8>,
@@ -37,7 +37,7 @@ pub struct Archive {
 /// origin in order.
 ///
 /// # Errors
-/// Fails if no origin returns a complete archive whose rebuilt body matches its digest.
+/// Fails if no origin returns a complete archive whose rebuilt evidence matches its digest.
 pub async fn download(environment: Environment, boot_sha256: &str) -> Result<Archive> {
     ensure!(
         is_sha256(boot_sha256),
@@ -133,12 +133,18 @@ async fn get(client: &Client, origin: &Url, path: &str, max_bytes: usize) -> Res
 #[serde(deny_unknown_fields)]
 struct Index {
     schema: String,
-    body_sha256: String,
+    evidence_sha256: String,
     sizes: BTreeMap<String, usize>,
-    sigstore: String,
+    environment: Environment,
+    revision: u64,
     keys: String,
-    approvals: String,
+    sigstore: String,
+    gateways: Vec<String>,
+    catalogs: Vec<String>,
+    hardware_policies: String,
     vendor_collateral: Vec<Collateral>,
+    signature: Value,
+    inclusion: Value,
 }
 
 #[derive(Deserialize)]
@@ -150,11 +156,12 @@ struct Collateral {
 
 impl Index {
     /// Checks identity, fan-out and declared sizes before any object is fetched.
-    fn parse(bytes: &[u8], body_sha256: &str) -> Result<Self> {
+    fn parse(bytes: &[u8], evidence_sha256: &str) -> Result<Self> {
         let index: Self =
             serde_json::from_slice(bytes).context("invalid evidence archive index")?;
         ensure!(
-            index.schema == "stogas.evidence-archive.v1" && index.body_sha256 == body_sha256,
+            index.schema == "stogas.evidence-archive.v1"
+                && index.evidence_sha256 == evidence_sha256,
             "evidence archive identity differs"
         );
         let references = index.references();
@@ -176,14 +183,16 @@ impl Index {
     }
 
     fn references(&self) -> BTreeSet<&str> {
-        [&self.sigstore, &self.keys, &self.approvals]
+        [&self.keys, &self.sigstore, &self.hardware_policies]
             .into_iter()
+            .chain(&self.gateways)
+            .chain(&self.catalogs)
             .chain(self.vendor_collateral.iter().map(|entry| &entry.der))
             .map(String::as_str)
             .collect()
     }
 
-    /// Rebuilds the bundle and requires its body to match the archived digest.
+    /// Rebuilds the signed evidence and requires its document to match the archived digest.
     fn assemble(self, objects: &BTreeMap<String, Value>) -> Result<Vec<u8>> {
         let object = |hash: &String| {
             objects
@@ -191,6 +200,7 @@ impl Index {
                 .cloned()
                 .context("evidence archive object is missing")
         };
+        let releases = |hashes: &[String]| hashes.iter().map(object).collect::<Result<Vec<_>>>();
         let collateral = self
             .vendor_collateral
             .into_iter()
@@ -199,21 +209,25 @@ impl Index {
                 Ok(Value::Object(metadata))
             })
             .collect::<Result<Vec<_>>>()?;
-        let body = json!({
-            "schema": "stogas.confidential-bundle.v1",
-            "sigstore": object(&self.sigstore)?,
+        let document = json!({
+            "schema": EVIDENCE_SCHEMA,
+            "environment": self.environment,
+            "revision": self.revision,
             "keys": object(&self.keys)?,
-            "approvals": object(&self.approvals)?,
+            "sigstore": object(&self.sigstore)?,
+            "gateways": releases(&self.gateways)?,
+            "catalogs": releases(&self.catalogs)?,
+            "hardware_policies": object(&self.hardware_policies)?,
             "vendor_collateral": collateral,
         });
         ensure!(
-            payload_sha256(&body)? == self.body_sha256,
+            payload_sha256(&document)? == self.evidence_sha256,
             "rebuilt evidence differs from its archived digest"
         );
         Ok(serde_json::to_vec(&json!({
-            "schema": "stogas.confidential-bundle-envelope.v1",
-            "body_sha256": self.body_sha256,
-            "body": body,
+            "document": document,
+            "signature": self.signature,
+            "inclusion": self.inclusion,
         }))?)
     }
 }
@@ -225,5 +239,5 @@ fn is_sha256(value: &str) -> bool {
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "staging"))]
 mod tests;

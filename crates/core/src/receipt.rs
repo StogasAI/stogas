@@ -407,13 +407,13 @@ mod http_tests {
         ))
         .unwrap();
         let mut verifier = crate::evidence::Verifier::new(
-            crate::approvals::Environment::Staging,
+            crate::authority::Environment::Staging,
             serde_json::from_value(fixture["root"].clone()).unwrap(),
         )
         .unwrap();
         let now = fixture["verified_at_ms"].as_i64().unwrap();
         let snapshot = verifier
-            .refresh(&serde_json::to_vec(&fixture["bundle"]).unwrap(), now)
+            .refresh(&serde_json::to_vec(&fixture["evidence"]).unwrap(), now)
             .unwrap();
         snapshot
             .verify_native_certificate(

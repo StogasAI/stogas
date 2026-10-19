@@ -38,7 +38,7 @@ impl EncryptedSetup {
     }
 
     /// # Errors
-    /// No session is returned before the fixed hardware, boot log, approval and
+    /// No session is returned before the fixed hardware, boot log, evidence and
     /// possession checks pass. An evidence miss preserves the pending setup for
     /// one bounded refresh by the asynchronous transport.
     pub fn complete(
