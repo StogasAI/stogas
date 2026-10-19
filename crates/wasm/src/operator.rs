@@ -1,11 +1,11 @@
 //! Registration, sealing, release and publication checks for the operator build
 //! used by Stogas's own services and CLI. Customer packages never enable it.
 use serde::Deserialize;
-use stogas_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};
 use stogas_core::{
     approvals::{SigstoreFiles, VerifiedSigstore},
     secret_release,
 };
+use stogas_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};
 use wasm_bindgen::prelude::*;
 
 use super::{parse_unix_ms, to_js_value};

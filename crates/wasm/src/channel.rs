@@ -224,11 +224,8 @@ impl ResponseReceipt {
             return Err(JsError::new("receipt verifier is closed"));
         }
         self.finished = true;
-        let result = stogas_core::receipt::verify_buffered(
-            self.appraisal.boot(),
-            &self.request,
-            response,
-        )?;
+        let result =
+            stogas_core::receipt::verify_buffered(self.appraisal.boot(), &self.request, response)?;
         super::to_js_value(&result)
     }
 }
