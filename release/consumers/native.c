@@ -1,4 +1,4 @@
-#include "stogas_verifier.h"
+#include "stogas.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,7 +25,7 @@ static void rejected(char *result, const char *code, const char *message) {
         fprintf(stderr, "%s: %s\n", message, result ? result : "no result");
         exit(1);
     }
-    stogas_verifier_string_free(result);
+    stogas_string_free(result);
 }
 
 static char *configure(const char *configuration, StogasEvidence **evidence) {
@@ -38,16 +38,16 @@ static void offline(void) {
     const char *staging = "{\"environment\":\"staging\"}";
     char *result = stogas_transport_start((const uint8_t *)staging, strlen(staging), &transport);
     require(result && strstr(result, "\"ok\":false") && !transport, "Production package accepted staging transport");
-    stogas_verifier_string_free(result);
+    stogas_string_free(result);
     StogasEvidence *evidence = NULL;
     result = configure(staging, &evidence);
     require(result && strstr(result, "\"ok\":false") && !evidence, "Production package accepted staging evidence");
-    stogas_verifier_string_free(result);
+    stogas_string_free(result);
 
     // The compiled production authority loads; rejected evidence creates no owner.
     result = configure("{\"environment\":\"prod\"}", &evidence);
     require(result && strstr(result, "\"ok\":true") && evidence, "Production evidence authority unavailable");
-    stogas_verifier_string_free(result);
+    stogas_string_free(result);
     StogasEvidenceSnapshot *snapshot = NULL;
     static const uint8_t malformed[] = "{\"body\":";
     rejected(stogas_evidence_refresh(evidence, malformed, sizeof(malformed) - 1, 1, &snapshot),
@@ -108,12 +108,12 @@ static void live(const char *environment) {
         }
         char response[8192];
         post_invalid_key(result, response, sizeof(response));
-        stogas_verifier_string_free(result);
+        stogas_string_free(result);
         require(strncmp(response, "HTTP/1.1 401 ", 13) == 0 && strstr(response, "\"authentication_error\""),
             "The gateway did not reject the invalid key through the verified connection");
         result = stogas_transport_refresh(transport);
         require(result && strstr(result, "\"ok\":true"), "Live evidence refresh failed");
-        stogas_verifier_string_free(result);
+        stogas_string_free(result);
         stogas_transport_close(transport);
         stogas_transport_close(transport);
         rejected(stogas_transport_refresh(transport), "\"code\":\"invalid_operation\"", "A closed transport accepted a refresh");
@@ -127,7 +127,7 @@ static void live(const char *environment) {
 // Without STOGAS_LIVE, test the installed production package offline. With
 // STOGAS_LIVE=staging|prod, send requests through that environment's gateways.
 int main(void) {
-    require(stogas_verifier_abi_version() == STOGAS_VERIFIER_ABI_VERSION, "Native ABI mismatch");
+    require(stogas_abi_version() == STOGAS_ABI_VERSION, "Native ABI mismatch");
     const char *environment = getenv("STOGAS_LIVE");
     if (environment) {
         require(strcmp(environment, "staging") == 0 || strcmp(environment, "prod") == 0, "STOGAS_LIVE must be staging or prod");

@@ -1,4 +1,4 @@
-#include "stogas_verifier.h"
+#include "stogas.h"
 #include <curl/curl.h>
 #include <json-c/json.h>
 #include <signal.h>
@@ -101,7 +101,7 @@ static size_t receive(char *data, size_t size, size_t count, void *context) {
 }
 
 int main(int argc, char **argv) {
-    if (stogas_verifier_abi_version() != STOGAS_VERIFIER_ABI_VERSION) {
+    if (stogas_abi_version() != STOGAS_ABI_VERSION) {
         fputs("Unsupported Stogas native ABI.\n", stderr);
         return 1;
     }
@@ -133,7 +133,7 @@ int main(int argc, char **argv) {
         const char *configuration = "{}";
         char *raw = stogas_transport_start((const uint8_t *)configuration, strlen(configuration), &transport);
         if (raw) started = json_tokener_parse(raw);
-        stogas_verifier_string_free(raw);
+        stogas_string_free(raw);
         if (!transport || !started || !json_object_object_get_ex(started, "ok", &ok) ||
             !json_object_get_boolean(ok) || !json_object_object_get_ex(started, "value", &value) ||
             !json_object_object_get_ex(value, "base_url", &base) ||

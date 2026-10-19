@@ -16,7 +16,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
-use stogas_verifier::{
+use stogas_core::{
     approvals::Environment,
     channel::{self, ClientRequest, ClientSession},
 };

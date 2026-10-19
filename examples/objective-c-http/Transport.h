@@ -1,5 +1,5 @@
 #import <Foundation/Foundation.h>
-#include "stogas_verifier.h"
+#include "stogas.h"
 
 @interface StogasTransportOwner : NSObject {
     StogasTransport *_handle;

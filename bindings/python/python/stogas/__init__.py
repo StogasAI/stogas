@@ -1,6 +1,6 @@
 """Stogas SDK for managed confidential connections and explicit verification."""
 
-from ._stogas_verifier import (
+from ._stogas import (
     EvidenceSnapshot,
     EvidenceVerifier,
     Transport,

@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use stogas_verifier::{
+use stogas_core::{
     attestation::{BatchProof, certificate::ParsedNativeCertificate, evidence::SessionEvidence},
     inspect_snp_report,
 };

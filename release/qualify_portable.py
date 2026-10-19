@@ -44,15 +44,15 @@ def qualify(source, packages, version, requested=()):
             (work / "package.json").write_text(json.dumps({"name": "stogas-release-consumer", "private": True, "type": "module", "devDependencies": package["devDependencies"]}))
             shutil.copyfile(source / "package-lock.json", work / "package-lock.json")
             run(PLAYWRIGHT, ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"])
-            run(PLAYWRIGHT, ["npm", "install", "--no-save", "--ignore-scripts", "--no-audit", "--no-fund", f"/work/packages/stogas-{version}.tgz", f"/work/packages/stogas-offline-sigstore-{version}.tgz"])
+            run(PLAYWRIGHT, ["npm", "install", "--no-save", "--ignore-scripts", "--no-audit", "--no-fund", f"/work/packages/stogas-{version}.tgz", f"/work/packages/stogas-sigstore-{version}.tgz"])
             # Existing adapter tests use repository-relative module paths. Their
             # inputs here come exclusively from npm's installed package bytes.
             installed = work / "node_modules/stogas"
             for name in ("bindings", "pkg"):
                 shutil.copytree(installed / name, work / name)
-            shutil.copytree(work / "node_modules/@stogas/offline-sigstore", work / "packages/offline-sigstore")
+            shutil.copytree(work / "node_modules/@stogas/sigstore", work / "packages/sigstore")
             shutil.copytree(installed / "pkg/browser", work / "target/browser")
-            shutil.copytree(work / "node_modules/@stogas/offline-sigstore/pkg/browser", work / "target/offline-browser")
+            shutil.copytree(work / "node_modules/@stogas/sigstore/pkg/browser", work / "target/sigstore-browser")
             tests = ["tests/node/" + path.name for path in sorted((work / "tests/node").glob("*.test.mjs")) if path.name != "fuzz-workflows.test.mjs"]
             (work / "tests/browser/release.config.mjs").write_text("""import {defineConfig} from '@playwright/test';
 export default defineConfig({testDir:'.',testMatch:['verifier.spec.ts','live.spec.ts'],forbidOnly:true,retries:0,reporter:'line',workers:2,projects:['chromium','firefox','webkit'].map(name=>({name,use:{browserName:name,headless:true}}))});
@@ -74,7 +74,7 @@ export default defineConfig({testDir:'.',testMatch:['verifier.spec.ts','live.spe
                 for runtime in ("chromium", "firefox", "webkit"):
                     record("npm", f"{runtime}-{case}", PLAYWRIGHT, outcome)
         if "rust" in selected:
-            crates = ("stogas-offline-sigstore", "stogas-verifier", "stogas")
+            crates = ("stogas-sigstore", "stogas-core", "stogas")
             for name in crates:
                 unpack(packages / f"{name}-{version}.crate", work / name)
             (work / "src").mkdir()

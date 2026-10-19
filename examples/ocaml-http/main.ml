@@ -109,7 +109,7 @@ let () =
     Fun.protect ~finally:Curl.global_cleanup (fun () ->
       match Sys.getenv_opt "STOGAS_BASE_URL" with
       | Some url -> request url
-      | None -> Transport.with_transport (Sys.getenv "STOGAS_VERIFIER_LIB") (`Assoc []) request)
+      | None -> Transport.with_transport (Sys.getenv "STOGAS_LIBRARY") (`Assoc []) request)
   with _ ->
     prerr_endline "Request failed or incomplete. Do not replay automatically.";
     exit 1

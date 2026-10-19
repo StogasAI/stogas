@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use stogas_verifier::{
+use stogas_core::{
     MAX_INPUT_BYTES,
     sdk_release::{self, ATTESTATION, MANIFEST, METADATA, QUALIFICATION, SIGNATURE},
 };
@@ -77,7 +77,7 @@ async fn read(directory: &Path, name: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use sha2::{Digest as _, Sha256};
-    use stogas_verifier::sdk_release::{METADATA, Manifest};
+    use stogas_core::sdk_release::{METADATA, Manifest};
 
     use super::verify_artifacts;
 

@@ -289,7 +289,7 @@ impl Verifier {
     ) -> Result<crate::approvals::KeyManifest, Error> {
         let trust = match &self.current {
             Some(snapshot) => snapshot.approvals.sigstore().trusted_root(),
-            None => stogas_offline_sigstore::TrustedRoot::embedded()
+            None => stogas_sigstore::TrustedRoot::embedded()
                 .map_err(|error| approvals::Error::Sigstore(error.to_string()))?,
         };
         Ok(self

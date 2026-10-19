@@ -7,7 +7,7 @@ import init, {
 	ResponseReceipt,
 	inspect_snp_report,
 	transport_configuration
-} from '../../pkg/browser/stogas_verifier.js';
+} from '../../pkg/browser/stogas.js';
 import { createTransportClass } from '../shared/transport.js';
 
 export default init;

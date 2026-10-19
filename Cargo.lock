@@ -3750,7 +3750,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "stogas-verifier",
+ "stogas-core",
  "thiserror",
  "tokio",
  "tokio-rustls",
@@ -3783,7 +3783,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "stogas",
- "stogas-verifier",
+ "stogas-core",
  "tokio",
  "url",
  "webpki-roots",
@@ -3793,51 +3793,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "stogas-offline-sigstore"
-version = "0.1.0-alpha.1"
-dependencies = [
- "base64",
- "chrono",
- "cms",
- "const-oid 0.9.6",
- "der",
- "ed25519-dalek",
- "hex",
- "p256",
- "p384",
- "pem",
- "rsa",
- "rustls-pki-types",
- "rustls-webpki",
- "serde",
- "serde_json",
- "serde_json_canonicalizer",
- "sha2 0.10.9",
- "signature",
- "sigstore-trust-root",
- "sigstore-types",
- "sigstore-verify",
- "spki",
- "thiserror",
- "tls_codec",
- "x509-cert",
-]
-
-[[package]]
-name = "stogas-offline-sigstore-wasm"
-version = "0.1.0-alpha.1"
-dependencies = [
- "getrandom 0.2.17",
- "js-sys",
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "stogas-offline-sigstore",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "stogas-verifier"
+name = "stogas-core"
 version = "0.1.0-alpha.1"
 dependencies = [
  "aes",
@@ -3873,7 +3829,7 @@ dependencies = [
  "signature",
  "spki",
  "stogas-alloc-probe",
- "stogas-offline-sigstore",
+ "stogas-sigstore",
  "subtle",
  "thiserror",
  "wasm-bindgen-test",
@@ -3883,7 +3839,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "stogas-verifier-ffi"
+name = "stogas-ffi"
 version = "0.1.0-alpha.1"
 dependencies = [
  "base64",
@@ -3892,23 +3848,67 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "stogas",
- "stogas-verifier",
+ "stogas-core",
  "zeroize",
 ]
 
 [[package]]
-name = "stogas-verifier-python"
+name = "stogas-python"
 version = "0.1.0-alpha.1"
 dependencies = [
  "pyo3",
  "serde",
  "serde_json",
  "stogas",
- "stogas-verifier",
+ "stogas-core",
 ]
 
 [[package]]
-name = "stogas-verifier-wasm"
+name = "stogas-sigstore"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "base64",
+ "chrono",
+ "cms",
+ "const-oid 0.9.6",
+ "der",
+ "ed25519-dalek",
+ "hex",
+ "p256",
+ "p384",
+ "pem",
+ "rsa",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.10.9",
+ "signature",
+ "sigstore-trust-root",
+ "sigstore-types",
+ "sigstore-verify",
+ "spki",
+ "thiserror",
+ "tls_codec",
+ "x509-cert",
+]
+
+[[package]]
+name = "stogas-sigstore-wasm"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "getrandom 0.2.17",
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "stogas-sigstore",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "stogas-wasm"
 version = "0.1.0-alpha.1"
 dependencies = [
  "base64",
@@ -3921,8 +3921,8 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_json",
  "sha2 0.10.9",
- "stogas-offline-sigstore",
- "stogas-verifier",
+ "stogas-core",
+ "stogas-sigstore",
  "wasm-bindgen",
  "wasm-bindgen-test",
  "web-sys",

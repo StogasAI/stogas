@@ -1,6 +1,6 @@
 [package]
-name = "stogas-offline-sigstore-wasm"
-description = "WebAssembly bindings for stogas-offline-sigstore"
+name = "stogas-sigstore-wasm"
+description = "WebAssembly bindings for stogas-sigstore"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,7 +17,7 @@ js-sys = "0.3.106"
 serde.workspace = true
 serde_json.workspace = true
 serde-wasm-bindgen = "0.6.5"
-stogas-offline-sigstore = { path = "../offline-sigstore" }
+stogas-sigstore = { path = "../sigstore" }
 wasm-bindgen = "0.2.129"
 
 [lints]

@@ -1748,41 +1748,13 @@ dependencies = [
  "libcrux-sha3 0.0.11",
  "libcrux-traits 0.0.9",
  "sha2 0.11.0",
- "stogas-verifier",
+ "stogas-core",
  "subtle",
  "zeroize",
 ]
 
 [[package]]
-name = "stogas-offline-sigstore"
-version = "0.1.0-alpha.1"
-dependencies = [
- "base64",
- "chrono",
- "cms",
- "const-oid 0.9.6",
- "der",
- "ed25519-dalek",
- "hex",
- "p256",
- "p384",
- "pem",
- "rsa",
- "rustls-pki-types",
- "rustls-webpki",
- "serde",
- "serde_json",
- "serde_json_canonicalizer",
- "sha2 0.10.9",
- "signature",
- "spki",
- "thiserror",
- "tls_codec",
- "x509-cert",
-]
-
-[[package]]
-name = "stogas-verifier"
+name = "stogas-core"
 version = "0.1.0-alpha.1"
 dependencies = [
  "aes",
@@ -1811,11 +1783,39 @@ dependencies = [
  "sha2 0.10.9",
  "sha2 0.11.0",
  "spki",
- "stogas-offline-sigstore",
+ "stogas-sigstore",
  "subtle",
  "thiserror",
  "x509-parser",
  "zeroize",
+]
+
+[[package]]
+name = "stogas-sigstore"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "base64",
+ "chrono",
+ "cms",
+ "const-oid 0.9.6",
+ "der",
+ "ed25519-dalek",
+ "hex",
+ "p256",
+ "p384",
+ "pem",
+ "rsa",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.10.9",
+ "signature",
+ "spki",
+ "thiserror",
+ "tls_codec",
+ "x509-cert",
 ]
 
 [[package]]

@@ -12,7 +12,7 @@ use rustls::{
     },
     pki_types::{CertificateDer, ServerName, UnixTime},
 };
-use stogas_verifier::evidence::{self, Snapshot, VerifiedSession};
+use stogas_core::evidence::{self, Snapshot, VerifiedSession};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     time::Instant,

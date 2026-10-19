@@ -26,7 +26,7 @@ public final class Transport implements AutoCloseable {
     /** Options use the native names: environment, security, max_connections and base_url. */
     public Transport(Map<String, ?> options) {
         Api api = Loaded.API;
-        if (api.stogas_verifier_abi_version() != 1) throw new IllegalStateException("Unsupported Stogas native ABI.");
+        if (api.stogas_abi_version() != 1) throw new IllegalStateException("Unsupported Stogas native ABI.");
         byte[] bytes;
         try { bytes = JSON.writeValueAsBytes(options); }
         catch (IOException error) { throw new IllegalArgumentException("Invalid transport options.", error); }
@@ -76,7 +76,7 @@ public final class Transport implements AutoCloseable {
                 throw new VerificationException(envelope.required("error").asText(), envelope.required("code").asText());
             return envelope.required("value");
         } catch (IOException error) { throw new IllegalStateException("Invalid native response.", error); }
-        finally { Loaded.API.stogas_verifier_string_free(pointer); }
+        finally { Loaded.API.stogas_string_free(pointer); }
     }
 
     private static final class State implements Runnable {
@@ -96,23 +96,23 @@ public final class Transport implements AutoCloseable {
         public SizeT(long value) { super(Native.SIZE_T_SIZE, value, true); }
     }
     public interface Api extends Library {
-        int stogas_verifier_abi_version();
+        int stogas_abi_version();
         Pointer stogas_transport_start(byte[] options, SizeT length, PointerByReference handle);
         Pointer stogas_transport_refresh(Pointer handle);
         void stogas_transport_close(Pointer handle);
         void stogas_transport_free(Pointer handle);
-        void stogas_verifier_string_free(Pointer value);
+        void stogas_string_free(Pointer value);
     }
     private static final class Loaded {
         static final Api API = load();
         static Api load() {
             try {
                 // Android installs ABI-selected AAR libraries in its native search path.
-                if (Platform.isAndroid()) return Native.load("stogas_verifier_ffi", Api.class);
+                if (Platform.isAndroid()) return Native.load("stogas_ffi", Api.class);
                 String resource = Platform.RESOURCE_PREFIX;
                 if (Platform.isLinux() && new String(Files.readAllBytes(Path.of("/proc/self/maps")), StandardCharsets.US_ASCII).contains("ld-musl-"))
                     resource = resource.replace("linux-", "linux-musl-");
-                var library = Native.extractFromResourcePath("/" + resource + "/" + System.mapLibraryName("stogas_verifier_ffi"), Transport.class.getClassLoader());
+                var library = Native.extractFromResourcePath("/" + resource + "/" + System.mapLibraryName("stogas_ffi"), Transport.class.getClassLoader());
                 return Native.load(library.getAbsolutePath(), Api.class);
             } catch (IOException error) { throw new IllegalStateException("No Stogas native library for this platform.", error); }
         }

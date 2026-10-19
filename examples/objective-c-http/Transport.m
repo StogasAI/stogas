@@ -7,10 +7,10 @@
     self = [super init];
     if (!self) return nil;
     NSData *bytes = [NSJSONSerialization dataWithJSONObject:configuration options:0 error:NULL];
-    if (bytes && stogas_verifier_abi_version() == 1) {
+    if (bytes && stogas_abi_version() == 1) {
         char *raw = stogas_transport_start(bytes.bytes, bytes.length, &_handle);
         NSData *result = raw ? [NSData dataWithBytes:raw length:strlen(raw)] : nil;
-        stogas_verifier_string_free(raw);
+        stogas_string_free(raw);
         id envelope = result ? [NSJSONSerialization JSONObjectWithData:result options:0 error:NULL] : nil;
         if ([envelope isKindOfClass:[NSDictionary class]] &&
             [[envelope objectForKey:@"ok"] isEqual:@(YES)]) {

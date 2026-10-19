@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 # Use the same feature graph as the protocol, including key erasure.
-stogas-verifier = { path = "../../../crates/verifier", default-features = false }
+stogas-core = { path = "../../../crates/core", default-features = false }
 aes-gcm = "=0.11.0"
 hkdf = "=0.13.0"
 sha2 = "=0.11.0"

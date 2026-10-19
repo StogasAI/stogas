@@ -32,8 +32,8 @@ def build(directory):
         work = Path(temporary)
         headers = work / "include"
         headers.mkdir()
-        shutil.copyfile(source / "include/stogas_verifier.h", headers / "stogas_verifier.h")
-        (headers / "module.modulemap").write_text('module CStogas { header "stogas_verifier.h" export * }\n')
+        shutil.copyfile(source / "include/stogas.h", headers / "stogas.h")
+        (headers / "module.modulemap").write_text('module CStogas { header "stogas.h" export * }\n')
         groups = {}
         for platform, target in sorted(apple.items()):
             shard = directory / platform
@@ -43,10 +43,10 @@ def build(directory):
                 raise ValueError("Apple native artifact changed before framework assembly")
             unpack(shard / f"stogas-v{version}-{platform}.tar.gz", work / platform)
             group = target["os"] + ("-simulator" if target.get("simulator") else "")
-            groups.setdefault(group, []).append(work / platform / f"stogas-v{version}-{platform}/libstogas_verifier_ffi.a")
+            groups.setdefault(group, []).append(work / platform / f"stogas-v{version}-{platform}/libstogas_ffi.a")
         arguments = ["xcodebuild", "-create-xcframework"]
         for group, libraries in sorted(groups.items()):
-            library = work / group / "libstogas_verifier_ffi.a"
+            library = work / group / "libstogas_ffi.a"
             library.parent.mkdir()
             # A fat library combines architectures only within one platform.
             # iOS device and simulator slices remain separate XCFramework entries.

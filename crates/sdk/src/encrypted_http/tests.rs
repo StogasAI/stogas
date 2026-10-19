@@ -2,7 +2,7 @@ use super::*;
 use axum::{Router, body::to_bytes, routing::post};
 use sha2::{Digest as _, Sha256};
 use std::time::Duration;
-use stogas_verifier::{approvals::Environment, channel::setup::PendingSetup};
+use stogas_core::{approvals::Environment, channel::setup::PendingSetup};
 
 mod clients;
 
@@ -110,8 +110,8 @@ impl Drop for Server {
 #[cfg(feature = "staging")]
 pub async fn hardware_session() -> (
     Arc<crate::evidence_client::EvidenceClient>,
-    Arc<stogas_verifier::evidence::Snapshot>,
-    Arc<stogas_verifier::evidence::VerifiedSession>,
+    Arc<stogas_core::evidence::Snapshot>,
+    Arc<stogas_core::evidence::VerifiedSession>,
 ) {
     use axum::routing::get;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -549,7 +549,7 @@ async fn client_fixture_request(
         return Err(response.body(Body::from(body)).unwrap());
     }
     let response = response.bytes().await.unwrap();
-    assert!(response.len() <= stogas_verifier::channel::setup::MAX_SERVER_SETUP_BYTES);
+    assert!(response.len() <= stogas_core::channel::setup::MAX_SERVER_SETUP_BYTES);
     let mut session = pending
         .complete(&response, |evidence| {
             assert_eq!(
@@ -577,7 +577,7 @@ async fn open_source_client_compatibility_proxy() {
             .decode(fixture["record"]["report"].as_str().unwrap())
             .unwrap();
         let node_id =
-            stogas_verifier::attestation::snp_node_id(report[0x140..0x160].try_into().unwrap());
+            stogas_core::attestation::snp_node_id(report[0x140..0x160].try_into().unwrap());
         // Serializer conformance does not own session reuse. Acquire for each request
         // so an idle test bridge cannot retain a server session between long suites.
         let acquire = {

@@ -45,7 +45,7 @@ Future<void> main(List<String> args) async {
     var baseUrl = Platform.environment['STOGAS_BASE_URL'];
     if (baseUrl == null) {
       transport = StogasTransport(
-        Platform.environment['STOGAS_VERIFIER_LIBRARY']!,
+        Platform.environment['STOGAS_LIBRARY']!,
       );
       baseUrl = transport.baseUrl;
     }

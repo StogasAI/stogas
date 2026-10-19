@@ -2,7 +2,7 @@ mod request;
 pub use request::EncryptedRequest;
 use std::sync::Arc;
 
-use stogas_verifier::{
+use stogas_core::{
     channel::{ClientSession, Error, setup::PendingSetup},
     evidence::{Snapshot, VerifiedSession},
 };
@@ -50,7 +50,7 @@ impl EncryptedSetup {
             .core
             .complete_verified(response, &snapshot.core, crate::wall_clock_ms()?)
             .map_err(|error| match error {
-                stogas_verifier::channel::setup::SetupError::Appraisal(error) => {
+                stogas_core::channel::setup::SetupError::Appraisal(error) => {
                     verification_error(&error)
                 }
                 error => js_sys::Error::new(&error.to_string()).into(),
@@ -133,7 +133,7 @@ impl EncryptedSession {
 
 #[wasm_bindgen(js_name = ResponseCompletion)]
 pub struct ResponseCompletion {
-    core: Option<stogas_verifier::receipt::StreamCompletion>,
+    core: Option<stogas_core::receipt::StreamCompletion>,
 }
 
 #[wasm_bindgen(js_class = ResponseCompletion)]
@@ -169,7 +169,7 @@ impl ResponseCompletion {
 pub struct ResponseReceipt {
     appraisal: Arc<VerifiedSession>,
     request: [u8; 32],
-    stream: Option<stogas_verifier::receipt::Stream>,
+    stream: Option<stogas_core::receipt::Stream>,
     finished: bool,
 }
 
@@ -183,7 +183,7 @@ impl ResponseReceipt {
         }
         let stream = self
             .stream
-            .get_or_insert_with(|| stogas_verifier::receipt::Stream::new(self.request));
+            .get_or_insert_with(|| stogas_core::receipt::Stream::new(self.request));
         match stream.push(bytes) {
             Ok(chunks) => {
                 let output = js_sys::Array::new();
@@ -224,7 +224,7 @@ impl ResponseReceipt {
             return Err(JsError::new("receipt verifier is closed"));
         }
         self.finished = true;
-        let result = stogas_verifier::receipt::verify_buffered(
+        let result = stogas_core::receipt::verify_buffered(
             self.appraisal.boot(),
             &self.request,
             response,

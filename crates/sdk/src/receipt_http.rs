@@ -5,10 +5,10 @@ use axum::{
 };
 use futures_util::{StreamExt as _, stream};
 use std::{collections::VecDeque, sync::Arc};
-use stogas_verifier::{evidence::VerifiedSession, receipt};
+use stogas_core::{evidence::VerifiedSession, receipt};
 use tokio::time::{Instant, timeout_at};
 
-const MAX_RESPONSE_BYTES: usize = stogas_verifier::receipt::MAX_BUFFERED_BYTES;
+const MAX_RESPONSE_BYTES: usize = stogas_core::receipt::MAX_BUFFERED_BYTES;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

@@ -4,7 +4,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use std::{io::Read as _, path::PathBuf, time::UNIX_EPOCH};
-use stogas_offline_sigstore::{IdentityPolicy, Subject, TrustedRoot, verify_dsse_attestation};
+use stogas_sigstore::{IdentityPolicy, Subject, TrustedRoot, verify_dsse_attestation};
 
 const MAX_BUNDLE_BYTES: u64 = 16 * 1024 * 1024;
 

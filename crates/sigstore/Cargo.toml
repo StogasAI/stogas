@@ -1,9 +1,9 @@
 [package]
-name = "stogas-offline-sigstore"
+name = "stogas-sigstore"
 description = "Networkless verification of the GitHub/Sigstore in-toto profile"
 readme = "../../README.md"
 homepage = "https://github.com/StogasAI/stogas"
-documentation = "https://docs.rs/stogas-offline-sigstore"
+documentation = "https://docs.rs/stogas-sigstore"
 keywords = ["sigstore", "in-toto", "slsa", "verification", "wasm"]
 categories = ["authentication", "cryptography", "web-programming::wasm"]
 version.workspace = true

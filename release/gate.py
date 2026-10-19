@@ -103,8 +103,8 @@ def check_release(directory, *, reports=True):
 
 def check_artifact_families(names, targets, version):
     expected = {
-        f"stogas-{version}.tgz", f"stogas-offline-sigstore-{version}.tgz",
-        *[f"{crate}-{version}.crate" for crate in ("stogas", "stogas-cli", "stogas-verifier", "stogas-offline-sigstore")],
+        f"stogas-{version}.tgz", f"stogas-sigstore-{version}.tgz",
+        *[f"{crate}-{version}.crate" for crate in ("stogas", "stogas-cli", "stogas-core", "stogas-sigstore")],
         f"stogas-go-v{version}.tar.gz", f"stogas-swift-v{version}.tar.gz",
         f"stogas-xcframework-v{version}.zip",
         f"stogas-source-v{version}.tar.gz",

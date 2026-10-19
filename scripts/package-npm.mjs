@@ -28,9 +28,9 @@ function pack(directory) {
 
 pack(repositoryRoot);
 
-const stagingRoot = mkdtempSync(join(tmpdir(), 'stogas-offline-sigstore-'));
+const stagingRoot = mkdtempSync(join(tmpdir(), 'stogas-sigstore-'));
 try {
-	cpSync(resolve(repositoryRoot, 'packages/offline-sigstore'), stagingRoot, { recursive: true });
+	cpSync(resolve(repositoryRoot, 'packages/sigstore'), stagingRoot, { recursive: true });
 	copyFileSync(resolve(repositoryRoot, 'LICENSE'), resolve(stagingRoot, 'LICENSE'));
 	pack(stagingRoot);
 } finally {

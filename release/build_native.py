@@ -82,11 +82,11 @@ def build(platform, output, epoch):
         library_command = [*base]
         library_command[1] = "rustc"
         link_options = ["--crate-type", "staticlib"] if target["os"] == "ios" else [
-            "--", "-C", "link-arg=-Wl,-install_name,@rpath/libstogas_verifier_ffi.dylib",
+            "--", "-C", "link-arg=-Wl,-install_name,@rpath/libstogas_ffi.dylib",
         ]
-        run([*library_command, "--package", "stogas-verifier-ffi", "--lib", *link_options], library_env)
+        run([*library_command, "--package", "stogas-ffi", "--lib", *link_options], library_env)
     else:
-        run([*base, "--package", "stogas-verifier-ffi"], library_env)
+        run([*base, "--package", "stogas-ffi"], library_env)
     built = Path(env["CARGO_TARGET_DIR"]) / triple / "dist"
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="stogas-package-") as temporary:
@@ -94,7 +94,7 @@ def build(platform, output, epoch):
         runtime, symbols = temporary / "runtime", temporary / "symbols"
         runtime.mkdir()
         symbols.mkdir()
-        archive = "stogas_verifier_ffi.lib" if windows else "libstogas_verifier_ffi.a"
+        archive = "stogas_ffi.lib" if windows else "libstogas_ffi.a"
         if windows:
             # COFF import members cannot be rewritten by llvm-objcopy. Preserve
             # the complete MSVC archive; its debug records support consumer PDBs.
@@ -108,15 +108,15 @@ def build(platform, output, epoch):
         if not windows and (runtime / archive).stat().st_size > 100 * 1024**2:
             raise ValueError("Static library exceeds the GitHub per-file limit for the Go module")
         if windows:
-            shared = "stogas_verifier_ffi.dll"
+            shared = "stogas_ffi.dll"
             shutil.copyfile(built / shared, runtime / shared)
             shutil.copyfile(built / (shared + ".lib"), runtime / (shared + ".lib"))
-            shutil.copyfile(built / "stogas_verifier_ffi.pdb", symbols / "stogas_verifier_ffi.pdb")
+            shutil.copyfile(built / "stogas_ffi.pdb", symbols / "stogas_ffi.pdb")
         elif target["os"] == "macos":
-            shared = "libstogas_verifier_ffi.dylib"
+            shared = "libstogas_ffi.dylib"
             split_apple_debug(built / shared, runtime / shared, symbols / (shared + ".dSYM"), env)
         elif not apple:
-            shared = "libstogas_verifier_ffi.so"
+            shared = "libstogas_ffi.so"
             split_debug(objcopy, built / shared, runtime / shared, symbols / (shared + ".debug"), env)
         if "cli" in target["packages"]:
             run([*base, "--package", "stogas-cli"], env)
@@ -131,7 +131,7 @@ def build(platform, output, epoch):
             build_windows_go(target, runtime, symbols, objcopy, env)
         for directory in (runtime, symbols):
             shutil.copyfile(ROOT / "LICENSE", directory / "LICENSE")
-        shutil.copyfile(ROOT / "include/stogas_verifier.h", runtime / "stogas_verifier.h")
+        shutil.copyfile(ROOT / "include/stogas.h", runtime / "stogas.h")
         name = f"stogas-v{version}-{platform}"
         pack, extension = (zip_archive, "zip") if windows else (tar_gz, "tar.gz")
         pack(output / f"{name}.{extension}", runtime, epoch, name)
@@ -193,12 +193,12 @@ def build_windows_go(target, runtime, symbols, objcopy, env):
     env[f"CFLAGS_{triple.replace('-', '_')}"] = "-mno-incremental-linker-compatible"
     env[f"CXXFLAGS_{triple.replace('-', '_')}"] = "-mno-incremental-linker-compatible"
     env[f"AR_{triple.replace('-', '_')}"] = "/opt/llvm-mingw/bin/llvm-ar"
-    run(["cargo", "build", "--locked", "--profile", "dist", "--target", triple, "--package", "stogas-verifier-ffi"], env)
-    original = Path(env["CARGO_TARGET_DIR"]) / triple / "dist/libstogas_verifier_ffi.a"
+    run(["cargo", "build", "--locked", "--profile", "dist", "--target", triple, "--package", "stogas-ffi"], env)
+    original = Path(env["CARGO_TARGET_DIR"]) / triple / "dist/libstogas_ffi.a"
     (runtime / "go").mkdir()
     (symbols / "go").mkdir()
-    shutil.copyfile(original, symbols / "go/libstogas_verifier_ffi.a")
-    packaged = runtime / "go/libstogas_verifier_ffi.a"
+    shutil.copyfile(original, symbols / "go/libstogas_ffi.a")
+    packaged = runtime / "go/libstogas_ffi.a"
     # GNU objcopy preserves NASM's reproducible COFF file records. LLVM objcopy
     # corrupts their empty auxiliary filename; ARM objects use LLVM's backend.
     coff_objcopy = objcopy if target["arch"] == "arm64" else Path("/usr/bin/objcopy")

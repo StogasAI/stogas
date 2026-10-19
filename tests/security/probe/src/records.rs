@@ -1,5 +1,5 @@
 //! Compile the production record KDF into the isolated analysis binary.
-use stogas_verifier::channel::Error;
+use stogas_core::channel::Error;
 
 #[derive(Clone, Copy)]
 #[repr(u8)]
@@ -8,7 +8,7 @@ enum Direction {
     Response = 2,
 }
 
-#[path = "../../../../crates/verifier/src/channel/record/keys.rs"]
+#[path = "../../../../crates/core/src/channel/record/keys.rs"]
 mod keys;
 
 pub fn audit() {

@@ -55,11 +55,11 @@ def qualify(source, packages, version, platform, target, requested, device, devi
             directory = "/build/" + native.relative_to(work).as_posix()
             compiler = {"amd64": "x86_64-linux-android", "arm64": "aarch64-linux-android"}[target["arch"]]
             # Google's ARM64 translation ignores LD_LIBRARY_PATH, so the consumer finds the library beside itself.
-            run(image("Dockerfile", "android"), [f"/opt/android-ndk-r30/toolchains/llvm/prebuilt/linux-x86_64/bin/{compiler}{target['minimum']}-clang", "-Wall", "-Wextra", "-Werror", directory + "/native.c", "-L" + directory, "-lstogas_verifier_ffi", "-Wl,-rpath,$ORIGIN", "-o", directory + "/native-consumer"])
+            run(image("Dockerfile", "android"), [f"/opt/android-ndk-r30/toolchains/llvm/prebuilt/linux-x86_64/bin/{compiler}{target['minimum']}-clang", "-Wall", "-Wextra", "-Werror", directory + "/native.c", "-L" + directory, "-lstogas_ffi", "-Wl,-rpath,$ORIGIN", "-o", directory + "/native-consumer"])
             remote = "/data/local/tmp/stogas-" + uuid.uuid4().hex
             shell("mkdir", remote)
             try:
-                for name in ("native-consumer", "libstogas_verifier_ffi.so"):
+                for name in ("native-consumer", "libstogas_ffi.so"):
                     subprocess.run([*adb, "push", str(native / name), remote + "/" + name], check=True)
                 shell("chmod", "700", remote + "/native-consumer")
                 commands = {"offline": remote + "/native-consumer", "live": "STOGAS_LIVE=prod " + remote + "/native-consumer"}

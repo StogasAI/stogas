@@ -7,7 +7,7 @@ mod operator;
 #[cfg(feature = "operator")]
 mod signing;
 use serde::Serialize;
-use stogas_verifier::inspect_snp_report as inspect_report;
+use stogas_core::inspect_snp_report as inspect_report;
 use wasm_bindgen::prelude::*;
 
 fn wall_clock_ms() -> Result<i64, JsError> {

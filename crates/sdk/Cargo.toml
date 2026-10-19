@@ -17,7 +17,7 @@ name = "stogas"
 path = "src/lib.rs"
 
 [features]
-staging = ["stogas-verifier/staging"]
+staging = ["stogas-core/staging"]
 
 [dependencies]
 anyhow.workspace = true
@@ -37,7 +37,7 @@ rustls.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 sha2.workspace = true
-stogas-verifier = { path = "../verifier", version = "0.1.0-alpha.1" }
+stogas-core = { path = "../core", version = "0.1.0-alpha.1" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
 tokio-rustls = "0.26.4"

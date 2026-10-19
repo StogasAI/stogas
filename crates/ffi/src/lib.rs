@@ -26,7 +26,7 @@ mod transport;
 pub use transport::*;
 
 /// ABI version implemented by this library and its public header.
-pub const STOGAS_VERIFIER_ABI_VERSION: u32 = 1;
+pub const STOGAS_ABI_VERSION: u32 = 1;
 
 #[derive(Serialize)]
 struct AbiResponse<T> {
@@ -59,8 +59,8 @@ impl From<&str> for AbiError {
     }
 }
 
-impl From<stogas_verifier::evidence::Error> for AbiError {
-    fn from(error: stogas_verifier::evidence::Error) -> Self {
+impl From<stogas_core::evidence::Error> for AbiError {
+    fn from(error: stogas_core::evidence::Error) -> Self {
         Self {
             message: error.to_string(),
             code: Some(error.code()),
@@ -68,8 +68,8 @@ impl From<stogas_verifier::evidence::Error> for AbiError {
     }
 }
 
-impl From<stogas_verifier::receipt::Error> for AbiError {
-    fn from(error: stogas_verifier::receipt::Error) -> Self {
+impl From<stogas_core::receipt::Error> for AbiError {
+    fn from(error: stogas_core::receipt::Error) -> Self {
         Self {
             message: error.to_string(),
             code: Some("invalid_receipt"),
@@ -79,8 +79,8 @@ impl From<stogas_verifier::receipt::Error> for AbiError {
 
 /// Return the ABI version before constructing a session.
 #[unsafe(no_mangle)]
-pub const extern "C" fn stogas_verifier_abi_version() -> u32 {
-    STOGAS_VERIFIER_ABI_VERSION
+pub const extern "C" fn stogas_abi_version() -> u32 {
+    STOGAS_ABI_VERSION
 }
 
 /// Release a JSON response returned by this ABI.
@@ -90,7 +90,7 @@ pub const extern "C" fn stogas_verifier_abi_version() -> u32 {
 /// `value` must be null or a live pointer returned by this ABI. A live pointer must be released
 /// exactly once.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn stogas_verifier_string_free(value: *mut c_char) {
+pub unsafe extern "C" fn stogas_string_free(value: *mut c_char) {
     if !value.is_null() {
         // SAFETY: the pointer was returned by `CString::into_raw` in `response` and is reclaimed
         // exactly once by the caller.
@@ -172,7 +172,7 @@ mod tests {
         // SAFETY: the test owns one response pointer until the matching free below.
         let bytes = unsafe { CStr::from_ptr(pointer) }.to_bytes().to_vec();
         // SAFETY: response pointer is released exactly once.
-        unsafe { stogas_verifier_string_free(pointer) };
+        unsafe { stogas_string_free(pointer) };
         serde_json::from_slice(&bytes).unwrap()
     }
 

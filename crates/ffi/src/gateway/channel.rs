@@ -5,7 +5,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     ptr, slice,
 };
-use stogas_verifier::channel::{
+use stogas_core::channel::{
     Error, Kind, MAX_RECORD_BYTES, MAX_RECORD_PLAINTEXT, ServerReader, ServerSession, ServerWriter,
     setup::{CLIENT_SETUP_BYTES, prepare_server_setup},
 };
@@ -71,9 +71,9 @@ pub unsafe extern "C" fn stogas_channel_setup(
             return Err(Error::Record);
         }
         let environment = match environment {
-            1 => stogas_verifier::approvals::Environment::Production,
+            1 => stogas_core::approvals::Environment::Production,
             #[cfg(feature = "staging")]
-            2 => stogas_verifier::approvals::Environment::Staging,
+            2 => stogas_core::approvals::Environment::Staging,
             _ => return Err(Error::Record),
         };
         // SAFETY: non-null inputs have the readable sizes specified by the ABI.

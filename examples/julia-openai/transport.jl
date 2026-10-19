@@ -9,7 +9,7 @@ end
 
 function Transport(path; configuration=Dict())
     library = Libdl.dlopen(path)
-    version = ccall(Libdl.dlsym(library, :stogas_verifier_abi_version), UInt32, ())
+    version = ccall(Libdl.dlsym(library, :stogas_abi_version), UInt32, ())
     version == 1 || error("Unsupported verifier ABI")
     json = JSON.json(configuration)
     output = Ref{Ptr{Cvoid}}(C_NULL)
@@ -24,7 +24,7 @@ function Transport(path; configuration=Dict())
         ccall(Libdl.dlsym(library, :stogas_transport_free), Cvoid, (Ptr{Cvoid},), output[])
         rethrow()
     finally
-        ccall(Libdl.dlsym(library, :stogas_verifier_string_free), Cvoid, (Ptr{UInt8},), raw)
+        ccall(Libdl.dlsym(library, :stogas_string_free), Cvoid, (Ptr{UInt8},), raw)
     end
 end
 

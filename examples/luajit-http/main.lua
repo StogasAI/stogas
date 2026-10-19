@@ -12,7 +12,7 @@ local ok = pcall(function()
     assert(key and key ~= "" and not key:find("[\r\n]") and model and model ~= "", "Set key and model")
     local base = os.getenv("STOGAS_BASE_URL")
     if not base then
-        transport = start_transport(assert(os.getenv("STOGAS_VERIFIER_LIBRARY")))
+        transport = start_transport(assert(os.getenv("STOGAS_LIBRARY")))
         base = transport.base_url
     end
     assert(base:match("^http://127%.0%.0%.1:%d+/"), "Expected the private loopback URL")

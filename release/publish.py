@@ -125,7 +125,7 @@ def crate_upload(path, metadata, token):
 
 
 def crates(packages, version):
-    for name in ("stogas-offline-sigstore", "stogas-verifier", "stogas", "stogas-cli"):
+    for name in ("stogas-sigstore", "stogas-core", "stogas", "stogas-cli"):
         path = packages / f"{name}-{version}.crate"
         url = f"https://static.crates.io/crates/{name}/{path.name}"
         check = lambda: exact_remote(path, url)
@@ -150,7 +150,7 @@ def crates(packages, version):
 
 
 def npm(packages, version):
-    for name, filename in (("@stogas/offline-sigstore", "stogas-offline-sigstore"), ("stogas", "stogas")):
+    for name, filename in (("@stogas/sigstore", "stogas-sigstore"), ("stogas", "stogas")):
         path = packages / f"{filename}-{version}.tgz"
         def check():
             data = download(f"https://registry.npmjs.org/{urllib.parse.quote(name, safe='')}/{version}")

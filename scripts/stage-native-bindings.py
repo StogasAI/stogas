@@ -23,7 +23,7 @@ def copy(source, destination):
 def stage(platform, native, bindings, version, *, apple_swift=True):
     target = PLATFORMS[platform]
     extension = "dll" if platform.startswith("windows") else "dylib" if platform.startswith("darwin") else "so"
-    name = ("" if extension == "dll" else "lib") + "stogas_verifier_ffi." + extension
+    name = ("" if extension == "dll" else "lib") + "stogas_ffi." + extension
     if "dotnet" in target:
         copy(native / name, bindings / "dotnet/Stogas/runtimes" / target["dotnet"] / "native" / name)
     if "jna" in target:
@@ -39,10 +39,10 @@ def stage(platform, native, bindings, version, *, apple_swift=True):
         with tempfile.TemporaryDirectory(prefix="stogas-swift-") as temporary:
             temporary = Path(temporary)
             headers = temporary / "include"
-            copy(ROOT / "include/stogas_verifier.h", headers / "stogas_verifier.h")
-            (headers / "module.modulemap").write_text('module CStogas { header "stogas_verifier.h" export * }\n')
+            copy(ROOT / "include/stogas.h", headers / "stogas.h")
+            (headers / "module.modulemap").write_text('module CStogas { header "stogas.h" export * }\n')
             bundle = temporary / "CStogas.xcframework"
-            subprocess.run(["xcodebuild", "-create-xcframework", "-library", str((native / "libstogas_verifier_ffi.a").resolve()), "-headers", str(headers), "-output", str(bundle)], check=True)
+            subprocess.run(["xcodebuild", "-create-xcframework", "-library", str((native / "libstogas_ffi.a").resolve()), "-headers", str(headers), "-output", str(bundle)], check=True)
             destination = bindings / "swift/CStogas.xcframework"
             if destination.exists():
                 shutil.rmtree(destination)
@@ -50,10 +50,10 @@ def stage(platform, native, bindings, version, *, apple_swift=True):
 
     if "swift" in target and target["os"] == "linux":
         bundle = bindings / "swift/CStogas.artifactbundle"
-        static = "libstogas_verifier_ffi.a"
+        static = "libstogas_ffi.a"
         copy(native / static, bundle / platform / static)
-        copy(Path(__file__).resolve().parents[1] / "include/stogas_verifier.h", bundle / "include/stogas_verifier.h")
-        (bundle / "include/module.modulemap").write_text('module CStogas { header "stogas_verifier.h" export * }\n')
+        copy(Path(__file__).resolve().parents[1] / "include/stogas.h", bundle / "include/stogas.h")
+        (bundle / "include/module.modulemap").write_text('module CStogas { header "stogas.h" export * }\n')
         manifest = bundle / "info.json"
         artifact = {"type": "staticLibrary", "version": version, "variants": []}
         if manifest.exists():

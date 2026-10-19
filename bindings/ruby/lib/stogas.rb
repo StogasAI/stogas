@@ -16,17 +16,17 @@ module Stogas
   module Native
     extend Fiddle::Importer
     library = case RbConfig::CONFIG.fetch('host_os')
-              when /darwin/ then 'libstogas_verifier_ffi.dylib'
-              when /mswin|mingw/ then 'stogas_verifier_ffi.dll'
-              else 'libstogas_verifier_ffi.so'
+              when /darwin/ then 'libstogas_ffi.dylib'
+              when /mswin|mingw/ then 'stogas_ffi.dll'
+              else 'libstogas_ffi.so'
               end
     dlload File.join(__dir__, 'stogas', 'native', library)
-    extern 'unsigned int stogas_verifier_abi_version()'
+    extern 'unsigned int stogas_abi_version()'
     extern 'void* stogas_transport_start(void*, size_t, void*)'
     extern 'void* stogas_transport_refresh(void*)'
     extern 'void stogas_transport_close(void*)'
     extern 'void stogas_transport_free(void*)'
-    extern 'void stogas_verifier_string_free(void*)'
+    extern 'void stogas_string_free(void*)'
 
     def self.result(pointer)
       raise 'Native transport returned no result.' if pointer.null?
@@ -37,7 +37,7 @@ module Stogas
         end
         envelope.fetch('value')
       ensure
-        stogas_verifier_string_free(pointer)
+        stogas_string_free(pointer)
       end
     end
   end
@@ -57,7 +57,7 @@ module Stogas
     end
 
     def initialize(environment: 'prod', security: 'tls', max_connections: 4, base_url: nil)
-      raise 'Unsupported Stogas native ABI.' unless Native.stogas_verifier_abi_version == 1
+      raise 'Unsupported Stogas native ABI.' unless Native.stogas_abi_version == 1
       @mutex = Mutex.new
       bytes = JSON.generate({environment: environment, security: security,
                              max_connections: max_connections, base_url: base_url})

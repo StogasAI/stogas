@@ -5,8 +5,8 @@ use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use std::time::Duration;
-use stogas_verifier::signing::SigningKey;
-use stogas_verifier::{approvals::Environment, evidence};
+use stogas_core::signing::SigningKey;
+use stogas_core::{approvals::Environment, evidence};
 
 fn peer() -> Arc<VerifiedSession> {
     let fixture: Value = serde_json::from_str(include_str!(

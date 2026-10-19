@@ -6,7 +6,7 @@ use std::{
     ffi::c_char,
     sync::{Arc, Mutex},
 };
-use stogas_verifier::{
+use stogas_core::{
     approvals::{Environment, RootKey},
     evidence,
 };
@@ -105,7 +105,7 @@ pub unsafe extern "C" fn stogas_evidence_refresh(
             input_slice(
                 bundle,
                 bundle_len,
-                stogas_verifier::MAX_INPUT_BYTES,
+                stogas_core::MAX_INPUT_BYTES,
                 "evidence",
             )?
         };
@@ -164,7 +164,7 @@ pub unsafe extern "C" fn stogas_evidence_verify_registration(
                 input_slice(
                     document,
                     document_len,
-                    stogas_verifier::attestation::evidence::MAX_EVIDENCE_BYTES,
+                    stogas_core::attestation::evidence::MAX_EVIDENCE_BYTES,
                     "boot",
                 )?,
                 input_slice(challenge, challenge_len, 32, "challenge")?,
@@ -200,13 +200,13 @@ pub unsafe extern "C" fn stogas_evidence_verify_logged_boot(
                 input_slice(
                     document,
                     document_len,
-                    stogas_verifier::attestation::evidence::MAX_EVIDENCE_BYTES,
+                    stogas_core::attestation::evidence::MAX_EVIDENCE_BYTES,
                     "boot",
                 )?,
                 input_slice(
                     inclusion,
                     inclusion_len,
-                    stogas_verifier::attestation::evidence::MAX_EVIDENCE_BYTES,
+                    stogas_core::attestation::evidence::MAX_EVIDENCE_BYTES,
                     "inclusion",
                 )?,
             )
@@ -239,7 +239,7 @@ pub unsafe extern "C" fn stogas_evidence_verify_receipt(
     response_hash_len: usize,
     now_unix_ms: i64,
 ) -> *mut c_char {
-    use stogas_verifier::attestation::evidence::MAX_EVIDENCE_BYTES;
+    use stogas_core::attestation::evidence::MAX_EVIDENCE_BYTES;
     response_coded(|| {
         // SAFETY: callers retain all slices and the snapshot through this synchronous call.
         let (snapshot, document, inclusion, receipt, request, response) = unsafe {
@@ -250,7 +250,7 @@ pub unsafe extern "C" fn stogas_evidence_verify_receipt(
                 input_slice(
                     receipt,
                     receipt_len,
-                    stogas_verifier::receipt::MAX_METADATA_BYTES,
+                    stogas_core::receipt::MAX_METADATA_BYTES,
                     "receipt",
                 )?,
                 input_slice(request_hash, request_hash_len, 32, "request SHA-256")?,
@@ -265,7 +265,7 @@ pub unsafe extern "C" fn stogas_evidence_verify_receipt(
             .map_err(|_| "response SHA-256 must be 32 bytes")?;
 
         let boot = snapshot.verify_logged_boot(document, inclusion, now_unix_ms)?;
-        Ok(stogas_verifier::receipt::verify_metadata(receipt, &boot, request, response)?.receipt)
+        Ok(stogas_core::receipt::verify_metadata(receipt, &boot, request, response)?.receipt)
     })
 }
 

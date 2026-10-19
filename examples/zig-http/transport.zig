@@ -1,6 +1,6 @@
 const std = @import("std");
 pub const c = @cImport({
-    @cInclude("stogas_verifier.h");
+    @cInclude("stogas.h");
     @cInclude("curl/curl.h");
     @cInclude("stdio.h");
     @cInclude("signal.h");
@@ -12,10 +12,10 @@ pub const Transport = struct {
     base_url: []u8,
 
     pub fn init(allocator: std.mem.Allocator, configuration: []const u8) !Transport {
-        if (c.stogas_verifier_abi_version() != 1) return error.UnsupportedABI;
+        if (c.stogas_abi_version() != 1) return error.UnsupportedABI;
         var handle: ?*c.StogasTransport = null;
         const raw = c.stogas_transport_start(configuration.ptr, configuration.len, &handle);
-        defer c.stogas_verifier_string_free(raw);
+        defer c.stogas_string_free(raw);
         errdefer c.stogas_transport_free(handle);
         if (raw == null or handle == null) return error.TransportUnavailable;
         const result = try std.json.parseFromSlice(std.json.Value, allocator, std.mem.span(raw), .{});

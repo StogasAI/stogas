@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use stogas_verifier::{
+use stogas_core::{
     approvals::RootKey,
     evidence::{self, Snapshot},
 };
@@ -13,7 +13,7 @@ use wasm_bindgen::prelude::*;
 /// Rejects environments absent from this build or failed output conversion.
 #[wasm_bindgen]
 pub fn transport_configuration(environment: &str) -> Result<JsValue, JsError> {
-    let environment: stogas_verifier::approvals::Environment =
+    let environment: stogas_core::approvals::Environment =
         serde_json::from_value(json!(environment))
             .map_err(|_| JsError::new("unsupported verification environment"))?;
     super::to_js_value(&json!({

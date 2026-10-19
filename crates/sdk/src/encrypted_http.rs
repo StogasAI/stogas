@@ -14,7 +14,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use stogas_verifier::channel::{
+use stogas_core::channel::{
     self, ClientRequest, Kind, MAX_RECORD_BYTES, MAX_RECORD_PLAINTEXT, ResponseDecoder,
 };
 use tokio::{
@@ -54,7 +54,7 @@ pub enum Error {
     #[error("encrypted record failed; execution is unknown: {0}")]
     Record(#[from] channel::Error),
     #[error("encrypted SSE completion failed; delivery is incomplete: {0}")]
-    Completion(#[from] stogas_verifier::receipt::Error),
+    Completion(#[from] stogas_core::receipt::Error),
 }
 
 /// Encrypt metadata before creating the outer request. The caller must supply a
@@ -265,7 +265,7 @@ struct Incoming {
     input: Bytes,
     pending: VecDeque<Bytes>,
     metadata: Option<ResponseMetadata>,
-    completion: Option<stogas_verifier::receipt::StreamCompletion>,
+    completion: Option<stogas_core::receipt::StreamCompletion>,
     body_allowed: bool,
     deadline: Instant,
     _upload: CancelUpload,
@@ -320,7 +320,7 @@ impl Incoming {
                                 })
                             {
                                 self.completion =
-                                    Some(stogas_verifier::receipt::StreamCompletion::default());
+                                    Some(stogas_core::receipt::StreamCompletion::default());
                             }
                             self.metadata = Some(metadata);
                         } else {

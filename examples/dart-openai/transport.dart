@@ -25,7 +25,7 @@ final class StogasTransport {
     Map<String, Object?> configuration = const {},
   ]) : _library = DynamicLibrary.open(libraryPath) {
     final version = _library.lookupFunction<Uint32 Function(), int Function()>(
-      'stogas_verifier_abi_version',
+      'stogas_abi_version',
     );
     if (version() != 1) throw StateError('Unsupported verifier ABI');
     final start = _library
@@ -41,7 +41,7 @@ final class StogasTransport {
         .lookupFunction<
           Void Function(Pointer<Utf8>),
           void Function(Pointer<Utf8>)
-        >('stogas_verifier_string_free');
+        >('stogas_string_free');
     final configurationJson = jsonEncode(configuration);
     final input = configurationJson.toNativeUtf8();
     final output = calloc<Pointer<_Handle>>();

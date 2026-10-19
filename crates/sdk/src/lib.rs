@@ -11,7 +11,7 @@ use std::{
 };
 use tokio::sync::oneshot;
 
-pub use stogas_verifier::evidence::{Error, Snapshot, Verifier};
+pub use stogas_core::evidence::{Error, Snapshot, Verifier};
 
 pub mod encrypted_client;
 pub mod encrypted_http;
@@ -29,7 +29,7 @@ mod upstream;
 const MAX_MANAGED_RESPONSE_LINE_BYTES: usize = 8 * 1024;
 const MAX_MANAGED_ERROR_BYTES: usize = 8 * 1024;
 
-pub use stogas_verifier::approvals::Environment;
+pub use stogas_core::approvals::Environment;
 
 /// The two independently verified transport profiles.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

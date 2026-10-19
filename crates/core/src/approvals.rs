@@ -10,7 +10,7 @@ use ed25519_dalek::{VerifyingKey, pkcs8::DecodePublicKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use stogas_offline_sigstore::TrustedRoot;
+use stogas_sigstore::TrustedRoot;
 use thiserror::Error;
 
 use crate::{
@@ -186,7 +186,7 @@ impl VerifiedSigstore {
     /// Rejects malformed files, broken root chains and trusted roots that differ from the
     /// signed targets listing.
     pub fn verify(files: &SigstoreFiles) -> Result<Self, Error> {
-        Self::check(files, stogas_offline_sigstore::verify_trust_update)
+        Self::check(files, stogas_sigstore::verify_trust_update)
     }
 
     /// Publishers also require Sigstore's current timestamp and snapshot to name these files
@@ -201,7 +201,7 @@ impl VerifiedSigstore {
         now_unix_ms: i64,
     ) -> Result<Self, Error> {
         Self::check(files, |roots, targets, trusted_root| {
-            stogas_offline_sigstore::verify_current_trust_update(
+            stogas_sigstore::verify_current_trust_update(
                 roots,
                 targets,
                 trusted_root,
@@ -219,8 +219,8 @@ impl VerifiedSigstore {
             &[u8],
             &[u8],
         ) -> Result<
-            stogas_offline_sigstore::TrustUpdate,
-            stogas_offline_sigstore::Error,
+            stogas_sigstore::TrustUpdate,
+            stogas_sigstore::Error,
         >,
     ) -> Result<Self, Error> {
         let decode = |text: &String| STANDARD.decode(text).map_err(|_| sigstore("base64"));
@@ -704,7 +704,7 @@ pub(crate) fn verify_document_inclusion(
 ) -> Result<i64, Error> {
     let artifact = canonical_json(&serde_json::json!({"document":document, "signature":signature}))
         .map_err(invalid)?;
-    stogas_offline_sigstore::verify_rekor_document_inclusion(
+    stogas_sigstore::verify_rekor_document_inclusion(
         trust,
         &serde_json::to_vec(inclusion).map_err(invalid)?,
         artifact.as_bytes(),

@@ -2,9 +2,9 @@
 
 use libfuzzer_sys::fuzz_target;
 use std::sync::LazyLock;
-use stogas_offline_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};
+use stogas_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};
 
-static TRUST: LazyLock<Result<&TrustedRoot, stogas_offline_sigstore::Error>> =
+static TRUST: LazyLock<Result<&TrustedRoot, stogas_sigstore::Error>> =
     LazyLock::new(TrustedRoot::embedded);
 const FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/gateway-v0.0.1-attestation.jsonl");
 const NOW_UNIX_MS: i64 = 1_784_246_400_000;
@@ -23,7 +23,7 @@ fuzz_target!(|data: &[u8]| {
         // Start with a valid independently generated submission binding instead;
         // the synthetic log proof itself must never establish trust.
         let candidate = mutate_fixture(&DOCUMENT.0, &data[1..]);
-        let _ = stogas_offline_sigstore::verify_rekor_document_inclusion(
+        let _ = stogas_sigstore::verify_rekor_document_inclusion(
             TRUST.as_ref().unwrap(),
             &candidate,
             &DOCUMENT.1,
@@ -51,7 +51,7 @@ fuzz_target!(|data: &[u8]| {
     };
     let trust = TRUST.as_ref().unwrap();
     let _ = verify_github_attestation(trust, &candidate, &subjects, &policy, NOW_UNIX_MS);
-    let _ = stogas_offline_sigstore::verify_rekor_document_inclusion(
+    let _ = stogas_sigstore::verify_rekor_document_inclusion(
         trust,
         &candidate,
         data,

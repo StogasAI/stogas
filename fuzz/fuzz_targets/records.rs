@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use stogas_verifier::channel::{Error, Kind, MAX_RECORD_BYTES};
+use stogas_core::channel::{Error, Kind, MAX_RECORD_BYTES};
 
 #[path = "../../tests/support/channel.rs"]
 mod channel_fixture;

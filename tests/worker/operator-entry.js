@@ -1,4 +1,4 @@
-import wasmModule from '../../target/operator/stogas_verifier_bg.wasm';
+import wasmModule from '../../target/operator/stogas_bg.wasm';
 import {
 	initSync,
 	EvidenceVerifier,
@@ -7,7 +7,7 @@ import {
 	rekor_public_key_from_seed,
 	prepare_rekor_submission_with_seed,
 	verify_sigstore_github_attestation
-} from '../../target/operator/stogas_verifier.js';
+} from '../../target/operator/stogas.js';
 import fixtures from './operator-fixtures.js';
 
 initSync({ module: wasmModule });

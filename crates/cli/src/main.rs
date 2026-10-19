@@ -19,7 +19,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use stogas::SecurityMode;
-use stogas_verifier::{
+use stogas_core::{
     MAX_INPUT_BYTES,
     evidence::{MAX_ARCHIVE_BYTES, Verifier},
     receipt::{self, VerifiedReceipt},
@@ -288,7 +288,7 @@ async fn run_api(method: Method, path: &str, input: Option<&Path>) -> Result<()>
 
 async fn run_verify(input: VerifyArgs) -> Result<()> {
     let bytes = read_bounded_input(&input.bundle, MAX_INPUT_BYTES, "bundle").await?;
-    let mut verifier = stogas_verifier::evidence::Verifier::stogas(input.environment)?;
+    let mut verifier = stogas_core::evidence::Verifier::stogas(input.environment)?;
     let now = input.now_unix_ms.unwrap_or_else(wall_clock_ms);
     let output = verifier.refresh(&bytes, now)?;
     print_output(&output, input.json, now);
@@ -420,7 +420,7 @@ async fn read_bounded_file(path: &Path, maximum: usize, label: &str) -> Result<V
     Ok(bytes)
 }
 
-fn print_output(output: &stogas_verifier::evidence::Snapshot, json: bool, now: i64) {
+fn print_output(output: &stogas_core::evidence::Snapshot, json: bool, now: i64) {
     if json {
         let mut summary = output.summary();
         summary["body_sha256"] = serde_json::json!(output.body_sha256());

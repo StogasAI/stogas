@@ -117,7 +117,7 @@ def qualify_linux(source, packages, version, platform, target, requested):
 
         relative_native = "/work/" + native.relative_to(work).as_posix()
         if "native" in selected:
-            run(python_image, ["cc", "-Wall", "-Wextra", "-Werror", "native.c", "-L.", "-lstogas_verifier_ffi", "-o", "native-consumer"], directory=relative_native, case="offline")
+            run(python_image, ["cc", "-Wall", "-Wextra", "-Werror", "native.c", "-L.", "-lstogas_ffi", "-o", "native-consumer"], directory=relative_native, case="offline")
             for case in CASES:
                 qualify_case("native", python_image, ["./native-consumer"], case, directory=relative_native, environment=["LD_LIBRARY_PATH=."])
         if "cli" in selected:

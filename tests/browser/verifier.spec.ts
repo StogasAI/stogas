@@ -5,12 +5,12 @@ import type { AddressInfo } from 'node:net';
 import { resolve } from 'node:path';
 
 const ROOT = resolve(import.meta.dirname, '../..');
-const GLUE = resolve(ROOT, 'target/browser/stogas_verifier.js');
-const WASM = resolve(ROOT, 'target/browser/stogas_verifier_bg.wasm');
-const OFFLINE_SIGSTORE_GLUE = resolve(ROOT, 'target/offline-browser/stogas_offline_sigstore.js');
-const OFFLINE_SIGSTORE_WASM = resolve(
+const GLUE = resolve(ROOT, 'target/browser/stogas.js');
+const WASM = resolve(ROOT, 'target/browser/stogas_bg.wasm');
+const SIGSTORE_GLUE = resolve(ROOT, 'target/sigstore-browser/stogas_sigstore.js');
+const SIGSTORE_WASM = resolve(
 	ROOT,
-	'target/offline-browser/stogas_offline_sigstore_bg.wasm'
+	'target/sigstore-browser/stogas_sigstore_bg.wasm'
 );
 const FIXTURE = resolve(ROOT, 'tests/fixtures/gateway-v0.0.1-attestation.jsonl');
 const NOW_UNIX_MS = 1_784_246_400_000;
@@ -56,7 +56,7 @@ test('browser boot history remains offline and separate from current evidence', 
 		({ fixture, archive }) => {
 			const api = (
 				globalThis as unknown as {
-					stogasVerifierBindings: typeof import('../../pkg/browser/stogas_verifier.js');
+					stogasVerifierBindings: typeof import('../../pkg/browser/stogas.js');
 				}
 			).stogasVerifierBindings;
 			const core = new api.EvidenceVerifier(
@@ -103,7 +103,7 @@ test('encrypted setup cannot release a browser session without its own verified 
 	const result = await page.evaluate((fixture) => {
 		const api = (
 			globalThis as unknown as {
-				stogasVerifierBindings: typeof import('../../pkg/browser/stogas_verifier.js');
+				stogasVerifierBindings: typeof import('../../pkg/browser/stogas.js');
 			}
 		).stogasVerifierBindings;
 		const platformNow = Date.now;
@@ -217,25 +217,25 @@ function initialize(page: import('@playwright/test').Page) {
 	return initializeModule(page, GLUE, WASM, 'stogasVerifierBindings');
 }
 
-function initializeOfflineSigstore(page: import('@playwright/test').Page) {
+function initializeSigstore(page: import('@playwright/test').Page) {
 	return initializeModule(
 		page,
-		OFFLINE_SIGSTORE_GLUE,
-		OFFLINE_SIGSTORE_WASM,
-		'stogasOfflineSigstoreBindings'
+		SIGSTORE_GLUE,
+		SIGSTORE_WASM,
+		'stogasSigstoreBindings'
 	);
 }
 
 test('standalone lightweight package verifies GitHub evidence with networking disabled', async ({
 	page
 }) => {
-	const requests = await initializeOfflineSigstore(page);
+	const requests = await initializeSigstore(page);
 	const fixture = await readFile(FIXTURE, 'utf8');
 	const result = await page.evaluate(
 		({ fixture, subjects, policy, now }) => {
 			const api = (
 				globalThis as typeof globalThis & {
-					stogasOfflineSigstoreBindings: {
+					stogasSigstoreBindings: {
 						verify_github_attestation_at(
 							bundle: Uint8Array,
 							subjects: string,
@@ -244,7 +244,7 @@ test('standalone lightweight package verifies GitHub evidence with networking di
 						): { subjects: unknown[] };
 					};
 				}
-			).stogasOfflineSigstoreBindings;
+			).stogasSigstoreBindings;
 			return api.verify_github_attestation_at(
 				new TextEncoder().encode(fixture),
 				JSON.stringify(subjects),
