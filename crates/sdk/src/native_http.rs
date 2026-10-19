@@ -13,7 +13,7 @@ use hyper::body::Bytes;
 use rustls::pki_types::ServerName;
 use sha2::{Digest as _, Sha256};
 use std::{future::Future, sync::Arc};
-use stogas_verifier::evidence::{Snapshot, VerifiedSession};
+use stogas_core::evidence::{Snapshot, VerifiedSession};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::Mutex,
@@ -28,7 +28,7 @@ pub enum Error {
     Evidence(#[from] evidence_client::Error),
     #[error("session evidence recovery failed: {acquisition}; original failure: {verification}")]
     Recovery {
-        verification: stogas_verifier::evidence::Error,
+        verification: stogas_core::evidence::Error,
         acquisition: evidence_client::Error,
     },
     #[error("request size accounting overflow")]
@@ -286,7 +286,7 @@ impl Channel {
                     let snapshot = evidence
                         .recover(deadline, move |snapshot| {
                             let time = now().map_err(|_| {
-                                stogas_verifier::evidence::Error::Invalid("local time".into())
+                                stogas_core::evidence::Error::Invalid("local time".into())
                             })?;
                             snapshot.reappraise_session(&session, time).map(|_| ())
                         })

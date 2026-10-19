@@ -97,7 +97,7 @@ def assemble(build_directory, output):
                 shutil.rmtree(ruby)
             stage.stage(platform, native, work / "bindings", version, apple_swift=False)
             if "go" in target["packages"]:
-                archive = native / ("go/libstogas_verifier_ffi.a" if target["os"] == "windows" else "libstogas_verifier_ffi.a")
+                archive = native / ("go/libstogas_ffi.a" if target["os"] == "windows" else "libstogas_ffi.a")
                 destination = work / "go/native" / platform
                 destination.mkdir(parents=True)
                 shutil.copyfile(archive, destination / archive.name)

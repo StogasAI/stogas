@@ -2,7 +2,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use std::sync::OnceLock;
-use stogas_verifier::{
+use stogas_core::{
     approvals::{Environment, RootKey},
     evidence::Verifier,
 };

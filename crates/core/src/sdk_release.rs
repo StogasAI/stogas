@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
-use stogas_offline_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};
+use stogas_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};
 
 use crate::{
     MAX_INPUT_BYTES, StogasSignature,

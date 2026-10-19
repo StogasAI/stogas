@@ -1,7 +1,7 @@
 //! Publication primitives for remote signers; no network or stored keys.
 
 use js_sys::{Object, Reflect, Uint8Array};
-use stogas_verifier::signing;
+use stogas_core::signing;
 use wasm_bindgen::prelude::*;
 use zeroize::Zeroizing;
 
@@ -15,7 +15,7 @@ pub fn verify_mldsa65_ed25519(
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), JsError> {
-    if message.len() > stogas_verifier::MAX_INPUT_BYTES {
+    if message.len() > stogas_core::MAX_INPUT_BYTES {
         return Err(JsError::new("signature message exceeds the input limit"));
     }
     let key = signing::public_key_from_spki(public_key_spki).map_err(error)?;
@@ -86,9 +86,9 @@ pub fn verify_rekor_document_inclusion(
     now_unix_ms: f64,
 ) -> Result<f64, JsError> {
     let now = super::parse_unix_ms(now_unix_ms, "now_unix_ms")?;
-    let trust = stogas_offline_sigstore::TrustedRoot::embedded()
+    let trust = stogas_sigstore::TrustedRoot::embedded()
         .map_err(|error| JsError::new(&error.to_string()))?;
-    let time = stogas_offline_sigstore::verify_rekor_document_inclusion(
+    let time = stogas_sigstore::verify_rekor_document_inclusion(
         trust,
         bundle,
         signed_document,

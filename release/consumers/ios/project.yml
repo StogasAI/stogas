@@ -33,7 +33,7 @@ targets:
       SWIFT_OBJC_BRIDGING_HEADER: NativeTests/Bridge.h
       OTHER_LDFLAGS:
         - $(inherited)
-        - $(SRCROOT)/Native/libstogas_verifier_ffi.a
+        - $(SRCROOT)/Native/libstogas_ffi.a
   SwiftTests:
     type: bundle.unit-test
     platform: iOS

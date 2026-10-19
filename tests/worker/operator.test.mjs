@@ -58,11 +58,11 @@ test('operator Worker verifies remote signatures, Rekor submissions, key manifes
 						mainModule: 'tests/worker/operator-entry.js',
 						modules: {
 							'tests/worker/operator-entry.js': await module('tests/worker/operator-entry.js'),
-							'target/operator/stogas_verifier.js': await module(
-								'target/operator/stogas_verifier.js'
+							'target/operator/stogas.js': await module(
+								'target/operator/stogas.js'
 							),
-							'target/operator/stogas_verifier_bg.wasm': await module(
-								'target/operator/stogas_verifier_bg.wasm'
+							'target/operator/stogas_bg.wasm': await module(
+								'target/operator/stogas_bg.wasm'
 							),
 							'tests/worker/operator-fixtures.js': {
 								type: 'esm',

@@ -1,5 +1,5 @@
 [package]
-name = "stogas-verifier-python"
+name = "stogas-python"
 description = "Python bindings for the Stogas SDK"
 version.workspace = true
 edition.workspace = true
@@ -8,17 +8,17 @@ license-file.workspace = true
 repository.workspace = true
 
 [lib]
-name = "_stogas_verifier"
+name = "_stogas"
 crate-type = ["cdylib"]
 
 [features]
-staging = ["stogas-verifier/staging", "stogas-sdk/staging"]
+staging = ["stogas-core/staging", "stogas-sdk/staging"]
 
 [dependencies]
 pyo3 = { version = "0.29.0", features = ["abi3-py310", "extension-module", "generate-import-lib"] }
 serde_json.workspace = true
 serde.workspace = true
-stogas-verifier = { path = "../../crates/verifier" }
+stogas-core = { path = "../../crates/core" }
 stogas-sdk = { package = "stogas", path = "../../crates/sdk" }
 
 [lints]

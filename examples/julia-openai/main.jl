@@ -11,7 +11,7 @@ function main()
         !isempty(key) && !isempty(model) && !occursin(r"[\r\n]", key) || error("Set key and model")
         base = get(ENV, "STOGAS_BASE_URL", nothing)
         if isnothing(base)
-            transport = StogasNative.Transport(ENV["STOGAS_VERIFIER_LIBRARY"])
+            transport = StogasNative.Transport(ENV["STOGAS_LIBRARY"])
             base = transport.base_url
         end
         if "--no-stream" in ARGS

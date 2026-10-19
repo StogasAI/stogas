@@ -17,4 +17,4 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 [dev-dependencies]
 axum = "0.8"
 serde_json = "1"
-stogas-verifier = { path = "../../crates/verifier" }
+stogas-core = { path = "../../crates/core" }

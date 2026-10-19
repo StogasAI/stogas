@@ -46,7 +46,7 @@ def qualify(source, packages, version, platform, target, requested):
                 raise ValueError("Native qualification requires the matching C compiler")
             shutil.copyfile(source / "release/consumers/native.c", native / "native.c")
             consumer = "native-consumer.exe" if windows else "native-consumer"
-            library = ["stogas_verifier_ffi.dll.lib", "-lws2_32"] if windows else ["-L.", "-lstogas_verifier_ffi", "-Wl,-rpath,@loader_path"]
+            library = ["stogas_ffi.dll.lib", "-lws2_32"] if windows else ["-L.", "-lstogas_ffi", "-Wl,-rpath,@loader_path"]
             run([compiler, "-Wall", "-Wextra", "-Werror", "native.c", *library, "-o", consumer], native)
             qualify_cases("native", compiler, ["--version"], [native / consumer], native)
         if "cli" in selected:

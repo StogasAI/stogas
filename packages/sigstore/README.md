@@ -1,4 +1,4 @@
-# `@stogas/offline-sigstore`
+# `@stogas/sigstore`
 
 Small, networkless WebAssembly verifier for the standard GitHub/Sigstore v0.3 DSSE and in-toto
 profile supported by Stogas. It verifies embedded Fulcio, SCT, Rekor, RFC 3161, subject, identity,
@@ -7,7 +7,7 @@ and GitHub Actions provenance material without fetching TUF or calling Sigstore 
 Use `stogas` to verify the complete Stogas confidential-gateway evidence and transport.
 
 ```js
-import { verify_github_attestation } from '@stogas/offline-sigstore';
+import { verify_github_attestation } from '@stogas/sigstore';
 
 const verified = verify_github_attestation(
 	attestationBytes,

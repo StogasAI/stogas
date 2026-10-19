@@ -6,7 +6,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     ptr, slice,
 };
-use stogas_verifier::{
+use stogas_core::{
     approvals::Environment,
     evidence::boot::BootRequestPurpose,
     gateway::{self, Error, NodeKeys, TlsKey},
@@ -287,7 +287,7 @@ pub unsafe extern "C" fn stogas_node_sign_receipt(
         }
         // SAFETY: the output is writable.
         unsafe { receipt.write(StogasBuffer::EMPTY) };
-        if metadata_len > stogas_verifier::receipt::MAX_METADATA_BYTES {
+        if metadata_len > stogas_core::receipt::MAX_METADATA_BYTES {
             return Err(Status::Input);
         }
         // SAFETY: the caller supplies live keys and readable inputs.
@@ -387,7 +387,7 @@ pub unsafe extern "C" fn stogas_tls_key_sign(
     signature: *mut u8,
 ) -> u32 {
     status(|| {
-        if signature.is_null() || message_len > stogas_verifier::MAX_INPUT_BYTES {
+        if signature.is_null() || message_len > stogas_core::MAX_INPUT_BYTES {
             return Err(Status::Input);
         }
         // SAFETY: the caller supplies a live key and readable message.
@@ -533,7 +533,7 @@ pub unsafe extern "C" fn stogas_session_evidence(
         }
         // SAFETY: the output is writable.
         unsafe { evidence.write(StogasBuffer::EMPTY) };
-        let limit = stogas_verifier::attestation::evidence::MAX_EVIDENCE_BYTES;
+        let limit = stogas_core::attestation::evidence::MAX_EVIDENCE_BYTES;
         if boot_document_len > limit || boot_inclusion_len > limit || report_len > limit {
             return Err(Status::Input);
         }

@@ -3,7 +3,7 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use libfuzzer_sys::fuzz_target;
 use std::sync::OnceLock;
-use stogas_verifier::signing;
+use stogas_core::signing;
 
 fuzz_target!(|data: &[u8]| {
     let _ = signing::public_key_from_spki(data);

@@ -218,14 +218,14 @@ fn configuration_and_browser_preflight_cannot_expand_the_transport_scope() {
 #[test]
 fn typed_failures_keep_revocation_separate_from_delivery_and_execution_uncertainty() {
     let revoked = Failure::native(&native_http::Error::Evidence(
-        crate::evidence_client::Error::Verification(stogas_verifier::evidence::Error::Revoked),
+        crate::evidence_client::Error::Verification(stogas_core::evidence::Error::Revoked),
     ));
     assert_eq!(
         (revoked.reason, revoked.submission),
         ("revoked", "not_sent")
     );
     let stale = Failure::evidence(&crate::evidence_client::Error::Verification(
-        stogas_verifier::evidence::Error::CollateralExpired,
+        stogas_core::evidence::Error::CollateralExpired,
     ));
     assert_eq!(stale.reason, "expired_collateral");
     let absent = Failure::evidence(&crate::evidence_client::Error::Http(

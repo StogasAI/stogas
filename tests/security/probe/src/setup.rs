@@ -1,6 +1,6 @@
 // Compile the actual private HPKE adapter into this analysis binary. Instrument
 // its owned secrets here without exporting test hooks from the production crate.
-include!("../../../../crates/verifier/src/kem.rs");
+include!("../../../../crates/core/src/kem.rs");
 
 use super::{public, secret};
 use hpke::rand_core::{TryCryptoRng, TryRng, utils};

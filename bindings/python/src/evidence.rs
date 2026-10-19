@@ -2,7 +2,7 @@
 
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyBytes};
 use std::sync::Arc;
-use stogas_verifier::{
+use stogas_core::{
     approvals::{Environment, RootKey},
     evidence::{self, boot::VerifiedBoot},
     receipt,

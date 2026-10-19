@@ -37,7 +37,7 @@ public final class Transport: @unchecked Sendable {
     private var handle: OpaquePointer?
 
     public init(options: TransportOptions = .init()) throws {
-        guard stogas_verifier_abi_version() == 1 else { throw VerificationError.unsupportedABI }
+        guard stogas_abi_version() == 1 else { throw VerificationError.unsupportedABI }
         let bytes = try JSONEncoder().encode(options)
         var pointer: OpaquePointer?
         let response = bytes.withUnsafeBytes { buffer in
@@ -90,7 +90,7 @@ private struct NativeEnvelope<Value: Decodable>: Decodable {
 
 private func nativeResult<Value: Decodable>(_ pointer: UnsafeMutablePointer<CChar>?) throws -> Value {
     guard let pointer else { throw VerificationError.invalidResponse }
-    defer { stogas_verifier_string_free(pointer) }
+    defer { stogas_string_free(pointer) }
     let data = Data(String(cString: pointer).utf8)
     let envelope = try JSONDecoder().decode(NativeEnvelope<Value>.self, from: data)
     guard envelope.ok else {

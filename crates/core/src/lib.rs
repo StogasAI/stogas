@@ -1,6 +1,6 @@
 //! Deterministic, networkless verification for Stogas confidential bundles.
 
-pub(crate) use stogas_offline_sigstore::strict_json;
+pub(crate) use stogas_sigstore::strict_json;
 mod kem;
 mod types;
 
@@ -35,7 +35,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 #[cfg(feature = "snp")]
 use std::collections::BTreeSet;
-use stogas_offline_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};
+use stogas_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};
 use thiserror::Error;
 #[cfg(feature = "snp")]
 use x509_parser::{

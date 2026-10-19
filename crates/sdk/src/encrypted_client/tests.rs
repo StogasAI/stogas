@@ -4,7 +4,7 @@ use crate::encrypted_http::tests::{
 };
 use axum::{Router, body::to_bytes, http::header, routing::post};
 use serde_json::Value;
-use stogas_verifier::channel::Kind;
+use stogas_core::channel::Kind;
 
 async fn fixture(maximum: usize) -> (Client, Arc<Owner>, SharedServer, Arc<RequestContext>) {
     let (evidence, snapshot, appraisal) = hardware_session().await;

@@ -13,7 +13,7 @@ use std::{
 
 use js_sys::{Function, Promise, Uint8Array, futures::future_to_promise};
 use sha2::{Digest as _, Sha256};
-use stogas_verifier::{
+use stogas_core::{
     channel::{ClientRequest, Error, Kind, ResponseDecoder},
     evidence::{Snapshot, VerifiedSession},
 };
@@ -162,7 +162,7 @@ impl EncryptedRequest {
             return Err(js_sys::Error::new("request content is incomplete").into());
         }
         Ok(ResponseCompletion {
-            core: Some(stogas_verifier::receipt::StreamCompletion::default()),
+            core: Some(stogas_core::receipt::StreamCompletion::default()),
         })
     }
 
@@ -195,7 +195,7 @@ impl EncryptedRequest {
         let response = response_sha256
             .try_into()
             .map_err(|_| JsError::new("response digest must be 32 bytes"))?;
-        let verified = stogas_verifier::receipt::verify_metadata(
+        let verified = stogas_core::receipt::verify_metadata(
             receipt,
             self.appraisal.boot(),
             request,

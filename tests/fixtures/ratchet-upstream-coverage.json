@@ -13,9 +13,9 @@
       "name": "directions_match",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors"
+        "crates/core/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
+        "crates/core/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner",
+        "crates/core/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors"
       ]
     },
     {
@@ -29,8 +29,8 @@
       "name": "previously_returned_key",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
+        "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+        "crates/core/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
       ]
     },
     {
@@ -38,10 +38,10 @@
       "name": "very_old_keys_are_trimmed",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::expiry_is_monotonic_and_owned_response_keys_survive_until_discarded",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner"
+        "crates/core/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
+        "crates/core/src/channel/ratchet/peer/tests.rs::expiry_is_monotonic_and_owned_response_keys_survive_until_discarded",
+        "crates/core/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
+        "crates/core/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner"
       ],
       "scope": "Uses the published previous-chain-length alternative: erase old chain roots and retain only individually bounded delayed-message keys."
     },
@@ -50,8 +50,8 @@
       "name": "out_of_order_keys",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
+        "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+        "crates/core/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
       ]
     },
     {
@@ -59,10 +59,10 @@
       "name": "clear_old_send_keys",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::expiry_is_monotonic_and_owned_response_keys_survive_until_discarded",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner"
+        "crates/core/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
+        "crates/core/src/channel/ratchet/peer/tests.rs::expiry_is_monotonic_and_owned_response_keys_survive_until_discarded",
+        "crates/core/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
+        "crates/core/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner"
       ],
       "scope": "Uses the published previous-chain-length alternative: erase old chain roots and retain only individually bounded delayed-message keys."
     },
@@ -71,8 +71,8 @@
       "name": "key_history_prop_test",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
+        "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+        "crates/core/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
       ]
     },
     {
@@ -80,10 +80,10 @@
       "name": "ced_prop_test",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::expiry_is_monotonic_and_owned_response_keys_survive_until_discarded",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner"
+        "crates/core/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
+        "crates/core/src/channel/ratchet/peer/tests.rs::expiry_is_monotonic_and_owned_response_keys_survive_until_discarded",
+        "crates/core/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
+        "crates/core/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner"
       ],
       "scope": "Uses the published previous-chain-length alternative: erase old chain roots and retain only individually bounded delayed-message keys."
     },
@@ -152,7 +152,7 @@
       "name": "incremental_mlkem768_round_trip",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/keys/tests.rs::full_mlkem_matches_independent_rustcrypto_and_every_ciphertext_mutation"
+        "crates/core/src/channel/ratchet/keys/tests.rs::full_mlkem_matches_independent_rustcrypto_and_every_ciphertext_mutation"
       ],
       "scope": "Full ML-KEM-768 key generation, encapsulation, decapsulation and implicit rejection; no incremental variant remains."
     },
@@ -161,7 +161,7 @@
       "name": "ratchet",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+        "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
         "fuzz/fuzz_targets/ratchet.rs"
       ]
     },
@@ -188,9 +188,9 @@
       "name": "min_version_v1_always_creates_keys_a2b",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors"
+        "crates/core/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
+        "crates/core/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner",
+        "crates/core/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors"
       ]
     },
     {
@@ -198,9 +198,9 @@
       "name": "min_version_v1_always_creates_keys_b2a",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors"
+        "crates/core/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
+        "crates/core/src/channel/ratchet/peer/tests.rs::private_turn_keys_retire_only_after_authentication_and_delayed_headers_have_one_owner",
+        "crates/core/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors"
       ]
     },
     {
@@ -232,7 +232,7 @@
       "name": "lockstep_run_with_logging",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+        "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
         "fuzz/fuzz_targets/ratchet.rs"
       ]
     },
@@ -241,8 +241,8 @@
       "name": "regression_test_libcrux_issue_1275_from_generated_states",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/keys/tests.rs::full_mlkem_matches_independent_rustcrypto_and_every_ciphertext_mutation",
-        "crates/verifier/src/channel/ratchet/keys/tests.rs::wycheproof_full_mlkem_seed_encapsulation_decapsulation_and_implicit_rejection"
+        "crates/core/src/channel/ratchet/keys/tests.rs::full_mlkem_matches_independent_rustcrypto_and_every_ciphertext_mutation",
+        "crates/core/src/channel/ratchet/keys/tests.rs::wycheproof_full_mlkem_seed_encapsulation_decapsulation_and_implicit_rejection"
       ],
       "scope": "Only locally generated private keys are decapsulated; complete Wycheproof and independent primitive differential checks cover the supported inputs."
     },
@@ -251,9 +251,9 @@
       "name": "disallow_downgrade_due_to_unsupported_version",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/setup/tests.rs::incompatible_setup_is_rejected_even_with_genuine_hardware_evidence",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing"
+        "crates/core/src/channel/setup/tests.rs::incompatible_setup_is_rejected_even_with_genuine_hardware_evidence",
+        "crates/core/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors",
+        "crates/core/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing"
       ]
     },
     {
@@ -267,9 +267,9 @@
       "name": "empty_recv_fails_minv1",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/setup/tests.rs::incompatible_setup_is_rejected_even_with_genuine_hardware_evidence",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing"
+        "crates/core/src/channel/setup/tests.rs::incompatible_setup_is_rejected_even_with_genuine_hardware_evidence",
+        "crates/core/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors",
+        "crates/core/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing"
       ]
     },
     {
@@ -277,9 +277,9 @@
       "name": "hybrid_ratchet",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+        "crates/core/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors",
+        "crates/core/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
+        "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
       ],
       "scope": "Both full X25519 and ML-KEM secrets enter each alternating root step. Independent Go standard-library vectors check this distinct encoding and KDF profile."
     },
@@ -288,7 +288,7 @@
       "name": "random_balanced",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+        "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
         "fuzz/fuzz_targets/ratchet.rs"
       ]
     },
@@ -297,7 +297,7 @@
       "name": "random_balanced_out_of_order",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+        "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
         "fuzz/fuzz_targets/ratchet.rs"
       ]
     },
@@ -306,8 +306,8 @@
       "name": "random_balanced_healing",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+        "crates/core/src/channel/ratchet/peer/tests.rs::captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns",
+        "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
       ],
       "scope": "Empirical capture, fresh-entropy and delivery checks for the fixed PQ2HE profile; no claim of equivalence to upstream symbolic compromise analysis or proof."
     },
@@ -316,8 +316,8 @@
       "name": "pingpong_healing",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+        "crates/core/src/channel/ratchet/peer/tests.rs::captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns",
+        "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
       ],
       "scope": "Empirical capture, fresh-entropy and delivery checks for the fixed PQ2HE profile; no claim of equivalence to upstream symbolic compromise analysis or proof."
     },
@@ -326,8 +326,8 @@
       "name": "onlineoffline_healing",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+        "crates/core/src/channel/ratchet/peer/tests.rs::captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns",
+        "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
       ],
       "scope": "Empirical capture, fresh-entropy and delivery checks for the fixed PQ2HE profile; no claim of equivalence to upstream symbolic compromise analysis or proof."
     },
@@ -399,8 +399,8 @@
       "name": "balanced_healing",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+        "crates/core/src/channel/ratchet/peer/tests.rs::captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns",
+        "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
       ],
       "scope": "Empirical capture, fresh-entropy and delivery checks for the fixed PQ2HE profile; no claim of equivalence to upstream symbolic compromise analysis or proof."
     },
@@ -409,7 +409,7 @@
       "name": "random_balanced",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+        "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
         "fuzz/fuzz_targets/ratchet.rs"
       ]
     },
@@ -418,7 +418,7 @@
       "name": "chaos",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+        "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
         "fuzz/fuzz_targets/ratchet.rs"
       ]
     },
@@ -427,8 +427,8 @@
       "name": "onlineoffline_healing_unidir",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+        "crates/core/src/channel/ratchet/peer/tests.rs::captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns",
+        "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
       ],
       "scope": "Empirical capture, fresh-entropy and delivery checks for the fixed PQ2HE profile; no claim of equivalence to upstream symbolic compromise analysis or proof."
     },
@@ -437,7 +437,7 @@
       "name": "random_balanced_out_of_order",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+        "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
         "fuzz/fuzz_targets/ratchet.rs"
       ]
     },
@@ -446,8 +446,8 @@
       "name": "random_slow_alex_healing_auth_bidir",
       "status": "covered_behavior",
       "tests": [
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns",
-        "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+        "crates/core/src/channel/ratchet/peer/tests.rs::captured_state_cannot_recover_consumed_keys_and_loses_future_access_after_fresh_turns",
+        "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
       ],
       "scope": "Empirical capture, fresh-entropy and delivery checks for the fixed PQ2HE profile; no claim of equivalence to upstream symbolic compromise analysis or proof."
     }
@@ -485,9 +485,9 @@
           "name": "test_chain_jump_over_limit",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::random_failure_and_counter_exhaustion_are_transactional"
+            "crates/core/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
+            "crates/core/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing",
+            "crates/core/src/channel/ratchet/peer/tests.rs::random_failure_and_counter_exhaustion_are_transactional"
           ]
         },
         {
@@ -495,7 +495,7 @@
           "name": "test_chain_jump_over_limit_with_self",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns"
+            "crates/core/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns"
           ],
           "scope": "No self-messaging identity special case; every endpoint uses the same 256 derivation bound."
         },
@@ -528,8 +528,8 @@
           "name": "test_basic_session",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+            "crates/core/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers",
+            "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
           ]
         },
         {
@@ -537,8 +537,8 @@
           "name": "test_message_key_limits",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::expiry_is_monotonic_and_owned_response_keys_survive_until_discarded"
+            "crates/core/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
+            "crates/core/src/channel/ratchet/peer/tests.rs::expiry_is_monotonic_and_owned_response_keys_survive_until_discarded"
           ],
           "scope": "Exercises our global 256-key limit, authenticated eviction, consumption and expiry rather than Signal's 2000-key limit."
         },
@@ -619,7 +619,7 @@
           "name": "test_longer_sessions",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+            "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
             "fuzz/fuzz_targets/ratchet.rs"
           ]
         },
@@ -628,7 +628,7 @@
           "name": "test_duplicate_message_error_returned",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/server.rs::admission_rejects_forgery_and_replay_and_streams_outlive_the_session"
+            "crates/core/src/channel/server.rs::admission_rejects_forgery_and_replay_and_streams_outlive_the_session"
           ]
         },
         {
@@ -636,7 +636,7 @@
           "name": "test_pqr_state_and_message_contents_nonempty",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers"
+            "crates/core/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers"
           ]
         },
         {
@@ -692,7 +692,7 @@
           "name": "test_chain_key_derivation",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors"
+            "crates/core/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors"
           ]
         },
         {
@@ -730,7 +730,7 @@
           "name": "scenario_interleaved_delivery_with_gaps_and_recovery",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+            "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
           ],
           "scope": "Covers message behavior; does not implement legacy event-machine migration."
         },
@@ -739,7 +739,7 @@
           "name": "scenario_chain_jump_over_limit",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns"
+            "crates/core/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns"
           ],
           "scope": "Covers message behavior; does not implement legacy event-machine migration."
         },
@@ -754,9 +754,9 @@
           "name": "scenario_corrupted_ciphertext",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/server.rs::admission_rejects_forgery_and_replay_and_streams_outlive_the_session",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing"
+            "crates/core/src/channel/server.rs::admission_rejects_forgery_and_replay_and_streams_outlive_the_session",
+            "crates/core/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys",
+            "crates/core/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing"
           ],
           "scope": "Covers message behavior; does not implement legacy event-machine migration."
         },
@@ -765,7 +765,7 @@
           "name": "scenario_replay_message",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/server.rs::admission_rejects_forgery_and_replay_and_streams_outlive_the_session"
+            "crates/core/src/channel/server.rs::admission_rejects_forgery_and_replay_and_streams_outlive_the_session"
           ],
           "scope": "Covers message behavior; does not implement legacy event-machine migration."
         },
@@ -824,7 +824,7 @@
             "ratchet_counts"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+            "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
           ]
         },
         {
@@ -834,8 +834,8 @@
             "respect_max_gap"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+            "crates/core/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
+            "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
           ],
           "scope": "Equivalent bounded-work/retention risks; numeric limits and eviction policies differ."
         },
@@ -844,7 +844,7 @@
             "advance_with_non_contributory_key_fails"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/keys/tests.rs::wycheproof_x25519_including_twists_noncanonical_and_low_order_points"
+            "crates/core/src/channel/ratchet/keys/tests.rs::wycheproof_x25519_including_twists_noncanonical_and_low_order_points"
           ]
         },
         {
@@ -853,7 +853,7 @@
             "advancing_remote_chain_key_increments_index"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors"
+            "crates/core/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors"
           ]
         }
       ],
@@ -875,7 +875,7 @@
             "test_max_forward_distance"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns"
+            "crates/core/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns"
           ]
         },
         {
@@ -884,8 +884,8 @@
             "test_forward_secrecy"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::expiry_is_monotonic_and_owned_response_keys_survive_until_discarded"
+            "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+            "crates/core/src/channel/ratchet/peer/tests.rs::expiry_is_monotonic_and_owned_response_keys_survive_until_discarded"
           ]
         },
         {
@@ -893,8 +893,8 @@
             "sender_ratchet_generation_overflow"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::random_failure_and_counter_exhaustion_are_transactional"
+            "crates/core/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing",
+            "crates/core/src/channel/ratchet/peer/tests.rs::random_failure_and_counter_exhaustion_are_transactional"
           ]
         }
       ],
@@ -921,7 +921,7 @@
             "Skip message"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+            "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
           ]
         },
         {
@@ -929,7 +929,7 @@
             "Skip more messages than limit"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns"
+            "crates/core/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns"
           ],
           "scope": "Includes combined gaps across the old and new DH chain, not only a single-chain limit."
         }
@@ -955,7 +955,7 @@
             "should allow skipped after ratchet advance"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+            "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
           ],
           "scope": "The local profile fixes X25519/ML-KEM-768 and includes asymmetric bursts, cross-turn retention, replay, rollback and loss."
         },
@@ -965,9 +965,9 @@
             "should serialize and parse message header (KEM)"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
+            "crates/core/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors",
+            "crates/core/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing",
+            "crates/core/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
           ],
           "scope": "Local coverage validates its own fixed binary grammar, not SimpleX encoding."
         }
@@ -980,9 +980,9 @@
           "name": "should serialize and parse message header",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
+            "crates/core/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors",
+            "crates/core/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing",
+            "crates/core/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
           ]
         },
         {
@@ -1074,8 +1074,8 @@
           "name": "should encrypt and decrypt messages",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers"
+            "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+            "crates/core/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers"
           ]
         },
         {
@@ -1083,8 +1083,8 @@
           "name": "should encrypt and decrypt skipped messages",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers"
+            "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+            "crates/core/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers"
           ]
         },
         {
@@ -1092,8 +1092,8 @@
           "name": "should encrypt and decrypt many messages",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers"
+            "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+            "crates/core/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers"
           ]
         },
         {
@@ -1101,8 +1101,8 @@
           "name": "should allow skipped after ratchet advance",
           "status": "covered_behavior",
           "tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers"
+            "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts",
+            "crates/core/src/channel/ratchet/peer/tests.rs::alternating_full_kem_turns_and_one_way_bursts_have_fixed_encrypted_headers"
           ]
         }
       ]
@@ -1126,9 +1126,9 @@
             "test_double_ratchet"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+            "crates/core/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys",
+            "crates/core/src/channel/ratchet/peer/tests.rs::authenticated_malformed_turns_keys_and_counters_are_rejected_without_committing",
+            "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
           ],
           "scope": "Compares associated-data authentication, failed-decryption rollback and duplicate rejection before/after DH changes; JSON snapshot restoration intentionally differs."
         },
@@ -1137,8 +1137,8 @@
             "test_diffie_hellman_ratchet"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
+            "crates/core/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
+            "crates/core/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
           ]
         },
         {
@@ -1149,8 +1149,8 @@
             "test_kdf_separate_hmacs"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
+            "crates/core/src/channel/ratchet/peer/tests.rs::full_transcript_matches_independent_go_vectors",
+            "crates/core/src/channel/ratchet/peer/tests.rs::header_and_body_mutation_and_truncation_never_commit_or_consume_keys"
           ],
           "scope": "Independent vectors cover the selected KDFs; algorithms and labels are not interchangeable."
         }
@@ -1174,7 +1174,7 @@
             "skipped_message_keys"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
+            "crates/core/src/channel/ratchet/peer/tests.rs::delayed_messages_cross_turns_and_reordering_loss_and_asymmetric_bursts"
           ]
         },
         {
@@ -1183,8 +1183,8 @@
             "max_counter_gap"
           ],
           "local_tests": [
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
-            "crates/verifier/src/channel/ratchet/peer/tests.rs::expiry_is_monotonic_and_owned_response_keys_survive_until_discarded"
+            "crates/core/src/channel/ratchet/peer/tests.rs::skipped_bounds_combine_previous_and_current_gaps_and_evict_oldest_across_turns",
+            "crates/core/src/channel/ratchet/peer/tests.rs::expiry_is_monotonic_and_owned_response_keys_survive_until_discarded"
           ],
           "scope": "Count-based eviction and time-based expiry differ; both require refusing discarded keys while preserving live chains."
         }

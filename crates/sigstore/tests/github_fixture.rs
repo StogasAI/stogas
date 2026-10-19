@@ -1,13 +1,13 @@
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use stogas_offline_sigstore::{GithubPolicy, Subject, verify_github_attestation};
+use stogas_sigstore::{GithubPolicy, Subject, verify_github_attestation};
 
 const IGVM_DIGEST: &str = "1b75d0ea7f94bc5f5a21080dd30e21370e14278a5b90eb19858c90dcc83a1bc6";
 const POLICY_DIGEST: &str = "8cc8926592b179283c8cab267a27dfb3df4d1086dff2504e51df5fa12b8ff008";
 const NOW_UNIX_MS: i64 = 1_784_246_400_000;
 
-fn embedded() -> &'static stogas_offline_sigstore::TrustedRoot {
-    stogas_offline_sigstore::TrustedRoot::embedded().unwrap()
+fn embedded() -> &'static stogas_sigstore::TrustedRoot {
+    stogas_sigstore::TrustedRoot::embedded().unwrap()
 }
 
 fn policy() -> GithubPolicy {

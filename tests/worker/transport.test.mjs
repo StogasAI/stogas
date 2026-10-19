@@ -11,8 +11,8 @@ async function packagedModules(...tests) {
 		...tests,
 		'bindings/worker/worker.js',
 		'bindings/browser/browser.js',
-		'pkg/browser/stogas_verifier.js',
-		'pkg/browser/stogas_verifier_bg.wasm',
+		'pkg/browser/stogas.js',
+		'pkg/browser/stogas_bg.wasm',
 		...(await readdir(resolve(root, 'bindings/shared')))
 			.filter((name) => name.endsWith('.js'))
 			.map((name) => `bindings/shared/${name}`)

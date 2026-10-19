@@ -5,18 +5,18 @@
 package stogas
 
 /*
-#cgo linux,amd64,!musl LDFLAGS: -L${SRCDIR}/native/linux-amd64 -l:libstogas_verifier_ffi.a -ldl -lpthread -lm
-#cgo linux,arm64,!musl LDFLAGS: -L${SRCDIR}/native/linux-arm64 -l:libstogas_verifier_ffi.a -ldl -lpthread -lm
-#cgo linux,amd64,musl LDFLAGS: -L${SRCDIR}/native/linux-musl-amd64 -l:libstogas_verifier_ffi.a -ldl -lpthread -lm
-#cgo linux,arm64,musl LDFLAGS: -L${SRCDIR}/native/linux-musl-arm64 -l:libstogas_verifier_ffi.a -ldl -lpthread -lm
-#cgo darwin,amd64 LDFLAGS: -L${SRCDIR}/native/darwin-amd64 -lstogas_verifier_ffi -framework Security -framework CoreFoundation
-#cgo darwin,arm64 LDFLAGS: -L${SRCDIR}/native/darwin-arm64 -lstogas_verifier_ffi -framework Security -framework CoreFoundation
-#cgo windows,amd64 LDFLAGS: -static-libgcc -L${SRCDIR}/native/windows-amd64 -lstogas_verifier_ffi -lws2_32 -lbcrypt -luserenv -lntdll
-#cgo windows,arm64 LDFLAGS: -static-libgcc -L${SRCDIR}/native/windows-arm64 -lstogas_verifier_ffi -lws2_32 -lbcrypt -luserenv -lntdll
+#cgo linux,amd64,!musl LDFLAGS: -L${SRCDIR}/native/linux-amd64 -l:libstogas_ffi.a -ldl -lpthread -lm
+#cgo linux,arm64,!musl LDFLAGS: -L${SRCDIR}/native/linux-arm64 -l:libstogas_ffi.a -ldl -lpthread -lm
+#cgo linux,amd64,musl LDFLAGS: -L${SRCDIR}/native/linux-musl-amd64 -l:libstogas_ffi.a -ldl -lpthread -lm
+#cgo linux,arm64,musl LDFLAGS: -L${SRCDIR}/native/linux-musl-arm64 -l:libstogas_ffi.a -ldl -lpthread -lm
+#cgo darwin,amd64 LDFLAGS: -L${SRCDIR}/native/darwin-amd64 -lstogas_ffi -framework Security -framework CoreFoundation
+#cgo darwin,arm64 LDFLAGS: -L${SRCDIR}/native/darwin-arm64 -lstogas_ffi -framework Security -framework CoreFoundation
+#cgo windows,amd64 LDFLAGS: -static-libgcc -L${SRCDIR}/native/windows-amd64 -lstogas_ffi -lws2_32 -lbcrypt -luserenv -lntdll
+#cgo windows,arm64 LDFLAGS: -static-libgcc -L${SRCDIR}/native/windows-arm64 -lstogas_ffi -lws2_32 -lbcrypt -luserenv -lntdll
 #include <stddef.h>
 #include <stdint.h>
-uint32_t stogas_verifier_abi_version(void);
-void stogas_verifier_string_free(char *value);
+uint32_t stogas_abi_version(void);
+void stogas_string_free(char *value);
 */
 import "C"
 
@@ -31,7 +31,7 @@ import (
 var ErrClosed = errors.New("stogas verifier is closed")
 
 func checkNativeABI() error {
-	if version := uint32(C.stogas_verifier_abi_version()); version != 1 {
+	if version := uint32(C.stogas_abi_version()); version != 1 {
 		return fmt.Errorf("native verifier ABI %d does not match required ABI 1", version)
 	}
 	return nil
@@ -48,7 +48,7 @@ func decodeResponse(response *C.char, output any) error {
 	if response == nil {
 		return errors.New("native verifier returned no response")
 	}
-	defer C.stogas_verifier_string_free(response)
+	defer C.stogas_string_free(response)
 	var envelope abiResponse
 	if err := json.Unmarshal([]byte(C.GoString(response)), &envelope); err != nil {
 		return fmt.Errorf("invalid native verifier response: %w", err)

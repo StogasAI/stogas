@@ -1,8 +1,8 @@
 //! Registration, sealing, release and publication checks for the operator build
 //! used by Stogas's own services and CLI. Customer packages never enable it.
 use serde::Deserialize;
-use stogas_offline_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};
-use stogas_verifier::{
+use stogas_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};
+use stogas_core::{
     approvals::{SigstoreFiles, VerifiedSigstore},
     secret_release,
 };
@@ -40,7 +40,7 @@ pub fn verify_sdk_release(
     signature: &[u8],
     now_unix_ms: f64,
 ) -> Result<(), JsError> {
-    stogas_verifier::sdk_release::verify(
+    stogas_core::sdk_release::verify(
         manifest,
         github_attestation,
         qualification,

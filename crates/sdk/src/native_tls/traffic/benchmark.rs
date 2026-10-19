@@ -21,7 +21,7 @@ use std::{
     },
     time::Instant as WallClock,
 };
-use stogas_verifier::{
+use stogas_core::{
     approvals::Environment,
     channel::{ClientSession, Kind, MAX_RECORD_PLAINTEXT, ResponseDecoder, setup::PendingSetup},
 };

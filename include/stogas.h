@@ -1,5 +1,5 @@
-#ifndef STOGAS_VERIFIER_H
-#define STOGAS_VERIFIER_H
+#ifndef STOGAS_H
+#define STOGAS_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -35,8 +35,8 @@ char *stogas_evidence_verify_archive(const StogasEvidence *handle, const uint8_t
 char *stogas_evidence_verify_boot_archive(const StogasEvidence *handle, const uint8_t *archive, size_t archive_len, const uint8_t *bundle, size_t bundle_len, int64_t now_unix_ms);
 char *stogas_evidence_verify_receipt_archive(const StogasEvidence *handle, const uint8_t *archive, size_t archive_len, const uint8_t *bundle, size_t bundle_len, const uint8_t *receipt, size_t receipt_len, const uint8_t *request_hash, size_t request_hash_len, const uint8_t *response_hash, size_t response_hash_len, int64_t now_unix_ms);
 
-#define STOGAS_VERIFIER_ABI_VERSION 1
-uint32_t stogas_verifier_abi_version(void);
+#define STOGAS_ABI_VERSION 1
+uint32_t stogas_abi_version(void);
 
 /*
  * Start one managed SDK transport. Configuration is UTF-8 JSON:
@@ -69,9 +69,9 @@ void stogas_transport_free(StogasTransport *transport);
  * Each operation returns an owned, NUL-terminated JSON envelope:
  *   {"ok":true,"value":...}
  *   {"ok":false,"error":"..."}
- * Release every non-NULL result with stogas_verifier_string_free.
+ * Release every non-NULL result with stogas_string_free.
  */
-void stogas_verifier_string_free(char *value);
+void stogas_string_free(char *value);
 
 #ifdef __cplusplus
 }

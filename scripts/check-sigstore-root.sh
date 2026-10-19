@@ -3,7 +3,7 @@
 # into the verifier. gh downloads the root through TUF and verifies it from the
 # TUF root built into gh.
 set -euo pipefail
-embedded="$(dirname "$0")/../crates/offline-sigstore/src/trusted_root.json"
+embedded="$(dirname "$0")/../crates/sigstore/src/trusted_root.json"
 current=$(mktemp)
 trap 'rm -f "$current"' EXIT
 gh attestation trusted-root |

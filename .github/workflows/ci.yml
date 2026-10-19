@@ -28,7 +28,7 @@ jobs:
       - run: rustup install --no-self-update --profile minimal "$RUSTUP_TOOLCHAIN"
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - run: cargo check --locked --workspace --all-targets
-      - run: cargo test --locked --tests --package stogas-verifier --package stogas-verifier-ffi --no-default-features --features staging,stogas-verifier-ffi/gateway
+      - run: cargo test --locked --tests --package stogas-core --package stogas-ffi --no-default-features --features staging,stogas-ffi/gateway
 
   security:
     name: Dependency security
@@ -62,9 +62,9 @@ jobs:
       # The nightly fuzz campaign is the only other build of these targets.
       - run: cargo clippy --locked --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
       - run: cargo clippy --locked --package stogas --package stogas-cli --all-targets --features staging -- -D warnings
-      - run: cargo clippy --locked --package stogas-verifier --all-targets --no-default-features -- -D warnings
-      - run: cargo clippy --locked --package stogas-verifier --all-targets --features staging,gateway -- -D warnings
-      - run: cargo clippy --locked --package stogas-verifier-ffi --all-targets --no-default-features --features staging,gateway -- -D warnings
+      - run: cargo clippy --locked --package stogas-core --all-targets --no-default-features -- -D warnings
+      - run: cargo clippy --locked --package stogas-core --all-targets --features staging,gateway -- -D warnings
+      - run: cargo clippy --locked --package stogas-ffi --all-targets --no-default-features --features staging,gateway -- -D warnings
 
   protocol-security:
     name: Symbolic composition and compiled secret-taint checks
@@ -139,9 +139,9 @@ jobs:
           cargo build --locked --manifest-path examples/rust-openai/Cargo.toml
           python3 examples/check_http_client.py examples/rust-openai/target/debug/stogas-openai-example
       - name: Test compiled staging trust policy and transport
-        run: cargo test --locked --package stogas-verifier --package stogas --package stogas-cli --all-targets --features staging
+        run: cargo test --locked --package stogas-core --package stogas --package stogas-cli --all-targets --features staging
       - name: Test the verifier without optional SNP support
-        run: cargo test --locked --package stogas-verifier --all-targets --no-default-features
+        run: cargo test --locked --package stogas-core --all-targets --no-default-features
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: '3.10'
@@ -181,7 +181,7 @@ jobs:
       - name: Stage native language packages
         shell: bash
         run: |
-          cargo build --locked --package stogas-verifier-ffi
+          cargo build --locked --package stogas-ffi
           python scripts/stage-native-bindings.py --platform ${{ matrix.platform }} --native-dir target/debug
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
         with:
@@ -235,7 +235,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - run: cargo build --locked --package stogas-verifier-ffi
+      - run: cargo build --locked --package stogas-ffi
       - run: python3 scripts/stage-native-bindings.py --platform ${{ matrix.platform }} --native-dir target/debug
       - name: Test Swift static package
         run: >-
@@ -284,7 +284,7 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Install native transport dependencies
         run: |
-          cargo build --locked --package stogas-verifier-ffi
+          cargo build --locked --package stogas-ffi
           python3 scripts/stage-native-bindings.py --platform linux-amd64 --native-dir target/debug
           mvn -q -f bindings/java/pom.xml install -DskipTests
           gem -C bindings/ruby build stogas.gemspec --output "$RUNNER_TEMP/stogas.gem"
@@ -333,22 +333,22 @@ jobs:
           persist-credentials: false
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - run: |
-          cargo build --locked --package stogas-verifier-ffi
+          cargo build --locked --package stogas-ffi
           python3 scripts/stage-native-bindings.py --platform darwin-arm64 --native-dir target/debug
           swift build --package-path examples/swift-http
           python3 examples/check_http_client.py examples/swift-http/.build/debug/StogasHTTPExample
       - name: Qualify Objective-C native ownership and HTTP
         run: |
           brew install json-c
-          cargo build --locked --package stogas-verifier-ffi --features staging
+          cargo build --locked --package stogas-ffi --features staging
           export DYLD_LIBRARY_PATH="$PWD/target/debug"
           clang -fobjc-arc -Wall -Wextra -Werror -framework Foundation -Iinclude \
             examples/objective-c-http/Transport.m examples/objective-c-http/test_native.m \
-            -Ltarget/debug -Wl,-rpath,"$PWD/target/debug" -lstogas_verifier_ffi -o /tmp/stogas-objective-c-native
+            -Ltarget/debug -Wl,-rpath,"$PWD/target/debug" -lstogas_ffi -o /tmp/stogas-objective-c-native
           /tmp/stogas-objective-c-native
           clang -fobjc-arc -Wall -Wextra -Werror -framework Foundation -Iinclude \
             examples/objective-c-http/Transport.m examples/objective-c-http/main.m \
-            -Ltarget/debug -Wl,-rpath,"$PWD/target/debug" -lstogas_verifier_ffi $(pkg-config --cflags --libs libcurl json-c) \
+            -Ltarget/debug -Wl,-rpath,"$PWD/target/debug" -lstogas_ffi $(pkg-config --cflags --libs libcurl json-c) \
             -o /tmp/stogas-objective-c-example
           python3 examples/check_http_client.py --sse-framing /tmp/stogas-objective-c-example
           python3 examples/check_http_client.py --unary /tmp/stogas-objective-c-example --no-stream
@@ -395,9 +395,9 @@ jobs:
           cache-dependency-path: go/go.mod
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - run: |
-          cargo build --locked --package stogas-verifier-ffi
+          cargo build --locked --package stogas-ffi
           mkdir -p "go/native/${{ matrix.platform }}"
-          cp "target/${{ matrix.target }}/debug/libstogas_verifier_ffi.a" "go/native/${{ matrix.platform }}/"
+          cp "target/${{ matrix.target }}/debug/libstogas_ffi.a" "go/native/${{ matrix.platform }}/"
       - name: Test the Go adapter against the static Rust library
         working-directory: go
         env:
@@ -409,7 +409,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libcurl4-openssl-dev libjson-c-dev
           cc -std=c11 -Wall -Wextra -Werror -Iinclude examples/c-http/main.c \
-            "target/${{ matrix.target }}/debug/libstogas_verifier_ffi.a" \
+            "target/${{ matrix.target }}/debug/libstogas_ffi.a" \
             $(pkg-config --cflags --libs libcurl json-c) -ldl -lpthread -lm -o /tmp/stogas-request
           python3 examples/check_http_client.py --sse-framing /tmp/stogas-request --stream
       - name: Qualify the Go OpenAI client example
@@ -423,19 +423,19 @@ jobs:
           go -C examples/go-openai build -o "$RUNNER_TEMP/stogas-go-client" .
           python3 examples/check_http_client.py "$RUNNER_TEMP/stogas-go-client"
       - run: |
-          cargo build --locked --package stogas-verifier-ffi --features staging
+          cargo build --locked --package stogas-ffi --features staging
           mkdir -p "go/native/${{ matrix.platform }}"
-          cp "target/${{ matrix.target }}/debug/libstogas_verifier_ffi.a" "go/native/${{ matrix.platform }}/"
+          cp "target/${{ matrix.target }}/debug/libstogas_ffi.a" "go/native/${{ matrix.platform }}/"
       - name: Test staging evidence ownership through the Go adapter
         working-directory: go
         env:
           CGO_ENABLED: '1'
         run: go test -race -tags staging ./...
-      - run: cargo test --locked --package stogas-verifier-ffi --no-default-features --features staging,gateway
+      - run: cargo test --locked --package stogas-ffi --no-default-features --features staging,gateway
       - run: |
-          cargo build --locked --package stogas-verifier-ffi --no-default-features --features staging,gateway
+          cargo build --locked --package stogas-ffi --no-default-features --features staging,gateway
           mkdir -p "go/native/${{ matrix.platform }}"
-          cp "target/${{ matrix.target }}/debug/libstogas_verifier_ffi.a" "go/native/${{ matrix.platform }}/"
+          cp "target/${{ matrix.target }}/debug/libstogas_ffi.a" "go/native/${{ matrix.platform }}/"
       - name: Test the gateway embedding build without native transport dependencies
         working-directory: go
         env:
@@ -463,7 +463,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - run: cargo build --locked --package stogas-verifier-ffi --package stogas-cli --features staging
+      - run: cargo build --locked --package stogas-ffi --package stogas-cli --features staging
       - run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libcurl4-openssl-dev
@@ -472,7 +472,7 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends php-cli php-curl php-xml php-mbstring composer
           composer install --no-interaction --no-plugins --no-scripts --working-dir=examples/php-openai
-          php -d ffi.enable=true examples/php-openai/test_transport.php "$PWD/target/${{ env.CARGO_BUILD_TARGET }}/debug/libstogas_verifier_ffi.so"
+          php -d ffi.enable=true examples/php-openai/test_transport.php "$PWD/target/${{ env.CARGO_BUILD_TARGET }}/debug/libstogas_ffi.so"
           python3 examples/check_http_client.py php examples/php-openai/main.php
       - name: Qualify the LuaJIT native bridge and HTTP client
         if: matrix.language == 'luajit'
@@ -480,7 +480,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends luajit libluajit-5.1-dev lua-cjson luarocks
           sudo luarocks --lua-version=5.1 install Lua-cURL 0.3.13-1 LUA_INCDIR=/usr/include/luajit-2.1 \
             CURL_INCDIR="$(pkg-config --variable=includedir libcurl)" CURL_LIBDIR="$(pkg-config --variable=libdir libcurl)"
-          luajit examples/luajit-http/test_transport.lua "$PWD/target/${{ env.CARGO_BUILD_TARGET }}/debug/libstogas_verifier_ffi.so"
+          luajit examples/luajit-http/test_transport.lua "$PWD/target/${{ env.CARGO_BUILD_TARGET }}/debug/libstogas_ffi.so"
           python3 examples/check_http_client.py --sse-framing luajit examples/luajit-http/main.lua
           python3 examples/check_http_client.py --unary luajit examples/luajit-http/main.lua --no-stream
           python3 examples/check_http_client.py --cancel luajit examples/luajit-http/main.lua
@@ -492,7 +492,7 @@ jobs:
         if: matrix.language == 'dart'
         run: |
           (cd examples/dart-openai && dart pub get --enforce-lockfile && dart analyze)
-          dart run examples/dart-openai/test_transport.dart "$PWD/target/${{ env.CARGO_BUILD_TARGET }}/debug/libstogas_verifier_ffi.so"
+          dart run examples/dart-openai/test_transport.dart "$PWD/target/${{ env.CARGO_BUILD_TARGET }}/debug/libstogas_ffi.so"
           python3 examples/check_http_client.py dart run examples/dart-openai/main.dart
           python3 examples/check_http_client.py --unary dart run examples/dart-openai/main.dart --no-stream
           python3 examples/check_http_client.py --cancel dart run examples/dart-openai/main.dart
@@ -504,7 +504,7 @@ jobs:
         if: matrix.language == 'julia'
         run: |
           julia --project=examples/julia-openai -e 'using Pkg; Pkg.instantiate()'
-          julia --project=examples/julia-openai examples/julia-openai/test_transport.jl "$PWD/target/${{ env.CARGO_BUILD_TARGET }}/debug/libstogas_verifier_ffi.so"
+          julia --project=examples/julia-openai examples/julia-openai/test_transport.jl "$PWD/target/${{ env.CARGO_BUILD_TARGET }}/debug/libstogas_ffi.so"
           python3 examples/check_http_client.py --sse-framing julia --project=examples/julia-openai examples/julia-openai/main.jl
           python3 examples/check_http_client.py --unary julia --project=examples/julia-openai examples/julia-openai/main.jl --no-stream
           python3 examples/check_http_client.py --cancel julia --project=examples/julia-openai examples/julia-openai/main.jl
@@ -559,7 +559,7 @@ jobs:
         run: |
           opam install . --deps-only --yes
           opam exec -- dune build
-          opam exec -- _build/default/test_native.exe "$GITHUB_WORKSPACE/target/${{ env.CARGO_BUILD_TARGET }}/debug/libstogas_verifier_ffi.so"
+          opam exec -- _build/default/test_native.exe "$GITHUB_WORKSPACE/target/${{ env.CARGO_BUILD_TARGET }}/debug/libstogas_ffi.so"
           opam exec -- python3 ../check_http_client.py --sse-framing _build/default/main.exe
           opam exec -- python3 ../check_http_client.py --unary _build/default/main.exe --no-stream
           opam exec -- python3 ../check_http_client.py --cancel _build/default/main.exe
@@ -571,8 +571,8 @@ jobs:
         if: matrix.language == 'zig'
         run: |
           export LD_LIBRARY_PATH="$PWD/target/${{ env.CARGO_BUILD_TARGET }}/debug"
-          zig test examples/zig-http/test_native.zig -Iinclude -L"$LD_LIBRARY_PATH" -lstogas_verifier_ffi -lcurl -lc
-          zig build-exe examples/zig-http/main.zig -Iinclude -L"$LD_LIBRARY_PATH" -lstogas_verifier_ffi -lcurl -lc -femit-bin=/tmp/stogas-zig-example
+          zig test examples/zig-http/test_native.zig -Iinclude -L"$LD_LIBRARY_PATH" -lstogas_ffi -lcurl -lc
+          zig build-exe examples/zig-http/main.zig -Iinclude -L"$LD_LIBRARY_PATH" -lstogas_ffi -lcurl -lc -femit-bin=/tmp/stogas-zig-example
           python3 examples/check_http_client.py --sse-framing /tmp/stogas-zig-example
           python3 examples/check_http_client.py --unary /tmp/stogas-zig-example --no-stream
           python3 examples/check_http_client.py --cancel /tmp/stogas-zig-example
@@ -594,7 +594,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for package in stogas-offline-sigstore-wasm stogas-verifier-wasm; do
+          for package in stogas-sigstore-wasm stogas-wasm; do
             cargo tree --locked --package "$package" --target wasm32-unknown-unknown > "${package}-dependencies.txt"
             if grep -E '(^| )(aws-lc-rs|openssl|ring) v' "${package}-dependencies.txt"; then
               echo "$package contains a native cryptographic backend." >&2
@@ -606,31 +606,31 @@ jobs:
         run: |
           set -euo pipefail
           cargo install wasm-bindgen-cli --version =0.2.129 --locked
-          cargo build --locked --release --package stogas-offline-sigstore-wasm --package stogas-verifier-wasm --target wasm32-unknown-unknown
-          wasm-bindgen target/wasm32-unknown-unknown/release/stogas_offline_sigstore_wasm.wasm \
+          cargo build --locked --release --package stogas-sigstore-wasm --package stogas-wasm --target wasm32-unknown-unknown
+          wasm-bindgen target/wasm32-unknown-unknown/release/stogas_sigstore_wasm.wasm \
             --target web \
-            --out-dir target/offline-browser \
-            --out-name stogas_offline_sigstore
-          wasm-bindgen target/wasm32-unknown-unknown/release/stogas_verifier_wasm.wasm \
+            --out-dir target/sigstore-browser \
+            --out-name stogas_sigstore
+          wasm-bindgen target/wasm32-unknown-unknown/release/stogas_wasm.wasm \
             --target web \
             --out-dir pkg/browser \
-            --out-name stogas_verifier
-          wasm-bindgen target/wasm32-unknown-unknown/release/stogas_offline_sigstore_wasm.wasm \
+            --out-name stogas
+          wasm-bindgen target/wasm32-unknown-unknown/release/stogas_sigstore_wasm.wasm \
             --target web \
-            --out-dir packages/offline-sigstore/pkg/browser \
-            --out-name stogas_offline_sigstore
-          cargo build --locked --release --package stogas-verifier-wasm --features staging \
+            --out-dir packages/sigstore/pkg/browser \
+            --out-name stogas_sigstore
+          cargo build --locked --release --package stogas-wasm --features staging \
             --target wasm32-unknown-unknown --target-dir target/wasm-staging
-          wasm-bindgen target/wasm-staging/wasm32-unknown-unknown/release/stogas_verifier_wasm.wasm \
+          wasm-bindgen target/wasm-staging/wasm32-unknown-unknown/release/stogas_wasm.wasm \
             --target web \
             --out-dir target/browser \
-            --out-name stogas_verifier
-          cargo build --locked --release --package stogas-verifier-wasm --features staging,operator \
+            --out-name stogas
+          cargo build --locked --release --package stogas-wasm --features staging,operator \
             --target wasm32-unknown-unknown --target-dir target/wasm-operator
-          wasm-bindgen target/wasm-operator/wasm32-unknown-unknown/release/stogas_verifier_wasm.wasm \
+          wasm-bindgen target/wasm-operator/wasm32-unknown-unknown/release/stogas_wasm.wasm \
             --target web \
             --out-dir target/operator \
-            --out-name stogas_verifier
+            --out-name stogas
       - name: Install browser test runtime
         run: |
           npm ci --ignore-scripts --workspaces=false
@@ -682,12 +682,12 @@ jobs:
           cache-dependency-path: sigstore-go/go.sum
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Compare RustCrypto with the native Sigstore backend
-        run: cargo test --locked --package stogas-offline-sigstore --test native_differential
+        run: cargo test --locked --package stogas-sigstore --test native_differential
       - name: Run every applicable official Sigstore v0.3 DSSE/SLSA case
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked --package stogas-offline-sigstore --bin stogas-sigstore-conformance
+          cargo build --locked --package stogas-sigstore --bin stogas-sigstore-conformance
           client="$GITHUB_WORKSPACE/target/debug/stogas-sigstore-conformance"
           assets="$GITHUB_WORKSPACE/sigstore-conformance/test/assets/bundle-verify"
           default_identity="https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main"

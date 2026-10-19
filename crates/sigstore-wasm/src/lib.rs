@@ -1,7 +1,7 @@
 //! Small browser, Worker, Node, and Bun adapter for the generic offline Sigstore verifier.
 
 use serde::{Deserialize, Serialize};
-use stogas_offline_sigstore::{
+use stogas_sigstore::{
     GithubPolicy, Subject, TrustedRoot, verify_github_attestation as verify_core,
 };
 use wasm_bindgen::prelude::*;

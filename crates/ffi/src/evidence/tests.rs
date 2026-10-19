@@ -107,7 +107,7 @@ fn compiled_authorities_never_substitute_another_environment() {
 )]
 fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-    use stogas_verifier::attestation::certificate::ParsedNativeCertificate;
+    use stogas_core::attestation::certificate::ParsedNativeCertificate;
     let fixture = hardware_fixture();
     let configuration =
         serde_json::to_vec(&json!({"environment":"staging", "root":fixture["root"]})).unwrap();
@@ -205,7 +205,7 @@ fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
             take_json(stogas_evidence_verify_archive(
                 handle,
                 ptr::null(),
-                stogas_verifier::MAX_INPUT_BYTES + 1,
+                stogas_core::MAX_INPUT_BYTES + 1,
                 later
             ))["code"],
             "invalid_operation"
@@ -284,7 +284,7 @@ fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
             );
         }
         // Oversized lengths and short hashes fail before dereferencing their contents.
-        for (receipt_len, hash_len) in [(stogas_verifier::receipt::MAX_BYTES + 1, 32), (0, 33)] {
+        for (receipt_len, hash_len) in [(stogas_core::receipt::MAX_BYTES + 1, 32), (0, 33)] {
             assert_eq!(
                 take_json(stogas_evidence_verify_receipt(
                     snapshot,

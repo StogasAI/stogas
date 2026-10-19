@@ -11,11 +11,11 @@ import Foreign
 import Foreign.C.Types
 import Foreign.C.String
 
-foreign import ccall safe "stogas_verifier_abi_version" abi :: IO Word32
+foreign import ccall safe "stogas_abi_version" abi :: IO Word32
 foreign import ccall safe "stogas_transport_start" start :: CString -> CSize -> Ptr (Ptr ()) -> IO CString
 foreign import ccall safe "stogas_transport_close" close :: Ptr () -> IO ()
 foreign import ccall safe "stogas_transport_free" freeTransport :: Ptr () -> IO ()
-foreign import ccall safe "stogas_verifier_string_free" freeString :: CString -> IO ()
+foreign import ccall safe "stogas_string_free" freeString :: CString -> IO ()
 
 withTransport :: Value -> (String -> IO a) -> IO a
 withTransport configuration action = bracket acquire release (action . snd)

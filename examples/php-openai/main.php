@@ -18,8 +18,8 @@ try {
     // An explicit URL may point to a separately managed verifier CLI.
     $base = getenv('STOGAS_BASE_URL');
     if (!$base) {
-        $library = getenv('STOGAS_VERIFIER_LIBRARY');
-        if (!$library) throw new RuntimeException('Set STOGAS_VERIFIER_LIBRARY to the native library path');
+        $library = getenv('STOGAS_LIBRARY');
+        if (!$library) throw new RuntimeException('Set STOGAS_LIBRARY to the native library path');
         $transport = new Transport($library);
         $base = $transport->baseUrl;
     }

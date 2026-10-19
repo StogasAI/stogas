@@ -71,8 +71,8 @@ internal sealed class TransportHandle : SafeHandleZeroOrMinusOneIsInvalid
 
 internal static partial class Native
 {
-    private const string Library = "stogas_verifier_ffi";
-    [LibraryImport(Library, EntryPoint = "stogas_verifier_abi_version")]
+    private const string Library = "stogas_ffi";
+    [LibraryImport(Library, EntryPoint = "stogas_abi_version")]
     internal static partial uint AbiVersion();
     [LibraryImport(Library, EntryPoint = "stogas_transport_start")]
     internal static partial nint Start(byte[] configuration, nuint length, out nint handle);
@@ -82,7 +82,7 @@ internal static partial class Native
     internal static partial void Close(TransportHandle handle);
     [LibraryImport(Library, EntryPoint = "stogas_transport_free")]
     internal static partial void Free(nint handle);
-    [LibraryImport(Library, EntryPoint = "stogas_verifier_string_free")]
+    [LibraryImport(Library, EntryPoint = "stogas_string_free")]
     private static partial void FreeString(nint value);
 
     internal static JsonElement Result(nint pointer)

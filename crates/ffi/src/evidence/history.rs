@@ -2,7 +2,7 @@
 
 use super::{AbiError, StogasEvidence, input_slice, response_coded};
 use std::{ffi::c_char, sync::MutexGuard};
-use stogas_verifier::evidence;
+use stogas_core::evidence;
 
 unsafe fn verifier<'a>(
     handle: *const StogasEvidence,
@@ -34,7 +34,7 @@ pub unsafe extern "C" fn stogas_evidence_verify_archive(
                 input_slice(
                     bundle,
                     bundle_len,
-                    stogas_verifier::MAX_INPUT_BYTES,
+                    stogas_core::MAX_INPUT_BYTES,
                     "evidence",
                 )?,
             )
@@ -70,7 +70,7 @@ pub unsafe extern "C" fn stogas_evidence_verify_boot_archive(
                 input_slice(
                     bundle,
                     bundle_len,
-                    stogas_verifier::MAX_INPUT_BYTES,
+                    stogas_core::MAX_INPUT_BYTES,
                     "evidence",
                 )?,
             )
@@ -115,13 +115,13 @@ pub unsafe extern "C" fn stogas_evidence_verify_receipt_archive(
                 input_slice(
                     bundle,
                     bundle_len,
-                    stogas_verifier::MAX_INPUT_BYTES,
+                    stogas_core::MAX_INPUT_BYTES,
                     "evidence",
                 )?,
                 input_slice(
                     receipt,
                     receipt_len,
-                    stogas_verifier::receipt::MAX_METADATA_BYTES,
+                    stogas_core::receipt::MAX_METADATA_BYTES,
                     "receipt",
                 )?,
                 input_slice(request_hash, request_hash_len, 32, "request SHA-256")?,
@@ -136,6 +136,6 @@ pub unsafe extern "C" fn stogas_evidence_verify_receipt_archive(
             .map_err(|_| "response SHA-256 must be 32 bytes")?;
 
         let boot = verifier.verify_boot_archive(archive, bundle, now_unix_ms)?;
-        Ok(stogas_verifier::receipt::verify_metadata(receipt, &boot, request, response)?.receipt)
+        Ok(stogas_core::receipt::verify_metadata(receipt, &boot, request, response)?.receipt)
     })
 }

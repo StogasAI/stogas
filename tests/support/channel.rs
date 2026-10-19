@@ -1,6 +1,6 @@
 //! Synthetic channel setup for public transport tests. Never used by shipped clients.
 use sha2::{Digest as _, Sha256};
-use stogas_verifier::{
+use stogas_core::{
     approvals::Environment,
     channel::{
         ClientSession, ServerSession,

@@ -11,7 +11,7 @@ root = Path(__file__).resolve().parents[1]
 version = sys.argv[1]
 if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?", version):
     raise SystemExit("Invalid release version")
-for name in ["package.json", "packages/offline-sigstore/package.json"]:
+for name in ["package.json", "packages/sigstore/package.json"]:
     assert json.loads((root / name).read_text())["version"] == version, name
 assert re.search(r'^version = "([^"]+)"', (root / "Cargo.toml").read_text(), re.M)[1] == version
 assert not re.search(r'^version = ', (root / "bindings/python/Cargo.toml").read_text(), re.M)

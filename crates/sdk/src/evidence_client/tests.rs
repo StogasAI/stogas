@@ -115,12 +115,12 @@ fn signed(mut body: Value) -> Vec<u8> {
     ))
     .unwrap();
     let digest =
-        stogas_verifier::approvals::payload_sha256(&body["approvals"]["document"]).unwrap();
+        stogas_core::approvals::payload_sha256(&body["approvals"]["document"]).unwrap();
     if let Some(logged) = variants["approvals"].get(&digest) {
         body["approvals"]["signature"] = logged["signature"].clone();
         body["approvals"]["inclusion"] = logged["inclusion"].clone();
     }
-    serde_json::to_vec(&json!({"schema":"stogas.confidential-bundle-envelope.v1", "body_sha256":stogas_verifier::approvals::payload_sha256(&body).unwrap(),"body":body})).unwrap()
+    serde_json::to_vec(&json!({"schema":"stogas.confidential-bundle-envelope.v1", "body_sha256":stogas_core::approvals::payload_sha256(&body).unwrap(),"body":body})).unwrap()
 }
 
 const fn reply(body: Vec<u8>, etag: &'static str) -> Reply {
@@ -186,7 +186,7 @@ async fn compression_cannot_bypass_the_decoded_evidence_limit() {
 #[tokio::test]
 async fn stale_success_falls_through_to_replica_and_etags_never_cross_origins() {
     let (root, mut latest) = fixture();
-    let target = stogas_verifier::approvals::payload_sha256(
+    let target = stogas_core::approvals::payload_sha256(
         &latest["approvals"]["document"]["catalogs"]
             .as_array()
             .unwrap()
@@ -213,7 +213,7 @@ async fn stale_success_falls_through_to_replica_and_etags_never_cross_origins() 
         .recover(deadline(), move |snapshot| {
             snapshot
                 .catalog(&required)
-                .ok_or_else(|| stogas_verifier::approvals::Error::NotApproved("catalog").into())
+                .ok_or_else(|| stogas_core::approvals::Error::NotApproved("catalog").into())
                 .map(|_| ())
         })
         .await
@@ -248,7 +248,7 @@ async fn concurrent_recovery_shares_success_and_failed_recovery_has_one_cooldown
     assert!(Arc::ptr_eq(&first.unwrap(), &second.unwrap()));
     assert_eq!(server.state.requests.lock().unwrap().len(), 1);
     let missing =
-        |_: &Snapshot| Err(stogas_verifier::approvals::Error::NotApproved("gateway").into());
+        |_: &Snapshot| Err(stogas_core::approvals::Error::NotApproved("gateway").into());
     assert!(matches!(
         client.recover(deadline(), missing).await,
         Err(Error::Verification(_))
@@ -686,7 +686,7 @@ async fn warm_rejection_preserves_cause_and_old_requests_without_reusing_stale_a
             channel.prepare(&client, deadline(), move || Ok(now)).await,
             Err(crate::native_http::Error::Recovery {
                 verification: evidence::Error::Approval(
-                    stogas_verifier::approvals::Error::NotApproved("gateway")
+                    stogas_core::approvals::Error::NotApproved("gateway")
                 ),
                 ..
             })
@@ -716,7 +716,7 @@ async fn encrypted_setup_bounds_delivery_and_never_recovers_invalid_protocol_dat
     use axum::http::Request;
     use axum::routing::post;
     use futures_util::stream;
-    use stogas_verifier::channel::setup::{CLIENT_SETUP_BYTES, MAX_SERVER_SETUP_BYTES};
+    use stogas_core::channel::setup::{CLIENT_SETUP_BYTES, MAX_SERVER_SETUP_BYTES};
 
     let (root, body) = fixture();
     let origins = Server::new([reply(signed(body), "\"evidence\""), reply(vec![], "unused")]).await;

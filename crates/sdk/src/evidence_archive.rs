@@ -15,7 +15,7 @@ use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
-use stogas_verifier::{
+use stogas_core::{
     MAX_INPUT_BYTES,
     approvals::{Environment, payload_sha256},
     evidence::MAX_ARCHIVE_BYTES,

@@ -3,7 +3,7 @@
 /examples/*/target
 /examples/*/vendor
 /pkg
-/packages/offline-sigstore/pkg
+/packages/sigstore/pkg
 /fuzz/artifacts
 /fuzz/coverage
 /fuzz/target

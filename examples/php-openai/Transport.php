@@ -11,13 +11,13 @@ final class Transport
     {
         $this->native = FFI::cdef(<<<'C'
             typedef struct StogasTransport StogasTransport;
-            uint32_t stogas_verifier_abi_version(void);
+            uint32_t stogas_abi_version(void);
             char *stogas_transport_start(const char *, size_t, StogasTransport **);
             void stogas_transport_close(const StogasTransport *);
             void stogas_transport_free(StogasTransport *);
-            void stogas_verifier_string_free(char *);
+            void stogas_string_free(char *);
             C, $library);
-        if ($this->native->stogas_verifier_abi_version() !== 1) {
+        if ($this->native->stogas_abi_version() !== 1) {
             throw new RuntimeException('Unsupported Stogas native ABI');
         }
         $this->handle = $this->native->new('StogasTransport *');
@@ -37,7 +37,7 @@ final class Transport
             $this->close();
             throw $error;
         } finally {
-            $this->native->stogas_verifier_string_free($raw);
+            $this->native->stogas_string_free($raw);
         }
     }
 

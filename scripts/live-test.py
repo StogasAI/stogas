@@ -46,18 +46,18 @@ def main(environment):
 
     features = ["--features", "staging"] if staging else []
     cargo = ["cargo", "build", "--locked", "--target-dir", target]
-    run(*cargo, "--package", "stogas-verifier-ffi", *features)
+    run(*cargo, "--package", "stogas-ffi", *features)
     run(*cargo, "--package", "stogas-cli", *features)
-    run(*cargo, "--release", "--package", "stogas-verifier-wasm", "--target", "wasm32-unknown-unknown", *features)
+    run(*cargo, "--release", "--package", "stogas-wasm", "--target", "wasm32-unknown-unknown", *features)
     run(sys.executable, "-B", "scripts/stage-native-bindings.py", "--platform", "linux-amd64", "--native-dir", native)
     (ROOT / "go/native/linux-amd64").mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(native / "libstogas_verifier_ffi.a", ROOT / "go/native/linux-amd64/libstogas_verifier_ffi.a")
+    shutil.copyfile(native / "libstogas_ffi.a", ROOT / "go/native/linux-amd64/libstogas_ffi.a")
 
     target.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="live-", dir=target) as temporary:
         work = Path(temporary)
         run(sys.executable, "-I", "release/consumers/cli.py", native / "stogas", version, "tests/fixtures")
-        run("cc", "-Wall", "-Wextra", "-Werror", "-Iinclude", "release/consumers/native.c", f"-L{native}", "-lstogas_verifier_ffi", f"-Wl,-rpath,{native}", "-o", work / "native")
+        run("cc", "-Wall", "-Wextra", "-Werror", "-Iinclude", "release/consumers/native.c", f"-L{native}", "-lstogas_ffi", f"-Wl,-rpath,{native}", "-o", work / "native")
         run(work / "native")
         run("go", "test", "-count=1", *(["-tags", "staging"] if staging else []), "./...", cwd=ROOT / "go", CGO_ENABLED="1", GOWORK="off")
         run("mvn", "-B", "-q", "-f", "bindings/java/pom.xml", "test")
@@ -83,7 +83,7 @@ def main(environment):
 
         # JavaScript runtimes load this environment's Wasm build from a package copy.
         js = work / "js"
-        run("wasm-bindgen", target / "wasm32-unknown-unknown/release/stogas_verifier_wasm.wasm", "--target", "web", "--out-dir", js / "pkg/browser", "--out-name", "stogas_verifier")
+        run("wasm-bindgen", target / "wasm32-unknown-unknown/release/stogas_wasm.wasm", "--target", "web", "--out-dir", js / "pkg/browser", "--out-name", "stogas")
         for name in ("bindings", "tests"):
             shutil.copytree(ROOT / name, js / name)
         shutil.copyfile(ROOT / "package.json", js / "package.json")

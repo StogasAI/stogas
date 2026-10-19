@@ -1,8 +1,8 @@
 use super::*;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
-use stogas_verifier::attestation::certificate::ParsedNativeCertificate;
-use stogas_verifier::signing::SigningKey;
+use stogas_core::attestation::certificate::ParsedNativeCertificate;
+use stogas_core::signing::SigningKey;
 
 struct Files {
     directory: PathBuf,

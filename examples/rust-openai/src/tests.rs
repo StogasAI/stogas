@@ -78,7 +78,7 @@ async fn sdk_completion_waits_for_transport_authentication_and_propagates_failur
             let finished = source.lock().unwrap().take().unwrap();
             async move {
                 let event = json!({"id":"chat-1","object":"chat.completion.chunk","created":1,"model":"example/model","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]});
-                let mut completion = stogas_verifier::receipt::StreamCompletion::default();
+                let mut completion = stogas_core::receipt::StreamCompletion::default();
                 let prefix = completion.push(format!(": STOGAS PROCESSING\n\ndata: {event}\n\ndata: [DONE]\n\n").as_bytes()).unwrap();
                 let body = stream::iter(prefix.into_iter().map(Ok::<_, std::io::Error>))
                     .chain(stream::once(async move {

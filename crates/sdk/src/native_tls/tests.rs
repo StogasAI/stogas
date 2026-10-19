@@ -17,7 +17,7 @@ fn snapshot() -> Arc<Snapshot> {
     ))
     .unwrap();
     evidence::Verifier::new(
-        stogas_verifier::approvals::Environment::Staging,
+        stogas_core::approvals::Environment::Staging,
         serde_json::from_value(fixture["root"].clone()).unwrap(),
     )
     .unwrap()

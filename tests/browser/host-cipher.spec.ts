@@ -15,7 +15,7 @@ const environment = {
 // Exercise the private adapter and cancellation state without shipping test exports.
 // The same optimized Wasm test artifact runs in Node and each real browser engine.
 // Match the shipped optimization profile for the full cryptographic vector sets.
-for (const cargoPackage of ['stogas-verifier-wasm', 'stogas-verifier']) {
+for (const cargoPackage of ['stogas-wasm', 'stogas-core']) {
 	test(`${cargoPackage}: cryptography contracts hold across JavaScript runtimes`, async () => {
 		test.setTimeout(480_000);
 		const { stdout } = await promisify(execFile)(

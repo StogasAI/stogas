@@ -7,7 +7,7 @@ use reqwest::{
     Client, StatusCode,
     header::{ETAG, HeaderValue, IF_NONE_MATCH},
 };
-use stogas_verifier::{
+use stogas_core::{
     MAX_INPUT_BYTES,
     approvals::{Environment, RootKey},
     evidence::{self, Snapshot, VerifiedSession},

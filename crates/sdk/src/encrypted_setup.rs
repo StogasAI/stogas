@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use stogas_verifier::{
+use stogas_core::{
     approvals::Environment,
     channel::{
         ClientSession,

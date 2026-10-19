@@ -3,21 +3,21 @@ local json = require "cjson.safe"
 
 ffi.cdef [[
 typedef struct StogasTransport StogasTransport;
-uint32_t stogas_verifier_abi_version(void);
+uint32_t stogas_abi_version(void);
 char *stogas_transport_start(const char *, size_t, StogasTransport **);
 void stogas_transport_close(const StogasTransport *);
 void stogas_transport_free(StogasTransport *);
-void stogas_verifier_string_free(char *);
+void stogas_string_free(char *);
 ]]
 
 return function(library, configuration)
     local native = ffi.load(library)
-    assert(native.stogas_verifier_abi_version() == 1, "Unsupported native ABI")
+    assert(native.stogas_abi_version() == 1, "Unsupported native ABI")
     local config = configuration and assert(json.encode(configuration)) or "{}"
     local output = ffi.new("StogasTransport *[1]")
     local raw = native.stogas_transport_start(config, #config, output)
     local result = raw ~= nil and json.decode(ffi.string(raw)) or nil
-    native.stogas_verifier_string_free(raw)
+    native.stogas_string_free(raw)
     if not result or result.ok ~= true or output[0] == nil or
        type(result.value) ~= "table" or type(result.value.base_url) ~= "string" then
         native.stogas_transport_free(output[0])

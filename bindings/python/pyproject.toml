@@ -25,5 +25,5 @@ Repository = "https://github.com/StogasAI/stogas"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
-module-name = "stogas._stogas_verifier"
+module-name = "stogas._stogas"
 python-source = "python"

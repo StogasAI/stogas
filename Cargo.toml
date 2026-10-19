@@ -6,9 +6,9 @@ members = [
   "crates/cli",
   "crates/sdk",
   "crates/ffi",
-  "crates/offline-sigstore",
-  "crates/offline-sigstore-wasm",
-  "crates/verifier",
+  "crates/sigstore",
+  "crates/sigstore-wasm",
+  "crates/core",
   "crates/wasm",
 ]
 resolver = "2"

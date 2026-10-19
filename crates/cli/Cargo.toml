@@ -36,7 +36,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 stogas = { path = "../sdk", version = "0.1.0-alpha.1" }
-stogas-verifier = { path = "../verifier", version = "0.1.0-alpha.1" }
+stogas-core = { path = "../core", version = "0.1.0-alpha.1" }
 tokio = { workspace = true, features = ["fs", "io-std", "io-util", "macros", "rt-multi-thread", "time"] }
 url.workspace = true
 webpki-roots.workspace = true

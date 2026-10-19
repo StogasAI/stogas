@@ -1,6 +1,6 @@
 [package]
-name = "stogas-verifier-ffi"
-description = "Bounded C ABI for stogas-verifier"
+name = "stogas-ffi"
+description = "Bounded C ABI for stogas-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,14 +15,14 @@ default = ["transport"]
 transport = ["dep:stogas-sdk"]
 # The gateway's embedding: channel server, boot keys, quote batches and its
 # own registration check.
-gateway = ["stogas-verifier/gateway", "dep:zeroize"]
-staging = ["stogas-verifier/staging", "stogas-sdk?/staging"]
+gateway = ["stogas-core/gateway", "dep:zeroize"]
+staging = ["stogas-core/staging", "stogas-sdk?/staging"]
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 stogas-sdk = { package = "stogas", path = "../sdk", optional = true }
-stogas-verifier = { path = "../verifier" }
+stogas-core = { path = "../core" }
 zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]

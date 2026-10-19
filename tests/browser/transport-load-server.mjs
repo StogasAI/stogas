@@ -23,7 +23,7 @@ export async function loadServer() {
 				'--locked',
 				'--release',
 				'--package',
-				'stogas-verifier-wasm',
+				'stogas-wasm',
 				'--lib',
 				'--target',
 				'wasm32-unknown-unknown',
@@ -41,7 +41,7 @@ export async function loadServer() {
 			.find(
 				(item) =>
 					item.reason === 'compiler-artifact' &&
-					item.target.name === 'stogas_verifier_wasm' &&
+					item.target.name === 'stogas_wasm' &&
 					item.profile.test
 			);
 		if (!artifact?.executable) throw new Error('Wasm test artifact was not produced');

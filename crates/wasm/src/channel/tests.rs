@@ -3,7 +3,7 @@
 use super::*;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::Value;
-use stogas_verifier::{
+use stogas_core::{
     approvals::Environment,
     channel::{self, Kind},
     evidence,

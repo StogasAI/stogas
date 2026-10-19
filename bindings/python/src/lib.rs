@@ -85,7 +85,7 @@ fn json_bytes<'py, T: serde::Serialize>(
 }
 
 #[pymodule]
-fn _stogas_verifier(module: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _stogas(module: &Bound<'_, PyModule>) -> PyResult<()> {
     evidence::register(module)?;
     module.add_class::<PythonTransport>()
 }

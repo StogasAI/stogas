@@ -1,4 +1,4 @@
-export { default } from '../../pkg/browser/stogas_verifier.js';
+export { default } from '../../pkg/browser/stogas.js';
 
 export interface StogasTransportOptions {
 	baseURL?: string;
@@ -79,11 +79,11 @@ export {
 	EvidenceVerifier,
 	EvidenceSnapshot,
 	inspect_snp_report
-} from '../../pkg/browser/stogas_verifier.js';
+} from '../../pkg/browser/stogas.js';
 
 export {
 	EncryptedSetup,
 	EncryptedSession,
 	EncryptedRequest,
 	ResponseReceipt
-} from '../../pkg/browser/stogas_verifier.js';
+} from '../../pkg/browser/stogas.js';

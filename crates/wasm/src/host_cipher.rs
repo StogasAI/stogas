@@ -6,7 +6,7 @@
 //! Browser/runtime AES-GCM. Protocol state and session secrets stay in the core.
 
 use js_sys::{Array, Reflect, Uint8Array};
-use stogas_verifier::channel::{
+use stogas_core::channel::{
     Error,
     cipher::{Cipher, SoftwareCipher},
 };

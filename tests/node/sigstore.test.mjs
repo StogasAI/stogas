@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { verify_github_attestation_at } from '../../packages/offline-sigstore/bindings/node/node.js';
+import { verify_github_attestation_at } from '../../packages/sigstore/bindings/node/node.js';
 
 const attestation = readFileSync(
 	new URL('../fixtures/gateway-v0.0.1-attestation.jsonl', import.meta.url)
