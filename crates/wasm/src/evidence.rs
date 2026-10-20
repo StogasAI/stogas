@@ -204,16 +204,14 @@ impl EvidenceSnapshot {
         )
     }
 
+    /// The interval of this platform's chip certificate alone, for deciding when to fetch a new one.
+    ///
     /// # Errors
-    /// Rejects absent, expired or revoked collateral for this exact platform.
-    pub fn collateral_validity(
-        &self,
-        chip_id: &str,
-        reported_tcb: &str,
-    ) -> Result<JsValue, JsValue> {
+    /// Rejects a platform without verified collateral.
+    pub fn vcek_validity(&self, chip_id: &str, reported_tcb: &str) -> Result<JsValue, JsValue> {
         let validity = self
             .core
-            .collateral_validity(chip_id, reported_tcb, super::wall_clock_ms()?)
+            .vcek_validity(chip_id, reported_tcb)
             .map_err(|error| verification_error(&error))?;
         Ok(super::to_js_value(&json!({
             "valid_from_unix_ms": validity.not_before_unix_ms,

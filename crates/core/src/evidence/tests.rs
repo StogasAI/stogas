@@ -404,6 +404,14 @@ mod staging {
                     && row.get("not_after_unix_ms").is_none())
         );
         assert_eq!(refreshed.gateways.len(), 1);
+        // An expired CRL does not make the chip certificate itself due for renewal.
+        assert!(
+            refreshed
+                .vcek_validity(&chip, &tcb)
+                .unwrap()
+                .not_after_unix_ms
+                > expiry
+        );
     }
 
     #[cfg(feature = "snp")]
