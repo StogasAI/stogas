@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   publish:
+    name: Publish to the package registries
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     environment: release

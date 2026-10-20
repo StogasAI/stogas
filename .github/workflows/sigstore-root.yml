@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   compare:
+    name: Compare with Sigstore's current trusted root
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

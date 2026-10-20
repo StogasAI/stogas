@@ -15,35 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  minimum-rust:
-    name: Minimum Rust and offline embedding
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    env:
-      RUSTUP_TOOLCHAIN: 1.94.1
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          persist-credentials: false
-      - run: rustup install --no-self-update --profile minimal "$RUSTUP_TOOLCHAIN"
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - run: cargo check --locked --workspace --all-targets
-      - run: cargo test --locked --tests --package stogas-core --package stogas-ffi --no-default-features --features staging,stogas-ffi/gateway
-
-  security:
-    name: Dependency security
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          persist-credentials: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - run: cargo install cargo-audit --version 0.22.2 --locked
-      - run: cargo audit
-
-  quality:
-    name: Format and lint
+  lint:
+    name: Lint, audit and release script tests
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -55,19 +28,52 @@ jobs:
           workspaces: |
             . -> target
             fuzz -> target
-      - run: cargo fmt --all --check
-      - run: cargo fmt --manifest-path fuzz/Cargo.toml --check
-      - run: python3 -B -m unittest discover -s release -p 'test_*.py' -v
-      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      # The nightly fuzz campaign is the only other build of these targets.
-      - run: cargo clippy --locked --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
-      - run: cargo clippy --locked --package stogas --package stogas-cli --all-targets --features staging -- -D warnings
-      - run: cargo clippy --locked --package stogas-core --all-targets --no-default-features -- -D warnings
-      - run: cargo clippy --locked --package stogas-core --all-targets --features staging,gateway -- -D warnings
-      - run: cargo clippy --locked --package stogas-ffi --all-targets --no-default-features --features staging,gateway -- -D warnings
+      - name: Check formatting
+        run: |
+          cargo fmt --all --check
+          cargo fmt --manifest-path fuzz/Cargo.toml --check
+      # The later checks also run after a failure, so one run reports every problem.
+      - name: Lint each feature set
+        if: ${{ !cancelled() }}
+        run: |
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo clippy --locked --package stogas --package stogas-cli --all-targets --features staging -- -D warnings
+          cargo clippy --locked --package stogas-core --all-targets --no-default-features -- -D warnings
+          cargo clippy --locked --package stogas-core --all-targets --features staging,gateway -- -D warnings
+          cargo clippy --locked --package stogas-ffi --all-targets --no-default-features --features staging,gateway -- -D warnings
+          # The nightly fuzz campaign is the only other build of these targets.
+          cargo clippy --locked --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+      - name: Audit the SDK and Rust example dependencies
+        if: ${{ !cancelled() }}
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit
+          cargo audit --file examples/rust-openai/Cargo.lock
+      - name: Test the release scripts
+        if: ${{ !cancelled() }}
+        run: python3 -B -m unittest discover -s release -p 'test_*.py' -v
 
-  protocol-security:
-    name: Symbolic composition and compiled secret-taint checks
+  minimum-rust:
+    name: Minimum supported Rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # The workspace's rust-version.
+      RUSTUP_TOOLCHAIN: 1.94.1
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Install Rust ${{ env.RUSTUP_TOOLCHAIN }}
+        run: rustup install --no-self-update --profile minimal "$RUSTUP_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Check every crate
+        run: cargo check --locked --workspace --all-targets
+      - name: Test the gateway feature set
+        run: cargo test --locked --tests --package stogas-core --package stogas-ffi --no-default-features --features staging,stogas-ffi/gateway
+
+  protocol:
+    name: Protocol model and constant-time checks
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -77,7 +83,7 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: tests/security/probe
-      - name: Install analysis tools
+      - name: Install ProVerif and Valgrind
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ocaml valgrind libc6-dbg
@@ -86,10 +92,9 @@ jobs:
           mkdir "$RUNNER_TEMP/proverif"
           tar -xzf "$RUNNER_TEMP/proverif.tar.gz" -C "$RUNNER_TEMP/proverif" --strip-components=1
           (cd "$RUNNER_TEMP/proverif" && ./build -nointeract)
-      - name: Verify composition and deliberately broken controls
+      - name: Prove the protocol model and reject its broken variants
         run: python3 tests/security/run-models.py "$RUNNER_TEMP/proverif/proverif"
-      - name: Check optimized native and portable primitive paths
-        shell: bash
+      - name: Check the primitives for secret-dependent branches and addresses
         run: |
           set -euo pipefail
           for backend in native soft; do
@@ -99,16 +104,100 @@ jobs:
             for primitive in aes hkdf records mlkem xwing x25519; do
               valgrind --tool=memcheck --error-exitcode=99 --track-origins=yes --leak-check=no "$probe" "$primitive"
             done
+            # The control branches on a secret, so the probe must report it.
             status=0
             valgrind --tool=memcheck --error-exitcode=99 --track-origins=yes --leak-check=no "$probe" control || status=$?
             test "$status" = 99
           done
 
-  native:
-    name: Native tests and language packages (${{ matrix.os }})
-    env:
-      # Exhaustive cryptographic fixtures keep debug assertions and overflow checks.
-      CARGO_PROFILE_TEST_OPT_LEVEL: '1'
+  sigstore:
+    name: Sigstore conformance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          repository: sigstore/sigstore-conformance
+          # sigstore-conformance v0.0.29
+          ref: 21533cde107c734ebc153c3e3a24d75fc9811a36
+          path: sigstore-conformance
+          persist-credentials: false
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          repository: sigstore/sigstore-go
+          ref: 55aa6240784677449a564e66a0fca7a6a3605ecd
+          path: sigstore-go
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-version-file: sigstore-go/go.mod
+          cache-dependency-path: sigstore-go/go.sum
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Compare the RustCrypto and native backends
+        run: cargo test --locked --package stogas-sigstore --test native_differential
+      - name: Run the official conformance cases
+        run: |
+          set -euo pipefail
+          cargo build --locked --package stogas-sigstore --bin stogas-sigstore-conformance
+          client="$GITHUB_WORKSPACE/target/debug/stogas-sigstore-conformance"
+          assets="$GITHUB_WORKSPACE/sigstore-conformance/test/assets/bundle-verify"
+          default_identity="https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main"
+          default_issuer="https://token.actions.githubusercontent.com"
+          cases=0
+          # The verifier accepts only v0.3 bundles that carry SLSA provenance in DSSE.
+          for case_dir in "$assets"/*; do
+            bundle="$case_dir/bundle.sigstore.json"
+            [ -f "$bundle" ] || continue
+            [ ! -f "$case_dir/key.pub" ] || continue
+            [ ! -f "$case_dir/trusted_root.json" ] || continue
+            jq -e '.mediaType == "application/vnd.dev.sigstore.bundle.v0.3+json" and has("dsseEnvelope")' "$bundle" >/dev/null || continue
+            jq -r '.dsseEnvelope.payload' "$bundle" | base64 -d > "$RUNNER_TEMP/statement.json"
+            jq -e '._type == "https://in-toto.io/Statement/v1" and .predicateType == "https://slsa.dev/provenance/v1"' "$RUNNER_TEMP/statement.json" >/dev/null || continue
+            case_name="$(basename "$case_dir")"
+            identity="$default_identity"
+            issuer="$default_issuer"
+            artifact="$assets/a.txt"
+            [ ! -f "$case_dir/identity" ] || identity="$(tr -d '\r\n' < "$case_dir/identity")"
+            [ ! -f "$case_dir/issuer" ] || issuer="$(tr -d '\r\n' < "$case_dir/issuer")"
+            [ ! -f "$case_dir/artifact" ] || artifact="$case_dir/artifact"
+            cases=$((cases + 1))
+            if "$client" verify-bundle --bundle "$bundle" --certificate-identity "$identity" --certificate-oidc-issuer "$issuer" "$artifact"; then
+              if [[ "$case_name" == *_fail ]]; then
+                echo "Official negative conformance case was accepted: $case_name" >&2
+                exit 1
+              fi
+            elif [[ "$case_name" != *_fail ]]; then
+              echo "Official supported conformance case was rejected: $case_name" >&2
+              exit 1
+            fi
+          done
+          test "$cases" -ge 4
+      - name: Verify a gateway release with gh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify tests/fixtures/gateway-v0.0.1-launch-policy.json \
+            --bundle tests/fixtures/gateway-v0.0.1-attestation.jsonl \
+            --repo StogasAI/gateway \
+            --cert-identity 'https://github.com/StogasAI/gateway/.github/workflows/gateway-igvm-release.yml@refs/tags/v0.0.1' \
+            --source-ref refs/tags/v0.0.1 \
+            --source-digest 27eb4b954a372975c9e7c5dbc77fbf0d0ca53b3f \
+            --deny-self-hosted-runners
+      - name: Verify a gateway release with sigstore-go
+        working-directory: sigstore-go
+        run: |
+          go run ./test/conformance verify-bundle \
+            --bundle "$GITHUB_WORKSPACE/tests/fixtures/gateway-v0.0.1-attestation.jsonl" \
+            --certificate-identity 'https://github.com/StogasAI/gateway/.github/workflows/gateway-igvm-release.yml@refs/tags/v0.0.1' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$GITHUB_WORKSPACE/tests/fixtures/gateway-v0.0.1-launch-policy.json"
+
+  # Every package that ships native code for a platform, tested on that platform.
+  packages:
+    name: Packages (${{ matrix.platform }})
     strategy:
       fail-fast: false
       matrix:
@@ -123,66 +212,67 @@ jobs:
             platform: darwin-arm64
           - os: windows-2025
             platform: windows-amd64
+            # cgo links with MinGW, so Go takes the GNU build of the library.
+            go-target: x86_64-pc-windows-gnu
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Exhaustive cryptographic fixtures keep debug assertions and overflow checks.
+      CARGO_PROFILE_TEST_OPT_LEVEL: '1'
+      PLATFORM: ${{ matrix.platform }}
+      GO_TARGET: ${{ matrix.go-target }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - run: cargo test --locked --workspace --all-targets
-      - name: Qualify the Rust OpenAI client example
-        run: cargo test --locked --manifest-path examples/rust-openai/Cargo.toml
-      - name: Rust client through encrypted HTTP records
-        if: runner.os == 'Linux'
-        run: |
-          cargo build --locked --manifest-path examples/rust-openai/Cargo.toml
-          python3 examples/check_http_client.py examples/rust-openai/target/debug/stogas-openai-example
-      - name: Test compiled staging trust policy and transport
+      - name: 'Rust: workspace tests'
+        run: cargo test --locked --workspace --all-targets
+      - name: 'Rust: staging trust policy and transport'
         run: cargo test --locked --package stogas-core --package stogas --package stogas-cli --all-targets --features staging
-      - name: Test the verifier without optional SNP support
+      - name: 'Rust: verifier without SNP support'
         run: cargo test --locked --package stogas-core --all-targets --no-default-features
+      - name: 'Rust: OpenAI client example'
+        env:
+          # Reuses the dependencies the workspace tests built.
+          CARGO_TARGET_DIR: target
+        run: cargo test --locked --manifest-path examples/rust-openai/Cargo.toml
+
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: '3.10'
-      - name: Build the Python wheel smoke artifact
+      - name: 'Python: build the wheel'
         uses: PyO3/maturin-action@36db84001d74475ad1b8e6613557ae4ee2dc3598
         with:
           manylinux: 'off'
           args: --locked --out dist --manifest-path bindings/python/Cargo.toml
-      - name: Import the Python wheel and reject malformed evidence
-        shell: bash
+      - name: 'Python: package tests'
         run: |
-          set -euo pipefail
           python -m pip install --force-reinstall dist/*.whl
           python -m unittest discover -s bindings/python/tests -v
-      - name: Qualify the Python OpenAI client example
+      - name: 'Python: OpenAI client example'
         run: |
           python -m pip install -r examples/python-openai/requirements.txt
           python -m unittest discover -s examples/python-openai -v
-      - name: Python client through encrypted HTTP records
-        if: runner.os == 'Linux'
-        run: python examples/check_http_client.py python examples/python-openai/main.py
-
-      - name: Build the staging Python wheel
+      - name: 'Python: build the staging wheel'
         uses: PyO3/maturin-action@36db84001d74475ad1b8e6613557ae4ee2dc3598
         with:
           manylinux: 'off'
           args: --locked --features staging --out dist-staging --manifest-path bindings/python/Cargo.toml
-      - name: Test Python snapshot ownership with signed evidence
-        shell: bash
+      - name: 'Python: staging snapshot ownership'
         env:
           STOGAS_TEST_STAGING: '1'
         run: |
-          set -euo pipefail
           python -m pip install --force-reinstall dist-staging/*.whl
           python -m unittest discover -s bindings/python/tests -v
 
-      - name: Stage native language packages
-        shell: bash
+      - name: Stage the C library in the language packages
         run: |
           cargo build --locked --package stogas-ffi
-          python scripts/stage-native-bindings.py --platform ${{ matrix.platform }} --native-dir target/debug
+          python scripts/stage-native-bindings.py --platform "$PLATFORM" --native-dir target/debug
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
         with:
           distribution: temurin
@@ -193,12 +283,11 @@ jobs:
       - uses: ruby/setup-ruby@e8944e80fb94b20106697132f8c20c665fab29e9
         with:
           ruby-version: '3.3'
-      - name: Java native loading, errors and installed consumer
-        shell: bash
+      - name: 'Java: package and OpenAI client example'
         run: |
           mvn -q -f bindings/java/pom.xml install
           mvn -q -f examples/java-openai/pom.xml test
-      - name: NuGet native loading and handle ownership
+      - name: '.NET: NuGet package'
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
@@ -206,379 +295,64 @@ jobs:
           dotnet nuget add source "$env:RUNNER_TEMP/stogas-nuget" --name stogas-local
           dotnet restore bindings/dotnet/tests/Consumer.csproj
           dotnet run --no-restore --project bindings/dotnet/tests/Consumer.csproj
-      - name: Ruby platform gem loading and native errors
-        shell: bash
+      - name: 'Ruby: platform gem'
         run: |
           gem -C bindings/ruby build stogas.gemspec --output "$RUNNER_TEMP/stogas.gem"
-          gem install "$RUNNER_TEMP/stogas.gem" --no-document
-          gem install minitest:6.0.6 --no-document
+          gem install "$RUNNER_TEMP/stogas.gem" minitest:6.0.6 --no-document
           ruby bindings/ruby/test/transport_test.rb
-      - name: Swift static package on macOS
+      - name: 'Swift: static package'
         if: runner.os == 'macOS'
         env:
           DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
         run: swift test --package-path bindings/swift
-  swift-linux:
-    name: Swift static package (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            platform: linux-amd64
-          - os: ubuntu-24.04-arm
-            platform: linux-arm64
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          persist-credentials: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - run: cargo build --locked --package stogas-ffi
-      - run: python3 scripts/stage-native-bindings.py --platform ${{ matrix.platform }} --native-dir target/debug
-      - name: Test Swift static package
+      - name: 'Swift: static package'
+        if: runner.os == 'Linux'
         run: >-
           docker run --rm -v "$PWD:/work" -w /work/bindings/swift
           swift@sha256:9bea530093ffff8cf6c259991715ee843fe4d0f932e612f7f4b79cca6e00db87
           swift test -j 4
 
-  python-frameworks:
-    name: Python AI frameworks over HTTP and E2EE
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
-        with:
-          python-version: '3.12'
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - run: python -m pip install -r tests/clients/python/requirements.txt
-      - name: Status errors, supported headers, completion and broken streams
-        run: |
-          for client in langchain llamaindex litellm pydantic-ai; do
-            python examples/check_http_client.py --typed-status --unary python tests/clients/python/client.py "$client" --unary
-            python examples/check_http_client.py --typed-status python tests/clients/python/client.py "$client"
-          done
-
-  http-clients:
-    name: Documented native HTTP clients
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          persist-credentials: false
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
-        with:
-          distribution: temurin
-          java-version: '21'
-      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
-        with:
-          dotnet-version: '10.0.x'
-      - uses: ruby/setup-ruby@e8944e80fb94b20106697132f8c20c665fab29e9
-        with:
-          ruby-version: '3.3'
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - name: Install native transport dependencies
-        run: |
-          cargo build --locked --package stogas-ffi
-          python3 scripts/stage-native-bindings.py --platform linux-amd64 --native-dir target/debug
-          mvn -q -f bindings/java/pom.xml install -DskipTests
-          gem -C bindings/ruby build stogas.gemspec --output "$RUNNER_TEMP/stogas.gem"
-          gem install "$RUNNER_TEMP/stogas.gem" --no-document
-      - name: Java typed requests and streaming failures
-        run: |
-          mvn -q -f examples/java-openai/pom.xml test dependency:build-classpath -Dmdep.outputFile=target/classpath
-          python3 examples/check_http_client.py java -cp "examples/java-openai/target/classes:$(cat examples/java-openai/target/classpath)" example.Main
-      - name: Ruby typed requests and streaming failures
-        run: |
-          gem install openai:0.94.0 webrick:1.9.2 minitest:6.0.6 --no-document
-          ruby examples/ruby-openai/test_client.rb
-          python3 examples/check_http_client.py ruby examples/ruby-openai/main.rb
-      - name: Kotlin typed requests and streaming failures
-        run: |
-          mvn -q -f examples/kotlin-openai/pom.xml package dependency:build-classpath -Dmdep.outputFile=target/classpath
-          python3 examples/check_http_client.py java -cp "examples/kotlin-openai/target/classes:$(cat examples/kotlin-openai/target/classpath)" example.MainKt
-      - name: Clojure typed requests and streaming failures
-        run: |
-          mvn -q -f examples/clojure-openai/pom.xml dependency:build-classpath -Dmdep.outputFile=target/classpath
-          python3 examples/check_http_client.py java -cp "examples/clojure-openai/src:$(cat examples/clojure-openai/target/classpath)" clojure.main -m example
-      - name: Scala typed requests and streaming failures
-        run: |
-          mvn -q -f examples/scala-openai/pom.xml package dependency:build-classpath -Dmdep.outputFile=target/classpath
-          python3 examples/check_http_client.py java -cp "examples/scala-openai/target/classes:$(cat examples/scala-openai/target/classpath)" example.Main
-      - name: .NET typed streaming and failures
-        run: |
-          dotnet restore --locked-mode examples/dotnet-openai/Example.csproj
-          dotnet build --no-restore examples/dotnet-openai/Example.csproj
-          python3 examples/check_http_client.py dotnet examples/dotnet-openai/bin/Debug/net10.0/Example.dll
-      - name: F# typed streaming and failures
-        run: |
-          dotnet restore --locked-mode examples/fsharp-openai/Example.fsproj
-          dotnet build --no-restore examples/fsharp-openai/Example.fsproj
-          python3 examples/check_http_client.py dotnet examples/fsharp-openai/bin/Debug/net10.0/Example.dll
-
-  swift-http:
-    name: Swift standard HTTP client
-    runs-on: macos-15
-    timeout-minutes: 10
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          persist-credentials: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - run: |
-          cargo build --locked --package stogas-ffi
-          python3 scripts/stage-native-bindings.py --platform darwin-arm64 --native-dir target/debug
-          swift build --package-path examples/swift-http
-          python3 examples/check_http_client.py examples/swift-http/.build/debug/StogasHTTPExample
-      - name: Qualify Objective-C native ownership and HTTP
-        run: |
-          brew install json-c
-          cargo build --locked --package stogas-ffi --features staging
-          export DYLD_LIBRARY_PATH="$PWD/target/debug"
-          clang -fobjc-arc -Wall -Wextra -Werror -framework Foundation -Iinclude \
-            examples/objective-c-http/Transport.m examples/objective-c-http/test_native.m \
-            -Ltarget/debug -Wl,-rpath,"$PWD/target/debug" -lstogas_ffi -o /tmp/stogas-objective-c-native
-          /tmp/stogas-objective-c-native
-          clang -fobjc-arc -Wall -Wextra -Werror -framework Foundation -Iinclude \
-            examples/objective-c-http/Transport.m examples/objective-c-http/main.m \
-            -Ltarget/debug -Wl,-rpath,"$PWD/target/debug" -lstogas_ffi $(pkg-config --cflags --libs libcurl json-c) \
-            -o /tmp/stogas-objective-c-example
-          python3 examples/check_http_client.py --sse-framing /tmp/stogas-objective-c-example
-          python3 examples/check_http_client.py --unary /tmp/stogas-objective-c-example --no-stream
-          python3 examples/check_http_client.py --cancel /tmp/stogas-objective-c-example
-
-  go:
-    name: Go binding and C ABI (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            platform: linux-amd64
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            platform: linux-arm64
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            platform: darwin-amd64
-          - os: macos-15
-            target: aarch64-apple-darwin
-            platform: darwin-arm64
-          - os: windows-2025
-            target: x86_64-pc-windows-gnu
-            platform: windows-amd64
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    defaults:
-      run:
-        shell: bash
-    env:
-      CARGO_BUILD_TARGET: ${{ matrix.target }}
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          persist-credentials: false
-      - run: |
-          rustup install --no-self-update
-          rustup target add ${{ matrix.target }}
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
         with:
           go-version-file: go/go.mod
-          cache-dependency-path: go/go.mod
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - run: |
-          cargo build --locked --package stogas-ffi
-          mkdir -p "go/native/${{ matrix.platform }}"
-          cp "target/${{ matrix.target }}/debug/libstogas_ffi.a" "go/native/${{ matrix.platform }}/"
-      - name: Test the Go adapter against the static Rust library
-        working-directory: go
+          cache-dependency-path: |
+            go/go.mod
+            examples/go-openai/go.sum
+      - name: 'Go: add the MinGW Rust target'
+        if: matrix.go-target
+        run: rustup target add "$GO_TARGET"
+      - name: 'Go: module and OpenAI client example'
         env:
           CGO_ENABLED: '1'
-        run: go test ./...
-      - name: Qualify the C HTTP example against the public ABI
-        if: matrix.os == 'ubuntu-24.04'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libcurl4-openssl-dev libjson-c-dev
-          cc -std=c11 -Wall -Wextra -Werror -Iinclude examples/c-http/main.c \
-            "target/${{ matrix.target }}/debug/libstogas_ffi.a" \
-            $(pkg-config --cflags --libs libcurl json-c) -ldl -lpthread -lm -o /tmp/stogas-request
-          python3 examples/check_http_client.py --sse-framing /tmp/stogas-request --stream
-      - name: Qualify the Go OpenAI client example
-        working-directory: examples/go-openai
+          cargo build --locked --package stogas-ffi ${GO_TARGET:+--target "$GO_TARGET"}
+          mkdir -p "go/native/$PLATFORM"
+          cp "target/${GO_TARGET:+$GO_TARGET/}debug/libstogas_ffi.a" "go/native/$PLATFORM/"
+          go -C go test ./...
+          go -C examples/go-openai test -race ./...
+      - name: 'Go: staging snapshot ownership'
         env:
           CGO_ENABLED: '1'
-        run: go test -race ./...
-      - name: Go client through encrypted HTTP records
-        if: runner.os == 'Linux'
         run: |
-          go -C examples/go-openai build -o "$RUNNER_TEMP/stogas-go-client" .
-          python3 examples/check_http_client.py "$RUNNER_TEMP/stogas-go-client"
-      - run: |
-          cargo build --locked --package stogas-ffi --features staging
-          mkdir -p "go/native/${{ matrix.platform }}"
-          cp "target/${{ matrix.target }}/debug/libstogas_ffi.a" "go/native/${{ matrix.platform }}/"
-      - name: Test staging evidence ownership through the Go adapter
-        working-directory: go
+          cargo build --locked --package stogas-ffi --features staging ${GO_TARGET:+--target "$GO_TARGET"}
+          cp "target/${GO_TARGET:+$GO_TARGET/}debug/libstogas_ffi.a" "go/native/$PLATFORM/"
+          go -C go test -race -tags staging ./...
+      - name: 'Go: gateway build without the native transport'
         env:
           CGO_ENABLED: '1'
-        run: go test -race -tags staging ./...
-      - run: cargo test --locked --package stogas-ffi --no-default-features --features staging,gateway
-      - run: |
-          cargo build --locked --package stogas-ffi --no-default-features --features staging,gateway
-          mkdir -p "go/native/${{ matrix.platform }}"
-          cp "target/${{ matrix.target }}/debug/libstogas_ffi.a" "go/native/${{ matrix.platform }}/"
-      - name: Test the gateway embedding build without native transport dependencies
-        working-directory: go
+        run: |
+          cargo test --locked --package stogas-ffi --no-default-features --features staging,gateway ${GO_TARGET:+--target "$GO_TARGET"}
+          cargo build --locked --package stogas-ffi --no-default-features --features staging,gateway ${GO_TARGET:+--target "$GO_TARGET"}
+          cp "target/${GO_TARGET:+$GO_TARGET/}debug/libstogas_ffi.a" "go/native/$PLATFORM/"
+          go -C go test -race -tags staging,stogas_gateway ./...
+      - name: 'Go: fully static gateway build'
+        if: matrix.platform == 'linux-amd64'
         env:
           CGO_ENABLED: '1'
-        run: go test -race -tags staging,stogas_gateway ./...
-      - name: Test the fully static gateway embedding
-        if: matrix.os == 'ubuntu-24.04'
-        working-directory: go
-        env:
-          CGO_ENABLED: '1'
-        run: go test -tags staging,stogas_gateway,netgo,osusergo -ldflags='-linkmode=external -extldflags "-static -Wl,--gc-sections,--build-id=none"' ./...
+        run: go -C go test -tags staging,stogas_gateway,netgo,osusergo -ldflags='-linkmode=external -extldflags "-static -Wl,--gc-sections,--build-id=none"' ./...
 
-  additional-languages:
-    name: Native examples (${{ matrix.language }})
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [php, luajit, dart, julia, beam, haskell, ocaml, zig]
-    env:
-      CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          persist-credentials: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - run: cargo build --locked --package stogas-ffi --package stogas-cli --features staging
-      - run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libcurl4-openssl-dev
-      - name: Qualify the PHP native bridge and OpenAI client
-        if: matrix.language == 'php'
-        run: |
-          sudo apt-get install -y --no-install-recommends php-cli php-curl php-xml php-mbstring composer
-          composer install --no-interaction --no-plugins --no-scripts --working-dir=examples/php-openai
-          php -d ffi.enable=true examples/php-openai/test_transport.php "$PWD/target/${{ env.CARGO_BUILD_TARGET }}/debug/libstogas_ffi.so"
-          python3 examples/check_http_client.py php examples/php-openai/main.php
-      - name: Qualify the LuaJIT native bridge and HTTP client
-        if: matrix.language == 'luajit'
-        run: |
-          sudo apt-get install -y --no-install-recommends luajit libluajit-5.1-dev lua-cjson luarocks
-          sudo luarocks --lua-version=5.1 install Lua-cURL 0.3.13-1 LUA_INCDIR=/usr/include/luajit-2.1 \
-            CURL_INCDIR="$(pkg-config --variable=includedir libcurl)" CURL_LIBDIR="$(pkg-config --variable=libdir libcurl)"
-          luajit examples/luajit-http/test_transport.lua "$PWD/target/${{ env.CARGO_BUILD_TARGET }}/debug/libstogas_ffi.so"
-          python3 examples/check_http_client.py --sse-framing luajit examples/luajit-http/main.lua
-          python3 examples/check_http_client.py --unary luajit examples/luajit-http/main.lua --no-stream
-          python3 examples/check_http_client.py --cancel luajit examples/luajit-http/main.lua
-      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d
-        if: matrix.language == 'dart'
-        with:
-          sdk: '3.13.4'
-      - name: Qualify the Dart native bridge and OpenAI client
-        if: matrix.language == 'dart'
-        run: |
-          (cd examples/dart-openai && dart pub get --enforce-lockfile && dart analyze)
-          dart run examples/dart-openai/test_transport.dart "$PWD/target/${{ env.CARGO_BUILD_TARGET }}/debug/libstogas_ffi.so"
-          python3 examples/check_http_client.py dart run examples/dart-openai/main.dart
-          python3 examples/check_http_client.py --unary dart run examples/dart-openai/main.dart --no-stream
-          python3 examples/check_http_client.py --cancel dart run examples/dart-openai/main.dart
-      - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9
-        if: matrix.language == 'julia'
-        with:
-          version: '1.13.0'
-      - name: Qualify the Julia native bridge and OpenAI/HTTP clients
-        if: matrix.language == 'julia'
-        run: |
-          julia --project=examples/julia-openai -e 'using Pkg; Pkg.instantiate()'
-          julia --project=examples/julia-openai examples/julia-openai/test_transport.jl "$PWD/target/${{ env.CARGO_BUILD_TARGET }}/debug/libstogas_ffi.so"
-          python3 examples/check_http_client.py --sse-framing julia --project=examples/julia-openai examples/julia-openai/main.jl
-          python3 examples/check_http_client.py --unary julia --project=examples/julia-openai examples/julia-openai/main.jl --no-stream
-          python3 examples/check_http_client.py --cancel julia --project=examples/julia-openai examples/julia-openai/main.jl
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
-        if: matrix.language == 'beam'
-        with:
-          otp-version: '27.3.4.6'
-          elixir-version: '1.18.3'
-          rebar3-version: '3.26.0'
-      - name: Qualify the Elixir OpenAI client and supervised verifier
-        if: matrix.language == 'beam'
-        run: |
-          cd examples/elixir-openai
-          mix deps.get --check-locked
-          mix compile --warnings-as-errors
-          mix run test_transport.exs "$GITHUB_WORKSPACE/target/${{ env.CARGO_BUILD_TARGET }}/debug/stogas"
-          mix run test_client.exs
-          python3 ../check_http_client.py mix run main.exs
-          python3 ../check_http_client.py --unary mix run main.exs --no-stream
-      - name: Qualify the Erlang HTTP client and supervised verifier
-        if: matrix.language == 'beam'
-        working-directory: examples/erlang-http
-        run: |
-          rebar3 escriptize
-          STOGAS_VERIFY_BIN="$GITHUB_WORKSPACE/target/${{ env.CARGO_BUILD_TARGET }}/debug/stogas" rebar3 eunit
-          python3 ../check_http_client.py --sse-framing _build/default/bin/stogas-example
-          python3 ../check_http_client.py --unary _build/default/bin/stogas-example --no-stream
-      - uses: haskell-actions/setup@7fd2bb5ca789761088fbc831406b2910e47e56f1
-        if: matrix.language == 'haskell'
-        with:
-          ghc-version: '9.10.3'
-          cabal-version: '3.12.1.0'
-      - name: Qualify the Haskell native bridge and HTTP client
-        if: matrix.language == 'haskell'
-        working-directory: examples/haskell-http
-        run: |
-          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/target/${{ env.CARGO_BUILD_TARGET }}/debug"
-          cabal update
-          cabal build all --enable-tests --extra-lib-dirs="$LD_LIBRARY_PATH"
-          cabal test --enable-tests --extra-lib-dirs="$LD_LIBRARY_PATH"
-          stogas_example_binary=$(cabal list-bin exe:stogas-example)
-          python3 ../check_http_client.py --sse-framing "$stogas_example_binary"
-          python3 ../check_http_client.py --unary "$stogas_example_binary" --no-stream
-          python3 ../check_http_client.py --cancel "$stogas_example_binary"
-      - uses: ocaml/setup-ocaml@93303b622b2522e4411e295f9e77411a24912ac7
-        if: matrix.language == 'ocaml'
-        with:
-          ocaml-compiler: '5.4.0'
-      - name: Qualify the OCaml native bridge and HTTP client
-        if: matrix.language == 'ocaml'
-        working-directory: examples/ocaml-http
-        run: |
-          opam install . --deps-only --yes
-          opam exec -- dune build
-          opam exec -- _build/default/test_native.exe "$GITHUB_WORKSPACE/target/${{ env.CARGO_BUILD_TARGET }}/debug/libstogas_ffi.so"
-          opam exec -- python3 ../check_http_client.py --sse-framing _build/default/main.exe
-          opam exec -- python3 ../check_http_client.py --unary _build/default/main.exe --no-stream
-          opam exec -- python3 ../check_http_client.py --cancel _build/default/main.exe
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
-        if: matrix.language == 'zig'
-        with:
-          version: '0.16.0'
-      - name: Qualify the Zig native bridge and HTTP client
-        if: matrix.language == 'zig'
-        run: |
-          export LD_LIBRARY_PATH="$PWD/target/${{ env.CARGO_BUILD_TARGET }}/debug"
-          zig test examples/zig-http/test_native.zig -Iinclude -L"$LD_LIBRARY_PATH" -lstogas_ffi -lcurl -lc
-          zig build-exe examples/zig-http/main.zig -Iinclude -L"$LD_LIBRARY_PATH" -lstogas_ffi -lcurl -lc -femit-bin=/tmp/stogas-zig-example
-          python3 examples/check_http_client.py --sse-framing /tmp/stogas-zig-example
-          python3 examples/check_http_client.py --unary /tmp/stogas-zig-example --no-stream
-          python3 examples/check_http_client.py --cancel /tmp/stogas-zig-example
-
-  wasm-compile:
-    name: Browser WASM and network-disabled E2E
+  javascript:
+    name: JavaScript and WebAssembly
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -590,8 +364,7 @@ jobs:
         with:
           node-version: 24.14.1
           cache: npm
-      - name: Reject native crypto in the browser dependency graph
-        shell: bash
+      - name: Reject native cryptography in the WebAssembly builds
         run: |
           set -euo pipefail
           for package in stogas-sigstore-wasm stogas-wasm; do
@@ -602,7 +375,7 @@ jobs:
             fi
             cargo check --locked --package "$package" --target wasm32-unknown-unknown
           done
-      - name: Build browser and Node packages
+      - name: Build the browser and Node packages
         run: |
           set -euo pipefail
           cargo install wasm-bindgen-cli --version =0.2.129 --locked
@@ -631,111 +404,298 @@ jobs:
             --target web \
             --out-dir target/operator \
             --out-name stogas
-      - name: Install browser test runtime
+      - name: Install the test browsers
         run: |
           npm ci --ignore-scripts --workspaces=false
           npx --no-install playwright install --with-deps chromium firefox webkit
-      - name: Verify with every browser network request blocked
+      - name: 'Browsers: verify with every network request blocked'
         run: npm run test:browser
-      - name: Verify the Node package entrypoint
+      - name: 'Node: package entry point and Fetch client'
         run: |
           npm run test:node
           node tests/clients/fetch-load.mjs
-      - name: Verify Bun and Deno Fetch clients
+      - name: 'Bun and Deno: package tests and Fetch client'
         run: |
           npx --yes --package bun@1.4.2 bun test tests/node
           npx --yes --package bun@1.4.2 bun tests/clients/fetch-load.mjs
           npx --yes --package deno@2.9.6 deno test --allow-all --no-check tests/node/*.test.mjs
           npx --yes --package deno@2.9.6 deno run --allow-all tests/clients/fetch-load.mjs
-      - name: Verify the Worker package in workerd
+      - name: 'Cloudflare Workers: package in workerd'
         run: npm run test:worker
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: 20.20.2
-      - name: Verify the minimum supported Node major
+      - name: 'Node 20: minimum supported version'
         run: npm run test:node
 
-  sigstore-conformance:
-    name: Sigstore conformance and differential verification
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
+  # Each documented client against the shared HTTP and SSE failure fixtures,
+  # both directly and through the E2EE record transport.
+  examples:
+    name: Examples (${{ matrix.name }})
+    runs-on: ${{ matrix.runner || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      # GitHub runs at most 20 jobs at once. This leaves room for the ten
+      # other jobs, which take longer.
+      max-parallel: 8
+      matrix:
+        include:
+          - { language: rust, name: Rust }
+          - { language: python, name: Python }
+          - { language: go, name: Go }
+          - { language: c, name: C }
+          - { language: jvm, name: 'Java, Kotlin, Clojure and Scala' }
+          - { language: dotnet, name: 'C# and F#' }
+          - { language: ruby, name: Ruby }
+          - { language: swift, name: Swift and Objective-C, runner: macos-15 }
+          - { language: dart, name: Dart }
+          - { language: beam, name: Elixir and Erlang }
+          - { language: haskell, name: Haskell }
+          - { language: julia, name: Julia }
+          - { language: luajit, name: LuaJIT }
+          - { language: ocaml, name: OCaml }
+          - { language: php, name: PHP }
+          - { language: zig, name: Zig }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          repository: sigstore/sigstore-conformance
-          # sigstore-conformance v0.0.29
-          ref: 21533cde107c734ebc153c3e3a24d75fc9811a36
-          path: sigstore-conformance
-          persist-credentials: false
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          repository: sigstore/sigstore-go
-          ref: 55aa6240784677449a564e66a0fca7a6a3605ecd
-          path: sigstore-go
-          persist-credentials: false
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
-        with:
-          go-version-file: sigstore-go/go.mod
-          cache-dependency-path: sigstore-go/go.sum
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - name: Compare RustCrypto with the native Sigstore backend
-        run: cargo test --locked --package stogas-sigstore --test native_differential
-      - name: Run every applicable official Sigstore v0.3 DSSE/SLSA case
-        shell: bash
+      - if: matrix.language == 'python'
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+      - if: matrix.language == 'python'
+        uses: PyO3/maturin-action@36db84001d74475ad1b8e6613557ae4ee2dc3598
+        with:
+          manylinux: 'off'
+          args: --locked --out dist --manifest-path bindings/python/Cargo.toml
+      - if: matrix.language == 'go'
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: examples/go-openai/go.sum
+      - if: matrix.language == 'jvm'
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '21'
+      - if: matrix.language == 'dotnet'
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        with:
+          dotnet-version: '10.0.x'
+      - if: matrix.language == 'ruby'
+        uses: ruby/setup-ruby@e8944e80fb94b20106697132f8c20c665fab29e9
+        with:
+          ruby-version: '3.3'
+      - if: matrix.language == 'dart'
+        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d
+        with:
+          sdk: '3.13.4'
+      - if: matrix.language == 'beam'
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+        with:
+          otp-version: '27.3.4.6'
+          elixir-version: '1.18.3'
+          rebar3-version: '3.26.0'
+      - if: matrix.language == 'haskell'
+        uses: haskell-actions/setup@7fd2bb5ca789761088fbc831406b2910e47e56f1
+        with:
+          ghc-version: '9.10.3'
+          cabal-version: '3.12.1.0'
+      - if: matrix.language == 'julia'
+        uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9
+        with:
+          version: '1.13.0'
+      - if: matrix.language == 'ocaml'
+        uses: ocaml/setup-ocaml@93303b622b2522e4411e295f9e77411a24912ac7
+        with:
+          ocaml-compiler: '5.4.0'
+      - if: matrix.language == 'zig'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: '0.16.0'
+      - name: Test the ${{ matrix.name }} examples
+        env:
+          LANGUAGE: ${{ matrix.language }}
         run: |
           set -euo pipefail
-          cargo build --locked --package stogas-sigstore --bin stogas-sigstore-conformance
-          client="$GITHUB_WORKSPACE/target/debug/stogas-sigstore-conformance"
-          assets="$GITHUB_WORKSPACE/sigstore-conformance/test/assets/bundle-verify"
-          default_identity="https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main"
-          default_issuer="https://token.actions.githubusercontent.com"
-          cases=0
-          for case_dir in "$assets"/*; do
-            bundle="$case_dir/bundle.sigstore.json"
-            [ -f "$bundle" ] || continue
-            [ ! -f "$case_dir/key.pub" ] || continue
-            [ ! -f "$case_dir/trusted_root.json" ] || continue
-            jq -e '.mediaType == "application/vnd.dev.sigstore.bundle.v0.3+json" and has("dsseEnvelope")' "$bundle" >/dev/null || continue
-            jq -r '.dsseEnvelope.payload' "$bundle" | base64 -d > "$RUNNER_TEMP/statement.json"
-            jq -e '._type == "https://in-toto.io/Statement/v1" and .predicateType == "https://slsa.dev/provenance/v1"' "$RUNNER_TEMP/statement.json" >/dev/null || continue
-            case_name="$(basename "$case_dir")"
-            identity="$default_identity"
-            issuer="$default_issuer"
-            artifact="$assets/a.txt"
-            [ ! -f "$case_dir/identity" ] || identity="$(tr -d '\r\n' < "$case_dir/identity")"
-            [ ! -f "$case_dir/issuer" ] || issuer="$(tr -d '\r\n' < "$case_dir/issuer")"
-            [ ! -f "$case_dir/artifact" ] || artifact="$case_dir/artifact"
-            cases=$((cases + 1))
-            if "$client" verify-bundle --bundle "$bundle" --certificate-identity "$identity" --certificate-oidc-issuer "$issuer" "$artifact"; then
-              if [[ "$case_name" == *_fail ]]; then
-                echo "Official negative conformance case was accepted: $case_name" >&2
-                exit 1
-              fi
-            elif [[ "$case_name" != *_fail ]]; then
-              echo "Official supported conformance case was rejected: $case_name" >&2
+          check() { python3 "$GITHUB_WORKSPACE/examples/check_http_client.py" "$@"; }
+          apt_install() {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends "$@"
+          }
+          library="$GITHUB_WORKSPACE/target/debug/libstogas_ffi.so"
+          case "$LANGUAGE" in
+            rust)
+              CARGO_TARGET_DIR=target cargo build --locked --manifest-path examples/rust-openai/Cargo.toml
+              check target/debug/stogas-openai-example
+              ;;
+            python)
+              python -m pip install dist/*.whl -r examples/python-openai/requirements.txt
+              check python examples/python-openai/main.py
+              # The AI frameworks pin their own OpenAI SDK.
+              python -m pip install -r tests/clients/python/requirements.txt
+              for client in langchain llamaindex litellm pydantic-ai; do
+                check --typed-status --unary python tests/clients/python/client.py "$client" --unary
+                check --typed-status python tests/clients/python/client.py "$client"
+              done
+              ;;
+            go)
+              cargo build --locked --package stogas-ffi
+              mkdir -p go/native/linux-amd64
+              cp target/debug/libstogas_ffi.a go/native/linux-amd64/
+              go -C examples/go-openai build -o "$RUNNER_TEMP/stogas-go-example" .
+              check "$RUNNER_TEMP/stogas-go-example"
+              ;;
+            c)
+              apt_install libcurl4-openssl-dev libjson-c-dev
+              cargo build --locked --package stogas-ffi
+              # shellcheck disable=SC2046 # pkg-config prints separate flags.
+              cc -std=c11 -Wall -Wextra -Werror -Iinclude examples/c-http/main.c target/debug/libstogas_ffi.a \
+                $(pkg-config --cflags --libs libcurl json-c) -ldl -lpthread -lm -o "$RUNNER_TEMP/stogas-c-example"
+              check --sse-framing "$RUNNER_TEMP/stogas-c-example" --stream
+              ;;
+            jvm)
+              cargo build --locked --package stogas-ffi
+              python3 scripts/stage-native-bindings.py --platform linux-amd64 --native-dir target/debug
+              mvn -q -f bindings/java/pom.xml install -DskipTests
+              mvn -q -f examples/java-openai/pom.xml test dependency:build-classpath -Dmdep.outputFile=target/classpath
+              check java -cp "examples/java-openai/target/classes:$(cat examples/java-openai/target/classpath)" example.Main
+              mvn -q -f examples/kotlin-openai/pom.xml package dependency:build-classpath -Dmdep.outputFile=target/classpath
+              check java -cp "examples/kotlin-openai/target/classes:$(cat examples/kotlin-openai/target/classpath)" example.MainKt
+              mvn -q -f examples/clojure-openai/pom.xml dependency:build-classpath -Dmdep.outputFile=target/classpath
+              check java -cp "examples/clojure-openai/src:$(cat examples/clojure-openai/target/classpath)" clojure.main -m example
+              mvn -q -f examples/scala-openai/pom.xml package dependency:build-classpath -Dmdep.outputFile=target/classpath
+              check java -cp "examples/scala-openai/target/classes:$(cat examples/scala-openai/target/classpath)" example.Main
+              ;;
+            dotnet)
+              cargo build --locked --package stogas-ffi
+              python3 scripts/stage-native-bindings.py --platform linux-amd64 --native-dir target/debug
+              for example in dotnet-openai/Example.csproj fsharp-openai/Example.fsproj; do
+                dotnet restore --locked-mode "examples/$example"
+                dotnet build --no-restore "examples/$example"
+                check dotnet "examples/${example%/*}/bin/Debug/net10.0/Example.dll"
+              done
+              ;;
+            ruby)
+              cargo build --locked --package stogas-ffi
+              python3 scripts/stage-native-bindings.py --platform linux-amd64 --native-dir target/debug
+              gem -C bindings/ruby build stogas.gemspec --output "$RUNNER_TEMP/stogas.gem"
+              gem install "$RUNNER_TEMP/stogas.gem" openai:0.94.0 webrick:1.9.2 minitest:6.0.6 --no-document
+              ruby examples/ruby-openai/test_client.rb
+              check ruby examples/ruby-openai/main.rb
+              ;;
+            swift)
+              export DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer
+              cargo build --locked --package stogas-ffi
+              python3 scripts/stage-native-bindings.py --platform darwin-arm64 --native-dir target/debug
+              swift build --package-path examples/swift-http
+              check examples/swift-http/.build/debug/StogasHTTPExample
+              # Objective-C loads the staging build of the library.
+              brew install json-c
+              cargo build --locked --package stogas-ffi --features staging
+              export DYLD_LIBRARY_PATH="$PWD/target/debug"
+              clang -fobjc-arc -Wall -Wextra -Werror -framework Foundation -Iinclude \
+                examples/objective-c-http/Transport.m examples/objective-c-http/test_native.m \
+                -Ltarget/debug -Wl,-rpath,"$PWD/target/debug" -lstogas_ffi -o "$RUNNER_TEMP/stogas-objective-c-native"
+              "$RUNNER_TEMP/stogas-objective-c-native"
+              # shellcheck disable=SC2046 # pkg-config prints separate flags.
+              clang -fobjc-arc -Wall -Wextra -Werror -framework Foundation -Iinclude \
+                examples/objective-c-http/Transport.m examples/objective-c-http/main.m \
+                -Ltarget/debug -Wl,-rpath,"$PWD/target/debug" -lstogas_ffi $(pkg-config --cflags --libs libcurl json-c) \
+                -o "$RUNNER_TEMP/stogas-objective-c-example"
+              check --sse-framing "$RUNNER_TEMP/stogas-objective-c-example"
+              check --unary "$RUNNER_TEMP/stogas-objective-c-example" --no-stream
+              check --cancel "$RUNNER_TEMP/stogas-objective-c-example"
+              ;;
+            dart)
+              cargo build --locked --package stogas-ffi --features staging
+              (cd examples/dart-openai && dart pub get --enforce-lockfile && dart analyze)
+              dart run examples/dart-openai/test_transport.dart "$library"
+              check dart run examples/dart-openai/main.dart
+              check --unary dart run examples/dart-openai/main.dart --no-stream
+              check --cancel dart run examples/dart-openai/main.dart
+              ;;
+            beam)
+              # Elixir and Erlang supervise the CLI instead of loading the library.
+              cargo build --locked --package stogas-cli --features staging
+              cli="$GITHUB_WORKSPACE/target/debug/stogas"
+              cd examples/elixir-openai
+              mix deps.get --check-locked
+              mix compile --warnings-as-errors
+              mix run test_transport.exs "$cli"
+              mix run test_client.exs
+              check mix run main.exs
+              check --unary mix run main.exs --no-stream
+              cd ../erlang-http
+              rebar3 escriptize
+              STOGAS_VERIFY_BIN="$cli" rebar3 eunit
+              check --sse-framing _build/default/bin/stogas-example
+              check --unary _build/default/bin/stogas-example --no-stream
+              ;;
+            haskell)
+              cargo build --locked --package stogas-ffi --features staging
+              export LD_LIBRARY_PATH="${library%/*}"
+              cd examples/haskell-http
+              cabal update
+              cabal build all --enable-tests --extra-lib-dirs="$LD_LIBRARY_PATH"
+              cabal test --enable-tests --extra-lib-dirs="$LD_LIBRARY_PATH"
+              example=$(cabal list-bin exe:stogas-example)
+              check --sse-framing "$example"
+              check --unary "$example" --no-stream
+              check --cancel "$example"
+              ;;
+            julia)
+              cargo build --locked --package stogas-ffi --features staging
+              julia --project=examples/julia-openai -e 'using Pkg; Pkg.instantiate()'
+              julia --project=examples/julia-openai examples/julia-openai/test_transport.jl "$library"
+              check --sse-framing julia --project=examples/julia-openai examples/julia-openai/main.jl
+              check --unary julia --project=examples/julia-openai examples/julia-openai/main.jl --no-stream
+              check --cancel julia --project=examples/julia-openai examples/julia-openai/main.jl
+              ;;
+            luajit)
+              apt_install luajit libluajit-5.1-dev lua-cjson luarocks libcurl4-openssl-dev
+              sudo luarocks --lua-version=5.1 install Lua-cURL 0.3.13-1 LUA_INCDIR=/usr/include/luajit-2.1 \
+                CURL_INCDIR="$(pkg-config --variable=includedir libcurl)" CURL_LIBDIR="$(pkg-config --variable=libdir libcurl)"
+              cargo build --locked --package stogas-ffi --features staging
+              luajit examples/luajit-http/test_transport.lua "$library"
+              check --sse-framing luajit examples/luajit-http/main.lua
+              check --unary luajit examples/luajit-http/main.lua --no-stream
+              check --cancel luajit examples/luajit-http/main.lua
+              ;;
+            ocaml)
+              apt_install libcurl4-openssl-dev
+              cargo build --locked --package stogas-ffi --features staging
+              cd examples/ocaml-http
+              opam install . --deps-only --yes
+              opam exec -- dune build
+              opam exec -- _build/default/test_native.exe "$library"
+              opam exec -- python3 ../check_http_client.py --sse-framing _build/default/main.exe
+              opam exec -- python3 ../check_http_client.py --unary _build/default/main.exe --no-stream
+              opam exec -- python3 ../check_http_client.py --cancel _build/default/main.exe
+              ;;
+            php)
+              apt_install php-cli php-curl php-xml php-mbstring composer
+              cargo build --locked --package stogas-ffi --features staging
+              composer install --no-interaction --no-plugins --no-scripts --working-dir=examples/php-openai
+              php -d ffi.enable=true examples/php-openai/test_transport.php "$library"
+              check php examples/php-openai/main.php
+              ;;
+            zig)
+              apt_install libcurl4-openssl-dev
+              cargo build --locked --package stogas-ffi --features staging
+              export LD_LIBRARY_PATH="${library%/*}"
+              zig test examples/zig-http/test_native.zig -Iinclude -L"$LD_LIBRARY_PATH" -lstogas_ffi -lcurl -lc
+              zig build-exe examples/zig-http/main.zig -Iinclude -L"$LD_LIBRARY_PATH" -lstogas_ffi -lcurl -lc \
+                -femit-bin="$RUNNER_TEMP/stogas-zig-example"
+              check --sse-framing "$RUNNER_TEMP/stogas-zig-example"
+              check --unary "$RUNNER_TEMP/stogas-zig-example" --no-stream
+              check --cancel "$RUNNER_TEMP/stogas-zig-example"
+              ;;
+            *)
+              echo "No example checks for $LANGUAGE" >&2
               exit 1
-            fi
-          done
-          test "$cases" -ge 4
-      - name: Verify the Stogas gateway fixture with gh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh attestation verify tests/fixtures/gateway-v0.0.1-launch-policy.json \
-            --bundle tests/fixtures/gateway-v0.0.1-attestation.jsonl \
-            --repo StogasAI/gateway \
-            --cert-identity 'https://github.com/StogasAI/gateway/.github/workflows/gateway-igvm-release.yml@refs/tags/v0.0.1' \
-            --source-ref refs/tags/v0.0.1 \
-            --source-digest 27eb4b954a372975c9e7c5dbc77fbf0d0ca53b3f \
-            --deny-self-hosted-runners
-      - name: Verify the Stogas gateway fixture with sigstore-go
-        working-directory: sigstore-go
-        run: |
-          go run ./test/conformance verify-bundle \
-            --bundle "$GITHUB_WORKSPACE/tests/fixtures/gateway-v0.0.1-attestation.jsonl" \
-            --certificate-identity 'https://github.com/StogasAI/gateway/.github/workflows/gateway-igvm-release.yml@refs/tags/v0.0.1' \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            "$GITHUB_WORKSPACE/tests/fixtures/gateway-v0.0.1-launch-policy.json"
+              ;;
+          esac
