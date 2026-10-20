@@ -235,6 +235,16 @@ impl Snapshot {
             Err(Error::MissingCollateral)
         }
     }
+
+    /// The chip certificate's own interval, which only a newly fetched VCEK extends. CRL
+    /// freshness and the root authorization deadline renew separately.
+    ///
+    /// # Errors
+    /// Rejects a platform without verified collateral.
+    #[cfg(feature = "snp")]
+    pub fn vcek_validity(&self, chip_id: &str, reported_tcb: &str) -> Result<Validity, Error> {
+        self.collateral.vcek_validity(chip_id, reported_tcb)
+    }
 }
 
 /// Networkless verifier. The connector owns fetching, origin-specific `ETags` and acquisition bounds.

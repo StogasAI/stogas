@@ -317,6 +317,7 @@ struct Platform {
     issuer: IssuerId,
     ask_serial: Vec<u8>,
     certificates: Validity,
+    vcek_validity: Validity,
     vcek: Arc<[u8]>,
 }
 
@@ -410,6 +411,17 @@ impl Store {
         )
     }
 
+    pub(in crate::evidence) fn vcek_validity(
+        &self,
+        chip: &str,
+        tcb: &str,
+    ) -> Result<Validity, Error> {
+        self.platforms
+            .get(&crate::amd_platform_key(chip, tcb))
+            .map(|platform| platform.vcek_validity)
+            .ok_or(Error::MissingCollateral)
+    }
+
     pub(in crate::evidence) fn vcek(&self, chip: &str, tcb: &str) -> Result<&[u8], Error> {
         self.platforms
             .get(&crate::amd_platform_key(chip, tcb))
@@ -424,30 +436,10 @@ fn verify_platform(
     vek: &crate::AmdCollateralEntry,
     digest: String,
 ) -> Result<Platform, Error> {
-    let mut validity = Validity {
-        not_before_unix_ms: i64::MIN,
-        not_after_unix_ms: i64::MAX,
-    };
-    for der in [&ark.der, &ask.der, &vek.der] {
-        let (remaining, cert) = parse_x509_certificate(der).map_err(collateral_error)?;
-        if !remaining.is_empty() {
-            return Err(collateral_error("certificate trailing bytes"));
-        }
-        validity = validity.intersect(Validity {
-            not_before_unix_ms: cert
-                .validity()
-                .not_before
-                .timestamp()
-                .checked_mul(1000)
-                .ok_or_else(|| collateral_error("certificate date overflow"))?,
-            not_after_unix_ms: cert
-                .validity()
-                .not_after
-                .timestamp()
-                .checked_mul(1000)
-                .ok_or_else(|| collateral_error("certificate date overflow"))?,
-        });
-    }
+    let vcek_validity = certificate_validity(&vek.der)?;
+    let validity = certificate_validity(&ark.der)?
+        .intersect(certificate_validity(&ask.der)?)
+        .intersect(vcek_validity);
     validity.at(validity.not_before_unix_ms)?;
     let stack = crate::AmdCollateralStack {
         ark: ark.der.clone(),
@@ -471,7 +463,24 @@ fn verify_platform(
         issuer: Sha384::digest(root.public_key().raw).into(),
         ask_serial: serial_bytes(issuer.raw_serial()).to_vec(),
         certificates: validity,
+        vcek_validity,
         vcek: Arc::from(vek.der.as_slice()),
+    })
+}
+
+fn certificate_validity(der: &[u8]) -> Result<Validity, Error> {
+    let (remaining, cert) = parse_x509_certificate(der).map_err(collateral_error)?;
+    if !remaining.is_empty() {
+        return Err(collateral_error("certificate trailing bytes"));
+    }
+    let unix_ms = |time: x509_parser::time::ASN1Time| {
+        time.timestamp()
+            .checked_mul(1000)
+            .ok_or_else(|| collateral_error("certificate date overflow"))
+    };
+    Ok(Validity {
+        not_before_unix_ms: unix_ms(cert.validity().not_before)?,
+        not_after_unix_ms: unix_ms(cert.validity().not_after)?,
     })
 }
 
