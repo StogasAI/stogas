@@ -75,8 +75,8 @@ struct Payment {
 
 pub async fn run(args: Args) -> Result<()> {
     let currency = args.currency.to_ascii_uppercase();
-    let btcpay_method = matches!(currency.as_str(), "BTC" | "XMR");
-    if btcpay_method && args.network.is_some() {
+    let wallet_coin = matches!(currency.as_str(), "BTC" | "XMR");
+    if wallet_coin && args.network.is_some() {
         bail!("{currency} has one network; leave out --network");
     }
     let dashboard = signed_in().await?;
@@ -90,8 +90,8 @@ pub async fn run(args: Args) -> Result<()> {
         .into_iter()
         .map(|payment| payment.id)
         .collect();
-    let expected = if btcpay_method {
-        btcpay(&dashboard, &base, currency, &args.amount).await?
+    let expected = if wallet_coin {
+        wallet(&dashboard, &base, currency, &args.amount).await?
     } else {
         ccpayment(
             &dashboard,
@@ -105,40 +105,46 @@ pub async fn run(args: Args) -> Result<()> {
     wait(&dashboard, &base, &expected, &earlier).await
 }
 
-pub async fn btcpay(
+pub async fn wallet(
     dashboard: &Dashboard,
     base: &str,
-    method: String,
+    coin: String,
     amount: &str,
 ) -> Result<Expected> {
     #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Invoice {
+    struct Deposit {
         address: String,
         // Null while the exchange rate is out of date.
         estimate: Option<Estimate>,
-        expires_at: Option<String>,
-        payment_uri: Option<String>,
+        testnet: bool,
     }
-    let path = format!("{base}/btcpay/invoices/{method}");
+    let path = format!("{base}/wallet/{coin}/address");
     let body = json!({ "desiredCreditUsd": amount });
-    let invoice: Invoice =
+    let deposit: Deposit =
         with_location(dashboard, base, async || dashboard.post(&path, &body).await).await?;
-    let network = if method == "BTC" { "Bitcoin" } else { "Monero" };
-    print_instructions(
-        &method,
-        network,
-        &invoice.address,
-        invoice.estimate.as_ref(),
-    );
-    print_qr(invoice.payment_uri.as_deref().unwrap_or(&invoice.address))?;
-    if let Some(expires_at) = &invoice.expires_at {
-        println!("Use this address until {}.", utc_minute(expires_at));
+    let (network, scheme, amount_key) = if coin == "BTC" {
+        ("Bitcoin", "bitcoin", "amount")
+    } else {
+        ("Monero", "monero", "tx_amount")
+    };
+    print_instructions(&coin, network, &deposit.address, deposit.estimate.as_ref());
+    // A payment URI with the amount lets a wallet that scans the code fill it in.
+    let uri = match &deposit.estimate {
+        Some(estimate) => format!(
+            "{scheme}:{}?{amount_key}={}",
+            deposit.address, estimate.amount_crypto
+        ),
+        None => deposit.address.clone(),
+    };
+    print_qr(&uri)?;
+    println!("You can reuse this address for later payments.");
+    if deposit.testnet {
+        println!("Test network: send only test {coin}. The credit has no cash value.");
     }
     Ok(Expected {
-        provider: "btcpay",
-        currency: method.clone(),
-        method,
+        provider: "wallet",
+        currency: coin.clone(),
+        method: coin,
     })
 }
 
@@ -430,7 +436,6 @@ fn describe(payment: &Payment) -> String {
             "{received}. The payment processor holds it for review. Contact billing@stogas.ai; another payment will not release it."
         ),
         "waiting_settlement" => format!("{received}. Waiting for network confirmations."),
-        "credit_failed" => format!("{received}. Adding the credit failed; it will be tried again."),
         _ => format!("{received}. Adding the credit."),
     }
 }
@@ -473,14 +478,6 @@ fn cents(amount: &str) -> Option<u128> {
         .ok()?
         .checked_mul(100)?
         .checked_add(fraction[..2].parse::<u128>().ok()? + round_up)
-}
-
-/// `2026-10-15T14:05:00.000Z` as `2026-10-15 14:05 UTC`.
-fn utc_minute(timestamp: &str) -> String {
-    match (timestamp.get(..10), timestamp.get(11..16)) {
-        (Some(date), Some(time)) if timestamp.ends_with('Z') => format!("{date} {time} UTC"),
-        _ => printable(timestamp),
-    }
 }
 
 /// The amount as the API's exact dollar string, without leading or trailing zeros.
@@ -602,17 +599,12 @@ mod tests {
     }
 
     #[test]
-    fn shows_dollars_with_cents_and_times_in_utc() {
+    fn shows_dollars_with_cents() {
         assert_eq!(dollars("10"), "10.00");
         assert_eq!(dollars("10.5"), "10.50");
         assert_eq!(dollars("0.125"), "0.13");
         assert_eq!(dollars("5.00050351584"), "5.00");
         assert_eq!(dollars("9.995"), "10.00");
         assert_eq!(dollars("-1.5"), "-1.5");
-        assert_eq!(
-            utc_minute("2026-10-15T14:05:00.000Z"),
-            "2026-10-15 14:05 UTC"
-        );
-        assert_eq!(utc_minute("soon"), "soon");
     }
 }
