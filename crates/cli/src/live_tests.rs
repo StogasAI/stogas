@@ -36,7 +36,7 @@ async fn signs_up_tops_up_and_signs_out() {
     let base = "/api/funding";
 
     // A new account has no billing location, so this asks for one first.
-    topup::btcpay(&dashboard, base, "BTC".into(), "5")
+    topup::wallet(&dashboard, base, "BTC".into(), "5")
         .await
         .unwrap();
 
