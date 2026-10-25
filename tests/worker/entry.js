@@ -26,7 +26,12 @@ export default {
 				{
 					refresh(bytes) {
 						const value = JSON.parse(new TextDecoder().decode(bytes));
-						return { summary: () => value, require_current_keys() {}, free() {} };
+						return {
+							summary: () => value,
+							same_as: () => false,
+							require_current_keys() {},
+							free() {}
+						};
 					},
 					free() {}
 				},

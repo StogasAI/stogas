@@ -33,6 +33,16 @@ pub(super) use amd::{Revocations, Store};
 #[cfg(not(feature = "snp"))]
 #[derive(Debug, Default)]
 pub(super) struct Revocations;
+#[cfg(not(feature = "snp"))]
+impl Revocations {
+    #[expect(
+        clippy::unused_self,
+        reason = "Matches the enabled collateral backend API."
+    )]
+    pub(super) const fn changes(&self) -> u64 {
+        0
+    }
+}
 
 #[cfg(not(feature = "snp"))]
 #[derive(Debug)]

@@ -174,6 +174,7 @@ impl Verifier {
             authority: self.authority.historical_authority()?,
             current: None,
             revocations: Arc::default(),
+            delivery: None,
         })
     }
 

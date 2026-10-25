@@ -252,6 +252,19 @@ pub struct Verifier {
     authority: Authority,
     current: Option<Arc<Snapshot>>,
     revocations: Arc<collateral::Revocations>,
+    delivery: Option<Delivery>,
+}
+
+/// The delivery that produced the current snapshot. Its signatures, proofs and release checks
+/// give the same result for the same bytes, and its time checks reject only instants before it
+/// was verified or at its root deadline. A repeat delivery therefore rechecks only the deadline
+/// and the root decisions learned since.
+#[derive(Debug)]
+struct Delivery {
+    bytes: Box<[u8]>,
+    verified_at: i64,
+    revocations: u64,
+    checks: Vec<(VerificationStep, Option<String>)>,
 }
 
 impl Verifier {
@@ -288,6 +301,7 @@ impl Verifier {
             authority: Authority::new(environment, root)?,
             current: None,
             revocations: Arc::default(),
+            delivery: None,
         })
     }
 
@@ -308,6 +322,8 @@ impl Verifier {
 
     /// Refresh with observations after actual checks, including reuse of authenticated bytes.
     /// Observers must not panic. Only `Accepted` establishes a complete current snapshot.
+    /// Bytes that repeat the current snapshot's delivery return that same snapshot, with each of
+    /// its checks observed as reused, so sessions bound to it need no new appraisal.
     ///
     /// # Errors
     /// Has the same validation and retained-revocation behavior as [`Self::refresh`].
@@ -317,7 +333,19 @@ impl Verifier {
         now_unix_ms: i64,
         mut observer: impl FnMut(VerificationCheck<'_>),
     ) -> Result<Arc<Snapshot>, Error> {
+        if let Some((snapshot, delivery)) = self.repeated(bytes, now_unix_ms)? {
+            for (step, reference) in &delivery.checks {
+                observer(VerificationCheck {
+                    step: *step,
+                    reference: reference.as_deref(),
+                    cached: true,
+                });
+            }
+            return Ok(snapshot);
+        }
+        let mut checks = Vec::new();
         let mut checked = |step, reference: Option<&str>, cached| {
+            checks.push((step, reference.map(str::to_owned)));
             observer(VerificationCheck {
                 step,
                 reference,
@@ -342,7 +370,36 @@ impl Verifier {
         self.authority.accept(snapshot.evidence.clone())?;
         self.current = Some(Arc::clone(&snapshot));
         checked(VerificationStep::Accepted, None, false);
+        self.delivery = Some(Delivery {
+            bytes: bytes.into(),
+            verified_at: now_unix_ms,
+            revocations: self.revocations.changes(),
+            checks,
+        });
         Ok(snapshot)
+    }
+
+    /// The current snapshot again when `bytes` repeat its delivery. A clock behind that
+    /// verification, or vendor revocation learned since, repeats the complete verification.
+    fn repeated(
+        &self,
+        bytes: &[u8],
+        now_unix_ms: i64,
+    ) -> Result<Option<(Arc<Snapshot>, &Delivery)>, Error> {
+        let (Some(snapshot), Some(delivery)) = (&self.current, &self.delivery) else {
+            return Ok(None);
+        };
+        if *delivery.bytes != *bytes
+            || now_unix_ms < delivery.verified_at
+            || delivery.revocations != self.revocations.changes()
+        {
+            return Ok(None);
+        }
+        // In the order a complete verification reaches them: root decisions learned since,
+        // then the root deadline.
+        self.authority.check_update(&snapshot.evidence)?;
+        snapshot.evidence.valid_until(now_unix_ms)?;
+        Ok(Some((Arc::clone(snapshot), delivery)))
     }
 
     /// Check an unsigned evidence document as [`Self::refresh`] would, so an operator never

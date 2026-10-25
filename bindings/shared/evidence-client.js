@@ -33,6 +33,15 @@ export function waitWithSignal(promise, signal) {
 	});
 }
 
+// Every observer receives the same summary, so none of them can change it.
+function deepFreeze(value) {
+	if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+		Object.freeze(value);
+		for (const child of Object.values(value)) deepFreeze(child);
+	}
+	return value;
+}
+
 // One network acquisition, two origin-specific representations and one current
 // Rust snapshot. No polling, third-party fetches or per-missing-object registry.
 export class EvidenceClient {
@@ -41,19 +50,19 @@ export class EvidenceClient {
 	#origins;
 	#representations;
 	#current;
+	// The current snapshot's frozen summary and the report of the verification that accepted it.
+	#accepted;
 	#pending;
 	#onSnapshot;
-	#onProgress;
 	#retryAt = 0;
 	#closed = new AbortController();
 
-	constructor(verifier, origins, fetch, onSnapshot = () => {}, onProgress = () => {}) {
+	constructor(verifier, origins, fetch, onSnapshot = () => {}) {
 		this.#verifier = verifier;
 		this.#fetch = fetch;
 		this.#origins = origins;
 		this.#representations = origins.map(() => undefined);
 		this.#onSnapshot = onSnapshot;
-		this.#onProgress = onProgress;
 	}
 
 	check(check) {
@@ -93,7 +102,7 @@ export class EvidenceClient {
 							/* The other caller may have needed different evidence. */
 						}
 					} else if (this.#current !== previous) {
-						return this.#current.summary();
+						return this.#accepted.evidence;
 					}
 				}
 			}
@@ -127,54 +136,49 @@ export class EvidenceClient {
 				}
 				attempt.signal.throwIfAborted();
 				// Rust retains authentic revocations even if another candidate object
-				// fails validation. A 304 must still recheck time and those decisions.
+				// fails validation. A 304 still rechecks time and those decisions.
 				const started = performance.now();
 				let checkpoint = started;
-				let observerDurationMs = 0;
 				const verificationChecks = [];
 				const observe = (check) => {
 					const finished = performance.now();
-					verificationChecks.push({ ...check, durationMs: finished - checkpoint });
-					try {
-						this.#onProgress(verificationChecks.map((entry) => ({ ...entry })));
-					} catch {
-						/* Observers have no authority over verification. */
-					}
-					checkpoint = performance.now();
-					observerDurationMs += checkpoint - finished;
+					verificationChecks.push(Object.freeze({ ...check, durationMs: finished - checkpoint }));
+					checkpoint = finished;
 				};
 				let snapshot;
 				try {
 					snapshot = this.#verifier.refresh(representation.bytes, observe);
 				} finally {
-					verificationDurationMs += performance.now() - started - observerDurationMs;
+					verificationDurationMs += performance.now() - started;
 				}
 				this.#representations[index] = representation;
 				const old = this.#current;
+				// Repeated bytes return the current snapshot, which keeps its summary and the
+				// report of the verification that accepted it.
+				if (!old?.same_as(snapshot)) {
+					this.#accepted = {
+						evidence: deepFreeze(snapshot.summary()),
+						verificationDurationMs,
+						verificationChecks: Object.freeze(verificationChecks)
+					};
+				}
 				this.#current = snapshot;
 				old?.free(); // Requests own independent Arc-backed snapshot handles.
 				try {
 					this.#onSnapshot({
-						evidence: snapshot.summary(),
+						...this.#accepted,
 						evidenceURL: this.#origins[index],
 						fetchedAtUnixMs: Date.now(),
-						fetchDurationMs,
-						verificationDurationMs,
-						verificationChecks
+						fetchDurationMs
 					});
 				} catch {
 					/* An observer cannot change authenticated state or delivery. */
 				}
 				snapshot.require_current_keys();
-				const result = check ? check(snapshot) : snapshot.summary();
+				const result = check ? check(snapshot) : this.#accepted.evidence;
 				this.#retryAt = 0;
 				return result;
 			} catch (error) {
-				try {
-					this.#onProgress(null);
-				} catch {
-					/* An observer cannot replace the verification failure. */
-				}
 				failure = error;
 			} finally {
 				attempt.dispose();
@@ -215,6 +219,7 @@ export class EvidenceClient {
 		this.#representations = [];
 		this.#current?.free();
 		this.#current = undefined;
+		this.#accepted = undefined;
 		this.#verifier.free();
 	}
 }

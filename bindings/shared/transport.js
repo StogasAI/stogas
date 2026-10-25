@@ -44,6 +44,7 @@ export function createTransportClass({
 		#closed = false;
 		#closing;
 		#refresh;
+		// Snapshots and everything in them are frozen, so every listener shares one.
 		#snapshot = Object.freeze({
 			evidence: null,
 			evidenceURL: null,
@@ -51,8 +52,7 @@ export function createTransportClass({
 			fetchedAtUnixMs: null,
 			fetchDurationMs: null,
 			verificationDurationMs: null,
-			verificationChecks: [],
-			verificationProgress: null,
+			verificationChecks: Object.freeze([]),
 			status: 'idle'
 		});
 
@@ -77,13 +77,8 @@ export function createTransportClass({
 			this.#baseURL = baseURL(options.baseURL ?? `${config.e2ee_origin}/v1`);
 			this.#origins = config.evidence_origins;
 			const core = EvidenceVerifier.for_stogas(config.environment);
-			this.#evidence = new EvidenceClient(
-				core,
-				this.#origins,
-				fetch,
-				(snapshot) =>
-					this.#publish({ ...snapshot, verificationProgress: null, status: 'ready', error: null }),
-				(verificationProgress) => this.#publish({ ...this.#snapshot, verificationProgress })
+			this.#evidence = new EvidenceClient(core, this.#origins, fetch, (snapshot) =>
+				this.#publish({ ...snapshot, status: 'ready', error: null })
 			);
 			this.#sessions = new SessionTransport({
 				Setup: EncryptedSetup,
@@ -115,7 +110,7 @@ export function createTransportClass({
 			return [...this.#origins];
 		}
 		get evidenceSnapshot() {
-			return structuredClone(this.#snapshot);
+			return this.#snapshot;
 		}
 
 		openAIOptions(apiKey) {
@@ -144,12 +139,7 @@ export function createTransportClass({
 		async refreshEvidence() {
 			this.#assertOpen();
 			if (this.#refresh) return this.#refresh;
-			this.#publish({
-				...this.#snapshot,
-				verificationProgress: [],
-				status: 'refreshing',
-				error: null
-			});
+			this.#publish({ ...this.#snapshot, status: 'refreshing', error: null });
 			const refresh = this.#evidence
 				.acquire()
 				.catch((error) => {
@@ -157,7 +147,6 @@ export function createTransportClass({
 						this.#publish({
 							...this.#snapshot,
 							status: 'error',
-							verificationProgress: null,
 							error: String(error.message ?? error)
 						});
 					throw error;
@@ -210,7 +199,7 @@ export function createTransportClass({
 			this.#snapshot = Object.freeze(snapshot);
 			for (const listener of this.#listeners) {
 				try {
-					listener(this.evidenceSnapshot);
+					listener(this.#snapshot);
 				} catch {
 					this.#listeners.delete(listener);
 				}

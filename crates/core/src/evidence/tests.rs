@@ -150,6 +150,114 @@ mod staging {
     }
 
     #[test]
+    fn repeated_delivery_keeps_its_snapshot_until_its_deadline_or_a_new_root_decision() {
+        let (mut verifier, evidence, now) = fixture();
+        let bytes = encode(&evidence);
+        let mut full = Vec::new();
+        let first = verifier
+            .refresh_observed(&bytes, now, |check| {
+                full.push((check.step, check.reference.map(str::to_owned)));
+            })
+            .unwrap();
+        // The same bytes return the same snapshot, so bound sessions need no new appraisal, and
+        // every check of the complete verification is reported as reused.
+        let mut repeated = Vec::new();
+        let again = verifier
+            .refresh_observed(&bytes, now + 60_000, |check| {
+                repeated.push((check.step, check.reference.map(str::to_owned), check.cached));
+            })
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &again));
+        assert_eq!(
+            repeated,
+            full.iter()
+                .map(|(step, reference)| (*step, reference.clone(), true))
+                .collect::<Vec<_>>()
+        );
+
+        // A clock behind the verification repeats it completely.
+        let earlier = verifier.refresh(&bytes, now - 1).unwrap();
+        assert!(!Arc::ptr_eq(&first, &earlier));
+        assert!(Arc::ptr_eq(
+            &earlier,
+            &verifier.refresh(&bytes, now).unwrap()
+        ));
+
+        // Other bytes for the same document verify completely.
+        let reformatted = serde_json::to_vec_pretty(&evidence).unwrap();
+        let other = verifier.refresh(&reformatted, now).unwrap();
+        assert!(!Arc::ptr_eq(&earlier, &other));
+        assert_eq!(other.evidence_sha256(), first.evidence_sha256());
+
+        // A repeat fails at the root deadline exactly as a complete verification does.
+        let deadline = first.evidence().valid_until(now).unwrap();
+        for bytes in [&reformatted, &bytes] {
+            assert!(matches!(
+                verifier.refresh(bytes, deadline),
+                Err(Error::Authority(authority::Error::Expired))
+            ));
+        }
+        assert!(Arc::ptr_eq(verifier.current().unwrap(), &other));
+        assert!(Arc::ptr_eq(
+            &other,
+            &verifier.refresh(&reformatted, deadline - 1).unwrap()
+        ));
+
+        // A root decision learned since, even from a delivery that fails, rejects the repeat.
+        let rotated: Value = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/hardware-session-rotated-v1.json"
+        ))
+        .unwrap();
+        let mut partial = rotated;
+        partial["document"]["revision"] = json!(99);
+        assert!(verifier.refresh(&encode(&partial), now).is_err());
+        assert!(matches!(
+            verifier.refresh(&reformatted, now),
+            Err(Error::Authority(authority::Error::Rollback))
+        ));
+    }
+
+    #[cfg(feature = "snp")]
+    #[test]
+    fn vendor_revocation_learned_since_a_delivery_repeats_its_complete_verification() {
+        let (mut verifier, evidence, now) = fixture();
+        let bytes = encode(&evidence);
+        let first = verifier.refresh(&bytes, now).unwrap();
+        assert!(Arc::ptr_eq(&first, &verifier.refresh(&bytes, now).unwrap()));
+        // Another product's genuine AMD root is a new revocation issuer, learned even though
+        // the document that carries it is incomplete.
+        let pem = std::str::from_utf8(sev::certs::snp::builtin::genoa::ARK).unwrap();
+        let der = base64::engine::general_purpose::STANDARD
+            .decode(
+                pem.lines()
+                    .filter(|line| !line.starts_with("-----"))
+                    .collect::<String>(),
+            )
+            .unwrap();
+        let mut document = evidence["document"].clone();
+        document["vendor_collateral"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "ca_product_name": "Genoa",
+                "collateral_type": "ark",
+                "der_base64url": URL_SAFE_NO_PAD.encode(der)
+            }));
+        let learned = verifier.revocations.changes();
+        assert!(verifier.check_unsigned(&encode(&document), now).is_err());
+        assert_eq!(verifier.revocations.changes(), learned + 1);
+        let second = verifier.refresh(&bytes, now).unwrap();
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert!(Arc::ptr_eq(
+            &second,
+            &verifier.refresh(&bytes, now).unwrap()
+        ));
+        // Observing the same root again changes nothing.
+        assert!(verifier.check_unsigned(&encode(&document), now).is_err());
+        assert_eq!(verifier.revocations.changes(), learned + 1);
+    }
+
+    #[test]
     fn generated_evidence_verifies_and_synthetic_boots_never_gain_hardware_trust() {
         let (mut verifier, evidence, now) = fixture();
         let snapshot = verifier.refresh(&encode(&evidence), now).unwrap();
