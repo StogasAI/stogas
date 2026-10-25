@@ -1395,7 +1395,6 @@ fn verify_amd_certificates(
     valid_from: i64,
     valid_until: i64,
 ) -> Result<(), Error> {
-    use sev::certs::snp::{Chain, Verifiable};
     use sha2::Sha384;
     use x509_parser::parse_x509_certificate;
     let (ark_remaining, ark) = parse_x509_certificate(&collateral.ark)
@@ -1427,17 +1426,51 @@ fn verify_amd_certificates(
     {
         return Err(Error::Node("AMD certificate identity chain differs".into()));
     }
-    let chain = Chain::from_der(&collateral.ark, &collateral.ask, &collateral.vek)
-        .map_err(|error| Error::Node(format!("AMD chain: {error}")))?;
-    (&chain)
-        .verify()
-        .map_err(|error| Error::Node(format!("AMD chain signature: {error}")))?;
-    Ok(())
+    verify_amd_certificate_signature("AMD ARK", &ark, &ark)?;
+    verify_amd_certificate_signature("AMD ASK", &ask, &ark)?;
+    verify_amd_certificate_signature("AMD VEK", &vek, &ask)
+}
+
+#[cfg(feature = "snp")]
+fn verify_amd_certificate_signature(
+    label: &str,
+    certificate: &x509_parser::certificate::X509Certificate<'_>,
+    signer: &x509_parser::certificate::X509Certificate<'_>,
+) -> Result<(), Error> {
+    verify_amd_rsa_pss_signature(
+        label,
+        certificate.tbs_certificate.as_ref(),
+        &certificate.signature_algorithm,
+        &certificate.tbs_certificate.signature,
+        &certificate.signature_value.data,
+        signer,
+    )
 }
 
 #[cfg(feature = "snp")]
 fn verify_amd_crl_signature(
     crl: &x509_parser::revocation_list::CertificateRevocationList<'_>,
+    signer: &x509_parser::certificate::X509Certificate<'_>,
+) -> Result<(), Error> {
+    verify_amd_rsa_pss_signature(
+        "AMD CRL",
+        crl.tbs_cert_list.as_ref(),
+        &crl.signature_algorithm,
+        &crl.tbs_cert_list.signature,
+        &crl.signature_value.data,
+        signer,
+    )
+}
+
+/// AMD signs its certificates and CRLs with RSA-PSS, SHA-384, MGF1-SHA-384 and a 48-byte salt.
+/// The algorithm inside the signed data must equal the outer one, and other parameters fail.
+#[cfg(feature = "snp")]
+fn verify_amd_rsa_pss_signature(
+    label: &str,
+    message: &[u8],
+    algorithm: &x509_parser::x509::AlgorithmIdentifier<'_>,
+    signed_algorithm: &x509_parser::x509::AlgorithmIdentifier<'_>,
+    signature: &[u8],
     signer: &x509_parser::certificate::X509Certificate<'_>,
 ) -> Result<(), Error> {
     use rsa::{RsaPublicKey, pkcs8::DecodePublicKey as _, pss};
@@ -1448,39 +1481,38 @@ fn verify_amd_crl_signature(
     const MGF1_OID: &str = "1.2.840.113549.1.1.8";
     const SHA384_OID: &str = "2.16.840.1.101.3.4.2.2";
     const SHA384_BYTES: u32 = 48;
-    if crl.signature_algorithm != crl.tbs_cert_list.signature
-        || crl.signature_algorithm.algorithm.to_id_string() != RSA_PSS_OID
-    {
-        return Err(Error::Node(
-            "AMD CRL must use one matching RSA-PSS signature algorithm".into(),
-        ));
+    if algorithm != signed_algorithm || algorithm.algorithm.to_id_string() != RSA_PSS_OID {
+        return Err(Error::Node(format!(
+            "{label} must use one matching RSA-PSS signature algorithm"
+        )));
     }
-    let SignatureAlgorithm::RSASSA_PSS(parameters) =
-        SignatureAlgorithm::try_from(&crl.signature_algorithm)
-            .map_err(|_| Error::Node("AMD CRL has invalid RSA-PSS signature parameters".into()))?
+    let SignatureAlgorithm::RSASSA_PSS(parameters) = SignatureAlgorithm::try_from(algorithm)
+        .map_err(|_| Error::Node(format!("{label} has invalid RSA-PSS signature parameters")))?
     else {
-        return Err(Error::Node("AMD CRL must use RSA-PSS with SHA-384".into()));
+        return Err(Error::Node(format!(
+            "{label} must use RSA-PSS with SHA-384"
+        )));
     };
     let mask = parameters
         .mask_gen_algorithm()
-        .map_err(|_| Error::Node("AMD CRL has invalid RSA-PSS mask parameters".into()))?;
+        .map_err(|_| Error::Node(format!("{label} has invalid RSA-PSS mask parameters")))?;
     if parameters.hash_algorithm_oid().to_id_string() != SHA384_OID
         || mask.mgf.to_id_string() != MGF1_OID
         || mask.hash.to_id_string() != SHA384_OID
         || parameters.salt_length() != SHA384_BYTES
         || parameters.trailer_field() != 1
     {
-        return Err(Error::Node(
-            "AMD CRL must use RSA-PSS with SHA-384, MGF1-SHA-384, and a 48-byte salt".into(),
-        ));
+        return Err(Error::Node(format!(
+            "{label} must use RSA-PSS with SHA-384, MGF1-SHA-384, and a 48-byte salt"
+        )));
     }
     let public_key = RsaPublicKey::from_public_key_der(signer.public_key().raw)
-        .map_err(|error| Error::Node(format!("AMD CRL signer key: {error}")))?;
-    let signature = pss::Signature::try_from(crl.signature_value.data.as_ref())
-        .map_err(|error| Error::Node(format!("AMD CRL signature encoding: {error}")))?;
+        .map_err(|error| Error::Node(format!("{label} signer key: {error}")))?;
+    let signature = pss::Signature::try_from(signature)
+        .map_err(|error| Error::Node(format!("{label} signature encoding: {error}")))?;
     pss::VerifyingKey::<sha2::Sha384>::new(public_key)
-        .verify(crl.tbs_cert_list.as_ref(), &signature)
-        .map_err(|error| Error::Node(format!("AMD CRL signature: {error}")))
+        .verify(message, &signature)
+        .map_err(|error| Error::Node(format!("{label} signature: {error}")))
 }
 
 #[cfg(feature = "snp")]
@@ -2314,6 +2346,66 @@ mod tests {
         mismatch.signature_algorithm.parameters = None;
         assert!(
             verify_amd_crl_signature(&mismatch, &ark)
+                .unwrap_err()
+                .to_string()
+                .contains("invalid RSA-PSS")
+        );
+    }
+
+    #[cfg(feature = "snp")]
+    #[test]
+    fn amd_certificate_signature_requires_the_issuer_key_and_matching_pss_parameters() {
+        use x509_parser::parse_x509_certificate;
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/amd-crl-test-vectors.json"))
+                .unwrap();
+        let decode = |field: &str| STANDARD.decode(fixture[field].as_str().unwrap()).unwrap();
+        let root = decode("ark_der_base64");
+        let (_, ark) = parse_x509_certificate(&root).unwrap();
+        let intermediate = decode("ask_der_base64");
+        let (_, ask) = parse_x509_certificate(&intermediate).unwrap();
+        verify_amd_certificate_signature("AMD ARK", &ark, &ark).unwrap();
+        verify_amd_certificate_signature("AMD ASK", &ask, &ark).unwrap();
+        assert!(verify_amd_certificate_signature("AMD ASK", &ask, &ask).is_err());
+        assert!(verify_amd_certificate_signature("AMD ARK", &ark, &ask).is_err());
+
+        // A changed digit in the signed validity keeps the certificate parseable.
+        let not_before = ask.validity().not_before.to_datetime();
+        let utc = format!(
+            "{:02}{:02}{:02}{:02}{:02}{:02}Z",
+            not_before.year() % 100,
+            u8::from(not_before.month()),
+            not_before.day(),
+            not_before.hour(),
+            not_before.minute(),
+            not_before.second()
+        );
+        let offset = intermediate
+            .windows(utc.len())
+            .position(|window| window == utc.as_bytes())
+            .unwrap();
+        let mut changed = intermediate.clone();
+        let digit = offset + utc.len() - 2;
+        changed[digit] = if changed[digit] == b'0' { b'1' } else { b'0' };
+        let (_, altered) = parse_x509_certificate(&changed).unwrap();
+        assert!(
+            verify_amd_certificate_signature("AMD ASK", &altered, &ark)
+                .unwrap_err()
+                .to_string()
+                .contains("AMD ASK signature:")
+        );
+
+        let mut mismatch = ask.clone();
+        mismatch.tbs_certificate.signature.parameters = None;
+        assert!(
+            verify_amd_certificate_signature("AMD ASK", &mismatch, &ark)
+                .unwrap_err()
+                .to_string()
+                .contains("one matching RSA-PSS")
+        );
+        mismatch.signature_algorithm.parameters = None;
+        assert!(
+            verify_amd_certificate_signature("AMD ASK", &mismatch, &ark)
                 .unwrap_err()
                 .to_string()
                 .contains("invalid RSA-PSS")

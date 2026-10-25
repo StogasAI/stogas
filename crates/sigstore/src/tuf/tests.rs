@@ -142,7 +142,7 @@ fn root_file(
         .map(|(keyid, key)| {
             let mut spki =
                 hex::decode("3059301306072a8648ce3d020106082a8648ce3d030107034200").unwrap();
-            spki.extend_from_slice(key.verifying_key().to_encoded_point(false).as_bytes());
+            spki.extend_from_slice(key.verifying_key().to_sec1_point(false).as_bytes());
             let public = pem::encode(&pem::Pem::new("PUBLIC KEY", spki));
             let key = json!({
                 "keytype": "ecdsa", "scheme": "ecdsa-sha2-nistp256", "keyval": {"public": public}

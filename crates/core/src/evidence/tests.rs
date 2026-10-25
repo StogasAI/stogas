@@ -226,7 +226,7 @@ mod staging {
         assert!(Arc::ptr_eq(&first, &verifier.refresh(&bytes, now).unwrap()));
         // Another product's genuine AMD root is a new revocation issuer, learned even though
         // the document that carries it is incomplete.
-        let pem = std::str::from_utf8(sev::certs::snp::builtin::genoa::ARK).unwrap();
+        let pem = include_str!("../../tests/fixtures/genoa-ark.pem");
         let der = base64::engine::general_purpose::STANDARD
             .decode(
                 pem.lines()
