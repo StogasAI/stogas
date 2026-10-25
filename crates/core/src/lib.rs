@@ -599,6 +599,10 @@ fn parse_u64_hex(value: &str, label: &str) -> Result<u64, Error> {
         .map_err(|_| Error::InvalidEvidence(format!("hardware policy {label} is invalid")))
 }
 
+/// Gateways and Web reject larger catalog artifacts, and the catalog build refuses them.
+const CATALOG_PUBLIC_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const CATALOG_RUNTIME_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
 fn validate_catalog_shape(manifest: &CatalogReleaseManifest) -> Result<(), Error> {
     if manifest.schema != "stogas.catalog.release.v1"
         || manifest.minimum_gateway_sequence == 0
@@ -609,8 +613,8 @@ fn validate_catalog_shape(manifest: &CatalogReleaseManifest) -> Result<(), Error
         || manifest.source.tag != format!("catalog-v{}", manifest.sequence)
         || !is_lower_hex(&manifest.source.commit, 20)
         || !is_lower_hex(&manifest.source.sha256, 32)
-        || !valid_artifact(&manifest.artifacts.runtime, 64 * 1024 * 1024)
-        || !valid_artifact(&manifest.artifacts.public, 64 * 1024 * 1024)
+        || !valid_artifact(&manifest.artifacts.runtime, CATALOG_RUNTIME_MAX_BYTES)
+        || !valid_artifact(&manifest.artifacts.public, CATALOG_PUBLIC_MAX_BYTES)
     {
         return Err(Error::InvalidEvidence(
             "invalid catalog release shape".into(),
@@ -2133,6 +2137,20 @@ mod tests {
                 changed["document"]["schema"] = schema;
                 assert!(!valid(changed));
             }
+        }
+    }
+
+    #[test]
+    fn catalog_artifacts_stay_within_the_sizes_that_gateways_and_web_accept() {
+        for (public, runtime, valid) in [
+            (8 * 1024 * 1024, 16 * 1024 * 1024, true),
+            (8 * 1024 * 1024 + 1, 1, false),
+            (1, 16 * 1024 * 1024 + 1, false),
+        ] {
+            let mut catalog = catalog_fixture();
+            catalog.document.artifacts.public.size_bytes = public;
+            catalog.document.artifacts.runtime.size_bytes = runtime;
+            assert_eq!(validate_catalog_shape(&catalog.document).is_ok(), valid);
         }
     }
 
