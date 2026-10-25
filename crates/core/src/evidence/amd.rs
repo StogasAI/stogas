@@ -1,6 +1,9 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex},
+    collections::{BTreeMap, BTreeSet, btree_map::Entry},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -34,9 +37,16 @@ struct Issuer {
 #[derive(Debug, Default)]
 pub(in crate::evidence) struct Revocations {
     issuers: Mutex<BTreeMap<IssuerId, Issuer>>,
+    /// Counts every change to `issuers`, so a verifier can tell whether anything was learned
+    /// since it checked a delivery.
+    changes: AtomicU64,
 }
 
 impl Revocations {
+    pub(in crate::evidence) fn changes(&self) -> u64 {
+        self.changes.load(Ordering::SeqCst)
+    }
+
     pub(in crate::evidence) fn observe(&self, document: &Value, now: i64) -> Result<(), Error> {
         let Some(rows) = document.get("vendor_collateral").and_then(Value::as_array) else {
             return Ok(());
@@ -77,15 +87,14 @@ impl Revocations {
             if (&root, &root).verify().is_err() {
                 continue;
             }
-            self.issuers
-                .lock()
-                .map_err(collateral_error)?
-                .entry(id)
-                .or_insert_with(|| Issuer {
+            if let Entry::Vacant(entry) = self.issuers.lock().map_err(collateral_error)?.entry(id) {
+                entry.insert(Issuer {
                     certificate: der.into(),
                     latest: None,
                     conflicting: false,
                 });
+                self.changes.fetch_add(1, Ordering::SeqCst);
+            }
         }
         let mut failure = None;
         for row in rows.iter().filter(|row| row["collateral_type"] == "crl") {
@@ -126,13 +135,17 @@ impl Revocations {
         // Signature verification does not hold the lock used by connection appraisal.
         for (id, root) in roots {
             if let Ok(crl) = authenticate_crl(&root, der, now) {
-                return self
-                    .issuers
-                    .lock()
-                    .map_err(collateral_error)?
-                    .get_mut(&id)
-                    .ok_or(Error::MissingCollateral)?
-                    .learn(crl);
+                let mut issuers = self.issuers.lock().map_err(collateral_error)?;
+                let issuer = issuers.get_mut(&id).ok_or(Error::MissingCollateral)?;
+                let before = issuer.state();
+                let learned = issuer.learn(crl);
+                // A conflict changes the issuer even though learning fails.
+                let changed = issuer.state() != before;
+                drop(issuers);
+                if changed {
+                    self.changes.fetch_add(1, Ordering::SeqCst);
+                }
+                return learned;
             }
         }
         Err(collateral_error("untrusted AMD CRL"))
@@ -162,6 +175,12 @@ impl Revocations {
 }
 
 impl Issuer {
+    /// Everything `learn` can change. It replaces the latest CRL only with a higher number, so
+    /// the number identifies it.
+    fn state(&self) -> (Option<[u8; 20]>, bool) {
+        (self.latest.as_ref().map(|crl| crl.number), self.conflicting)
+    }
+
     fn learn(&mut self, crl: Crl) -> Result<(), Error> {
         if let Some(old) = &self.latest {
             if crl.number < old.number {

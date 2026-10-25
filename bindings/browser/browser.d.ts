@@ -10,24 +10,25 @@ export interface StogasTransportOptions {
 	onMetadata?: (metadata: unknown) => void;
 }
 
+/** Frozen, with everything in it, and shared by every listener. */
 export interface StogasEvidenceSnapshot {
-	evidence: unknown | null;
-	evidenceURL: string | null;
-	error: string | null;
-	fetchedAtUnixMs: number | null;
-	status: 'idle' | 'refreshing' | 'ready' | 'error';
+	readonly evidence: unknown | null;
+	readonly evidenceURL: string | null;
+	readonly error: string | null;
+	readonly fetchedAtUnixMs: number | null;
+	readonly status: 'idle' | 'refreshing' | 'ready' | 'error';
 	/** Network acquisition and body reading across attempted origins, excluding verification. */
-	fetchDurationMs: number | null;
-	/** Local verifier work across attempted origins, excluding progress observers. May reuse authenticated artifacts. */
-	verificationDurationMs: number | null;
-	verificationChecks: StogasVerificationCheck[];
-	/** In-progress candidate checks; never a substitute for the accepted evidence. */
-	verificationProgress: StogasVerificationCheck[] | null;
+	readonly fetchDurationMs: number | null;
+	/** Local verifier work that accepted the current evidence, across attempted origins. May
+	 * reuse authenticated artifacts. A refresh that delivers the same bytes keeps it. */
+	readonly verificationDurationMs: number | null;
+	/** The checks that accepted the current evidence; a refresh that delivers the same bytes keeps them. */
+	readonly verificationChecks: readonly StogasVerificationCheck[];
 }
 
 /** A completed local check; only an accepted snapshot establishes complete evidence trust. */
 export interface StogasVerificationCheck {
-	step:
+	readonly step:
 		| 'decode'
 		| 'sigstore'
 		| 'key_manifest'
@@ -38,10 +39,10 @@ export interface StogasVerificationCheck {
 		| 'hardware_policy'
 		| 'vendor_collateral'
 		| 'accepted';
-	reference: string | null;
+	readonly reference: string | null;
 	/** Reused authenticated artifact bytes; current selection is still checked. */
-	cached: boolean;
-	durationMs: number;
+	readonly cached: boolean;
+	readonly durationMs: number;
 }
 
 export interface StogasOpenAIOptions {

@@ -22,6 +22,7 @@ function binding() {
 				assert.equal(new TextDecoder().decode(bytes), '{}');
 				return {
 					summary: () => ({ document: { revision: 1 } }),
+					same_as: () => false,
 					require_current_keys() {},
 					free() {}
 				};
@@ -95,7 +96,7 @@ test('options are explicit and confidential fetch never falls through to ordinar
 	);
 });
 
-test('explicit refresh shares acquisition, exposes copied evidence, and isolates failed observers', async () => {
+test('explicit refresh shares acquisition, exposes frozen evidence, and isolates failed observers', async () => {
 	const fixture = binding();
 	const attempts = [];
 	const transport = new fixture.Transport({
@@ -112,13 +113,19 @@ test('explicit refresh shares acquisition, exposes copied evidence, and isolates
 		observed++;
 		if (observed > 1) throw new Error('observer');
 	});
-	const [first, second] = await Promise.all([transport.refreshEvidence(), transport.refreshEvidence()]);
+	const [first, second] = await Promise.all([
+		transport.refreshEvidence(),
+		transport.refreshEvidence()
+	]);
 	assert.deepEqual(first, second);
 	assert.deepEqual(attempts, ['https://r2.example/evidence', 'https://aws.example/evidence']);
 	assert.equal(observed, 2);
 	const snapshot = transport.evidenceSnapshot;
 	assert.equal(snapshot.status, 'ready');
-	snapshot.evidence.document.revision = 999;
+	assert.equal(transport.evidenceSnapshot, snapshot);
+	assert.throws(() => {
+		snapshot.evidence.document.revision = 999;
+	}, TypeError);
 	assert.equal(transport.evidenceSnapshot.evidence.document.revision, 1);
 	assert.deepEqual(transport.evidenceURLs, attempts);
 	await transport.close();

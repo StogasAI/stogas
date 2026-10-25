@@ -547,7 +547,9 @@ impl Authority {
         self.accepted.as_ref()
     }
 
-    fn check_update(&self, candidate: &VerifiedEvidence) -> Result<(), Error> {
+    /// Rechecks that `candidate` may follow the accepted evidence under the root decisions
+    /// learned so far.
+    pub(crate) fn check_update(&self, candidate: &VerifiedEvidence) -> Result<(), Error> {
         if candidate.root_sha256 != self.root_sha256
             || candidate.document.environment != self.environment
         {

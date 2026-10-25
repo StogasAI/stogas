@@ -126,6 +126,13 @@ impl EvidenceSnapshot {
         self.core.evidence_sha256().to_owned()
     }
 
+    /// Whether both handles hold one accepted snapshot. A refresh that repeats the current
+    /// delivery returns the snapshot that is already current.
+    #[must_use]
+    pub fn same_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.core, &other.core)
+    }
+
     /// # Errors
     /// Returns an error if output conversion fails; this does not re-appraise a live node.
     pub fn summary(&self) -> Result<JsValue, JsError> {

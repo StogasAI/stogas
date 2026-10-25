@@ -150,6 +150,28 @@ fn same_number_conflict_blocks_the_scope_and_large_numbers_are_supported() {
 }
 
 #[test]
+fn each_learned_crl_or_conflict_counts_as_a_change_and_repeats_do_not() {
+    let (value, _, state) = trusted_fixture();
+    let now = value["now"].as_i64().unwrap();
+    let observe = |name| {
+        let _ = state.observe(
+            &serde_json::json!({"vendor_collateral":[row(&der(&value,name),"crl")]}),
+            now,
+        );
+        state.changes()
+    };
+    assert_eq!(observe("clean"), 1);
+    assert_eq!(observe("clean"), 1);
+    assert_eq!(observe("revoked"), 2);
+    // An older CRL is refused without changing anything.
+    assert_eq!(observe("clean"), 2);
+    // A conflict changes the issuer although learning it fails.
+    assert_eq!(observe("conflict"), 3);
+    assert_eq!(observe("revoked"), 3);
+    assert_eq!(observe("large_number"), 4);
+}
+
+#[test]
 fn forged_future_scoped_or_untrusted_crls_cannot_advance_state() {
     let (value, id, state) = trusted_fixture();
     let now = value["now"].as_i64().unwrap();

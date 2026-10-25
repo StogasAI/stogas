@@ -10,16 +10,25 @@ const origins = [
 // exercised by Rust and packaged Wasm tests against genuine evidence.
 function verifier() {
 	let retired = false;
+	let current;
 	return {
 		freed: false,
 		refresh(bytes) {
 			assert.equal(this.freed, false);
-			const { revision, invalid, retire } = JSON.parse(new TextDecoder().decode(bytes));
+			const text = new TextDecoder().decode(bytes);
+			const { revision, invalid, retire } = JSON.parse(text);
 			if (retire) retired = true;
 			if (invalid) throw new Error('invalid evidence');
+			// As in Rust, repeated bytes return another handle to the current snapshot.
+			if (current?.text !== text) current = { text };
+			const core = current;
 			return {
 				revision,
+				core,
 				freed: false,
+				same_as(other) {
+					return other.core === core;
+				},
 				require_current_keys() {
 					assert.equal(this.freed, false);
 					if (retired) throw new Error('retired key');
@@ -177,7 +186,6 @@ test('measured checks follow actual verification and observer failures cannot re
 		observe({ step: 'accepted', reference: null, cached: false });
 		return snapshot;
 	};
-	const progress = [];
 	let snapshot;
 	const client = new EvidenceClient(
 		core,
@@ -185,17 +193,10 @@ test('measured checks follow actual verification and observer failures cannot re
 		async () => response(7),
 		(value) => {
 			snapshot = value;
-		},
-		(checks) => {
-			progress.push(checks);
 			throw new Error('display failed');
 		}
 	);
 	assert.deepEqual(await client.acquire(), { revision: 7 });
-	assert.deepEqual(
-		progress.map((checks) => checks.length),
-		[1, 2]
-	);
 	assert.deepEqual(
 		snapshot.verificationChecks.map((check) => check.step),
 		['key_manifest', 'accepted']
@@ -212,7 +213,7 @@ test('measured checks follow actual verification and observer failures cannot re
 	client.close();
 });
 
-test('fetch and verification timings include fallback work but exclude observers on warm refresh', async (t) => {
+test('fetch and verification timings include fallback work, and a repeated delivery keeps its report', async (t) => {
 	let now = 0;
 	t.mock.method(performance, 'now', () => now);
 	const core = verifier();
@@ -224,37 +225,45 @@ test('fetch and verification timings include fallback work but exclude observers
 		return refresh(bytes);
 	};
 	const snapshots = [];
+	let revision = 2;
 	const client = new EvidenceClient(
 		core,
 		origins,
 		async (url, options) => {
 			now += 20;
 			if (url === origins[0]) return response(1, undefined, { invalid: true });
-			if (warm) {
+			if (warm && revision === 2) {
 				assert.equal(options.headers['if-none-match'], 'accepted');
 				return new Response(null, { status: 304 });
 			}
-			return response(2, 'accepted');
+			return response(revision, 'accepted');
 		},
-		(snapshot) => snapshots.push(snapshot),
-		() => {
-			now += 100;
-		}
+		(snapshot) => snapshots.push(snapshot)
 	);
 	await client.acquire();
 	assert.equal(snapshots[0].fetchDurationMs, 40);
 	assert.equal(snapshots[0].verificationDurationMs, 24);
 	assert.equal(snapshots[0].verificationChecks[0].durationMs, 12);
 	warm = true;
-	await client.acquire();
+	assert.equal(await client.acquire(), snapshots[0].evidence);
+	// The 304 repeats the accepted bytes, so the summary and report stay the same objects.
 	assert.equal(snapshots[1].fetchDurationMs, 40);
-	assert.equal(snapshots[1].verificationDurationMs, 6);
-	assert.equal(snapshots[1].verificationChecks[0].cached, true);
-	assert.equal(snapshots[1].verificationChecks[0].durationMs, 3);
+	assert.equal(snapshots[1].evidence, snapshots[0].evidence);
+	assert.equal(snapshots[1].verificationChecks, snapshots[0].verificationChecks);
+	assert.equal(snapshots[1].verificationDurationMs, 24);
+	assert.ok(
+		Object.isFrozen(snapshots[1].evidence) && Object.isFrozen(snapshots[1].verificationChecks[0])
+	);
+	revision = 3;
+	await client.acquire();
+	assert.deepEqual(snapshots[2].evidence, { revision: 3 });
+	assert.equal(snapshots[2].verificationDurationMs, 6);
+	assert.equal(snapshots[2].verificationChecks[0].cached, true);
+	assert.equal(snapshots[2].verificationChecks[0].durationMs, 3);
 	client.close();
 });
 
-test('failed candidate progress clears before replica verification without replacing accepted evidence', async () => {
+test('a failed candidate never replaces accepted evidence while the replica is verified', async () => {
 	const core = verifier();
 	const refresh = core.refresh.bind(core);
 	core.refresh = (bytes, observe) => {
@@ -263,27 +272,28 @@ test('failed candidate progress clears before replica verification without repla
 		observe({ step: 'accepted', reference: null, cached: false });
 		return snapshot;
 	};
-	const progress = [];
 	const accepted = [];
 	const retained = [];
+	let revision = 7;
 	let invalid = false;
 	const client = new EvidenceClient(
 		core,
 		origins,
-		async (url) => response(7, undefined, { invalid: invalid && url === origins[0] }),
-		(snapshot) => accepted.push(snapshot),
-		(checks) => {
-			progress.push(checks?.map((check) => check.step) ?? null);
-			if (checks === null) retained.push(client.check((current) => current.summary()));
-		}
+		async (url) => {
+			if (url === origins[1]) retained.push(client.check((current) => current.revision));
+			return response(revision, undefined, { invalid: invalid && url === origins[0] });
+		},
+		(snapshot) => accepted.push(snapshot)
 	);
 	await client.acquire();
-	progress.length = 0;
 	invalid = true;
+	revision = 8;
 	await client.acquire();
-	assert.deepEqual(progress, [['decode'], null, ['decode'], ['decode', 'accepted']]);
-	assert.equal(accepted.length, 2);
-	assert.deepEqual(retained, [{ revision: 7 }]);
+	assert.deepEqual(retained, [7]);
+	assert.deepEqual(
+		accepted.map((snapshot) => snapshot.evidence),
+		[{ revision: 7 }, { revision: 8 }]
+	);
 	assert.deepEqual(
 		accepted[1].verificationChecks.map((check) => check.step),
 		['decode', 'accepted']

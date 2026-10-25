@@ -21,7 +21,7 @@ async function fixture(inference, maxRetries = 0) {
 				return new this();
 			}
 			refresh() {
-				return { summary: () => ({}), require_current_keys() {}, free() {} };
+				return { summary: () => ({}), same_as: () => false, require_current_keys() {}, free() {} };
 			}
 			free() {}
 		},
