@@ -296,6 +296,9 @@ jobs:
           dotnet restore bindings/dotnet/tests/Consumer.csproj
           dotnet run --no-restore --project bindings/dotnet/tests/Consumer.csproj
       - name: 'Ruby: platform gem'
+        # A lockfile cannot hold the gem that this job builds, and the test gems are exact
+        # versions; the job holds no secrets and can write nothing.
+        # zizmor: ignore[adhoc-packages]
         run: |
           gem -C bindings/ruby build stogas.gemspec --output "$RUNNER_TEMP/stogas.gem"
           gem install "$RUNNER_TEMP/stogas.gem" minitest:6.0.6 --no-document
@@ -519,6 +522,9 @@ jobs:
       - name: Test the ${{ matrix.name }} examples
         env:
           LANGUAGE: ${{ matrix.language }}
+        # Ruby installs the gem that this job builds, which a lockfile cannot hold, with exact
+        # versions of the example's gems; the job holds no secrets and can write nothing.
+        # zizmor: ignore[adhoc-packages]
         run: |
           set -euo pipefail
           check() { python3 "$GITHUB_WORKSPACE/examples/check_http_client.py" "$@"; }
