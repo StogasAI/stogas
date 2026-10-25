@@ -77,17 +77,17 @@ pub async fn register(dashboard: &Dashboard) -> Result<Zeroizing<String>> {
     struct Account {
         token: String,
     }
+    let altcha = proof_of_work(dashboard, "/api/auth/challenge?for=register").await?;
     let account: Account = dashboard
-        .post(
-            "/api/auth/register",
-            &json!({ "altcha": proof_of_work(dashboard).await? }),
-        )
+        .post("/api/auth/register", &json!({ "altcha": altcha }))
         .await?;
     Ok(Zeroizing::new(account.token))
 }
 
-async fn proof_of_work(dashboard: &Dashboard) -> Result<String> {
-    let challenge: Value = dashboard.get("/api/auth/challenge").await?;
+/// Sign-up asks for a sign-up challenge, whose work the dashboard raises on its own while many
+/// accounts are being created.
+async fn proof_of_work(dashboard: &Dashboard, path: &str) -> Result<String> {
+    let challenge: Value = dashboard.get(path).await?;
     tokio::task::spawn_blocking(move || altcha::solve(&challenge)).await?
 }
 
@@ -109,7 +109,7 @@ pub async fn create_token(dashboard: &Dashboard, password: &str) -> Result<Zeroi
         .post(
             "/api/auth/access-token",
             &json!({
-                "altcha": proof_of_work(dashboard).await?,
+                "altcha": proof_of_work(dashboard, "/api/auth/challenge").await?,
                 "password": password,
                 "settings": settings,
             }),
