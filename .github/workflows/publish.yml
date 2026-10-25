@@ -10,6 +10,9 @@ on:
 permissions:
   contents: read
 
+# A publication uploads only the approved release files, never a cache that another run wrote.
+cache-mode: none
+
 concurrency:
   group: sdk-registry-publication
   cancel-in-progress: false
