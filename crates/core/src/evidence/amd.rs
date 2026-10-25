@@ -8,7 +8,6 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::Value;
-use sev::certs::snp::{Certificate, Verifiable as _};
 use sha2::{Digest, Sha256, Sha384};
 use x509_parser::{extensions::ParsedExtension, parse_x509_certificate, parse_x509_crl};
 
@@ -81,10 +80,7 @@ impl Revocations {
             // The SPKI pin authenticates the key, not the delivered issuer name or
             // extensions used to match CRLs. Authenticate those before retaining them.
             // As with CRLs, expensive signature work must not hold the admission lock.
-            let Ok(root) = Certificate::from_der(&der) else {
-                continue;
-            };
-            if (&root, &root).verify().is_err() {
+            if crate::verify_amd_certificate_signature("AMD ARK", &cert, &cert).is_err() {
                 continue;
             }
             if let Entry::Vacant(entry) = self.issuers.lock().map_err(collateral_error)?.entry(id) {

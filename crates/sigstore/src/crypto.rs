@@ -7,7 +7,7 @@ use rustls_pki_types::{
     AlgorithmIdentifier, InvalidSignature, SignatureVerificationAlgorithm, alg_id,
 };
 use sha2::{Digest as _, Sha256, Sha384, Sha512};
-use signature::{Verifier as _, hazmat::PrehashVerifier as _};
+use signature::Verifier as _;
 use spki::SubjectPublicKeyInfoRef;
 
 const ED25519_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.101.112");
@@ -219,6 +219,7 @@ fn verify_raw(
 ) -> Result<(), String> {
     match scheme {
         Scheme::EcdsaP256Sha256 | Scheme::EcdsaP256Sha384 => {
+            use p256::ecdsa::signature::{Verifier as _, hazmat::PrehashVerifier as _};
             let key = p256::ecdsa::VerifyingKey::from_sec1_bytes(public_key)
                 .map_err(|error| format!("invalid P-256 key: {error}"))?;
             let signature = p256::ecdsa::Signature::from_der(signature)
@@ -231,6 +232,7 @@ fn verify_raw(
             .map_err(|error| format!("P-256 signature verification failed: {error}"))
         }
         Scheme::EcdsaP384Sha256 | Scheme::EcdsaP384Sha384 => {
+            use p384::ecdsa::signature::{Verifier as _, hazmat::PrehashVerifier as _};
             let key = p384::ecdsa::VerifyingKey::from_sec1_bytes(public_key)
                 .map_err(|error| format!("invalid P-384 key: {error}"))?;
             let signature = p384::ecdsa::Signature::from_der(signature)
