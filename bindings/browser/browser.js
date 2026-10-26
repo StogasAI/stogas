@@ -1,4 +1,4 @@
-import init, {
+import initModule, {
 	EvidenceVerifier,
 	EvidenceSnapshot,
 	EncryptedSetup,
@@ -10,7 +10,17 @@ import init, {
 } from '../../pkg/browser/stogas.js';
 import { createTransportClass } from '../shared/transport.js';
 
-export default init;
+let initialization;
+
+// The generated init returns early only after it finishes. Overlapping calls would each
+// instantiate the module, and the last one would replace memory that live objects use.
+export default function init(options) {
+	initialization ??= initModule(options).catch((error) => {
+		initialization = undefined;
+		throw error;
+	});
+	return initialization;
+}
 export {
 	EvidenceVerifier,
 	EvidenceSnapshot,

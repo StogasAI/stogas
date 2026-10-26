@@ -2,16 +2,13 @@ import { expect, test } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { resolve } from 'node:path';
+import { extname, resolve } from 'node:path';
 
 const ROOT = resolve(import.meta.dirname, '../..');
 const GLUE = resolve(ROOT, 'target/browser/stogas.js');
 const WASM = resolve(ROOT, 'target/browser/stogas_bg.wasm');
 const SIGSTORE_GLUE = resolve(ROOT, 'target/sigstore-browser/stogas_sigstore.js');
-const SIGSTORE_WASM = resolve(
-	ROOT,
-	'target/sigstore-browser/stogas_sigstore_bg.wasm'
-);
+const SIGSTORE_WASM = resolve(ROOT, 'target/sigstore-browser/stogas_sigstore_bg.wasm');
 const FIXTURE = resolve(ROOT, 'tests/fixtures/gateway-v0.0.1-attestation.jsonl');
 const NOW_UNIX_MS = 1_784_246_400_000;
 const SUBJECTS = [
@@ -218,12 +215,7 @@ function initialize(page: import('@playwright/test').Page) {
 }
 
 function initializeSigstore(page: import('@playwright/test').Page) {
-	return initializeModule(
-		page,
-		SIGSTORE_GLUE,
-		SIGSTORE_WASM,
-		'stogasSigstoreBindings'
-	);
+	return initializeModule(page, SIGSTORE_GLUE, SIGSTORE_WASM, 'stogasSigstoreBindings');
 }
 
 test('standalone lightweight package verifies GitHub evidence with networking disabled', async ({
@@ -256,4 +248,43 @@ test('standalone lightweight package verifies GitHub evidence with networking di
 	);
 	expect(result.subjects).toHaveLength(2);
 	expect(requests).toEqual([]);
+});
+
+test('concurrent initialization instantiates the browser package once', async ({ page }) => {
+	const types: Record<string, string> = { '.js': 'text/javascript', '.wasm': 'application/wasm' };
+	let wasmRequests = 0;
+	const server = createServer((request, response) => {
+		const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
+		if (path === '/') return response.end('<!doctype html><title>SDK consumer</title>');
+		const type = types[extname(path)];
+		if (!type || !/^\/(bindings|pkg\/browser)\//.test(path)) {
+			response.statusCode = 404;
+			return response.end();
+		}
+		if (type === 'application/wasm') wasmRequests += 1;
+		readFile(resolve(ROOT, `.${path}`)).then(
+			(body) => response.setHeader('content-type', type).end(body),
+			() => {
+				response.statusCode = 404;
+				response.end();
+			}
+		);
+	});
+	await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+	try {
+		const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+		await page.goto(origin);
+		const shared = await page.evaluate(async (origin) => {
+			const sdk = await import(`${origin}/bindings/browser/browser.js`);
+			const [first, second] = await Promise.all([sdk.default(), sdk.default()]);
+			return first === second && (await sdk.default()) === first;
+		}, origin);
+		expect(shared).toBe(true);
+		expect(wasmRequests).toBe(1);
+	} finally {
+		server.closeAllConnections();
+		await new Promise<void>((done, fail) =>
+			server.close((error) => (error ? fail(error) : done()))
+		);
+	}
 });
