@@ -1,17 +1,17 @@
 {
-  "hmacKey": "stogas-cli-altcha-vector-hmac-key-v1",
-  "challenge": {
-    "parameters": {
-      "algorithm": "PBKDF2/SHA-256",
-      "cost": 5000,
-      "expiresAt": 4102448400,
-      "keyLength": 32,
-      "keyPrefix": "6902b9bbf7cb15031c1068877715f064",
-      "keySignature": "d57abd7cccc294d17cde30415b2c589141d53e4eec22921ae466e8131502a2ae",
-      "nonce": "f70024fbb08b1364f4d9c2d757a45abe",
-      "salt": "7e62f3e1bd624b842cd862372c304ac5"
-    },
-    "signature": "1ef315e706dccfc9d60859a8d2b2cd0f97e0265e9c5922d61e2097ed8271301d"
-  },
-  "payload": "eyJjaGFsbGVuZ2UiOnsicGFyYW1ldGVycyI6eyJhbGdvcml0aG0iOiJQQktERjIvU0hBLTI1NiIsImNvc3QiOjUwMDAsImV4cGlyZXNBdCI6NDEwMjQ0ODQwMCwia2V5TGVuZ3RoIjozMiwia2V5UHJlZml4IjoiNjkwMmI5YmJmN2NiMTUwMzFjMTA2ODg3NzcxNWYwNjQiLCJrZXlTaWduYXR1cmUiOiJkNTdhYmQ3Y2NjYzI5NGQxN2NkZTMwNDE1YjJjNTg5MTQxZDUzZTRlZWMyMjkyMWFlNDY2ZTgxMzE1MDJhMmFlIiwibm9uY2UiOiJmNzAwMjRmYmIwOGIxMzY0ZjRkOWMyZDc1N2E0NWFiZSIsInNhbHQiOiI3ZTYyZjNlMWJkNjI0Yjg0MmNkODYyMzcyYzMwNGFjNSJ9LCJzaWduYXR1cmUiOiIxZWYzMTVlNzA2ZGNjZmM5ZDYwODU5YThkMmIyY2QwZjk3ZTAyNjVlOWM1OTIyZDYxZTIwOTdlZDgyNzEzMDFkIn0sInNvbHV0aW9uIjp7ImNvdW50ZXIiOjQyLCJkZXJpdmVkS2V5IjoiNjkwMmI5YmJmN2NiMTUwMzFjMTA2ODg3NzcxNWYwNjQ0Y2MyNDVlNTYzMzUzYzBiMjYxY2UwMDRhYzE1N2VlNiJ9fQ=="
+	"hmacKey": "stogas-cli-altcha-vector-hmac-key-v1",
+	"challenge": {
+		"parameters": {
+			"algorithm": "PBKDF2/SHA-256",
+			"cost": 5000,
+			"expiresAt": 4102448400,
+			"keyLength": 32,
+			"keyPrefix": "6902b9bbf7cb15031c1068877715f064",
+			"keySignature": "d57abd7cccc294d17cde30415b2c589141d53e4eec22921ae466e8131502a2ae",
+			"nonce": "f70024fbb08b1364f4d9c2d757a45abe",
+			"salt": "7e62f3e1bd624b842cd862372c304ac5"
+		},
+		"signature": "1ef315e706dccfc9d60859a8d2b2cd0f97e0265e9c5922d61e2097ed8271301d"
+	},
+	"payload": "eyJjaGFsbGVuZ2UiOnsicGFyYW1ldGVycyI6eyJhbGdvcml0aG0iOiJQQktERjIvU0hBLTI1NiIsImNvc3QiOjUwMDAsImV4cGlyZXNBdCI6NDEwMjQ0ODQwMCwia2V5TGVuZ3RoIjozMiwia2V5UHJlZml4IjoiNjkwMmI5YmJmN2NiMTUwMzFjMTA2ODg3NzcxNWYwNjQiLCJrZXlTaWduYXR1cmUiOiJkNTdhYmQ3Y2NjYzI5NGQxN2NkZTMwNDE1YjJjNTg5MTQxZDUzZTRlZWMyMjkyMWFlNDY2ZTgxMzE1MDJhMmFlIiwibm9uY2UiOiJmNzAwMjRmYmIwOGIxMzY0ZjRkOWMyZDc1N2E0NWFiZSIsInNhbHQiOiI3ZTYyZjNlMWJkNjI0Yjg0MmNkODYyMzcyYzMwNGFjNSJ9LCJzaWduYXR1cmUiOiIxZWYzMTVlNzA2ZGNjZmM5ZDYwODU5YThkMmIyY2QwZjk3ZTAyNjVlOWM1OTIyZDYxZTIwOTdlZDgyNzEzMDFkIn0sInNvbHV0aW9uIjp7ImNvdW50ZXIiOjQyLCJkZXJpdmVkS2V5IjoiNjkwMmI5YmJmN2NiMTUwMzFjMTA2ODg3NzcxNWYwNjQ0Y2MyNDVlNTYzMzUzYzBiMjYxY2UwMDRhYzE1N2VlNiJ9fQ=="
 }
