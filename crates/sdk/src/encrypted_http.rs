@@ -403,7 +403,7 @@ fn response_metadata(bytes: &[u8]) -> Result<ResponseMetadata, Error> {
         let name = HeaderName::try_from(name).map_err(|_| Error::Metadata)?;
         if !matches!(
             name.as_str(),
-            "content-type" | "cache-control" | "retry-after"
+            "content-type" | "cache-control" | "retry-after" | "x-should-retry"
         ) || headers.contains_key(&name)
         {
             return Err(Error::Metadata);

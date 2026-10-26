@@ -115,7 +115,9 @@ function responseMetadata(bytes) {
 	const headers = new Headers();
 	for (const [name, content] of Object.entries(value.headers)) {
 		if (
-			!['content-type', 'cache-control', 'retry-after'].includes(name.toLowerCase()) ||
+			!['content-type', 'cache-control', 'retry-after', 'x-should-retry'].includes(
+				name.toLowerCase()
+			) ||
 			typeof content !== 'string' ||
 			headers.has(name)
 		) {
