@@ -149,7 +149,10 @@ test('acknowledgement precedes inner headers, runs outside decoding and fires on
 	assert.equal(returned, false);
 	output.enqueue(record(4));
 	output.enqueue(
-		record(1, '{"status":429,"headers":{"content-type":"application/json","retry-after":"7"}}')
+		record(
+			1,
+			'{"status":429,"headers":{"content-type":"application/json","retry-after":"7","x-should-retry":"false"}}'
+		)
 	);
 	output.enqueue(record(2, '{"error":"later rejection"}'));
 	output.enqueue(record(3));
@@ -157,6 +160,7 @@ test('acknowledgement precedes inner headers, runs outside decoding and fires on
 	const response = await sending;
 	assert.equal(response.status, 429);
 	assert.equal(response.headers.get('retry-after'), '7');
+	assert.equal(response.headers.get('x-should-retry'), 'false');
 	assert.deepEqual(await response.json(), { error: 'later rejection' });
 	assert.equal(calls, 1);
 	assert.equal(state.exchanges[0].freed, 1);
@@ -186,7 +190,7 @@ test('outer IP rejection stays execution-unknown and OpenAI never resubmits it',
 	}
 });
 
-test('OpenAI cancellation cannot turn partial encrypted delivery into successful completion', async () => {
+test('OpenAI cancellation ends iteration, cancels the encrypted stream and never resends', async () => {
 	let cancelled = 0;
 	const content = { id: 'chat-1', choices: [{ index: 0, delta: { content: 'Hello' } }] };
 	const state = await fixture(
@@ -218,7 +222,8 @@ test('OpenAI cancellation cannot turn partial encrypted delivery into successful
 		const iterator = stream[Symbol.asyncIterator]();
 		assert.equal((await iterator.next()).value.choices[0].delta.content, 'Hello');
 		cancellation.abort();
-		await assert.rejects(iterator.next(), { submission: 'execution_unknown' });
+		// The SDK ends iteration after a caller abort; the aborted signal tells the caller why.
+		assert.deepEqual(await iterator.next(), { value: undefined, done: true });
 		assert.equal(cancelled, 1);
 		assert.equal(state.exchanges[0].freed, 1);
 		assert.equal(state.calls(), 1);

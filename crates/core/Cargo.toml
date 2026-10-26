@@ -21,8 +21,8 @@ snp = ["dep:p384", "dep:rsa", "dep:signature"]
 
 [dependencies]
 # These existing transitive dependencies do not inherit aes-gcm/hpke erasure features.
-aes = { version = "=0.9.1", features = ["zeroize"] }
-aes-gcm = { version = "=0.11.0", default-features = false, features = ["aes", "alloc", "zeroize"] }
+aes = { version = "=0.9.3", features = ["zeroize"] }
+aes-gcm = { version = "=0.11.1", default-features = false, features = ["aes", "alloc", "zeroize"] }
 base64.workspace = true
 chrono.workspace = true
 ed25519-dalek = { workspace = true, features = ["digest"] }
@@ -33,11 +33,11 @@ hkdf = "0.13.0"
 # Enable erasure for HKDF's HMAC state through Cargo feature unification.
 hmac = { version = "0.13.0", features = ["zeroize"] }
 # hpke requires one built-in KEM feature; kem.rs supplies X-Wing and setup uses libcrux X25519.
-hpke = { version = "=0.14.0", default-features = false, features = ["alloc", "getrandom", "aes", "x25519"] }
-hybrid-array = { version = "=0.4.13", features = ["extra-sizes"] }
+hpke = { version = "=0.14.1", default-features = false, features = ["alloc", "getrandom", "aes", "x25519"] }
+hybrid-array = { version = "=0.4.15", features = ["extra-sizes"] }
 libcrux-curve25519 = "=0.0.9"
 libcrux-kem = { version = "=0.0.10", default-features = false }
-libcrux-ml-dsa = { version = "=0.0.10", default-features = false, features = ["mldsa65"] }
+libcrux-ml-dsa = { version = "=0.0.11", default-features = false, features = ["mldsa65"] }
 libcrux-ml-kem = { version = "=0.0.11", default-features = false, features = ["mlkem768"] }
 libcrux-sha3 = { version = "=0.0.11", default-features = false }
 libcrux-traits = { version = "=0.0.9", default-features = false }
