@@ -47,8 +47,8 @@
 		"test:node": "node --test tests/node/*.test.mjs"
 	},
 	"devDependencies": {
-		"@playwright/test": "1.62.1",
+		"@playwright/test": "1.64.0",
 		"miniflare": "5.20261006.1-alpha",
-		"openai": "7.5.0"
+		"openai": "7.32.0"
 	}
 }

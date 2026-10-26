@@ -9,15 +9,15 @@ publish = false
 [dependencies]
 # Use the same feature graph as the protocol, including key erasure.
 stogas-core = { path = "../../../crates/core", default-features = false }
-aes-gcm = "=0.11.0"
+aes-gcm = "=0.11.1"
 hkdf = "=0.13.0"
 sha2 = "=0.11.0"
 libcrux-ml-kem = { version = "=0.0.11", default-features = false, features = ["mlkem768"] }
 libcrux-kem = { version = "=0.0.10", default-features = false }
 libcrux-traits = { version = "=0.0.9", default-features = false }
 libcrux-sha3 = { version = "=0.0.11", default-features = false }
-hpke = { version = "=0.14.0", default-features = false, features = ["alloc", "getrandom", "aes", "x25519"] }
-hybrid-array = { version = "=0.4.13", features = ["extra-sizes"] }
+hpke = { version = "=0.14.1", default-features = false, features = ["alloc", "getrandom", "aes", "x25519"] }
+hybrid-array = { version = "=0.4.15", features = ["extra-sizes"] }
 subtle = { version = "2.6.1", default-features = false }
 zeroize = "1.8.1"
 libcrux-curve25519 = { version = "=0.0.9", default-features = false }
