@@ -419,8 +419,8 @@ jobs:
           node tests/clients/fetch-load.mjs
       - name: 'Bun and Deno: package tests and Fetch client'
         run: |
-          npx --yes --package bun@1.4.2 bun test tests/node
-          npx --yes --package bun@1.4.2 bun tests/clients/fetch-load.mjs
+          npx --yes --package bun@1.4.4 bun test tests/node
+          npx --yes --package bun@1.4.4 bun tests/clients/fetch-load.mjs
           npx --yes --package deno@2.9.6 deno test --allow-all --no-check tests/node/*.test.mjs
           npx --yes --package deno@2.9.6 deno run --allow-all tests/clients/fetch-load.mjs
       - name: 'Cloudflare Workers: package in workerd'
