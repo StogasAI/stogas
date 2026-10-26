@@ -123,7 +123,7 @@ async fn forward(
         }
     };
     let mut headers = Map::new();
-    for name in ["content-type", "cache-control", "retry-after"] {
+    for name in ["content-type", "cache-control", "retry-after", "x-should-retry"] {
         if let Some(value) = response.headers().get(name) {
             headers.insert(name.into(), Value::String(value.to_str().unwrap().into()));
         }

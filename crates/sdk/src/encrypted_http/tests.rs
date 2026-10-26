@@ -172,7 +172,7 @@ async fn acknowledged_response_waits_for_provider_status_and_preserves_retry_hea
                     let metadata = serde_json::to_vec(&json!({
                         "status": status,
                         "refused": refused,
-                        "headers": {"content-type": "application/json", "retry-after": "7", "cache-control": "no-store"}
+                        "headers": {"content-type": "application/json", "retry-after": "7", "x-should-retry": "false", "cache-control": "no-store"}
                     })).unwrap();
                     let (output, receiver) = tokio::sync::mpsc::channel(1);
                     tokio::spawn(async move {
@@ -226,6 +226,7 @@ async fn acknowledged_response_waits_for_provider_status_and_preserves_retry_hea
         assert_eq!(response.status().as_u16(), status);
         assert_eq!(response.extensions().get::<Refused>().is_some(), refused);
         assert_eq!(response.headers()[header::RETRY_AFTER], "7");
+        assert_eq!(response.headers()["x-should-retry"], "false");
         assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         assert_eq!(
             to_bytes(response.into_body(), 1024).await.unwrap(),
