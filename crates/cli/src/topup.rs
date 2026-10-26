@@ -251,8 +251,8 @@ fn choose(assets: Vec<Asset>, currency: &str, network: Option<&str>) -> Result<A
     }
 }
 
-/// Sends the request, and when the organization has no billing location yet, asks for it and
-/// sends the request again.
+/// Sends the request, and when the organization has no billing country, state and ZIP code yet,
+/// asks for them and sends the request again.
 async fn with_location<T>(
     dashboard: &Dashboard,
     base: &str,
@@ -268,7 +268,7 @@ async fn with_location<T>(
     }
 }
 
-/// Asks for each location field the dashboard refuses until it accepts the billing profile.
+/// Asks for each address field the dashboard refuses until it accepts the billing profile.
 async fn set_location(dashboard: &Dashboard, base: &str) -> Result<()> {
     let path = format!("{base}/billing-profile");
     let mut profile: Value = dashboard.get(&path).await?;
@@ -277,8 +277,8 @@ async fn set_location(dashboard: &Dashboard, base: &str) -> Result<()> {
     }
     if profile["address"].is_null() {
         profile["address"] = json!({
-            "city": null, "countryCode": "", "line1": null, "line2": null,
-            "postalCode": null, "region": null,
+            "city": null, "countryCode": null, "line1": null, "line2": null, "postalCode": null,
+            "state": null,
         });
     }
     loop {
@@ -296,12 +296,9 @@ async fn set_location(dashboard: &Dashboard, base: &str) -> Result<()> {
         let mut asked = HashSet::new();
         for issue in &refused.issues {
             let (field, prompt) = match issue.path.as_str() {
-                "address.countryCode" => (
-                    "countryCode",
-                    "Billing country (two-letter code, such as US): ",
-                ),
-                "address.region" => ("region", "State or province (two-letter code): "),
-                "address.postalCode" => ("postalCode", "ZIP or postal code: "),
+                "address.countryCode" => ("countryCode", "Country (two-letter code, such as US): "),
+                "address.state" => ("state", "State (two-letter code, such as NJ): "),
+                "address.postalCode" => ("postalCode", "ZIP code: "),
                 _ => return Err(error),
             };
             if !asked.insert(field) {
@@ -316,7 +313,7 @@ async fn set_location(dashboard: &Dashboard, base: &str) -> Result<()> {
             }
             let value = read_line(prompt)?;
             if value.is_empty() {
-                bail!("the top-up needs a billing location");
+                bail!("the top-up needs a billing country, state and ZIP code");
             }
             profile["address"][field] = json!(value.to_uppercase());
         }
