@@ -13,7 +13,7 @@ project:
 release:
   github:
     owner: StogasAI
-    name: verifier
+    name: stogas
     skipRelease: true
 
 signing:
@@ -31,3 +31,9 @@ deploy:
         url: https://central.sonatype.com/api/v1/publisher
         applyMavenCentralRules: true
         stagingRepositories: [release-staging/maven]
+        # The POM check builds a Maven project, and plain Maven does not know
+        # Android's aar packaging. Central still checks the POM's required fields.
+        artifactOverrides:
+          - groupId: ai.stogas
+            artifactId: stogas-android
+            verifyPom: false
