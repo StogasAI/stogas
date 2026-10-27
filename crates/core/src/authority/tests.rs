@@ -99,25 +99,33 @@ fn verified_keys(keys: &KeyManifest) -> VerifiedKeys {
     }
 }
 
-fn check(authority: &Authority, document: EvidenceDocument) -> Result<VerifiedEvidence, Error> {
+fn check(document: EvidenceDocument) -> Result<VerifiedEvidence, Error> {
     let keys = verified_keys(&document.keys.document);
-    check_document(
-        authority.root_sha256,
-        keys,
-        document,
-        Arc::clone(&sigstore().1),
-    )
+    check_document(keys, document, Arc::clone(&sigstore().1))
 }
 
 // Exercises acceptance independently of Rekor's existing cryptographic test suite. Production
 // candidates carry a proof only after the signature and the log inclusion pass.
-fn candidate(authority: &Authority, document: EvidenceDocument, seed: u8) -> VerifiedEvidence {
-    let mut candidate = check(authority, document).unwrap();
+fn candidate(document: EvidenceDocument, seed: u8) -> VerifiedEvidence {
+    let mut candidate = check(document).unwrap();
     candidate.proof = Some(Proof {
         signature: sign(&serde_json::to_value(&candidate.document).unwrap(), seed),
         inclusion: Value::Null,
     });
     candidate
+}
+
+/// Refreshes as the verifier does: learn the manifest, check that the document may follow the
+/// accepted evidence, then install it with its signature.
+fn admit(authority: &mut Authority, document: EvidenceDocument, seed: u8) -> Result<(), Error> {
+    let keys = verified_keys(&document.keys.document);
+    authority.key_state.learn(keys.clone())?;
+    let mut candidate = authority.check(keys, document, Arc::clone(&sigstore().1), NOW)?;
+    candidate.proof = Some(Proof {
+        signature: sign(&serde_json::to_value(&candidate.document).unwrap(), seed),
+        inclusion: Value::Null,
+    });
+    authority.accept(candidate)
 }
 
 fn authority() -> Authority {
@@ -267,12 +275,12 @@ fn unsigned_candidates_are_checked_but_never_accepted() {
 #[test]
 fn rotation_supersedes_a_compromised_max_revision() {
     let mut authority = authority();
-    let original = candidate(&authority, document(&keys(1, 2, &[]), MAX_REVISION), 2);
-    authority.accept(original.clone()).unwrap();
-    authority
-        .accept(candidate(&authority, document(&keys(2, 3, &[2]), 1), 3))
-        .unwrap();
-    assert_eq!(authority.accept(original).unwrap_err(), Error::Rollback);
+    admit(&mut authority, document(&keys(1, 2, &[]), MAX_REVISION), 2).unwrap();
+    admit(&mut authority, document(&keys(2, 3, &[2]), 1), 3).unwrap();
+    assert_eq!(
+        admit(&mut authority, document(&keys(1, 2, &[]), MAX_REVISION), 2).unwrap_err(),
+        Error::Rollback
+    );
     assert_eq!(authority.accepted().unwrap().keys().generation, 2);
 }
 
@@ -280,14 +288,14 @@ fn rotation_supersedes_a_compromised_max_revision() {
 fn root_expiry_bounds_every_revision_and_renewal_needs_a_new_generation() {
     let mut authority = authority();
     let keys = keys(1, 2, &[]);
-    let original = candidate(&authority, document(&keys, 1), 2);
+    let original = candidate(document(&keys, 1), 2);
     let deadline = keys.expiry_unix_ms().unwrap();
     assert_eq!(original.valid_until(deadline - 1).unwrap(), deadline);
     assert_eq!(original.valid_until(deadline), Err(Error::Expired));
     assert_eq!(original.valid_until(deadline + 1), Err(Error::Expired));
-    let online_update = candidate(&authority, document(&keys, MAX_REVISION), 2);
+    let online_update = candidate(document(&keys, MAX_REVISION), 2);
     assert_eq!(online_update.valid_until(deadline), Err(Error::Expired));
-    authority.accept(original.clone()).unwrap();
+    admit(&mut authority, document(&keys, 1), 2).unwrap();
     assert_eq!(
         authority
             .check(
@@ -301,20 +309,21 @@ fn root_expiry_bounds_every_revision_and_renewal_needs_a_new_generation() {
     );
 
     // Another root decision under the same generation conflicts with the accepted one.
-    let mut renewed = keys;
+    let mut renewed = keys.clone();
     renewed.expires_at = "2100-02-01T00:00:00Z".into();
     assert_eq!(
-        authority
-            .accept(candidate(&authority, document(&renewed, 2), 2))
-            .unwrap_err(),
+        admit(&mut authority, document(&renewed, 2), 2).unwrap_err(),
         Error::Equivocation
     );
     renewed.generation += 1;
-    let renewal = candidate(&authority, document(&renewed, 2), 2);
+    let renewal = candidate(document(&renewed, 2), 2);
     renewal.valid_until(deadline).unwrap();
     assert_eq!(renewal.keys().active_key, original.keys().active_key);
-    authority.accept(renewal).unwrap();
-    assert_eq!(authority.accept(original).unwrap_err(), Error::Rollback);
+    admit(&mut authority, document(&renewed, 2), 2).unwrap();
+    assert_eq!(
+        admit(&mut authority, document(&keys, 1), 2).unwrap_err(),
+        Error::Rollback
+    );
 }
 
 #[test]
@@ -339,52 +348,48 @@ fn root_expiry_has_one_unambiguous_timestamp_representation() {
 }
 
 #[test]
-fn revisions_detect_only_conflicting_decisions_and_reject_stale_concurrent_candidates() {
+fn revisions_detect_only_conflicting_decisions_and_reject_older_ones() {
     let mut authority = authority();
     let keys = keys(1, 2, &[]);
-    let first = candidate(&authority, document(&keys, 1), 2);
-    authority.accept(first.clone()).unwrap();
-    authority.accept(first.clone()).unwrap();
+    let first = document(&keys, 1);
+    admit(&mut authority, first.clone(), 2).unwrap();
+    admit(&mut authority, first, 2).unwrap();
     let mut conflict = document(&keys, 1);
     conflict.gateways.clear();
     assert_eq!(
-        authority
-            .accept(candidate(&authority, conflict, 2))
-            .unwrap_err(),
+        admit(&mut authority, conflict, 2).unwrap_err(),
         Error::Equivocation
     );
+    admit(&mut authority, document(&keys, 2), 2).unwrap();
+    assert_eq!(
+        admit(&mut authority, document(&keys, 1), 2).unwrap_err(),
+        Error::Rollback
+    );
+    assert_eq!(authority.accepted().unwrap().document().revision, 2);
+
+    // Another manifest under the same generation stops that generation until a newer one.
     let other_key = self::keys(1, 3, &[2]);
     assert_eq!(
-        authority
-            .accept(candidate(&authority, document(&other_key, 2), 3))
-            .unwrap_err(),
+        admit(&mut authority, document(&other_key, 3), 3).unwrap_err(),
         Error::Equivocation
     );
-    authority
-        .accept(candidate(&authority, document(&keys, 2), 2))
-        .unwrap();
-    assert_eq!(authority.accept(first).unwrap_err(), Error::Rollback);
-    assert_eq!(authority.accepted().unwrap().document().revision, 2);
+    assert_eq!(
+        admit(&mut authority, document(&keys, 3), 2).unwrap_err(),
+        Error::Equivocation
+    );
+    admit(&mut authority, document(&self::keys(2, 3, &[2]), 1), 3).unwrap();
 }
 
 #[test]
 fn root_decisions_can_omit_retired_keys_without_authorizing_them() {
     let mut authority = authority();
-    authority
-        .accept(candidate(&authority, document(&keys(1, 2, &[]), 1), 2))
-        .unwrap();
-    authority
-        .accept(candidate(&authority, document(&keys(2, 3, &[2]), 1), 3))
-        .unwrap();
+    admit(&mut authority, document(&keys(1, 2, &[]), 1), 2).unwrap();
+    admit(&mut authority, document(&keys(2, 3, &[2]), 1), 3).unwrap();
     let pruned = keys(3, 3, &[]);
-    authority
-        .accept(candidate(&authority, document(&pruned, 1), 3))
-        .unwrap();
+    admit(&mut authority, document(&pruned, 1), 3).unwrap();
     let mut fresh = self::authority();
-    fresh
-        .accept(candidate(&fresh, document(&pruned, 1), 3))
-        .unwrap();
-    let mut unsigned = check(&authority, document(&pruned, 2)).unwrap();
+    admit(&mut fresh, document(&pruned, 1), 3).unwrap();
+    let mut unsigned = check(document(&pruned, 2)).unwrap();
     let value = serde_json::to_value(unsigned.document()).unwrap();
     for signer in [1, 2, 4] {
         assert_eq!(
@@ -393,19 +398,16 @@ fn root_decisions_can_omit_retired_keys_without_authorizing_them() {
         );
     }
     // The root can also rotate without carrying earlier public keys forward.
-    authority
-        .accept(candidate(&authority, document(&keys(4, 4, &[]), 1), 4))
-        .unwrap();
+    admit(&mut authority, document(&keys(4, 4, &[]), 1), 4).unwrap();
 }
 
 #[test]
 fn signatures_are_bound_to_the_active_key_document_and_purpose() {
-    let authority = authority();
     let keys = keys(2, 3, &[2]);
     let original = document(&keys, 1);
     let value = serde_json::to_value(&original).unwrap();
     let verify = |document: EvidenceDocument, signature: StogasSignature| {
-        let mut candidate = check(&authority, document)?;
+        let mut candidate = check(document)?;
         verify_proof(&mut candidate, signature, Value::Null, NOW)
     };
     // The signature passes; only the absent unit-test log entry remains.
@@ -455,13 +457,8 @@ fn signatures_are_bound_to_the_active_key_document_and_purpose() {
     other_keys.keys.document.generation += 1;
     for substituted in [other_sigstore, other_keys] {
         assert_eq!(
-            check_document(
-                authority.root_sha256,
-                verified_keys(&keys),
-                substituted,
-                Arc::clone(&sigstore().1)
-            )
-            .unwrap_err(),
+            check_document(verified_keys(&keys), substituted, Arc::clone(&sigstore().1))
+                .unwrap_err(),
             Error::Invalid("verified keys or Sigstore files differ".into())
         );
     }
@@ -491,14 +488,13 @@ fn documents_reject_ambiguous_ids_keys_versions_and_counters() {
         invalid_key.key_id = id.into();
         assert!(decode_key(&invalid_key.key_id, &invalid_key.public_key).is_err());
     }
-    let authority = authority();
     let keys = keys(1, 2, &[]);
     for revision in [0, MAX_REVISION + 1, u64::MAX] {
-        assert!(check(&authority, document(&keys, revision)).is_err());
+        assert!(check(document(&keys, revision)).is_err());
     }
     let mut other_schema = document(&keys, 1);
     other_schema.schema = KEY_MANIFEST_SCHEMA.into();
-    assert!(check(&authority, other_schema).is_err());
+    assert!(check(other_schema).is_err());
     for sequences in [[1, 1], [2, 1]] {
         let mut gateways = document(&keys, 1);
         gateways.gateways = sequences
@@ -520,7 +516,7 @@ fn documents_reject_ambiguous_ids_keys_versions_and_counters() {
             .collect();
         for invalid in [gateways, catalogs] {
             assert_eq!(
-                check(&authority, invalid).unwrap_err(),
+                check(invalid).unwrap_err(),
                 Error::Invalid("approved releases must be ordered by unique sequence".into())
             );
         }
@@ -530,9 +526,7 @@ fn documents_reject_ambiguous_ids_keys_versions_and_counters() {
 #[test]
 fn root_inclusion_is_mandatory_and_failure_never_advances_state() {
     let mut authority = authority();
-    authority
-        .accept(candidate(&authority, document(&keys(1, 2, &[]), 1), 2))
-        .unwrap();
+    admit(&mut authority, document(&keys(1, 2, &[]), 1), 2).unwrap();
     let keys = SignedKeyManifest {
         signature: sign(&serde_json::to_value(keys(2, 3, &[2])).unwrap(), 1),
         document: keys(2, 3, &[2]),
@@ -578,18 +572,6 @@ fn strict_boundary_rejects_unknown_duplicate_trailing_and_oversized_inputs() {
     assert!(authority.accepted().is_none());
 }
 
-#[test]
-fn a_candidate_from_another_root_cannot_be_installed() {
-    let mut authority = authority();
-    let other = Authority::new(Environment::Production, root(5)).unwrap();
-    assert_eq!(
-        authority
-            .accept(candidate(&other, document(&keys(1, 2, &[]), 1), 2))
-            .unwrap_err(),
-        Error::Authority
-    );
-}
-
 #[cfg(feature = "staging")]
 #[test]
 fn staging_capable_verifier_rejects_placeholders_in_a_production_context() {
@@ -622,7 +604,7 @@ fn staging_capable_verifier_rejects_placeholders_in_a_production_context() {
     ] {
         let mut keys = keys(1, 2, &[]);
         keys.environment = environment;
-        let evidence = check(&authority(), document(&keys, 1)).unwrap();
+        let evidence = check(document(&keys, 1)).unwrap();
         let gateway = evidence.verify_gateway(&gateway, NOW);
         let catalog = evidence.verify_catalog(&catalog, NOW);
         if allowed {
@@ -647,14 +629,7 @@ fn environments_are_signed_and_cannot_share_candidates() {
     );
     let mut production = document(&manifest, 1);
     production.environment = Environment::Production;
-    assert_eq!(check(&authority, production).unwrap_err(), Error::Authority);
-    let mut staging = Authority::new(Environment::Staging, root(1)).unwrap();
-    assert_eq!(
-        staging
-            .accept(candidate(&authority, document(&keys(1, 2, &[]), 1), 2))
-            .unwrap_err(),
-        Error::Authority
-    );
+    assert_eq!(check(production).unwrap_err(), Error::Authority);
 }
 
 #[cfg(not(feature = "staging"))]
