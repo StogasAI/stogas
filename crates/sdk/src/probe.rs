@@ -65,6 +65,7 @@ pub async fn check(options: &TransportOptions, timeout: Duration) -> Result<Prob
     let evidence = Arc::new(EvidenceClient::new(
         environment,
         environment.stogas_root()?,
+        options.network()?,
     )?);
     if let Err(error) = evidence.refresh(deadline).await {
         report.error_code = Some(error.code());

@@ -1,6 +1,6 @@
 use crate::{
     SecurityMode, TransportOptions, encrypted_client, evidence_client::EvidenceClient, http2_pool,
-    native_http,
+    native_http, network::SETUP_BUDGET,
 };
 use anyhow::{Context as _, Result, bail};
 use rustls::pki_types::ServerName;
@@ -54,17 +54,21 @@ impl Upstream {
                 let port = origin
                     .port_or_known_default()
                     .context("missing upstream port")?;
+                // Attested TLS takes the same route as the evidence that it checks.
+                let network = evidence.network().clone();
                 let limits = http2_pool::Limits {
                     connections: maximum,
                     waiting_requests: NonZeroUsize::new(1024).context("invalid wait count")?,
                     waiting_bytes: NonZeroUsize::new(256 * 1024 * 1024)
                         .context("invalid wait bytes")?,
+                    setup: network.patient(SETUP_BUDGET),
                 };
                 Self::Tls(native_http::Client::new(
                     evidence,
                     move || {
                         let host = host.clone();
-                        async move { tokio::net::TcpStream::connect((host.as_str(), port)).await }
+                        let network = network.clone();
+                        async move { network.connect(&host, port).await }
                     },
                     server_name,
                     limits,

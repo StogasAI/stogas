@@ -6,16 +6,25 @@ public struct TransportOptions: Encodable, Sendable {
     public var security: String
     public var maxConnections: UInt32
     public var baseURL: String?
+    /// A `socks5h://host:port` proxy, such as Tor's, for every connection to Stogas.
+    public var proxy: String?
+    /// Reach the environment at its onion address, through `proxy`.
+    public var onion: Bool
 
-    public init(environment: String = "prod", security: String = "tls", maxConnections: UInt32 = 4, baseURL: String? = nil) {
+    public init(
+        environment: String = "prod", security: String = "tls", maxConnections: UInt32 = 4, baseURL: String? = nil,
+        proxy: String? = nil, onion: Bool = false
+    ) {
         self.environment = environment
         self.security = security
         self.maxConnections = maxConnections
         self.baseURL = baseURL
+        self.proxy = proxy
+        self.onion = onion
     }
 
     enum CodingKeys: String, CodingKey {
-        case environment, security
+        case environment, security, proxy, onion
         case maxConnections = "max_connections"
         case baseURL = "base_url"
     }

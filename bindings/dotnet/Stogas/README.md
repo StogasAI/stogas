@@ -16,6 +16,8 @@ using var http = new HttpClient(new SocketsHttpHandler
 
 `TransportOptions` selects `Security` (`tls` or `e2ee`) and `MaxConnections` (default 4). `Environment` defaults to `prod`; staging requires a staging native build. Initialization verifies evidence before returning. `Refresh()` refreshes evidence without replaying requests. `VerificationException.Code` is the structured native error code.
 
+`Proxy` sends every connection to Stogas through a SOCKS5 proxy, such as Tor's `socks5h://127.0.0.1:9050`. `Onion = true` also reaches the environment at its onion address through that proxy. Keep `UseProxy = false` on your own client, which talks only to the local endpoint.
+
 Dispose the transport after all clients using it finish. Disposal is safe to repeat and allows up to five seconds for graceful cleanup. The OpenAI client owns retry policy; interrupted inference may already have executed.
 
 The native package supports 64-bit Linux, macOS and Windows targets. Mobile targets are not included.

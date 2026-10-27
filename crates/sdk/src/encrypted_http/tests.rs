@@ -64,17 +64,26 @@ impl Records {
     }
 }
 
-fn http() -> Client {
-    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+/// Trusts no certificate. The fixture servers use plain HTTP on loopback.
+fn tls() -> rustls::ClientConfig {
+    rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::aws_lc_rs::default_provider(),
     ))
     .with_safe_default_protocol_versions()
     .unwrap()
     .with_root_certificates(rustls::RootCertStore::empty())
-    .with_no_client_auth();
-    Client::builder()
-        .use_preconfigured_tls(config)
+    .with_no_client_auth()
+}
+/// The SDK's own carriage.
+fn http() -> HttpsClient {
+    HttpsClient::new(crate::network::Network::direct(), tls())
+}
+/// An application's own HTTP client, which calls the local fixtures.
+fn caller() -> reqwest::Client {
+    reqwest::Client::builder()
+        .use_preconfigured_tls(tls())
         .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
         .build()
         .unwrap()
 }
@@ -131,7 +140,7 @@ pub async fn hardware_session() -> (
     let endpoint = origin.endpoint.join("/evidence").unwrap();
     let evidence = Arc::new(
         crate::evidence_client::EvidenceClient::from_parts(
-            crate::evidence_client::https_client().unwrap(),
+            HttpsClient::public(crate::network::Network::direct()).unwrap(),
             [endpoint.clone(), endpoint],
             Environment::Staging,
             serde_json::from_value(fixture["root"].clone()).unwrap(),
@@ -531,7 +540,7 @@ async fn client_fixture_request(
     fixture: Value,
 ) -> Result<channel::ClientRequest, Response<Body>> {
     let mut pending = PendingSetup::new(Environment::Production).unwrap();
-    let response = http()
+    let response = caller()
         .post(endpoint.clone())
         .header(header::CONTENT_TYPE, CONTENT_TYPE)
         .body(pending.hello().to_vec())
@@ -641,7 +650,7 @@ async fn open_source_client_compatibility_proxy() {
         "owner".into(),
     )
     .await;
-    let response = http()
+    let response = caller()
         .post(format!("{}/chat/completions", proxy.endpoint))
         .header(header::AUTHORIZATION, "Bearer fixture")
         .body("{}")
@@ -651,7 +660,7 @@ async fn open_source_client_compatibility_proxy() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.text().await.unwrap(), "{\"ok\":true}");
     assert_eq!(
-        http()
+        caller()
             .post(proxy.endpoint.join("/v1/chat/completions").unwrap())
             .send()
             .await

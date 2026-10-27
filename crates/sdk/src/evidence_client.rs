@@ -3,8 +3,12 @@
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use reqwest::{
-    Client, StatusCode,
+use crate::{
+    https::{self, HttpsClient},
+    network::Network,
+};
+use http::{
+    HeaderMap, StatusCode,
     header::{ETAG, HeaderValue, IF_NONE_MATCH},
 };
 use stogas_core::{
@@ -28,7 +32,7 @@ pub enum Error {
     #[error("evidence acquisition is cooling down after a failed attempt")]
     Cooldown,
     #[error("evidence delivery failed: {0}")]
-    Delivery(#[from] reqwest::Error),
+    Delivery(#[from] https::Error),
     #[error("could not configure evidence HTTPS: {0}")]
     Configuration(#[from] rustls::Error),
     #[error("evidence origin returned HTTP {0}")]
@@ -73,7 +77,7 @@ type Check = Arc<dyn Fn(&Snapshot) -> Result<(), evidence::Error> + Send + Sync>
 /// One current snapshot, one acquisition and one bounded representation per configured origin.
 /// There are no timer tasks, third-party fetches or per-missing-identifier lookup tables.
 pub struct EvidenceClient {
-    client: Client,
+    client: HttpsClient,
     origins: [Url; 2],
     verifier: Arc<Mutex<evidence::Verifier>>,
     current: Arc<RwLock<Option<Arc<Snapshot>>>>,
@@ -86,9 +90,9 @@ impl EvidenceClient {
     ///
     /// # Errors
     /// Rejects a malformed root or unavailable maintained HTTPS configuration.
-    pub fn new(environment: Environment, root: RootKey) -> Result<Self, Error> {
+    pub fn new(environment: Environment, root: RootKey, network: Network) -> Result<Self, Error> {
         let origins = environment.evidence_origins();
-        let client = https_client()?;
+        let client = HttpsClient::public(network)?;
         let origins = [
             Url::parse(origins[0]).map_err(|_| Error::State)?,
             Url::parse(origins[1]).map_err(|_| Error::State)?,
@@ -97,7 +101,7 @@ impl EvidenceClient {
     }
 
     pub(crate) fn from_parts(
-        client: Client,
+        client: HttpsClient,
         origins: [Url; 2],
         environment: Environment,
         root: RootKey,
@@ -121,8 +125,13 @@ impl EvidenceClient {
     }
 
     // This client carries no application headers, cookies or redirect behavior.
-    pub(crate) fn carriage(&self) -> Client {
+    pub(crate) fn carriage(&self) -> HttpsClient {
         self.client.clone()
+    }
+
+    /// The route that evidence and everything sharing its client take.
+    pub(crate) const fn network(&self) -> &Network {
+        self.client.network()
     }
 
     pub(crate) async fn compute<T: Send + 'static>(
@@ -188,7 +197,7 @@ impl EvidenceClient {
         if Instant::now() >= deadline {
             return Err(Error::Deadline);
         }
-        let deadline = deadline.min(Instant::now() + RECOVERY_BUDGET);
+        let deadline = deadline.min(Instant::now() + self.network().patient(RECOVERY_BUDGET));
         timeout_at(deadline, self.acquire_inner(deadline, check))
             .await
             .map_err(|_| Error::Deadline)?
@@ -226,7 +235,8 @@ impl EvidenceClient {
         }
         let mut failure = Error::Deadline;
         for (index, origin) in self.origins.iter().enumerate() {
-            let attempt_deadline = deadline.min(Instant::now() + ORIGIN_BUDGET);
+            let attempt_deadline =
+                deadline.min(Instant::now() + self.network().patient(ORIGIN_BUDGET));
             let result = timeout_at(attempt_deadline, async {
                 let candidate = self
                     .download(origin, acquisition.representations[index].as_ref())
@@ -282,11 +292,11 @@ impl EvidenceClient {
         origin: &Url,
         cached: Option<&Representation>,
     ) -> Result<Representation, Error> {
-        let mut request = self.client.get(origin.clone());
+        let mut headers = HeaderMap::new();
         if let Some(etag) = cached.and_then(|value| value.etag.as_ref()) {
-            request = request.header(IF_NONE_MATCH, etag);
+            headers.insert(IF_NONE_MATCH, etag.clone());
         }
-        let mut response = request.send().await?;
+        let response = self.client.get(origin, headers).await?;
         if response.status() == StatusCode::NOT_MODIFIED {
             let cached = cached.ok_or(Error::MissingRepresentation)?;
             return Ok(Representation {
@@ -304,36 +314,18 @@ impl EvidenceClient {
             return Err(Error::TooLarge);
         }
         let etag = response.headers().get(ETAG).cloned();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
-            if chunk.len() > MAX_INPUT_BYTES.saturating_sub(bytes.len()) {
-                return Err(Error::TooLarge);
-            }
-            bytes.extend_from_slice(&chunk);
-        }
+        let bytes = response
+            .decoded(MAX_INPUT_BYTES)
+            .await
+            .map_err(|error| match error {
+                https::Error::TooLarge(_) => Error::TooLarge,
+                error => Error::Delivery(error),
+            })?;
         Ok(Representation {
             bytes: bytes.into(),
             etag,
         })
     }
-}
-
-/// Evidence origins are fixed, so the client follows no redirects.
-pub(crate) fn https_client() -> Result<Client, Error> {
-    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::aws_lc_rs::default_provider(),
-    ))
-    .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])?
-    .with_root_certificates(rustls::RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-    })
-    .with_no_client_auth();
-    tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    Ok(Client::builder()
-        .use_preconfigured_tls(tls)
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(ORIGIN_BUDGET)
-        .build()?)
 }
 
 async fn run_cpu<T: Send + 'static>(

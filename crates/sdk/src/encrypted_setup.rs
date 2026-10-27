@@ -1,10 +1,11 @@
 //! Fresh encrypted setup over HTTP, independent of application request formats.
-use crate::evidence_client::{self, EvidenceClient, wall_clock_ms};
-use reqwest::{Client, StatusCode, header};
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
+use crate::{
+    evidence_client::{self, EvidenceClient, wall_clock_ms},
+    https::{self, HttpsClient},
+    network::SETUP_BUDGET,
 };
+use http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use std::sync::{Arc, Mutex};
 use stogas_core::{
     authority::Environment,
     channel::{
@@ -17,14 +18,13 @@ use tokio::time::{Instant, timeout_at};
 use url::Url;
 
 pub const CONTENT_TYPE: &str = "application/vnd.stogas.session";
-const SETUP_BUDGET: Duration = Duration::from_secs(15);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("encrypted setup deadline expired")]
     Deadline,
     #[error("encrypted setup HTTP failed: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(#[from] https::Error),
     #[error("origin did not return a bounded encrypted setup")]
     Response,
     #[error("encrypted setup state is unavailable")]
@@ -76,7 +76,7 @@ pub struct Connection {
 /// bounds evidence acquisition, HTTP, queueing and cryptographic verification.
 pub async fn connect(
     evidence: &EvidenceClient,
-    http: &Client,
+    http: &HttpsClient,
     endpoint: Url,
     environment: Environment,
     deadline: Instant,
@@ -84,7 +84,7 @@ pub async fn connect(
     if Instant::now() >= deadline {
         return Err(Error::Deadline);
     }
-    let deadline = deadline.min(Instant::now() + SETUP_BUDGET);
+    let deadline = deadline.min(Instant::now() + http.network().patient(SETUP_BUDGET));
     timeout_at(
         deadline,
         connect_inner(evidence, http, endpoint, environment, deadline),
@@ -95,7 +95,7 @@ pub async fn connect(
 
 async fn connect_inner(
     evidence: &EvidenceClient,
-    http: &Client,
+    http: &HttpsClient,
     endpoint: Url,
     environment: Environment,
     deadline: Instant,
@@ -107,12 +107,16 @@ async fn connect_inner(
     let pending = evidence
         .compute(deadline, move || PendingSetup::new(environment))
         .await??;
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(CONTENT_TYPE));
+    headers.insert(header::ACCEPT, HeaderValue::from_static(CONTENT_TYPE));
     let mut response = http
-        .post(endpoint)
-        .header(header::CONTENT_TYPE, CONTENT_TYPE)
-        .header(header::ACCEPT, CONTENT_TYPE)
-        .body(pending.hello().to_vec())
-        .send()
+        .fetch(
+            Method::POST,
+            &endpoint,
+            headers,
+            https::full(pending.hello().to_vec()),
+        )
         .await?;
     if response.status() != StatusCode::OK
         || response

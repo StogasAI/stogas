@@ -2,6 +2,7 @@ use crate::{
     TransportOptions, encrypted_client,
     evidence_client::EvidenceClient,
     http2_pool, native_http,
+    network::SETUP_BUDGET,
     upstream::{self, Upstream},
 };
 use anyhow::{Context as _, Result, bail};
@@ -27,7 +28,6 @@ use tokio::{
 };
 use url::Url;
 
-const SETUP_BUDGET: Duration = Duration::from_secs(15);
 const REQUEST_BUDGET: Duration = Duration::from_hours(1);
 const CLOSE_BUDGET: Duration = Duration::from_secs(5);
 const MAX_REQUEST_BYTES: usize = 128 * 1024 * 1024;
@@ -87,8 +87,11 @@ impl ProxyState {
         let evidence = Arc::new(EvidenceClient::new(
             environment,
             environment.stogas_root()?,
+            config.options.network()?,
         )?);
-        evidence.refresh(Instant::now() + SETUP_BUDGET).await?;
+        evidence
+            .refresh(Instant::now() + evidence.network().patient(SETUP_BUDGET))
+            .await?;
         let upstream = Upstream::new(&config.options, &config.upstream, Arc::clone(&evidence))?;
         Ok(Self {
             config,
@@ -429,7 +432,7 @@ async fn proxy_request_inner(
                 .map_err(|error| Failure::evidence(&error))?;
             let snapshot = state
                 .evidence
-                .refresh(Instant::now() + SETUP_BUDGET)
+                .refresh(Instant::now() + state.evidence.network().patient(SETUP_BUDGET))
                 .await
                 .map_err(|error| Failure::evidence(&error))?;
             let changed =

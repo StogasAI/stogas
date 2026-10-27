@@ -19,6 +19,8 @@ type TransportOptions struct {
 	Security       string
 	MaxConnections uint64
 	BaseURL        string
+	Proxy          string
+	Onion          bool
 }
 
 // Transport is unavailable without cgo.

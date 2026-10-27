@@ -69,6 +69,16 @@ class PackageTests(unittest.TestCase):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 Transport(**options)
 
+    def test_proxy_and_onion_reach_the_native_transport(self):
+        for options, message in (
+            ({"proxy": "socks5://127.0.0.1:9050"}, "use socks5h://"),
+            ({"proxy": "socks5h://127.0.0.1"}, "needs a host and a port"),
+            ({"onion": True}, "onion needs a proxy"),
+            ({"proxy": "socks5h://127.0.0.1:9050", "onion": True}, "no onion address yet"),
+        ):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, message):
+                Transport(**options)
+
     def test_removed_options_do_not_silently_change_trust(self):
         for options in (
             {"bundle_url": "https://attacker.example"},

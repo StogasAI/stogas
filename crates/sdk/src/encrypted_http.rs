@@ -1,11 +1,13 @@
 //! HTTP carriage for an already verified binary session. No inference is retried.
-use crate::encrypted_setup::CONTENT_TYPE;
+use crate::{
+    encrypted_setup::CONTENT_TYPE,
+    https::{self, HttpsClient},
+};
 use axum::{
     body::{Body, Bytes},
-    http::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode, header},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, header},
 };
 use futures_util::stream;
-use reqwest::Client;
 use serde_json::{Map, Value, json};
 use std::{
     collections::VecDeque,
@@ -46,7 +48,7 @@ pub enum Error {
     #[error("encrypted response deadline expired; execution is unknown")]
     Deadline,
     #[error("encrypted HTTP failed; execution is unknown: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(#[from] https::Error),
     #[error("origin did not return an encrypted response; execution is unknown")]
     Response,
     #[error("invalid encrypted response metadata; execution is unknown")]
@@ -64,7 +66,7 @@ pub enum Error {
 /// Invalid input fails before submission. Once HTTP begins, errors are execution-unknown;
 /// even an outer 503 is not proof that an earlier arrival never ran.
 pub async fn send(
-    http: &Client,
+    http: &HttpsClient,
     endpoint: Url,
     node_id: &str,
     exchange: ClientRequest,
@@ -94,7 +96,7 @@ pub async fn send(
         deadline,
     };
     let guard = CancelUpload(cancelled);
-    let body = reqwest::Body::wrap_stream(stream::unfold(Some(upload), |state| async {
+    let body = https::stream(stream::unfold(Some(upload), |state| async {
         let mut state = state?;
         match state.next() {
             Ok(Some(bytes)) => Some((Ok(bytes), Some(state))),
@@ -102,17 +104,13 @@ pub async fn send(
             Err(error) => Some((Err(error), None)),
         }
     }));
-    let response = timeout_at(
-        deadline,
-        http.post(endpoint)
-            .header(header::CONTENT_TYPE, CONTENT_TYPE)
-            .header(header::ACCEPT, CONTENT_TYPE)
-            .header("stogas-node-id", node_id)
-            .body(body)
-            .send(),
-    )
-    .await
-    .map_err(|_| Error::Deadline)??;
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(CONTENT_TYPE));
+    headers.insert(header::ACCEPT, HeaderValue::from_static(CONTENT_TYPE));
+    headers.insert("stogas-node-id", node_id);
+    let response = timeout_at(deadline, http.fetch(Method::POST, &endpoint, headers, body))
+        .await
+        .map_err(|_| Error::Deadline)??;
     if response.status() != StatusCode::OK
         || response
             .headers()
@@ -260,7 +258,7 @@ impl Drop for CancelUpload {
 }
 
 struct Incoming {
-    source: reqwest::Response,
+    source: https::Response,
     decoder: Option<ResponseDecoder>,
     input: Bytes,
     pending: VecDeque<Bytes>,

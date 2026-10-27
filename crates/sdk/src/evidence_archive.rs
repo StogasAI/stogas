@@ -9,9 +9,10 @@ use std::{
     time::Duration,
 };
 
+use crate::{https::HttpsClient, network::Network};
 use anyhow::{Context as _, Result, bail, ensure};
 use futures_util::{StreamExt as _, TryStreamExt as _, stream};
-use reqwest::{Client, StatusCode};
+use http::{HeaderMap, StatusCode};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
@@ -38,22 +39,22 @@ pub struct Archive {
 ///
 /// # Errors
 /// Fails if no origin returns a complete archive whose rebuilt evidence matches its digest.
-pub async fn download(environment: Environment, boot_sha256: &str) -> Result<Archive> {
+pub async fn download(
+    environment: Environment,
+    network: Network,
+    boot_sha256: &str,
+) -> Result<Archive> {
     ensure!(
         is_sha256(boot_sha256),
         "boot_sha256 must be 64 lowercase hexadecimal characters"
     );
-    let client = crate::evidence_client::https_client()?;
+    let deadline = network.patient(ORIGIN_DEADLINE);
+    let client = HttpsClient::public(network)?;
     let mut failures = Vec::new();
     for origin in environment.evidence_origins() {
         let origin = Url::parse(origin)?;
         let host = origin.host_str().unwrap_or_default().to_owned();
-        match timeout(
-            ORIGIN_DEADLINE,
-            download_from(&client, &origin, boot_sha256),
-        )
-        .await
-        {
+        match timeout(deadline, download_from(&client, &origin, boot_sha256)).await {
             Ok(Ok(archive)) => return Ok(archive),
             Ok(Err(error)) => failures.push(format!("{host}: {error:#}")),
             Err(_) => failures.push(format!("{host}: timed out")),
@@ -62,7 +63,7 @@ pub async fn download(environment: Environment, boot_sha256: &str) -> Result<Arc
     bail!("archived evidence is unavailable ({})", failures.join("; "))
 }
 
-async fn download_from(client: &Client, origin: &Url, boot_sha256: &str) -> Result<Archive> {
+async fn download_from(client: &HttpsClient, origin: &Url, boot_sha256: &str) -> Result<Archive> {
     let boot = get(
         client,
         origin,
@@ -110,23 +111,19 @@ async fn download_from(client: &Client, origin: &Url, boot_sha256: &str) -> Resu
     })
 }
 
-async fn get(client: &Client, origin: &Url, path: &str, max_bytes: usize) -> Result<Vec<u8>> {
+async fn get(client: &HttpsClient, origin: &Url, path: &str, max_bytes: usize) -> Result<Vec<u8>> {
     let url = origin.join(path)?;
-    let mut response = client.get(url.clone()).send().await?;
-    ensure!(
-        response.status() == StatusCode::OK,
-        "{url} returned HTTP {}",
-        response.status()
-    );
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
+    async {
+        let response = client.get(&url, HeaderMap::new()).await?;
         ensure!(
-            chunk.len() <= max_bytes.saturating_sub(bytes.len()),
-            "{url} is too large"
+            response.status() == StatusCode::OK,
+            "HTTP {}",
+            response.status()
         );
-        bytes.extend_from_slice(&chunk);
+        Ok(response.decoded(max_bytes).await?)
     }
-    Ok(bytes)
+    .await
+    .with_context(|| url.to_string())
 }
 
 #[derive(Deserialize)]

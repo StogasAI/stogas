@@ -23,13 +23,13 @@ staging = ["stogas/staging"]
 anyhow.workspace = true
 aws-lc-rs.workspace = true
 base64.workspace = true
-clap = { version = "4.5.47", features = ["derive"] }
+clap = { version = "4.5.47", features = ["derive", "env"] }
 gethostname = "1.1.0"
 getrandom.workspace = true
 hex.workspace = true
+http = "1.5.0"
 keyring-core = "1.0.1"
 qrcode = { version = "0.14.1", default-features = false }
-reqwest.workspace = true
 rpassword = "7.5.4"
 rustls.workspace = true
 serde.workspace = true

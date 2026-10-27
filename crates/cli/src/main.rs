@@ -9,16 +9,16 @@ mod topup;
 use anyhow::{Context, Result, bail};
 use clap::{
     Args, Parser, Subcommand,
-    builder::{PossibleValuesParser, TypedValueParser},
+    builder::{BoolishValueParser, PossibleValuesParser, TypedValueParser},
 };
-use reqwest::Method;
+use http::Method;
 use sha2::{Digest as _, Sha256};
 use std::{
     io::{IsTerminal as _, Write as _},
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use stogas::SecurityMode;
+use stogas::{Environment, SecurityMode, network::Network};
 use stogas_core::{
     MAX_INPUT_BYTES,
     evidence::{MAX_ARCHIVE_BYTES, Verifier},
@@ -29,6 +29,12 @@ use tokio::io::AsyncReadExt as _;
 #[derive(Parser)]
 #[command(name = "stogas", version, about)]
 struct Cli {
+    /// A SOCKS5 proxy for every connection, such as Tor's `socks5h://127.0.0.1:9050`.
+    #[arg(long, global = true, env = "STOGAS_PROXY", value_name = "URL")]
+    proxy: Option<String>,
+    /// Reach the environment at its onion address, through --proxy.
+    #[arg(long, global = true, env = "STOGAS_ONION", value_parser = BoolishValueParser::new())]
+    onion: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -89,9 +95,10 @@ enum Command {
         upstream: Option<String>,
         #[arg(long, value_parser = security_parser(), default_value = "tls")]
         security: SecurityMode,
-        /// Total evidence, session setup and response deadline in milliseconds.
-        #[arg(long, default_value_t = 8_000)]
-        timeout_ms: u32,
+        /// Total evidence, session setup and response deadline in milliseconds. By default 8000,
+        /// or four times that through a proxy.
+        #[arg(long)]
+        timeout_ms: Option<u32>,
     },
     /// Generate an organization encryption key locally; print only its public identifier.
     EncryptionKey {
@@ -199,16 +206,24 @@ struct ServeArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    match Cli::parse().command {
-        Command::Signup => account::signup().await?,
-        Command::Login => account::login().await?,
-        Command::Logout => account::logout().await?,
+    let Cli {
+        proxy,
+        onion,
+        command,
+    } = Cli::parse();
+    let network = |environment| Network::new(environment, proxy.as_deref(), onion);
+    // The dashboard serves production accounts.
+    let dashboard = || network(Environment::Production);
+    match command {
+        Command::Signup => account::signup(&dashboard()?).await?,
+        Command::Login => account::login(&dashboard()?).await?,
+        Command::Logout => account::logout(&dashboard()?).await?,
         Command::Api {
             method,
             path,
             input,
-        } => run_api(method, &path, input.as_deref()).await?,
-        Command::Topup(args) => topup::run(args).await?,
+        } => run_api(method, &path, input.as_deref(), &dashboard()?).await?,
+        Command::Topup(args) => topup::run(args, &dashboard()?).await?,
         Command::VerifyRelease { directory } => sdk_release::verify_directory(&directory).await?,
         Command::Probe {
             environment,
@@ -216,14 +231,20 @@ async fn main() -> Result<()> {
             security,
             timeout_ms,
         } => {
+            let timeout = match timeout_ms {
+                Some(milliseconds) => Duration::from_millis(u64::from(milliseconds)),
+                None => network(environment)?.patient(Duration::from_secs(8)),
+            };
             let report = stogas::probe::check(
                 &stogas::TransportOptions {
                     environment,
                     security,
                     base_url: upstream,
                     max_connections: 1,
+                    proxy: proxy.clone(),
+                    onion,
                 },
-                Duration::from_millis(u64::from(timeout_ms)),
+                timeout,
             )
             .await?;
             println!("{}", serde_json::to_string(&report)?);
@@ -245,20 +266,31 @@ async fn main() -> Result<()> {
             environment,
             output,
         } => {
-            let archive = stogas::evidence_archive::download(environment, &boot).await?;
+            let archive =
+                stogas::evidence_archive::download(environment, network(environment)?, &boot)
+                    .await?;
             tokio::fs::write(output.join("boot.json"), archive.boot).await?;
             tokio::fs::write(output.join("evidence.json"), archive.evidence).await?;
         }
         Command::Proof(args) => {
             let verifier = Verifier::stogas(args.environment)?;
-            print_proof_output(&verify_proof_files(&args, &verifier).await?, args.json)?;
+            let network = network(args.environment)?;
+            print_proof_output(
+                &verify_proof_files(&args, &verifier, network).await?,
+                args.json,
+            )?;
         }
-        Command::Serve(args) => run_serve(args).await?,
+        Command::Serve(args) => run_serve(args, proxy.clone(), onion).await?,
     }
     Ok(())
 }
 
-async fn run_api(method: Method, path: &str, input: Option<&Path>) -> Result<()> {
+async fn run_api(
+    method: Method,
+    path: &str,
+    input: Option<&Path>,
+    network: &Network,
+) -> Result<()> {
     let body = match input {
         Some(input) => Some(
             serde_json::from_slice::<serde_json::Value>(
@@ -268,7 +300,7 @@ async fn run_api(method: Method, path: &str, input: Option<&Path>) -> Result<()>
         ),
         None => None,
     };
-    let response = account::signed_in()
+    let response = account::signed_in(network)
         .await?
         .send(method, path, body.as_ref())
         .await?;
@@ -295,13 +327,15 @@ async fn run_verify(input: VerifyArgs) -> Result<()> {
     Ok(())
 }
 
-async fn run_serve(input: ServeArgs) -> Result<()> {
+async fn run_serve(input: ServeArgs, proxy: Option<String>, onion: bool) -> Result<()> {
     stogas::serve(stogas::ServeOptions {
         transport: stogas::TransportOptions {
             environment: input.environment,
             security: input.security,
             max_connections: input.max_connections,
             base_url: input.upstream,
+            proxy,
+            onion,
         },
         listen: input.listen,
         browser_origin: input.browser_origin,
@@ -310,7 +344,11 @@ async fn run_serve(input: ServeArgs) -> Result<()> {
     .await
 }
 
-async fn verify_proof_files(input: &ProofArgs, verifier: &Verifier) -> Result<VerifiedReceipt> {
+async fn verify_proof_files(
+    input: &ProofArgs,
+    verifier: &Verifier,
+    network: Network,
+) -> Result<VerifiedReceipt> {
     let now = input.now_unix_ms.unwrap_or_else(wall_clock_ms);
     let request = hash_file(&input.request, "request body").await?;
     let signed = read_signed_response(input, request).await?;
@@ -323,7 +361,7 @@ async fn verify_proof_files(input: &ProofArgs, verifier: &Verifier) -> Result<Ve
         let boot = signed
             .boot_sha256()
             .context("the response has no Stogas receipt")?;
-        let archive = stogas::evidence_archive::download(input.environment, boot).await?;
+        let archive = stogas::evidence_archive::download(input.environment, network, boot).await?;
         (archive.boot, archive.evidence)
     };
     let boot = verifier.verify_boot_archive(&archive, &evidence, now)?;

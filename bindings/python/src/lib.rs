@@ -13,13 +13,15 @@ struct PythonTransport {
 #[pymethods]
 impl PythonTransport {
     #[new]
-    #[pyo3(signature = (*, environment = "prod", security = "tls", max_connections = 4, base_url = None))]
+    #[pyo3(signature = (*, environment = "prod", security = "tls", max_connections = 4, base_url = None, proxy = None, onion = false))]
     fn new(
         py: Python<'_>,
         environment: &str,
         security: &str,
         max_connections: usize,
         base_url: Option<String>,
+        proxy: Option<String>,
+        onion: bool,
     ) -> PyResult<Self> {
         let options = TransportOptions {
             environment: serde_json::from_value(serde_json::Value::String(environment.to_owned()))
@@ -31,6 +33,8 @@ impl PythonTransport {
             },
             max_connections,
             base_url,
+            proxy,
+            onion,
         };
         let inner = py
             .detach(move || ManagedTransport::start(&options))

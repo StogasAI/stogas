@@ -19,8 +19,10 @@ pub mod encrypted_setup;
 pub mod evidence_archive;
 pub mod evidence_client;
 pub mod http2_pool;
+pub mod https;
 pub mod native_http;
 pub mod native_tls;
+pub mod network;
 pub mod probe;
 mod proxy;
 pub mod receipt_http;
@@ -48,6 +50,10 @@ pub struct TransportOptions {
     pub max_connections: usize,
     /// Optional HTTPS origin; compiled evidence authorities remain fixed.
     pub base_url: Option<String>,
+    /// A `socks5h://host:port` proxy, such as Tor's, for every connection.
+    pub proxy: Option<String>,
+    /// Reach the environment's hosts at its onion address, through `proxy`.
+    pub onion: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -68,6 +74,8 @@ impl Default for TransportOptions {
             security: SecurityMode::Tls,
             max_connections: 4,
             base_url: None,
+            proxy: None,
+            onion: false,
         }
     }
 }
@@ -76,7 +84,18 @@ impl TransportOptions {
         if self.max_connections == 0 {
             bail!("max_connections must be positive");
         }
-        Ok(())
+        if self.onion && self.base_url.is_some() {
+            bail!("onion reaches only the environment's own hosts, so it cannot use base_url");
+        }
+        self.network().map(drop)
+    }
+
+    /// The route that every connection of this transport takes.
+    ///
+    /// # Errors
+    /// Rejects an invalid proxy, or `onion` without a proxy or an onion address.
+    pub fn network(&self) -> Result<network::Network> {
+        network::Network::new(self.environment, self.proxy.as_deref(), self.onion)
     }
 }
 
