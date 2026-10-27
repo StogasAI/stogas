@@ -211,13 +211,12 @@ mod tests {
             )
         );
         assert_eq!(std::fs::read(&path).unwrap(), first);
+        // A file's path cannot be a directory. Each system words the error its own way.
         let missing = path.join("key");
+        let refused = std::fs::File::create(&missing).unwrap_err();
         assert_eq!(
             format!("{:#}", generate(&missing).unwrap_err()),
-            format!(
-                "could not create {}: Not a directory (os error 20)",
-                missing.display()
-            )
+            format!("could not create {}: {refused}", missing.display())
         );
         #[cfg(unix)]
         {
