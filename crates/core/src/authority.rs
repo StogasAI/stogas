@@ -83,7 +83,7 @@ impl Environment {
             // Production has no onion address yet.
             Self::Production => None,
             #[cfg(feature = "staging")]
-            Self::Staging => Some("npqdxfo2kw4aayox35wcqz4rzxc2pyvhaqfdbgs6ecejdamzvuq4x7ad.onion"),
+            Self::Staging => Some("rauebvifjq4az3tzwa2kamihflt6d5pu6ftz7ib265dkgvhz2r5a5iyd.onion"),
         }
     }
 
