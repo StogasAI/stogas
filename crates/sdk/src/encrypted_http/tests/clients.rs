@@ -54,7 +54,7 @@ async fn bridge(upstream: Url) -> Server {
                     upstream.path().trim_end_matches('/'),
                     metadata["path"].as_str().unwrap()
                 ));
-                let mut request = http().request(
+                let mut request = caller().request(
                     metadata["method"].as_str().unwrap().parse().unwrap(),
                     endpoint,
                 );
@@ -123,7 +123,12 @@ async fn forward(
         }
     };
     let mut headers = Map::new();
-    for name in ["content-type", "cache-control", "retry-after", "x-should-retry"] {
+    for name in [
+        "content-type",
+        "cache-control",
+        "retry-after",
+        "x-should-retry",
+    ] {
         if let Some(value) = response.headers().get(name) {
             headers.insert(name.into(), Value::String(value.to_str().unwrap().into()));
         }
@@ -176,7 +181,7 @@ async fn encrypted_http_client_fixture() {
     let proxy = bridge(upstream.endpoint.join("/").unwrap()).await;
     // Reuse exercises the ratchet feedback carried by each first response ACK.
     for _ in 0..2 {
-        let response = http()
+        let response = caller()
             .post(format!("{}/chat/completions", proxy.endpoint))
             .header(header::AUTHORIZATION, "Bearer fixture")
             .body(r#"{"stream":true}"#)

@@ -5,6 +5,7 @@ package stogas
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -30,6 +31,26 @@ func TestTransportRejectsInvalidConfigurationBeforeEvidenceAcquisition(t *testin
 			}
 			if err == nil {
 				t.Fatal("invalid configuration was accepted")
+			}
+		})
+	}
+}
+
+func TestTransportPassesTheProxyAndOnionToTheNativeTransport(t *testing.T) {
+	for options, message := range map[TransportOptions]string{
+		{Proxy: "socks5://127.0.0.1:9050"}:               "use socks5h://",
+		{Proxy: "socks5h://127.0.0.1"}:                   "needs a host and a port",
+		{Onion: true}:                                    "onion needs a proxy",
+		{Proxy: "socks5h://127.0.0.1:9050", Onion: true}: "no onion address yet",
+	} {
+		t.Run(fmt.Sprintf("%+v", options), func(t *testing.T) {
+			transport, err := NewTransport(options)
+			if transport != nil {
+				_ = transport.Close()
+				t.Fatal("invalid configuration created a transport")
+			}
+			if err == nil || !strings.Contains(err.Error(), message) {
+				t.Fatalf("want an error with %q, got %v", message, err)
 			}
 		})
 	}

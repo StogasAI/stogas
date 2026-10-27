@@ -15,6 +15,21 @@ final class TransportTests: XCTestCase {
         }
     }
 
+    func testProxyAndOnionReachTheNativeTransport() {
+        let cases: [(TransportOptions, String)] = [
+            (.init(proxy: "socks5://127.0.0.1:9050"), "use socks5h://"),
+            (.init(proxy: "socks5h://127.0.0.1"), "needs a host and a port"),
+            (.init(onion: true), "onion needs a proxy"),
+            (.init(proxy: "socks5h://127.0.0.1:9050", onion: true), "no onion address yet"),
+        ]
+        for (options, expected) in cases {
+            XCTAssertThrowsError(try Transport(options: options)) { error in
+                guard case VerificationError.native(_, let message) = error else { return XCTFail("Expected native error, got \(error)") }
+                XCTAssertTrue(message.contains(expected), message)
+            }
+        }
+    }
+
     /// STOGAS_LIVE=staging|prod sends an invalid API key through each security mode.
     func testLiveGatewayRejectsAnInvalidKey() async throws {
         guard let environment = ProcessInfo.processInfo.environment["STOGAS_LIVE"] else {

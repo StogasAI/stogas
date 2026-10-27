@@ -24,15 +24,18 @@ anyhow.workspace = true
 aws-lc-rs.workspace = true
 axum = "0.8.4"
 base64.workspace = true
+brotli-decompressor = "6.2.0"
+bytes = "1.12.1"
+flate2 = "1.1.10"
 futures-util = "0.3.31"
 getrandom.workspace = true
 h2 = "0.4.15"
 hex.workspace = true
+http = "1.5.0"
 http-body-util = "0.1.4"
-hyper = { version = "1.10.1", features = ["client", "http2"] }
-hyper-util = { version = "0.1.20", features = ["tokio"] }
+hyper = { version = "1.10.1", features = ["client", "http1", "http2"] }
+hyper-util = { version = "0.1.20", features = ["client-legacy", "http1", "http2", "tokio"] }
 rand = "0.9.2"
-reqwest.workspace = true
 rustls.workspace = true
 serde_json.workspace = true
 serde.workspace = true
@@ -41,13 +44,14 @@ stogas-core = { path = "../core", version = "0.1.0-alpha.1" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
 tokio-rustls = "0.26.4"
+tower-service = "0.3.3"
 url.workspace = true
 webpki-roots.workspace = true
 
 [dev-dependencies]
 brotli = "9"
-flate2 = "1"
 rcgen = "0.14.4"
+reqwest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

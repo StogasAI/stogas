@@ -23,7 +23,7 @@ public final class Transport implements AutoCloseable {
 
     public Transport() { this(Map.of()); }
 
-    /** Options use the native names: environment, security, max_connections and base_url. */
+    /** Options use the native names: environment, security, max_connections, base_url, proxy and onion. */
     public Transport(Map<String, ?> options) {
         Api api = Loaded.API;
         if (api.stogas_abi_version() != 1) throw new IllegalStateException("Unsupported Stogas native ABI.");

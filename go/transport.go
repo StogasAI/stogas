@@ -23,12 +23,16 @@ import (
 // ErrTransportClosed is returned after a managed transport has been closed.
 var ErrTransportClosed = errors.New("stogas transport is closed")
 
-// TransportOptions controls one in-process managed Stogas connection.
+// TransportOptions controls one in-process managed Stogas connection. Proxy is a
+// socks5h://host:port proxy, such as Tor's, for every connection; Onion reaches the
+// environment at its onion address through Proxy.
 type TransportOptions struct {
 	Environment    string `json:"environment,omitempty"`
 	Security       string `json:"security,omitempty"`
 	MaxConnections uint64 `json:"max_connections,omitempty"`
 	BaseURL        string `json:"base_url,omitempty"`
+	Proxy          string `json:"proxy,omitempty"`
+	Onion          bool   `json:"onion,omitempty"`
 }
 
 // Transport owns evidence recovery, attested TLS, E2EE, and streaming in the native Rust core.

@@ -25,14 +25,14 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 
-const SETUP_BUDGET: Duration = Duration::from_secs(15);
-
 /// Caller resource preferences, independent of gateway quotas. No permanent spare is opened.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub connections: NonZeroUsize,
     pub waiting_requests: NonZeroUsize,
     pub waiting_bytes: NonZeroUsize,
+    /// The most time that opening one connection may take, however long the request may wait.
+    pub setup: Duration,
 }
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -137,7 +137,7 @@ impl<M: Send + Sync + 'static> Pool<M> {
                     let connect = Arc::clone(&connect);
                     let changed = Arc::clone(&notify);
                     Box::pin(async move {
-                        let deadline = deadline.min(Instant::now() + SETUP_BUDGET);
+                        let deadline = deadline.min(Instant::now() + limits.setup);
                         timeout_at(deadline, async {
                             let (io, metadata) = connect(deadline).await?;
                             Channel::open(io, metadata, changed, deadline).await

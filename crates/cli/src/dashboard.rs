@@ -1,19 +1,24 @@
 //! The dashboard API client used by the account commands.
 
-use anyhow::{Context as _, Result, bail};
-use reqwest::{Method, StatusCode, header};
+use anyhow::{Context as _, Result, anyhow, bail};
+use http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{fmt, sync::Arc, time::Duration};
+use stogas::{
+    https::{self, HttpsClient},
+    network::Network,
+};
 use url::Url;
 use zeroize::Zeroizing;
 
 pub const ORIGIN: &str = "https://app.stogas.ai";
 // Far above any API request or response; the CLI holds a whole body in memory.
 pub const MAX_BODY_BYTES: usize = 32 << 20;
+const REQUEST_BUDGET: Duration = Duration::from_mins(1);
 
 pub struct Dashboard {
-    client: reqwest::Client,
+    client: HttpsClient,
     origin: Url,
     token: Option<Zeroizing<String>>,
 }
@@ -61,7 +66,7 @@ impl std::error::Error for ApiError {}
 impl Dashboard {
     /// The key exchange is ML-KEM only, so recorded traffic stays private from a future
     /// quantum computer; passwords and tokens do not expire on their own.
-    pub fn new(origin: &str, token: Option<Zeroizing<String>>) -> Result<Self> {
+    pub fn new(origin: &str, token: Option<Zeroizing<String>>, network: Network) -> Result<Self> {
         let mut provider = rustls::crypto::aws_lc_rs::default_provider();
         provider.kx_groups = vec![rustls::crypto::aws_lc_rs::kx_group::X25519MLKEM768];
         let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(provider))
@@ -72,13 +77,7 @@ impl Dashboard {
             .with_no_client_auth();
         tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         Ok(Self {
-            client: reqwest::Client::builder()
-                .use_preconfigured_tls(tls)
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_mins(1))
-                .user_agent(concat!("stogas-cli/", env!("CARGO_PKG_VERSION")))
-                .build()?,
+            client: HttpsClient::new(network, tls),
             origin: Url::parse(origin)?,
             token,
         })
@@ -110,32 +109,51 @@ impl Dashboard {
     /// [`ApiError`].
     pub async fn send(&self, method: Method, path: &str, body: Option<&Value>) -> Result<Vec<u8>> {
         let url = self.url(path)?;
-        let mut request = self
-            .client
-            .request(method, url)
-            .header(header::ACCEPT, "application/json");
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
+        headers.insert(
+            header::USER_AGENT,
+            HeaderValue::from_static(concat!("stogas-cli/", env!("CARGO_PKG_VERSION"))),
+        );
         if let Some(token) = &self.token {
-            request = request.bearer_auth(token.as_str());
+            let mut value =
+                HeaderValue::from_str(&Zeroizing::new(format!("Bearer {}", token.as_str())))
+                    .context("the access token has characters that a header cannot carry")?;
+            value.set_sensitive(true);
+            headers.insert(header::AUTHORIZATION, value);
         }
-        if let Some(body) = body {
-            request = request.json(body);
-        }
-        let mut response = request
-            .send()
-            .await
-            .context("could not reach the Stogas dashboard")?;
-        let status = response.status();
-        let mut body = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .context("the dashboard response ended early")?
-        {
-            if body.len() + chunk.len() > MAX_BODY_BYTES {
-                bail!("the dashboard response exceeds {MAX_BODY_BYTES} bytes");
+        let body = match body {
+            Some(body) => {
+                headers.insert(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                );
+                https::full(serde_json::to_vec(body)?)
             }
-            body.extend_from_slice(&chunk);
-        }
+            None => https::empty(),
+        };
+        let exchange = async {
+            let response = self
+                .client
+                .fetch(method, &url, headers, body)
+                .await
+                .context("could not reach the Stogas dashboard")?;
+            let status = response.status();
+            let body = response
+                .decoded(MAX_BODY_BYTES)
+                .await
+                .map_err(|error| match error {
+                    https::Error::TooLarge(_) => {
+                        anyhow!("the dashboard response exceeds {MAX_BODY_BYTES} bytes")
+                    }
+                    error => anyhow::Error::new(error).context("the dashboard response failed"),
+                })?;
+            anyhow::Ok((status, body))
+        };
+        let (status, body) =
+            tokio::time::timeout(self.client.network().patient(REQUEST_BUDGET), exchange)
+                .await
+                .context("the Stogas dashboard did not answer in time")??;
         if status.is_success() {
             return Ok(body);
         }
@@ -198,7 +216,7 @@ mod tests {
 
     #[test]
     fn sends_the_token_only_to_api_paths_on_the_dashboard_origin() {
-        let dashboard = Dashboard::new(ORIGIN, None).unwrap();
+        let dashboard = Dashboard::new(ORIGIN, None, Network::direct()).unwrap();
         assert_eq!(
             dashboard.url("/api/account").unwrap().as_str(),
             "https://app.stogas.ai/api/account"

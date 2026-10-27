@@ -11,6 +11,8 @@ public sealed record TransportOptions
     [JsonPropertyName("security")] public string Security { get; init; } = "tls";
     [JsonPropertyName("max_connections")] public uint MaxConnections { get; init; } = 4;
     [JsonPropertyName("base_url")] public string? BaseUrl { get; init; }
+    [JsonPropertyName("proxy")] public string? Proxy { get; init; }
+    [JsonPropertyName("onion")] public bool Onion { get; init; }
 }
 
 public sealed class VerificationException(string message, string code) : Exception(message)

@@ -17,6 +17,21 @@ foreach (var options in new[] {
     catch (VerificationException error) when (error.Code.Length > 0) { }
 }
 
+foreach (var (options, message) in new[] {
+    (new TransportOptions { Proxy = "socks5://127.0.0.1:9050" }, "use socks5h://"),
+    (new TransportOptions { Proxy = "socks5h://127.0.0.1" }, "needs a host and a port"),
+    (new TransportOptions { Onion = true }, "onion needs a proxy"),
+    (new TransportOptions { Proxy = "socks5h://127.0.0.1:9050", Onion = true }, "no onion address yet"),
+})
+{
+    try
+    {
+        using var rejected = new Transport(options);
+        throw new Exception("Invalid configuration opened a transport.");
+    }
+    catch (VerificationException error) when (error.Message.Contains(message, StringComparison.Ordinal)) { }
+}
+
 // STOGAS_LIVE=staging|prod sends an invalid API key through each security mode.
 if (Environment.GetEnvironmentVariable("STOGAS_LIVE") is { } environment)
 {

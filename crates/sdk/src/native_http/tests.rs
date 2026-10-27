@@ -35,6 +35,7 @@ async fn client(answers: Vec<Answer>) -> (Client, Arrivals, Arc<AtomicUsize>) {
             connections: NonZeroUsize::MIN,
             waiting_requests: NonZeroUsize::new(4).unwrap(),
             waiting_bytes: NonZeroUsize::new(4096).unwrap(),
+            setup: Duration::from_secs(15),
         },
         move |_| {
             let number = opened.fetch_add(1, Ordering::SeqCst);

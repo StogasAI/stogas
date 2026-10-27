@@ -11,6 +11,18 @@ class TransportTest < Minitest::Test
     end
   end
 
+  def test_proxy_and_onion_reach_the_native_transport
+    {
+      {proxy: 'socks5://127.0.0.1:9050'} => 'use socks5h://',
+      {proxy: 'socks5h://127.0.0.1'} => 'needs a host and a port',
+      {onion: true} => 'onion needs a proxy',
+      {proxy: 'socks5h://127.0.0.1:9050', onion: true} => 'no onion address yet'
+    }.each do |options, message|
+      error = assert_raises(Stogas::VerificationError) { Stogas::Transport.new(**options) }
+      assert_includes error.message, message
+    end
+  end
+
   # STOGAS_LIVE=staging|prod sends an invalid API key through each security mode.
   def test_live_gateway_rejects_an_invalid_key_through_each_security_mode
     environment = ENV['STOGAS_LIVE'] or skip 'set STOGAS_LIVE to staging or prod'

@@ -179,23 +179,36 @@ mod tests {
     #[test]
     #[cfg(feature = "transport")]
     fn managed_transport_rejects_invalid_options_before_network_access() {
-        let configuration = br#"{"security":"tls","max_connections":0}"#;
-        let mut transport = std::ptr::null_mut();
-        // SAFETY: fixture bytes and the writable output pointer live for the synchronous call.
-        let result = unsafe {
-            take_json(stogas_transport_start(
-                configuration.as_ptr(),
-                configuration.len(),
-                &raw mut transport,
-            ))
-        };
-        assert_eq!(result["ok"], false);
-        assert!(
-            result["error"]
-                .as_str()
-                .unwrap()
-                .contains("must be positive")
-        );
-        assert!(transport.is_null());
+        for (configuration, message) in [
+            (
+                &br#"{"security":"tls","max_connections":0}"#[..],
+                "must be positive",
+            ),
+            (br#"{"onion":true}"#, "onion needs a proxy"),
+            (br#"{"proxy":"socks5://127.0.0.1:9050"}"#, "use socks5h://"),
+            (
+                br#"{"proxy":"socks5h://127.0.0.1:9050","onion":true}"#,
+                "no onion address yet",
+            ),
+            (
+                br#"{"proxy":"socks5h://127.0.0.1:9050","onion":true,"base_url":"https://example.com"}"#,
+                "cannot use base_url",
+            ),
+            (br#"{"proxy_url":"socks5h://127.0.0.1:9050"}"#, "unknown field"),
+        ] {
+            let mut transport = std::ptr::null_mut();
+            // SAFETY: fixture bytes and the writable output pointer live for the synchronous call.
+            let result = unsafe {
+                take_json(stogas_transport_start(
+                    configuration.as_ptr(),
+                    configuration.len(),
+                    &raw mut transport,
+                ))
+            };
+            assert_eq!(result["ok"], false);
+            let error = result["error"].as_str().unwrap();
+            assert!(error.contains(message), "{error}");
+            assert!(transport.is_null());
+        }
     }
 }

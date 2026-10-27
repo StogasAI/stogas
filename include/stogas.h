@@ -48,6 +48,8 @@ uint32_t stogas_abi_version(void);
  *
  * These are the defaults. security accepts tls or e2ee; staging requires a staging build.
  * Optional base_url overrides the HTTPS origin, never the compiled evidence authorities.
+ * Optional proxy is a "socks5h://host:port" proxy, such as Tor's, for every connection.
+ * Optional onion, true or false, reaches the environment at its onion address through proxy.
  * Connections/sessions open lazily. There is no evidence polling or inference replay.
  * On success, *transport_out owns a live
  * handle and the returned envelope contains {"base_url":"http://127.0.0.1:<port>/<capability>/v1"}.

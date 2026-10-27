@@ -15,6 +15,8 @@ struct AbiTransportOptions {
     security: String,
     max_connections: usize,
     base_url: Option<String>,
+    proxy: Option<String>,
+    onion: bool,
 }
 
 impl Default for AbiTransportOptions {
@@ -24,6 +26,8 @@ impl Default for AbiTransportOptions {
             security: "tls".into(),
             max_connections: TransportOptions::default().max_connections,
             base_url: None,
+            proxy: None,
+            onion: false,
         }
     }
 }
@@ -72,6 +76,8 @@ pub unsafe extern "C" fn stogas_transport_start(
             },
             max_connections: configuration.max_connections,
             base_url: configuration.base_url,
+            proxy: configuration.proxy,
+            onion: configuration.onion,
         };
         let transport = ManagedTransport::start(&options).map_err(|error| AbiError {
             code: Some(

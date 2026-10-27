@@ -6,13 +6,14 @@ use crate::{
     dashboard::{ApiError, Dashboard, ORIGIN},
 };
 use anyhow::{Context as _, Result, bail};
-use reqwest::Method;
+use http::Method;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     env,
     io::{self, BufRead as _, IsTerminal as _},
 };
+use stogas::network::Network;
 use zeroize::Zeroizing;
 
 const PASSWORD_LENGTH: usize = 64;
@@ -21,41 +22,41 @@ const CODE_ATTEMPTS: usize = 3;
 const HOST_LENGTH: usize = 86;
 
 /// The dashboard client with this machine's access token.
-pub async fn signed_in() -> Result<Dashboard> {
+pub async fn signed_in(network: &Network) -> Result<Dashboard> {
     let token = credentials::token(ORIGIN)
         .await?
         .with_context(|| format!("not signed in; run `stogas login`, or set {VARIABLE}"))?;
-    Dashboard::new(ORIGIN, Some(token))
+    Dashboard::new(ORIGIN, Some(token), network.clone())
 }
 
-pub async fn signup() -> Result<()> {
+pub async fn signup(network: &Network) -> Result<()> {
     refuse_environment_token()?;
-    let dashboard = Dashboard::new(ORIGIN, None)?;
+    let dashboard = Dashboard::new(ORIGIN, None, network.clone())?;
     let password = register(&dashboard).await?;
     // The password comes first, so a failed sign-in below cannot lose the account.
     eprintln!("Account created. Save this password now; it cannot be recovered:");
     println!("{}", password.as_str());
-    save(create_token(&dashboard, &password).await?).await
+    save(create_token(&dashboard, &password).await?, network).await
 }
 
-pub async fn login() -> Result<()> {
+pub async fn login(network: &Network) -> Result<()> {
     refuse_environment_token()?;
     let password = read_password()?;
     if password.chars().count() != PASSWORD_LENGTH {
         bail!("the password has {PASSWORD_LENGTH} characters");
     }
-    let dashboard = Dashboard::new(ORIGIN, None)?;
-    save(create_token(&dashboard, &password).await?).await
+    let dashboard = Dashboard::new(ORIGIN, None, network.clone())?;
+    save(create_token(&dashboard, &password).await?, network).await
 }
 
-pub async fn logout() -> Result<()> {
+pub async fn logout(network: &Network) -> Result<()> {
     refuse_environment_token()?;
     let Some(token) = credentials::stored(ORIGIN).await? else {
         eprintln!("Not signed in.");
         return Ok(());
     };
     // Keep the saved token when the dashboard cannot delete it, since it would still work.
-    revoke(ORIGIN, token)
+    revoke(ORIGIN, token, network)
         .await
         .context("could not delete the access token, so it still works")?;
     credentials::delete(ORIGIN).await?;
@@ -168,7 +169,7 @@ fn token_settings(hostname: &str) -> Value {
 }
 
 /// Saves the new token, then deletes the one it replaces so that old tokens do not pile up.
-async fn save(token: Zeroizing<String>) -> Result<()> {
+async fn save(token: Zeroizing<String>, network: &Network) -> Result<()> {
     let previous = credentials::stored(ORIGIN).await?;
     if credentials::store(ORIGIN, token.clone()).await? {
         eprintln!("Signed in.");
@@ -177,7 +178,7 @@ async fn save(token: Zeroizing<String>) -> Result<()> {
         println!("{}", token.as_str());
     }
     if let Some(previous) = previous
-        && let Err(error) = revoke(ORIGIN, previous).await
+        && let Err(error) = revoke(ORIGIN, previous, network).await
     {
         eprintln!(
             "Could not delete the previous access token ({error:#}). Delete it on the Account page."
@@ -186,8 +187,8 @@ async fn save(token: Zeroizing<String>) -> Result<()> {
     Ok(())
 }
 
-pub async fn revoke(origin: &str, token: Zeroizing<String>) -> Result<()> {
-    Dashboard::new(origin, Some(token))?
+pub async fn revoke(origin: &str, token: Zeroizing<String>, network: &Network) -> Result<()> {
+    Dashboard::new(origin, Some(token), network.clone())?
         .send(Method::POST, "/api/auth/logout", None)
         .await
         .map(drop)

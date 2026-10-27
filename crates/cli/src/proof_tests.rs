@@ -91,7 +91,7 @@ impl Files {
             self.input.environment,
             serde_json::from_value(self.fixture["root"].clone()).unwrap(),
         )?;
-        verify_proof_files(&self.input, &verifier).await
+        verify_proof_files(&self.input, &verifier, Network::direct()).await
     }
 }
 

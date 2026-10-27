@@ -95,7 +95,8 @@ impl Server {
     }
 
     fn client(&self, root: RootKey) -> EvidenceClient {
-        let mut client = EvidenceClient::new(Environment::Staging, root).unwrap();
+        let mut client =
+            EvidenceClient::new(Environment::Staging, root, Network::direct()).unwrap();
         client.origins.clone_from(&self.origins);
         client
     }
@@ -431,6 +432,7 @@ async fn native_pool_never_assigns_an_unattested_connection() {
             connections: std::num::NonZeroUsize::new(4).unwrap(),
             waiting_requests: std::num::NonZeroUsize::new(8).unwrap(),
             waiting_bytes: std::num::NonZeroUsize::new(1024).unwrap(),
+            setup: Duration::from_secs(15),
         },
     );
     let result = pool

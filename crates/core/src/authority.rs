@@ -74,6 +74,19 @@ impl Environment {
         }
     }
 
+    /// The onion address that serves the API, E2EE and evidence hosts through Tor. Its relay reads
+    /// only the server name in each TLS handshake and passes the connection on unread, so clients
+    /// check the same certificates and attestation as without Tor.
+    #[must_use]
+    pub const fn onion_address(self) -> Option<&'static str> {
+        match self {
+            // Production has no onion address yet.
+            Self::Production => None,
+            #[cfg(feature = "staging")]
+            Self::Staging => Some("npqdxfo2kw4aayox35wcqz4rzxc2pyvhaqfdbgs6ecejdamzvuq4x7ad.onion"),
+        }
+    }
+
     /// Compiled Stogas trust seed; evidence cannot select or replace this authority.
     ///
     /// # Errors

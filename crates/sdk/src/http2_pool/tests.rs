@@ -29,6 +29,7 @@ struct Harness {
     calls: Arc<AtomicUsize>,
     live: Arc<AtomicUsize>,
 }
+const SETUP: Duration = Duration::from_secs(15);
 fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(5)
 }
@@ -37,6 +38,7 @@ fn limits(connections: usize) -> Limits {
         connections: NonZeroUsize::new(connections).unwrap(),
         waiting_requests: NonZeroUsize::new(4).unwrap(),
         waiting_bytes: NonZeroUsize::new(1024).unwrap(),
+        setup: SETUP,
     }
 }
 fn harness(connections: usize, streams: u32) -> (Pool<usize>, Harness) {
@@ -792,7 +794,7 @@ async fn long_request_deadline_does_not_extend_setup_or_restart_it_for_http2_set
     let origin = Instant::now();
     let (accepted, mut sockets) = mpsc::unbounded_channel();
     let pool = Pool::new(limits(1), move |deadline| {
-        assert_eq!(deadline, origin + SETUP_BUDGET);
+        assert_eq!(deadline, origin + SETUP);
         let accepted = accepted.clone();
         async move {
             tokio::time::sleep(Duration::from_secs(7)).await;

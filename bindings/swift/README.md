@@ -13,6 +13,8 @@ let baseURL = transport.baseURL
 
 Keep one transport for the application's lifetime. Startup and `refresh()` perform blocking setup work; run them off your UI event loop. The default is native attested TLS. `TransportOptions(security: "e2ee")` selects binary E2EE. Other options are `maxConnections` and `baseURL`; the latter changes the inference origin without changing trusted evidence authorities. Staging requires a separately built staging library.
 
+`proxy` sends every connection to Stogas through a SOCKS5 proxy, such as Tor's `socks5h://127.0.0.1:9050`. `onion: true` also reaches the environment at its onion address through that proxy.
+
 Finish your HTTP clients before `close()`. Cleanup waits up to five seconds, is safe to repeat and also runs when the transport is released. Concurrent refresh and close are serialized. Native failures preserve their reason in `VerificationError.native(code:message:)`.
 
 The package includes no OpenAI request schemas. Use Foundation or your chosen API client; the Swift HTTP example checks HTTP errors, cancellation and authenticated stream completion.

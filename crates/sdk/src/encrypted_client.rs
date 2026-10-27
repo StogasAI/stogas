@@ -2,7 +2,9 @@
 use crate::{
     encrypted_http, encrypted_setup,
     evidence_client::{self, EvidenceClient, wall_clock_ms},
+    https::HttpsClient,
     native_http::{self, Channel, RequestContext},
+    network::SETUP_BUDGET,
     receipt_http,
 };
 use axum::{
@@ -78,7 +80,7 @@ pub struct Client {
 }
 struct Inner {
     evidence: Arc<EvidenceClient>,
-    http: reqwest::Client,
+    http: HttpsClient,
     endpoint: Url,
     environment: Environment,
     maximum: NonZeroUsize,
@@ -316,7 +318,8 @@ impl Client {
         &self,
         deadline: Instant,
     ) -> Result<(Lease, ClientRequest, Arc<RequestContext>), Error> {
-        let setup_deadline = deadline.min(Instant::now() + Duration::from_secs(15));
+        let setup_deadline =
+            deadline.min(Instant::now() + self.inner.http.network().patient(SETUP_BUDGET));
         timeout_at(setup_deadline, async {
             loop {
                 let changed = self.inner.changed.notified();

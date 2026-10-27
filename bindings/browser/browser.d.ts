@@ -5,6 +5,7 @@ export interface StogasTransportOptions {
 	environment?: 'prod' | 'staging';
 	/** One initial session, growing on capacity pressure to this maximum. Default: four. */
 	maxConnections?: number;
+	/** Carries every request, evidence included. One that uses a proxy, such as Tor, sends them all through it. */
 	fetch?: typeof globalThis.fetch;
 	/** Delivered only after the requested terminal content receipt verifies. */
 	onMetadata?: (metadata: unknown) => void;

@@ -5,8 +5,8 @@ use crate::{
     dashboard::{ApiError, Dashboard, printable},
 };
 use anyhow::{Result, bail};
+use http::StatusCode;
 use qrcode::{QrCode, render::unicode::Dense1x2};
-use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -14,6 +14,7 @@ use std::{
     io::{self, IsTerminal as _},
     time::Duration,
 };
+use stogas::network::Network;
 
 const CHECK_EVERY: Duration = Duration::from_secs(15);
 
@@ -73,13 +74,13 @@ struct Payment {
     provider: String,
 }
 
-pub async fn run(args: Args) -> Result<()> {
+pub async fn run(args: Args, network: &Network) -> Result<()> {
     let currency = args.currency.to_ascii_uppercase();
     let wallet_coin = matches!(currency.as_str(), "BTC" | "XMR");
     if wallet_coin && args.network.is_some() {
         bail!("{currency} has one network; leave out --network");
     }
-    let dashboard = signed_in().await?;
+    let dashboard = signed_in(network).await?;
     let base = args.organization.map_or_else(
         || "/api/funding".to_owned(),
         |organization| format!("/api/{organization}/funding"),
