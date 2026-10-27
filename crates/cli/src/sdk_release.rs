@@ -18,14 +18,14 @@ pub async fn verify_directory(directory: &Path) -> Result<()> {
     )?;
     let mut verified = verify_artifacts(directory, &manifest).await?;
     verified.sort();
-    println!(
+    out!(
         "Verified SDK {} with GitHub provenance and the Stogas signature: {} of {} artifacts",
         manifest.version,
         verified.len(),
         manifest.artifacts.len()
-    );
+    )?;
     for name in verified {
-        println!("  {name}");
+        out!("  {name}")?;
     }
     Ok(())
 }

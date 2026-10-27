@@ -1,3 +1,12 @@
+/// Writes a line to standard output. Unlike `println!`, it returns the error when a reader such as
+/// `head` has stopped reading, so the command can end quietly instead of panicking.
+macro_rules! out {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        writeln!(std::io::stdout(), $($arg)*)
+    }};
+}
+
 mod account;
 mod altcha;
 mod credentials;
@@ -109,7 +118,7 @@ enum Command {
     Encrypt {
         #[arg(long)]
         key_file: PathBuf,
-        #[arg(long)]
+        #[arg(long, value_parser = topup::parse_organization)]
         organization: String,
         #[arg(long, value_parser = ["plugins", "byok/openai", "byok/anthropic", "byok/chutes"])]
         purpose: String,
@@ -206,6 +215,22 @@ struct ServeArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    match run().await {
+        // A reader that stopped reading, such as `head`, already has all that it wanted.
+        Err(error)
+            if error.chain().any(|cause| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::BrokenPipe)
+            }) =>
+        {
+            Ok(())
+        }
+        result => result,
+    }
+}
+
+async fn run() -> Result<()> {
     let Cli {
         proxy,
         onion,
@@ -247,7 +272,7 @@ async fn main() -> Result<()> {
                 timeout,
             )
             .await?;
-            println!("{}", serde_json::to_string(&report)?);
+            out!("{}", serde_json::to_string(&report)?)?;
             if !report.ready {
                 std::process::exit(1);
             }
@@ -269,8 +294,15 @@ async fn main() -> Result<()> {
             let archive =
                 stogas::evidence_archive::download(environment, network(environment)?, &boot)
                     .await?;
-            tokio::fs::write(output.join("boot.json"), archive.boot).await?;
-            tokio::fs::write(output.join("evidence.json"), archive.evidence).await?;
+            for (name, bytes) in [
+                ("boot.json", archive.boot),
+                ("evidence.json", archive.evidence),
+            ] {
+                let path = output.join(name);
+                tokio::fs::write(&path, bytes)
+                    .await
+                    .with_context(|| format!("could not write {}", path.display()))?;
+            }
         }
         Command::Proof(args) => {
             let verifier = Verifier::stogas(args.environment)?;
@@ -323,8 +355,7 @@ async fn run_verify(input: VerifyArgs) -> Result<()> {
     let mut verifier = stogas_core::evidence::Verifier::stogas(input.environment)?;
     let now = input.now_unix_ms.unwrap_or_else(wall_clock_ms);
     let output = verifier.refresh(&bytes, now)?;
-    print_output(&output, input.json, now);
-    Ok(())
+    print_output(&output, input.json, now)
 }
 
 async fn run_serve(input: ServeArgs, proxy: Option<String>, onion: bool) -> Result<()> {
@@ -375,7 +406,9 @@ async fn read_signed_response(input: &ProofArgs, request: [u8; 32]) -> Result<re
         return Ok(receipt::Signed::detached(request, &proof, response)?);
     }
     if input.stream {
-        let mut response = tokio::fs::File::open(&input.response).await?;
+        let mut response = tokio::fs::File::open(&input.response)
+            .await
+            .with_context(|| format!("could not read {}", input.response.display()))?;
         let mut stream = receipt::Stream::new(request);
         let mut buffer = vec![0; 64 * 1024].into_boxed_slice();
         loop {
@@ -398,12 +431,12 @@ async fn read_signed_response(input: &ProofArgs, request: [u8; 32]) -> Result<re
 
 fn print_proof_output(output: &VerifiedReceipt, json: bool) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string(&output)?);
+        out!("{}", serde_json::to_string(&output)?)?;
     } else {
-        println!("Verified response");
-        println!("  node: {}", output.node_id);
-        println!("  request SHA-256: {}", output.request_sha256);
-        println!("  response SHA-256: {}", output.response_sha256);
+        out!("Verified response")?;
+        out!("  node: {}", output.node_id)?;
+        out!("  request SHA-256: {}", output.request_sha256)?;
+        out!("  response SHA-256: {}", output.response_sha256)?;
     }
     Ok(())
 }
@@ -458,17 +491,18 @@ async fn read_bounded_file(path: &Path, maximum: usize, label: &str) -> Result<V
     Ok(bytes)
 }
 
-fn print_output(output: &stogas_core::evidence::Snapshot, json: bool, now: i64) {
+fn print_output(output: &stogas_core::evidence::Snapshot, json: bool, now: i64) -> Result<()> {
     if json {
         let mut summary = output.summary();
         summary["collateral"] = serde_json::json!(output.collateral_summary(now));
-        println!("{summary}");
-        return;
+        out!("{summary}")?;
+        return Ok(());
     }
     let document = output.evidence().document();
-    println!("Verified evidence revision {}", document.revision);
-    println!("  gateway releases: {}", document.gateways.len());
-    println!("  catalogs: {}", document.catalogs.len());
+    out!("Verified evidence revision {}", document.revision)?;
+    out!("  gateway releases: {}", document.gateways.len())?;
+    out!("  catalogs: {}", document.catalogs.len())?;
+    Ok(())
 }
 
 fn wall_clock_ms() -> i64 {
