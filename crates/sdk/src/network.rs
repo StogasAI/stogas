@@ -5,18 +5,21 @@
 //! connections go direct and proxy environment variables have no effect.
 
 use anyhow::{Result, bail};
-use std::{fmt, io, sync::Arc, time::Duration};
+use futures_util::{StreamExt as _, stream::FuturesUnordered};
+use std::{fmt, future::Future, io, net::SocketAddr, sync::Arc, time::Duration};
 use stogas_core::authority::Environment;
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
-    net::TcpStream,
-    time::timeout,
+    net::{TcpStream, lookup_host},
+    time::{sleep, timeout},
 };
 use url::Url;
 
 /// The time to open a verified connection or E2EE session, with any evidence it needs, directly.
 pub(crate) const SETUP_BUDGET: Duration = Duration::from_secs(15);
 const DIRECT_CONNECT: Duration = Duration::from_secs(10);
+/// RFC 8305's connection attempt delay.
+const NEXT_ATTEMPT: Duration = Duration::from_millis(250);
 /// Tor may build a new circuit, and reaching an onion service adds a rendezvous.
 const PROXIED_CONNECT: Duration = Duration::from_mins(1);
 /// Each setup step over Tor takes several slow round trips.
@@ -116,7 +119,7 @@ impl Network {
         let host = host.trim_start_matches('[').trim_end_matches(']');
         match &*self.0 {
             Route::Direct => {
-                let stream = timeout(DIRECT_CONNECT, TcpStream::connect((host, port)))
+                let stream = timeout(DIRECT_CONNECT, connect_any(host, port))
                     .await
                     .map_err(|_| timed_out(format!("connecting to {host} timed out")))??;
                 stream.set_nodelay(true)?;
@@ -138,16 +141,12 @@ impl Network {
                     .map_or(host, |onion| onion.address);
                 let request = connect_request(target, port)?;
                 timeout(PROXIED_CONNECT, async {
-                    let mut stream = TcpStream::connect((proxy.as_str(), *proxy_port))
-                        .await
-                        .map_err(|error| {
-                            io::Error::new(
-                                error.kind(),
-                                format!(
-                                    "could not reach the proxy at {proxy}:{proxy_port}: {error}"
-                                ),
-                            )
-                        })?;
+                    let mut stream = connect_any(proxy, *proxy_port).await.map_err(|error| {
+                        io::Error::new(
+                            error.kind(),
+                            format!("could not reach the proxy at {proxy}:{proxy_port}: {error}"),
+                        )
+                    })?;
                     stream.set_nodelay(true)?;
                     socks5_connect(&mut stream, &request, target).await?;
                     Ok(stream)
@@ -188,6 +187,61 @@ impl fmt::Debug for Network {
 
 fn timed_out(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::TimedOut, message)
+}
+
+/// Connects to one of the addresses that `host` resolves to, with Happy Eyeballs (RFC 8305).
+/// Resolvers usually list IPv6 first, and a network that drops IPv6 silently would otherwise
+/// hold each connection until it timed out.
+async fn connect_any(host: &str, port: u16) -> io::Result<TcpStream> {
+    first_connection(
+        lookup_host((host, port)).await?.collect(),
+        TcpStream::connect,
+    )
+    .await
+}
+
+/// Tries the addresses with their families alternating, from the resolver's first choice. Each
+/// attempt starts when the one before it fails, or after [`NEXT_ATTEMPT`] while it is pending,
+/// and the first connection wins. Dropping the others cancels them.
+async fn first_connection<T, F>(
+    addresses: Vec<SocketAddr>,
+    mut connect: impl FnMut(SocketAddr) -> F,
+) -> io::Result<T>
+where
+    F: Future<Output = io::Result<T>>,
+{
+    let mut queue = alternate_families(addresses).into_iter();
+    let mut attempts = FuturesUnordered::new();
+    let mut failure = io::Error::new(io::ErrorKind::NotFound, "the host has no addresses");
+    loop {
+        match queue.next() {
+            Some(address) => attempts.push(connect(address)),
+            None if attempts.is_empty() => return Err(failure),
+            None => {}
+        }
+        tokio::select! {
+            Some(result) = attempts.next() => match result {
+                Ok(stream) => return Ok(stream),
+                Err(error) => failure = error,
+            },
+            () = sleep(NEXT_ATTEMPT), if !queue.as_slice().is_empty() => {}
+        }
+    }
+}
+
+fn alternate_families(addresses: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    let first_is_ipv6 = addresses.first().is_some_and(SocketAddr::is_ipv6);
+    let (preferred, other): (Vec<_>, Vec<_>) = addresses
+        .into_iter()
+        .partition(|address| address.is_ipv6() == first_is_ipv6);
+    let mut other = other.into_iter();
+    let mut ordered = Vec::with_capacity(preferred.len() + other.len());
+    for address in preferred {
+        ordered.push(address);
+        ordered.extend(other.next());
+    }
+    ordered.extend(other);
+    ordered
 }
 
 /// A SOCKS5 (RFC 1928) request to connect to `host` by name. The proxy looks the name up, so it

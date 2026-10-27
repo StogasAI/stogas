@@ -222,6 +222,94 @@ async fn direct_connections_disable_nagle() {
     assert_eq!(stream.peer_addr().unwrap(), address);
 }
 
+const SILENT_IPV6: &str = "[2001:db8::1]:443";
+const IPV4: &str = "192.0.2.1:443";
+
+fn address(text: &str) -> SocketAddr {
+    text.parse().unwrap()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_family_that_drops_packets_costs_a_quarter_second() {
+    let started = tokio::time::Instant::now();
+    let racing = first_connection(vec![address(SILENT_IPV6), address(IPV4)], |to| async move {
+        if to == address(SILENT_IPV6) {
+            std::future::pending().await
+        } else {
+            Ok(to)
+        }
+    });
+    let connected = timeout(DIRECT_CONNECT, racing).await.unwrap().unwrap();
+    assert_eq!(connected, address(IPV4));
+    assert_eq!(started.elapsed(), NEXT_ATTEMPT);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_address_moves_on_at_once() {
+    let started = tokio::time::Instant::now();
+    let connected = first_connection(vec![address(SILENT_IPV6), address(IPV4)], |to| async move {
+        if to == address(SILENT_IPV6) {
+            Err(io::ErrorKind::ConnectionRefused.into())
+        } else {
+            Ok(to)
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(connected, address(IPV4));
+    assert_eq!(started.elapsed(), Duration::ZERO);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_attempt_keeps_running_after_the_next_starts() {
+    let started = tokio::time::Instant::now();
+    let connected = first_connection(vec![address(SILENT_IPV6), address(IPV4)], |to| async move {
+        let delay = if to == address(SILENT_IPV6) {
+            400
+        } else {
+            1_000
+        };
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+        Ok(to)
+    })
+    .await
+    .unwrap();
+    assert_eq!(connected, address(SILENT_IPV6));
+    assert_eq!(started.elapsed(), Duration::from_millis(400));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_last_failure_explains_why_no_address_connected() {
+    let refused = first_connection(vec![address(SILENT_IPV6), address(IPV4)], |to| async move {
+        Err::<(), _>(if to == address(IPV4) {
+            io::ErrorKind::ConnectionRefused.into()
+        } else {
+            io::Error::from(io::ErrorKind::NetworkUnreachable)
+        })
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(refused.kind(), io::ErrorKind::ConnectionRefused);
+    let none = first_connection(Vec::new(), |_| async { Ok(()) })
+        .await
+        .unwrap_err();
+    assert_eq!(none.kind(), io::ErrorKind::NotFound);
+}
+
+#[test]
+fn families_alternate_from_the_resolver_s_first_choice() {
+    let v6 = |port| SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port));
+    let v4 = |port| SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+    assert_eq!(
+        alternate_families(vec![v6(1), v6(2), v4(3), v4(4), v4(5)]),
+        [v6(1), v4(3), v6(2), v4(4), v4(5)]
+    );
+    assert_eq!(
+        alternate_families(vec![v4(1), v6(2), v4(3)]),
+        [v4(1), v6(2), v4(3)]
+    );
+}
+
 #[tokio::test]
 async fn the_proxy_looks_up_names_and_bound_addresses_are_skipped() {
     let bound_addresses = [
