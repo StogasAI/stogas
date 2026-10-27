@@ -200,8 +200,12 @@ pub async fn ccpayment(
         )?;
     }
     print_qr(&deposit.address)?;
+    out!("You can reuse this address for later payments.")?;
     if deposit.testnet {
-        out!("Testnet: send test funds only. The credit has no cash value.")?;
+        out!(
+            "Test network: send only test {}. The credit has no cash value.",
+            printable(&asset.symbol)
+        )?;
     }
     Ok(Expected {
         provider: "ccpayment",
