@@ -24,10 +24,10 @@ sys.dont_write_bytecode = True
 from artifacts import digest, source_digest, unpack
 
 
-def run(arguments, **kwargs):
+def run(arguments, stderr=subprocess.STDOUT, **kwargs):
     # Registry clients may include response bodies in errors. Keep their output
     # private; tokens are supplied through the client's documented environment.
-    result = subprocess.run(arguments, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs)
+    result = subprocess.run(arguments, stdout=subprocess.PIPE, stderr=stderr, **kwargs)
     if result.returncode:
         raise RuntimeError(f"{Path(arguments[0]).name} failed (exit {result.returncode}); registry publication stopped")
     return result.stdout
@@ -149,7 +149,10 @@ def crates(packages, version):
         wait_for(indexed)
 
 
-def npm(packages, version):
+def npm(packages, version, stage=False):
+    """With `stage`, upload each archive for a maintainer to approve with two-factor
+    authentication instead of publishing it. A token can create a package only this way once
+    npm stops tokens that bypass two-factor authentication from publishing."""
     for name, filename in (("@stogas/sigstore", "stogas-sigstore"), ("stogas", "stogas")):
         path = packages / f"{filename}-{version}.tgz"
         def check():
@@ -160,9 +163,30 @@ def npm(packages, version):
             if metadata["name"] != name or metadata["version"] != version:
                 raise ValueError("npm package identity differs from the approved release")
             return exact_remote(path, metadata["dist"]["tarball"])
-        if not check():
+        if check():
+            continue
+        if not stage:
             run(["npm", "publish", str(path), "--access", "public"])
-        wait_for(check)
+            wait_for(check)
+            continue
+        # A rerun finds the upload that still awaits approval.
+        if not (staged := npm_staged(name, version)):
+            run(["npm", "stage", "publish", str(path), "--access", "public"])
+            staged = npm_staged(name, version)
+        if not staged:
+            raise RuntimeError(f"npm lists no staged {name}@{version}")
+        for stage_id in staged:
+            with tempfile.TemporaryDirectory(prefix="stogas-npm-") as temporary:
+                run(["npm", "stage", "download", stage_id], cwd=temporary)
+                if [digest(file) for file in Path(temporary).iterdir()] != [digest(path)]:
+                    raise ValueError(f"npm staged different bytes as {name}@{version}; reject stage {stage_id}")
+        print(f"npm: {name}@{version} awaits approval on npmjs.com under Staged Packages")
+
+
+def npm_staged(name, version):
+    # npm writes notices to standard error, which would corrupt the JSON.
+    items = json.loads(run(["npm", "stage", "list", "--json"], stderr=subprocess.DEVNULL))
+    return [item["id"] for item in items if item["packageName"] == name and item["version"] == version]
 
 
 def pypi(packages, version):
@@ -283,11 +307,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("ecosystem", choices=["crates", "npm", "pypi", "ruby", "nuget", "maven", "go"])
     parser.add_argument("packages", type=Path)
+    parser.add_argument("--stage", action="store_true", help="npm only: leave each new version for a maintainer to approve")
     args = parser.parse_args()
+    if args.stage and args.ecosystem != "npm":
+        parser.error("only npm stages packages")
     packages = args.packages.resolve()
     manifest = json.loads((packages / "release-manifest.json").read_text())
     if args.ecosystem == "go":
         go(packages, manifest["version"], manifest["source"])
+    elif args.ecosystem == "npm":
+        npm(packages, manifest["version"], args.stage)
     else:
         globals()[args.ecosystem](packages, manifest["version"])
-    print(f"{args.ecosystem}: published artifacts match the approved release")
+    if not args.stage:
+        print(f"{args.ecosystem}: published artifacts match the approved release")
