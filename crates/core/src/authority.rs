@@ -316,8 +316,6 @@ pub struct Proof {
 /// Authenticated evidence contents. Never holds CRL state, checkpoints or HTTP `ETags`.
 #[derive(Clone, Debug)]
 pub struct VerifiedEvidence {
-    /// SHA-256 of the root key that authorized this evidence.
-    root_sha256: [u8; 32],
     document: EvidenceDocument,
     /// Absent only for an operator's unsigned candidate, which is never accepted.
     proof: Option<Proof>,
@@ -427,7 +425,6 @@ impl VerifiedEvidence {
 pub struct Authority {
     environment: Environment,
     root: RootKey,
-    root_sha256: [u8; 32],
     accepted: Option<VerifiedEvidence>,
     key_state: Arc<KeyState>,
 }
@@ -459,11 +456,10 @@ impl Authority {
     /// # Errors
     /// Rejects malformed or weak root keys and ambiguous key identifiers.
     pub fn new(environment: Environment, root: RootKey) -> Result<Self, Error> {
-        let root_der = decode_key(&root.key_id, &root.public_key)?;
+        decode_key(&root.key_id, &root.public_key)?;
         Ok(Self {
             environment,
             root,
-            root_sha256: Sha256::digest(&root_der).into(),
             accepted: None,
             key_state: Arc::default(),
         })
@@ -531,26 +527,23 @@ impl Authority {
         sigstore: Arc<VerifiedSigstore>,
         now_unix_ms: i64,
     ) -> Result<VerifiedEvidence, Error> {
-        let candidate = check_document(self.root_sha256, keys, document, sigstore)?;
+        let candidate = check_document(keys, document, sigstore)?;
         candidate.valid_until(now_unix_ms)?;
         self.check_update(&candidate)?;
         Ok(candidate)
     }
 
-    /// Call only after the complete candidate passes release, hardware and collateral checks.
-    /// Rechecks ordering so overlapping acquisitions cannot undo newer accepted evidence.
+    /// Installs a candidate that [`Self::check`] returned in the same refresh, once its signature
+    /// and its release, hardware and collateral checks pass. A refresh holds the authority
+    /// exclusively from that check to here, so the candidate still follows the accepted evidence,
+    /// and its key manifest was learned before the check.
     ///
     /// # Errors
-    /// Rejects unsigned evidence, another authority, rollback or equivocation.
+    /// Rejects a candidate without a verified signature.
     pub(crate) fn accept(&mut self, candidate: VerifiedEvidence) -> Result<(), Error> {
         if candidate.proof.is_none() {
             return Err(Error::Signature);
         }
-        self.check_update(&candidate)?;
-        self.key_state.learn(VerifiedKeys {
-            document: candidate.keys().clone(),
-            digest: candidate.keys_digest.clone(),
-        })?;
         self.accepted = Some(candidate);
         Ok(())
     }
@@ -560,14 +553,9 @@ impl Authority {
         self.accepted.as_ref()
     }
 
-    /// Rechecks that `candidate` may follow the accepted evidence under the root decisions
-    /// learned so far.
+    /// Checks that `candidate` may follow the accepted evidence under the root decisions
+    /// learned so far. Its key manifest passed this authority's root and environment.
     pub(crate) fn check_update(&self, candidate: &VerifiedEvidence) -> Result<(), Error> {
-        if candidate.root_sha256 != self.root_sha256
-            || candidate.document.environment != self.environment
-        {
-            return Err(Error::Authority);
-        }
         // Rejects an older generation and a different manifest with the same generation.
         self.key_state
             .check(candidate.keys(), &candidate.keys_digest)?;
@@ -621,7 +609,6 @@ pub fn payload_sha256(payload: &impl Serialize) -> Result<String, Error> {
 }
 
 fn check_document(
-    root_sha256: [u8; 32],
     keys: VerifiedKeys,
     document: EvidenceDocument,
     sigstore: Arc<VerifiedSigstore>,
@@ -657,7 +644,6 @@ fn check_document(
         ));
     }
     Ok(VerifiedEvidence {
-        root_sha256,
         digest: payload_sha256(&document)?,
         expires_unix_ms: keys.document.expiry_unix_ms()?,
         document,
