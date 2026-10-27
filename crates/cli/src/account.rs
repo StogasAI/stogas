@@ -35,7 +35,10 @@ pub async fn signup(network: &Network) -> Result<()> {
     let password = register(&dashboard).await?;
     // The password comes first, so a failed sign-in below cannot lose the account.
     eprintln!("Account created. Save this password now; it cannot be recovered:");
-    println!("{}", password.as_str());
+    // Unlike other output, a password that nobody read is an error, so this keeps no I/O error
+    // that would let the command end quietly.
+    out!("{}", password.as_str())
+        .map_err(|error| anyhow::anyhow!("could not print the password: {error}"))?;
     save(create_token(&dashboard, &password).await?, network).await
 }
 
@@ -175,7 +178,8 @@ async fn save(token: Zeroizing<String>, network: &Network) -> Result<()> {
         eprintln!("Signed in.");
     } else {
         eprintln!("This system has no keychain. Save this access token and set it as {VARIABLE}:");
-        println!("{}", token.as_str());
+        out!("{}", token.as_str())
+            .map_err(|error| anyhow::anyhow!("could not print the access token: {error}"))?;
     }
     if let Some(previous) = previous
         && let Err(error) = revoke(ORIGIN, previous, network).await

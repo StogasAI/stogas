@@ -128,7 +128,7 @@ pub async fn wallet(
     } else {
         ("Monero", "monero", "tx_amount")
     };
-    print_instructions(&coin, network, &deposit.address, deposit.estimate.as_ref());
+    print_instructions(&coin, network, &deposit.address, deposit.estimate.as_ref())?;
     // A payment URI with the amount lets a wallet that scans the code fill it in.
     let uri = match &deposit.estimate {
         Some(estimate) => format!(
@@ -138,9 +138,9 @@ pub async fn wallet(
         None => deposit.address.clone(),
     };
     print_qr(&uri)?;
-    println!("You can reuse this address for later payments.");
+    out!("You can reuse this address for later payments.")?;
     if deposit.testnet {
-        println!("Test network: send only test {coin}. The credit has no cash value.");
+        out!("Test network: send only test {coin}. The credit has no cash value.")?;
     }
     Ok(Expected {
         provider: "wallet",
@@ -180,12 +180,12 @@ pub async fn ccpayment(
         &asset.network,
         &deposit.address,
         Some(&deposit.estimate),
-    );
+    )?;
     if !deposit.memo.is_empty() {
-        println!(
+        out!(
             "Memo: {} (required; send it with the payment)",
             printable(&deposit.memo)
-        );
+        )?;
     }
     // A zero minimum means none, as for testnet tokens.
     if asset
@@ -193,15 +193,15 @@ pub async fn ccpayment(
         .bytes()
         .any(|byte| matches!(byte, b'1'..=b'9'))
     {
-        println!(
+        out!(
             "Minimum deposit: {} {}. Smaller deposits may not be credited.",
             printable(&asset.minimum_deposit),
             printable(&asset.symbol)
-        );
+        )?;
     }
     print_qr(&deposit.address)?;
     if deposit.testnet {
-        println!("Testnet: send test funds only. The credit has no cash value.");
+        out!("Testnet: send test funds only. The credit has no cash value.")?;
     }
     Ok(Expected {
         provider: "ccpayment",
@@ -321,19 +321,24 @@ async fn set_location(dashboard: &Dashboard, base: &str) -> Result<()> {
     }
 }
 
-fn print_instructions(symbol: &str, network: &str, address: &str, estimate: Option<&Estimate>) {
+fn print_instructions(
+    symbol: &str,
+    network: &str,
+    address: &str,
+    estimate: Option<&Estimate>,
+) -> Result<()> {
     let symbol = printable(symbol);
     let network = printable(network);
     match estimate {
-        Some(estimate) => println!(
+        Some(estimate) => out!(
             "Send {} {symbol} to this {network} address:",
             printable(&estimate.amount_crypto)
-        ),
-        None => println!("Send {symbol} to this {network} address:"),
+        )?,
+        None => out!("Send {symbol} to this {network} address:")?,
     }
-    println!("{}", printable(address));
+    out!("{}", printable(address))?;
     match estimate {
-        Some(estimate) => println!(
+        Some(estimate) => out!(
             "You get about ${} in credit after ${:.2} in estimated fees.",
             dollars(&estimate.credit_usd),
             [
@@ -345,24 +350,25 @@ fn print_instructions(symbol: &str, network: &str, address: &str, estimate: Opti
             .into_iter()
             .map(|fee| fee.parse::<f64>().unwrap_or(f64::NAN))
             .sum::<f64>()
-        ),
-        None => println!(
+        )?,
+        None => out!(
             "There is no current exchange rate. The credit uses the rate when the payment arrives."
-        ),
+        )?,
     }
+    Ok(())
 }
 
 /// Draws the code only on a terminal, which is assumed to have a dark background.
 fn print_qr(text: &str) -> Result<()> {
     if io::stdout().is_terminal() {
         let code = QrCode::new(text)?;
-        println!(
+        out!(
             "{}",
             code.render::<Dense1x2>()
                 .dark_color(Dense1x2::Light)
                 .light_color(Dense1x2::Dark)
                 .build()
-        );
+        )?;
     }
     Ok(())
 }
@@ -383,7 +389,7 @@ pub async fn wait(
     expected: &Expected,
     earlier: &HashSet<String>,
 ) -> Result<()> {
-    println!("Waiting for the payment. Press Ctrl-C to stop waiting.");
+    out!("Waiting for the payment. Press Ctrl-C to stop waiting.")?;
     let mut reported = HashMap::new();
     loop {
         tokio::time::sleep(CHECK_EVERY).await;
@@ -403,7 +409,7 @@ pub async fn wait(
         }) {
             let status = describe(payment);
             if reported.get(&payment.id) != Some(&status) {
-                println!("{status}");
+                out!("{status}")?;
                 reported.insert(payment.id.clone(), status);
             }
             match payment.credit_status.as_str() {
@@ -502,7 +508,7 @@ fn parse_usd(value: &str) -> Result<String, String> {
     }
 }
 
-fn parse_organization(value: &str) -> Result<String, String> {
+pub fn parse_organization(value: &str) -> Result<String, String> {
     let uuid = value.len() == 36
         && value.bytes().enumerate().all(|(index, byte)| {
             if matches!(index, 8 | 13 | 18 | 23) {

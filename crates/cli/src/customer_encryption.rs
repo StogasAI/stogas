@@ -11,9 +11,9 @@ use zeroize::Zeroizing;
 
 fn read_private(path: &Path, maximum: usize) -> Result<Zeroizing<Vec<u8>>> {
     let mut bytes = Zeroizing::new(Vec::new());
-    std::fs::File::open(path)?
-        .take((maximum + 1) as u64)
-        .read_to_end(&mut bytes)?;
+    std::fs::File::open(path)
+        .and_then(|file| file.take((maximum + 1) as u64).read_to_end(&mut bytes))
+        .with_context(|| format!("could not read {}", path.display()))?;
     if bytes.len() > maximum {
         bail!("Input exceeds its size limit");
     }
@@ -28,9 +28,14 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
-    let mut file = options
-        .open(path)
-        .context("Cannot create output; existing files are never overwritten")?;
+    let mut file = options.open(path).map_err(|error| {
+        let path = path.display();
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            anyhow::anyhow!("{path} already exists, and the CLI never overwrites a file")
+        } else {
+            anyhow::Error::new(error).context(format!("could not create {path}"))
+        }
+    })?;
     file.write_all(bytes)?;
     file.sync_all()?;
     Ok(())
@@ -48,7 +53,7 @@ pub fn generate(output: &Path) -> Result<()> {
     getrandom::fill(root.as_mut()).context("Cannot generate encryption key")?;
     let encoded = Zeroizing::new(URL_SAFE_NO_PAD.encode(root.as_ref()));
     write_new(output, encoded.as_bytes())?;
-    println!("{}", key_id(root.as_ref()));
+    out!("{}", key_id(root.as_ref()))?;
     Ok(())
 }
 
@@ -198,8 +203,22 @@ mod tests {
         generate(&path).unwrap();
         let first = std::fs::read(&path).unwrap();
         assert_eq!(URL_SAFE_NO_PAD.decode(&first).unwrap().len(), 32);
-        assert!(generate(&path).is_err());
+        assert_eq!(
+            generate(&path).unwrap_err().to_string(),
+            format!(
+                "{} already exists, and the CLI never overwrites a file",
+                path.display()
+            )
+        );
         assert_eq!(std::fs::read(&path).unwrap(), first);
+        let missing = path.join("key");
+        assert_eq!(
+            format!("{:#}", generate(&missing).unwrap_err()),
+            format!(
+                "could not create {}: Not a directory (os error 20)",
+                missing.display()
+            )
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
