@@ -600,8 +600,8 @@ fn parse_u64_hex(value: &str, label: &str) -> Result<u64, Error> {
 }
 
 /// Gateways and Web reject larger catalog artifacts, and the catalog build refuses them.
-const CATALOG_PUBLIC_MAX_BYTES: u64 = 8 * 1024 * 1024;
-const CATALOG_RUNTIME_MAX_BYTES: u64 = 16 * 1024 * 1024;
+const CATALOG_PUBLIC_MAX_BYTES: u64 = 32 * 1024 * 1024;
+const CATALOG_RUNTIME_MAX_BYTES: u64 = 32 * 1024 * 1024;
 
 fn validate_catalog_shape(manifest: &CatalogReleaseManifest) -> Result<(), Error> {
     if manifest.schema != "stogas.catalog.release.v1"
@@ -2175,9 +2175,9 @@ mod tests {
     #[test]
     fn catalog_artifacts_stay_within_the_sizes_that_gateways_and_web_accept() {
         for (public, runtime, valid) in [
-            (8 * 1024 * 1024, 16 * 1024 * 1024, true),
-            (8 * 1024 * 1024 + 1, 1, false),
-            (1, 16 * 1024 * 1024 + 1, false),
+            (32 * 1024 * 1024, 32 * 1024 * 1024, true),
+            (32 * 1024 * 1024 + 1, 1, false),
+            (1, 32 * 1024 * 1024 + 1, false),
         ] {
             let mut catalog = catalog_fixture();
             catalog.document.artifacts.public.size_bytes = public;
