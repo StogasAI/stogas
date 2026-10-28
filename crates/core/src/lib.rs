@@ -599,12 +599,11 @@ fn parse_u64_hex(value: &str, label: &str) -> Result<u64, Error> {
         .map_err(|_| Error::InvalidEvidence(format!("hardware policy {label} is invalid")))
 }
 
-/// Gateways and Web reject larger catalog artifacts, and the catalog build refuses them.
-const CATALOG_PUBLIC_MAX_BYTES: u64 = 32 * 1024 * 1024;
-const CATALOG_RUNTIME_MAX_BYTES: u64 = 32 * 1024 * 1024;
+/// Gateways and Web reject a larger catalog root, and the catalog build refuses one.
+const CATALOG_ROOT_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 fn validate_catalog_shape(manifest: &CatalogReleaseManifest) -> Result<(), Error> {
-    if manifest.schema != "stogas.catalog.release.v1"
+    if manifest.schema != "stogas.catalog.release.v2"
         || manifest.minimum_gateway_sequence == 0
         || manifest.minimum_gateway_sequence > MAX_SAFE_INTEGER
         || manifest.sequence == 0
@@ -613,8 +612,7 @@ fn validate_catalog_shape(manifest: &CatalogReleaseManifest) -> Result<(), Error
         || manifest.source.tag != format!("catalog-v{}", manifest.sequence)
         || !is_lower_hex(&manifest.source.commit, 20)
         || !is_lower_hex(&manifest.source.sha256, 32)
-        || !valid_artifact(&manifest.artifacts.runtime, CATALOG_RUNTIME_MAX_BYTES)
-        || !valid_artifact(&manifest.artifacts.public, CATALOG_PUBLIC_MAX_BYTES)
+        || !valid_artifact(&manifest.artifacts.root, CATALOG_ROOT_MAX_BYTES)
     {
         return Err(Error::InvalidEvidence(
             "invalid catalog release shape".into(),
@@ -878,10 +876,8 @@ fn verify_catalog_release(
         github_integrated_time_unix_ms,
         minimum_gateway_sequence: manifest.minimum_gateway_sequence,
         provenance,
-        public_digest: format!("sha256:{}", manifest.artifacts.public.sha256),
-        public_size_bytes: manifest.artifacts.public.size_bytes,
-        runtime_digest: format!("sha256:{}", manifest.artifacts.runtime.sha256),
-        runtime_size_bytes: manifest.artifacts.runtime.size_bytes,
+        root_digest: format!("sha256:{}", manifest.artifacts.root.sha256),
+        root_size_bytes: manifest.artifacts.root.size_bytes,
         sequence: manifest.sequence,
         source_commit: manifest.source.commit.clone(),
         source_repository: manifest.source.repository.clone(),
@@ -902,8 +898,7 @@ fn verify_catalog_provenance(
         attestation_bytes,
         &[
             ("catalog-release.json", manifest_digest),
-            ("catalog.runtime.json", &manifest.artifacts.runtime.sha256),
-            ("catalog.public.json", &manifest.artifacts.public.sha256),
+            ("catalog.json", &manifest.artifacts.root.sha256),
         ],
     )? {
         return Ok((None, ReleaseProvenance::Staging));
@@ -922,12 +917,8 @@ fn verify_catalog_provenance(
                 sha256: manifest_digest,
             },
             Subject {
-                name: "catalog.runtime.json",
-                sha256: &manifest.artifacts.runtime.sha256,
-            },
-            Subject {
-                name: "catalog.public.json",
-                sha256: &manifest.artifacts.public.sha256,
+                name: "catalog.json",
+                sha256: &manifest.artifacts.root.sha256,
             },
         ],
         &GithubPolicy {
@@ -2023,10 +2014,9 @@ mod tests {
             "document": {
                 "minimum_gateway_sequence": 1,
                 "artifacts": {
-                    "catalog.public.json": { "sha256": "11".repeat(32), "size_bytes": 1 },
-                    "catalog.runtime.json": { "sha256": "22".repeat(32), "size_bytes": 1 }
+                    "catalog.json": { "sha256": "11".repeat(32), "size_bytes": 1 }
                 },
-                "schema": "stogas.catalog.release.v1",
+                "schema": "stogas.catalog.release.v2",
                 "sequence": 1,
                 "source": {
                     "commit": "33".repeat(20),
@@ -2173,15 +2163,15 @@ mod tests {
     }
 
     #[test]
-    fn catalog_artifacts_stay_within_the_sizes_that_gateways_and_web_accept() {
-        for (public, runtime, valid) in [
-            (32 * 1024 * 1024, 32 * 1024 * 1024, true),
-            (32 * 1024 * 1024 + 1, 1, false),
-            (1, 32 * 1024 * 1024 + 1, false),
+    fn catalog_root_stays_within_the_size_that_gateways_and_web_accept() {
+        for (size, valid) in [
+            (0, false),
+            (1, true),
+            (16 * 1024 * 1024, true),
+            (16 * 1024 * 1024 + 1, false),
         ] {
             let mut catalog = catalog_fixture();
-            catalog.document.artifacts.public.size_bytes = public;
-            catalog.document.artifacts.runtime.size_bytes = runtime;
+            catalog.document.artifacts.root.size_bytes = size;
             assert_eq!(validate_catalog_shape(&catalog.document).is_ok(), valid);
         }
     }
@@ -2232,8 +2222,7 @@ mod tests {
             "predicate": { "environment": "staging" },
             "subject": [
                 { "name": "catalog-release.json", "digest": { "sha256": manifest_digest } },
-                { "name": "catalog.runtime.json", "digest": { "sha256": &catalog.document.artifacts.runtime.sha256 } },
-                { "name": "catalog.public.json", "digest": { "sha256": &catalog.document.artifacts.public.sha256 } }
+                { "name": "catalog.json", "digest": { "sha256": &catalog.document.artifacts.root.sha256 } }
             ]
         });
 
@@ -2243,7 +2232,7 @@ mod tests {
             assert!(verified.github_integrated_time_unix_ms.is_none());
             assert!(matches!(verified.provenance, ReleaseProvenance::Staging));
 
-            for subject in 0..3 {
+            for subject in 0..2 {
                 let mut changed = catalog.clone();
                 changed.provenance["subject"][subject]["digest"]["sha256"] =
                     Value::String("00".repeat(32));
