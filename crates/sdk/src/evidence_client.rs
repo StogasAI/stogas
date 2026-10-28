@@ -23,6 +23,9 @@ use tokio::{
 use url::Url;
 
 const ORIGIN_BUDGET: Duration = Duration::from_secs(5);
+// The primary answers within a second about 98% of the time. When it has not, the replica starts
+// too and the first verified answer wins, so a slow origin costs about a second, not five.
+const HEDGE_DELAY: Duration = Duration::from_secs(1);
 const RECOVERY_BUDGET: Duration = Duration::from_secs(15);
 
 #[derive(Debug, thiserror::Error)]
@@ -61,6 +64,7 @@ impl Error {
     }
 }
 
+#[derive(Clone)]
 struct Representation {
     bytes: Arc<[u8]>,
     etag: Option<HeaderValue>,
@@ -233,58 +237,95 @@ impl EvidenceClient {
         {
             return Err(Error::Cooldown);
         }
+        let cached = acquisition.representations.clone();
+        let started = Instant::now();
+        let primary = self.attempt(0, cached[0].clone(), check.clone(), deadline);
+        tokio::pin!(primary);
+        // The replica starts once the primary fails or has not answered by the hedge delay.
+        let early = tokio::select! {
+            result = &mut primary => Some(result),
+            () = tokio::time::sleep_until(
+                deadline.min(started + self.network().patient(HEDGE_DELAY)),
+            ) => None,
+        };
+        let replica = self.attempt(1, cached[1].clone(), check, deadline);
+        tokio::pin!(replica);
+        let (mut primary_failed, mut replica_failed) = (false, false);
         let mut failure = Error::Deadline;
-        for (index, origin) in self.origins.iter().enumerate() {
-            let attempt_deadline =
-                deadline.min(Instant::now() + self.network().patient(ORIGIN_BUDGET));
-            let result = timeout_at(attempt_deadline, async {
-                let candidate = self
-                    .download(origin, acquisition.representations[index].as_ref())
-                    .await?;
-                let verifier = Arc::clone(&self.verifier);
-                let current = Arc::clone(&self.current);
-                let bytes = Arc::clone(&candidate.bytes);
-                let snapshot = run_cpu(Arc::clone(&self.cpu), move || {
-                    let now = wall_clock_ms()?;
-                    let snapshot = verifier
-                        .lock()
-                        .map_err(|_| Error::State)?
-                        .refresh(&bytes, now)?;
-                    *current.write().map_err(|_| Error::State)? = Some(Arc::clone(&snapshot));
-                    Ok(snapshot)
-                })
-                .await?;
-                acquisition.representations[index] = Some(candidate);
-                if let Some(check) = &check {
-                    let check = Arc::clone(check);
-                    let owned = Arc::clone(&snapshot);
-                    run_cpu(Arc::clone(&self.cpu), move || {
-                        owned.require_current_keys()?;
-                        owned
-                            .evidence()
-                            .valid_until(wall_clock_ms()?)
-                            .map_err(evidence::Error::from)?;
-                        check(&owned)?;
-                        Ok(())
-                    })
-                    .await?;
-                }
-                Ok::<_, Error>(snapshot)
-            })
-            .await
-            .unwrap_or(Err(Error::Deadline));
-            match result {
-                Ok(snapshot) => {
-                    acquisition.retry_after = None;
-                    return Ok(snapshot);
-                }
-                Err(error) => failure = error,
+        match early {
+            Some(Ok(accepted)) => return Ok(Self::accept(&mut acquisition, 0, accepted)),
+            Some(Err(error)) => (primary_failed, failure) = (true, error),
+            None => {}
+        }
+        while !(primary_failed && replica_failed) {
+            tokio::select! {
+                result = &mut primary, if !primary_failed => match result {
+                    Ok(accepted) => return Ok(Self::accept(&mut acquisition, 0, accepted)),
+                    Err(error) => (primary_failed, failure) = (true, error),
+                },
+                result = &mut replica, if !replica_failed => match result {
+                    Ok(accepted) => return Ok(Self::accept(&mut acquisition, 1, accepted)),
+                    Err(error) => (replica_failed, failure) = (true, error),
+                },
             }
         }
         acquisition.retry_after =
             Some(Instant::now() + Duration::from_millis(rand::random_range(4500..=5500)));
         drop(acquisition);
         Err(failure)
+    }
+
+    fn accept(
+        acquisition: &mut Acquisition,
+        index: usize,
+        (snapshot, candidate): (Arc<Snapshot>, Representation),
+    ) -> Arc<Snapshot> {
+        acquisition.representations[index] = Some(candidate);
+        acquisition.retry_after = None;
+        snapshot
+    }
+
+    /// One origin's download and verification within its own budget and the caller's deadline.
+    async fn attempt(
+        &self,
+        index: usize,
+        cached: Option<Representation>,
+        check: Option<Check>,
+        deadline: Instant,
+    ) -> Result<(Arc<Snapshot>, Representation), Error> {
+        let attempt_deadline = deadline.min(Instant::now() + self.network().patient(ORIGIN_BUDGET));
+        timeout_at(attempt_deadline, async {
+            let candidate = self.download(&self.origins[index], cached.as_ref()).await?;
+            let verifier = Arc::clone(&self.verifier);
+            let current = Arc::clone(&self.current);
+            let bytes = Arc::clone(&candidate.bytes);
+            let snapshot = run_cpu(Arc::clone(&self.cpu), move || {
+                let now = wall_clock_ms()?;
+                let snapshot = verifier
+                    .lock()
+                    .map_err(|_| Error::State)?
+                    .refresh(&bytes, now)?;
+                *current.write().map_err(|_| Error::State)? = Some(Arc::clone(&snapshot));
+                Ok(snapshot)
+            })
+            .await?;
+            if let Some(check) = check {
+                let owned = Arc::clone(&snapshot);
+                run_cpu(Arc::clone(&self.cpu), move || {
+                    owned.require_current_keys()?;
+                    owned
+                        .evidence()
+                        .valid_until(wall_clock_ms()?)
+                        .map_err(evidence::Error::from)?;
+                    check(&owned)?;
+                    Ok(())
+                })
+                .await?;
+            }
+            Ok((snapshot, candidate))
+        })
+        .await
+        .unwrap_or(Err(Error::Deadline))
     }
 
     async fn download(
