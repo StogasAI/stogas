@@ -594,8 +594,7 @@ fn staging_capable_verifier_rejects_placeholders_in_a_production_context() {
         "predicate": { "environment": "staging" },
         "subject": [
             { "name": "catalog-release.json", "digest": { "sha256": file_sha256(serde_json::to_value(&catalog.document).unwrap()) } },
-            { "name": "catalog.runtime.json", "digest": { "sha256": &catalog.document.artifacts.runtime.sha256 } },
-            { "name": "catalog.public.json", "digest": { "sha256": &catalog.document.artifacts.public.sha256 } }
+            { "name": "catalog.json", "digest": { "sha256": &catalog.document.artifacts.root.sha256 } }
         ]
     });
     for (environment, allowed) in [

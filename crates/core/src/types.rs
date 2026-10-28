@@ -57,10 +57,9 @@ pub struct CatalogReleaseManifest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogReleaseArtifacts {
-    #[serde(rename = "catalog.public.json")]
-    pub public: ReleaseArtifact,
-    #[serde(rename = "catalog.runtime.json")]
-    pub runtime: ReleaseArtifact,
+    /// The catalog's root, which names by digest the parts that hold the rest.
+    #[serde(rename = "catalog.json")]
+    pub root: ReleaseArtifact,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -250,10 +249,8 @@ pub struct VerifiedCatalogRelease {
     pub github_integrated_time_unix_ms: Option<i64>,
     pub minimum_gateway_sequence: u64,
     pub provenance: ReleaseProvenance,
-    pub public_digest: String,
-    pub public_size_bytes: u64,
-    pub runtime_digest: String,
-    pub runtime_size_bytes: u64,
+    pub root_digest: String,
+    pub root_size_bytes: u64,
     pub sequence: u64,
     pub source_commit: String,
     pub source_repository: String,
