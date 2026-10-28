@@ -17,6 +17,7 @@ struct Reply {
     etag: &'static str,
     status: StatusCode,
     encoding: Option<&'static str>,
+    delay: Duration,
 }
 
 struct Origins {
@@ -45,6 +46,7 @@ async fn handler(
         .map(|v| v.to_str().unwrap().to_owned());
     state.requests.lock().unwrap().push((index, etag.clone()));
     let reply = state.replies.read().unwrap()[index].clone();
+    tokio::time::sleep(reply.delay).await;
     if reply.status != StatusCode::OK {
         return Response::builder()
             .status(reply.status)
@@ -136,6 +138,7 @@ const fn reply(body: Vec<u8>, etag: &'static str) -> Reply {
         etag,
         status: StatusCode::OK,
         encoding: None,
+        delay: Duration::ZERO,
     }
 }
 fn deadline() -> Instant {
@@ -234,6 +237,35 @@ async fn stale_success_falls_through_to_replica_and_etags_never_cross_origins() 
 }
 
 #[tokio::test]
+async fn a_slow_primary_starts_the_replica_after_the_hedge_delay() {
+    let (root, document) = fixture();
+    let server = Server::new([
+        Reply {
+            delay: Duration::from_secs(4),
+            ..reply(signed(&document), "\"r2\"")
+        },
+        reply(signed(&document), "\"aws\""),
+    ])
+    .await;
+    let client = server.client(root);
+    let started = Instant::now();
+    client.refresh(deadline()).await.unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= HEDGE_DELAY && elapsed < Duration::from_secs(3),
+        "{elapsed:?}"
+    );
+    // The replica's answer is cached for its own origin, and the next refresh tries the primary
+    // without a conditional header it never received.
+    server.state.replies.write().unwrap()[0].delay = Duration::ZERO;
+    client.refresh(deadline()).await.unwrap();
+    assert_eq!(
+        *server.state.requests.lock().unwrap(),
+        vec![(0, None), (1, None), (0, None)]
+    );
+}
+
+#[tokio::test]
 async fn concurrent_recovery_shares_success_and_failed_recovery_has_one_cooldown() {
     let (root, document) = fixture();
     let server = Server::new([
@@ -285,6 +317,7 @@ async fn bad_or_oversized_delivery_preserves_snapshot_and_never_caches_the_candi
                 etag: "",
                 status: StatusCode::SERVICE_UNAVAILABLE,
                 encoding: None,
+                delay: Duration::ZERO,
             },
         ];
         assert!(client.refresh(deadline()).await.is_err());
@@ -337,12 +370,14 @@ async fn native_setup_sends_nothing_before_evidence_and_never_redials_an_unresol
             etag: "",
             status: StatusCode::SERVICE_UNAVAILABLE,
             encoding: None,
+            delay: Duration::ZERO,
         },
         Reply {
             body: vec![],
             etag: "",
             status: StatusCode::SERVICE_UNAVAILABLE,
             encoding: None,
+            delay: Duration::ZERO,
         },
     ])
     .await;
