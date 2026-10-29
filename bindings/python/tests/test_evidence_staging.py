@@ -20,6 +20,7 @@ class StagingEvidenceTests(unittest.TestCase):
             environment="staging",
             root_key_id=fixture["root"]["key_id"],
             root_public_key=fixture["root"]["public_key"],
+            root_rekor_public_key=fixture["root"]["rekor_public_key"],
         )
         registration = json.loads(
             (Path(__file__).resolve().parents[3] / "tests/fixtures/hardware-registration-v1.json").read_bytes()
@@ -63,6 +64,7 @@ class StagingEvidenceTests(unittest.TestCase):
             environment="staging",
             root_key_id=fixture["root"]["key_id"],
             root_public_key=fixture["root"]["public_key"],
+            root_rekor_public_key=fixture["root"]["rekor_public_key"],
         )
         snapshot = verifier.refresh(json.dumps(fixture["evidence"]).encode())
         expected = json.loads(snapshot.summary())

@@ -10,7 +10,7 @@ import (
 func TestEvidenceConfigurationFailsClosed(t *testing.T) {
 	for _, options := range []EvidenceOptions{
 		{Environment: "unknown"},
-		{Environment: "prod", Root: &TrustRoot{KeyID: "invalid", PublicKey: "invalid"}},
+		{Environment: "prod", Root: &TrustRoot{KeyID: "invalid", PublicKey: "invalid", RekorPublicKey: "invalid"}},
 	} {
 		owner, err := NewEvidence(options)
 		if owner != nil || err == nil {

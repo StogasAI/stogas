@@ -857,20 +857,14 @@ fn release_manifest_sha256(manifest: &impl serde::Serialize) -> Result<String, E
 fn verify_catalog_release(
     catalog: &AllowedCatalog,
     trust: &TrustedRoot,
-    now_unix_ms: i64,
 ) -> Result<VerifiedCatalogRelease, Error> {
     let manifest = &catalog.document;
     validate_catalog_shape(manifest)?;
     let manifest_digest = release_manifest_sha256(manifest)?;
     let attestation_bytes = serde_json::to_vec(&catalog.provenance)
         .map_err(|error| Error::Release(error.to_string()))?;
-    let (github_integrated_time_unix_ms, provenance) = verify_catalog_provenance(
-        &attestation_bytes,
-        manifest,
-        &manifest_digest,
-        trust,
-        now_unix_ms,
-    )?;
+    let (github_integrated_time_unix_ms, provenance) =
+        verify_catalog_provenance(&attestation_bytes, manifest, &manifest_digest, trust)?;
 
     Ok(VerifiedCatalogRelease {
         github_integrated_time_unix_ms,
@@ -891,7 +885,6 @@ fn verify_catalog_provenance(
     manifest: &CatalogReleaseManifest,
     manifest_digest: &str,
     trust: &TrustedRoot,
-    now_unix_ms: i64,
 ) -> Result<(Option<i64>, ReleaseProvenance), Error> {
     #[cfg(feature = "staging")]
     if is_staging_development_provenance(
@@ -928,7 +921,6 @@ fn verify_catalog_provenance(
             source_commit: manifest.source.commit.clone(),
             predicate_type: "https://slsa.dev/provenance/v1".into(),
         },
-        now_unix_ms,
         "catalog provenance",
     )
 }
@@ -936,20 +928,14 @@ fn verify_catalog_provenance(
 fn verify_gateway_release(
     release: &AllowedIgvm,
     trust: &TrustedRoot,
-    now_unix_ms: i64,
 ) -> Result<VerifiedRelease, Error> {
     let manifest = &release.document;
     validate_gateway_release_manifest(manifest)?;
     let manifest_digest = release_manifest_sha256(manifest)?;
     let attestation_bytes = serde_json::to_vec(&release.provenance)
         .map_err(|error| Error::Release(error.to_string()))?;
-    let (github_integrated_time_unix_ms, provenance) = verify_release_provenance(
-        &attestation_bytes,
-        manifest,
-        &manifest_digest,
-        trust,
-        now_unix_ms,
-    )?;
+    let (github_integrated_time_unix_ms, provenance) =
+        verify_release_provenance(&attestation_bytes, manifest, &manifest_digest, trust)?;
 
     Ok(VerifiedRelease {
         github_integrated_time_unix_ms,
@@ -973,7 +959,6 @@ fn verify_release_provenance(
     manifest: &GatewayReleaseManifest,
     manifest_digest: &str,
     trust: &TrustedRoot,
-    now_unix_ms: i64,
 ) -> Result<(Option<i64>, ReleaseProvenance), Error> {
     #[cfg(feature = "staging")]
     if is_staging_development_provenance(
@@ -1010,7 +995,6 @@ fn verify_release_provenance(
             source_commit: manifest.source.commit.clone(),
             predicate_type: "https://slsa.dev/provenance/v1".into(),
         },
-        now_unix_ms,
         "gateway provenance",
     )
 }
@@ -1020,17 +1004,10 @@ fn verify_github_provenance(
     attestation_bytes: &[u8],
     expected_subjects: &[Subject<'_>],
     policy: &GithubPolicy,
-    now_unix_ms: i64,
     context: &str,
 ) -> Result<(Option<i64>, ReleaseProvenance), Error> {
-    let verified = verify_github_attestation(
-        trust,
-        attestation_bytes,
-        expected_subjects,
-        policy,
-        now_unix_ms,
-    )
-    .map_err(|error| Error::Release(format!("{context}: {error}")))?;
+    let verified = verify_github_attestation(trust, attestation_bytes, expected_subjects, policy)
+        .map_err(|error| Error::Release(format!("{context}: {error}")))?;
     let integrated_time = verified
         .integrated_time
         .checked_mul(1000)
@@ -2193,7 +2170,7 @@ mod tests {
 
         #[cfg(feature = "staging")]
         {
-            let verified = verify_gateway_release(&release, embedded(), 1_784_246_400_000).unwrap();
+            let verified = verify_gateway_release(&release, embedded()).unwrap();
             assert!(verified.github_integrated_time_unix_ms.is_none());
             assert!(matches!(verified.provenance, ReleaseProvenance::Staging));
 
@@ -2201,14 +2178,14 @@ mod tests {
                 let mut changed = release.clone();
                 changed.provenance["subject"][subject]["digest"]["sha256"] =
                     Value::String("00".repeat(32));
-                assert!(verify_gateway_release(&changed, embedded(), 1_784_246_400_000).is_err());
+                assert!(verify_gateway_release(&changed, embedded()).is_err());
             }
             let mut missing = release;
             missing.provenance["subject"].as_array_mut().unwrap().pop();
-            assert!(verify_gateway_release(&missing, embedded(), 1_784_246_400_000).is_err());
+            assert!(verify_gateway_release(&missing, embedded()).is_err());
         }
         #[cfg(not(feature = "staging"))]
-        assert!(verify_gateway_release(&release, embedded(), 1_784_246_400_000).is_err());
+        assert!(verify_gateway_release(&release, embedded()).is_err());
     }
 
     #[test]
@@ -2228,7 +2205,7 @@ mod tests {
 
         #[cfg(feature = "staging")]
         {
-            let verified = verify_catalog_release(&catalog, embedded(), 1_784_246_400_000).unwrap();
+            let verified = verify_catalog_release(&catalog, embedded()).unwrap();
             assert!(verified.github_integrated_time_unix_ms.is_none());
             assert!(matches!(verified.provenance, ReleaseProvenance::Staging));
 
@@ -2236,14 +2213,14 @@ mod tests {
                 let mut changed = catalog.clone();
                 changed.provenance["subject"][subject]["digest"]["sha256"] =
                     Value::String("00".repeat(32));
-                assert!(verify_catalog_release(&changed, embedded(), 1_784_246_400_000).is_err());
+                assert!(verify_catalog_release(&changed, embedded()).is_err());
             }
             let mut missing = catalog;
             missing.provenance["subject"].as_array_mut().unwrap().pop();
-            assert!(verify_catalog_release(&missing, embedded(), 1_784_246_400_000).is_err());
+            assert!(verify_catalog_release(&missing, embedded()).is_err());
         }
         #[cfg(not(feature = "staging"))]
-        assert!(verify_catalog_release(&catalog, embedded(), 1_784_246_400_000).is_err());
+        assert!(verify_catalog_release(&catalog, embedded()).is_err());
     }
 
     #[test]

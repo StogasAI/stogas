@@ -65,14 +65,14 @@ pub struct Signature {
 /// compare artifact bytes with the returned manifest.
 ///
 /// # Errors
-/// Rejects unsigned, altered, staging or dirty releases and signing keys that had expired
-/// when Rekor logged the signature. A later key expiry does not invalidate old software.
+/// Rejects unsigned, altered, staging or dirty releases, and signing keys that a key manifest
+/// had not yet authorized, or no longer authorized, when Rekor logged the signature. A later
+/// key expiry does not invalidate old software.
 pub fn verify(
     manifest_bytes: &[u8],
     github_attestation: &[u8],
     qualification: &[u8],
     signature_bytes: &[u8],
-    now_unix_ms: i64,
 ) -> Result<Manifest, authority::Error> {
     if [
         manifest_bytes.len(),
@@ -96,24 +96,22 @@ pub fn verify(
     // Without current evidence, the Sigstore keys compiled into this release check its successors.
     let trust =
         TrustedRoot::embedded().map_err(|error| authority::Error::Sigstore(error.to_string()))?;
+    // The root signature over this key manifest, checked next, authenticates its Rekor key.
     let published = authority::verify_document_inclusion(
         &document,
         &signed.signature,
         &signed.inclusion,
         trust,
-        now_unix_ms,
+        &signed.keys.document.active_key.rekor_public_key,
     )?;
-    let published_ms = published
-        .checked_mul(1000)
-        .ok_or_else(|| invalid("log time overflow"))?;
     let authority = Authority::new(
         Environment::Production,
         Environment::Production.stogas_root()?,
     )?;
-    let keys = authority.verify_key_manifest(
+    let keys = authority.verify_key_manifest_at(
         &serde_json::to_vec(&signed.keys).map_err(invalid)?,
         trust,
-        published_ms,
+        published,
     )?;
     authority::verify_signature(
         &document,
@@ -153,7 +151,6 @@ pub fn verify(
             source_commit: manifest.source.commit.clone(),
             predicate_type: "https://slsa.dev/provenance/v1".into(),
         },
-        now_unix_ms,
     )
     .map_err(invalid)?;
     Ok(manifest)

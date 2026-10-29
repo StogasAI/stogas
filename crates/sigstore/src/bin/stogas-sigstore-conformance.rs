@@ -3,7 +3,7 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
-use std::{io::Read as _, path::PathBuf, time::UNIX_EPOCH};
+use std::{io::Read as _, path::PathBuf};
 use stogas_sigstore::{IdentityPolicy, Subject, TrustedRoot, verify_dsse_attestation};
 
 const MAX_BUNDLE_BYTES: u64 = 16 * 1024 * 1024;
@@ -72,13 +72,6 @@ fn run() -> Result<(), String> {
         name: &matches[0].name,
         sha256: &digest,
     }];
-    let now = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| "system clock predates the Unix epoch")?
-            .as_millis(),
-    )
-    .map_err(|_| "system clock is too large")?;
     verify_dsse_attestation(
         TrustedRoot::embedded().map_err(|error| error.to_string())?,
         &bundle,
@@ -88,7 +81,6 @@ fn run() -> Result<(), String> {
             certificate_oidc_issuer: arguments.issuer,
             predicate_type: "https://slsa.dev/provenance/v1".into(),
         },
-        now,
     )
     .map_err(|error| error.to_string())?;
     Ok(())

@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use serde::Serialize;
+use serde::{Deserialize as _, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -359,12 +359,7 @@ impl Verifier {
         let mut candidate = self
             .authority
             .check(keys, signed.document, sigstore, now_unix_ms)?;
-        authority::verify_proof(
-            &mut candidate,
-            signed.signature,
-            signed.inclusion,
-            now_unix_ms,
-        )?;
+        authority::verify_proof(&mut candidate, signed.signature, signed.inclusion)?;
         checked(VerificationStep::Signature, None, false);
         let snapshot = Arc::new(self.verify_snapshot(candidate, now_unix_ms, &mut checked)?);
         self.authority.accept(snapshot.evidence.clone())?;
@@ -439,7 +434,6 @@ impl Verifier {
                 let keys = self.authority.observe_keys(
                     &serde_json::to_vec(&document["keys"]).map_err(invalid)?,
                     sigstore.trusted_root(),
-                    now_unix_ms,
                 )?;
                 Ok((keys, sigstore))
             });
@@ -480,7 +474,7 @@ impl Verifier {
                 releases.and_then(|snapshot| snapshot.gateways.get(&id)),
                 payload_sha256(gateway)?,
                 now_unix_ms,
-                || evidence.verify_gateway(gateway, now_unix_ms),
+                || evidence.verify_gateway(gateway),
             )?;
             checked(VerificationStep::GatewayRelease, Some(id.as_str()), reused);
             gateways.insert(id, entry);
@@ -492,7 +486,7 @@ impl Verifier {
                 releases.and_then(|snapshot| snapshot.catalogs.get(&id)),
                 payload_sha256(catalog)?,
                 now_unix_ms,
-                || evidence.verify_catalog(catalog, now_unix_ms),
+                || evidence.verify_catalog(catalog),
             )?;
             checked(VerificationStep::CatalogRelease, Some(id.as_str()), reused);
             catalogs.insert(id, entry);
@@ -519,7 +513,7 @@ impl Verifier {
     /// Verify the evidence's Sigstore files, reusing the current snapshot's result for the
     /// same files.
     fn sigstore(&self, files: &Value) -> Result<(Arc<VerifiedSigstore>, bool), Error> {
-        let files: SigstoreFiles = serde_json::from_value(files.clone()).map_err(invalid)?;
+        let files = SigstoreFiles::deserialize(files).map_err(invalid)?;
         let digest = payload_sha256(&files)?;
         if let Some(snapshot) = &self.current
             && snapshot.evidence.sigstore().digest() == digest

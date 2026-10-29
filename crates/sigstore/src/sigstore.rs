@@ -156,9 +156,8 @@ pub fn verify(
     root: &TrustedRoot,
     value: &serde_json::Value,
     policy: &CertificatePolicy<'_>,
-    now_unix_ms: i64,
 ) -> Result<i64, String> {
-    let bundle: Bundle = serde_json::from_value(value.clone())
+    let bundle = Bundle::deserialize(value)
         .map_err(|error| format!("invalid Sigstore v0.3 bundle: {error}"))?;
     if bundle.media_type != "application/vnd.dev.sigstore.bundle.v0.3+json"
         || bundle.dsse_envelope.payload_type != "application/vnd.in-toto+json"
@@ -196,12 +195,12 @@ pub fn verify(
             .rfc3161_timestamps,
         &signature,
         root,
-        now_unix_ms.div_euclid(1000),
     )?;
+    // Rekor's and the timestamp authority's signatures authenticate these times, so they are
+    // never compared with the local clock: a slow clock must not reject fresh entries.
     let validation_time = timestamp_time.unwrap_or(integrated_time);
-    let now_seconds = now_unix_ms.div_euclid(1000);
-    if validation_time <= 0 || validation_time > now_seconds + 60 {
-        return Err("authenticated Sigstore time is absent or in the future".into());
+    if validation_time <= 0 {
+        return Err("authenticated Sigstore time is absent".into());
     }
     if validation_time < certificate.not_before || validation_time > certificate.not_after {
         return Err("Fulcio certificate was not valid at the authenticated signing time".into());
@@ -215,7 +214,6 @@ pub fn verify(
         &certificate.der,
         certificate.not_before,
         certificate.not_after,
-        now_seconds,
         root,
     )?;
     verify_dsse_signature(&bundle.dsse_envelope, &certificate.spki)?;

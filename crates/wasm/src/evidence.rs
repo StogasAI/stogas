@@ -82,6 +82,7 @@ impl EvidenceVerifier {
         environment: &str,
         root_key_id: String,
         root_public_key: String,
+        root_rekor_public_key: String,
     ) -> Result<Self, JsValue> {
         let environment = serde_json::from_value(json!(environment))
             .map_err(|_| js_sys::Error::new("unsupported verification environment"))?;
@@ -90,6 +91,7 @@ impl EvidenceVerifier {
             RootKey {
                 key_id: root_key_id,
                 public_key: root_public_key,
+                rekor_public_key: root_rekor_public_key,
             },
         )
         .map_err(|error| verification_error(&error))?;

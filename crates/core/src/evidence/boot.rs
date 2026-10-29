@@ -393,19 +393,17 @@ impl Snapshot {
             &signer.key_id,
             &signer.public_key,
         )?;
-        let integrated = crate::authority::verify_document_inclusion(
+        let integrated_time_unix_ms = crate::authority::verify_document_inclusion(
             &publication,
             &proof.signature,
             &proof.inclusion,
             self.evidence.sigstore().trusted_root(),
-            now_unix_ms,
+            &signer.rekor_public_key,
         )?;
         let identity = self.verify_boot_report(document, record, now_unix_ms)?;
         Ok(VerifiedBoot {
             identity,
-            integrated_time_unix_ms: integrated
-                .checked_mul(1000)
-                .ok_or_else(|| invalid("boot log time overflow"))?,
+            integrated_time_unix_ms,
         })
     }
 

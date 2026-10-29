@@ -7,13 +7,18 @@ use stogas_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestat
 static TRUST: LazyLock<Result<&TrustedRoot, stogas_sigstore::Error>> =
     LazyLock::new(TrustedRoot::embedded);
 const FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/gateway-v0.0.1-attestation.jsonl");
-const NOW_UNIX_MS: i64 = 1_784_246_400_000;
-static DOCUMENT: LazyLock<(Vec<u8>, Vec<u8>)> = LazyLock::new(|| {
+/// Bundle, artifact and designated submitter of the Rekor document seed.
+static DOCUMENT: LazyLock<(Vec<u8>, Vec<u8>, Vec<u8>)> = LazyLock::new(|| {
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("../../tests/fixtures/rekor-document-v1.json")).unwrap();
+    let submitter = fixture["submission_key_spki"].as_str().unwrap();
     (
         serde_json::to_vec(&fixture["bundle"]).unwrap(),
         fixture["artifact"].as_str().unwrap().as_bytes().to_vec(),
+        (0..submitter.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&submitter[at..at + 2], 16).unwrap())
+            .collect(),
     )
 });
 
@@ -27,7 +32,7 @@ fuzz_target!(|data: &[u8]| {
             TRUST.as_ref().unwrap(),
             &candidate,
             &DOCUMENT.1,
-            NOW_UNIX_MS,
+            &DOCUMENT.2,
         );
         return;
     }
@@ -50,8 +55,8 @@ fuzz_target!(|data: &[u8]| {
         predicate_type: "https://slsa.dev/provenance/v1".into(),
     };
     let trust = TRUST.as_ref().unwrap();
-    let _ = verify_github_attestation(trust, &candidate, &subjects, &policy, NOW_UNIX_MS);
-    let _ = stogas_sigstore::verify_rekor_document_inclusion(trust, &candidate, data, NOW_UNIX_MS);
+    let _ = verify_github_attestation(trust, &candidate, &subjects, &policy);
+    let _ = stogas_sigstore::verify_rekor_document_inclusion(trust, &candidate, data, &DOCUMENT.2);
 });
 
 fn mutate_fixture_or_raw(fixture: &[u8], data: &[u8]) -> Vec<u8> {

@@ -75,23 +75,26 @@ pub fn prepare_rekor_submission_with_seed(
         .map_err(error)
 }
 
-/// Verify inclusion of exact signed bytes; this does not establish document authorship.
+/// Verify that the `submitter` Ed25519 `SubjectPublicKeyInfo` DER logged exact signed bytes,
+/// and return the log time in Unix seconds. This does not establish document authorship.
 ///
 /// # Errors
-/// Rejects malformed proofs, changed documents and invalid log signatures or times.
+/// Rejects malformed proofs, changed documents, other submitters and invalid log signatures.
 #[wasm_bindgen]
 pub fn verify_rekor_document_inclusion(
     bundle: &[u8],
     signed_document: &[u8],
-    now_unix_ms: f64,
+    submitter: &[u8],
 ) -> Result<f64, JsError> {
-    let now = super::parse_unix_ms(now_unix_ms, "now_unix_ms")?;
     let trust = stogas_sigstore::TrustedRoot::embedded()
         .map_err(|error| JsError::new(&error.to_string()))?;
     let time =
-        stogas_sigstore::verify_rekor_document_inclusion(trust, bundle, signed_document, now)
+        stogas_sigstore::verify_rekor_document_inclusion(trust, bundle, signed_document, submitter)
             .map_err(|error| JsError::new(&error.to_string()))?;
-    // A verified seconds value is bounded by the safe-integer millisecond input above.
+    // JavaScript numbers represent every whole number below 2^53 exactly.
+    if time >= 1 << 53 {
+        return Err(JsError::new("Rekor log time is out of range"));
+    }
     #[allow(clippy::cast_precision_loss)]
     Ok(time as f64)
 }

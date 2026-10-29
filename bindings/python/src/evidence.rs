@@ -28,23 +28,35 @@ struct Boot {
 #[pymethods]
 impl EvidenceVerifier {
     #[new]
-    #[pyo3(signature = (*, environment = "prod", root_key_id = None, root_public_key = None))]
+    #[pyo3(signature = (
+        *,
+        environment = "prod",
+        root_key_id = None,
+        root_public_key = None,
+        root_rekor_public_key = None
+    ))]
     fn new(
         py: Python<'_>,
         environment: &str,
         root_key_id: Option<String>,
         root_public_key: Option<String>,
+        root_rekor_public_key: Option<String>,
     ) -> PyResult<Self> {
         let environment: Environment = serde_json::from_value(serde_json::json!(environment))
             .map_err(|_| PyValueError::new_err("environment is unsupported by this build"))?;
-        let core = match (root_key_id, root_public_key) {
-            (None, None) => evidence::Verifier::stogas(environment),
-            (Some(key_id), Some(public_key)) => {
-                evidence::Verifier::new(environment, RootKey { key_id, public_key })
-            }
+        let core = match (root_key_id, root_public_key, root_rekor_public_key) {
+            (None, None, None) => evidence::Verifier::stogas(environment),
+            (Some(key_id), Some(public_key), Some(rekor_public_key)) => evidence::Verifier::new(
+                environment,
+                RootKey {
+                    key_id,
+                    public_key,
+                    rekor_public_key,
+                },
+            ),
             _ => {
                 return Err(PyValueError::new_err(
-                    "root key ID and public key are required together",
+                    "root key ID, public key and Rekor public key are required together",
                 ));
             }
         }

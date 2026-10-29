@@ -14,7 +14,7 @@ for (const retired of [
 const { root } = JSON.parse(
 	readFileSync(new URL('../fixtures/hardware-session-v1.json', import.meta.url), 'utf8')
 );
-const verifier = new EvidenceVerifier('prod', root.key_id, root.public_key);
+const verifier = new EvidenceVerifier('prod', root.key_id, root.public_key, root.rekor_public_key);
 try {
 	assert.throws(() => verifier.refresh(new TextEncoder().encode('{"document":')));
 } finally {
