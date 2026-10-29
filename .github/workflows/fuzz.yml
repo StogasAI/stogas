@@ -61,6 +61,19 @@ jobs:
       - env:
           TARGET: ${{ matrix.target }}
         run: cargo fuzz run "$TARGET" -- -max_total_time=1800 -timeout=15
+      # Merging keeps one input for each behavior the campaign reached, so the corpus
+      # does not grow with each night. A failed campaign keeps its corpus whole.
+      - name: Minimize the corpus
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo fuzz cmin "$TARGET"
+      - name: Keep the corpus
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: success() || failure()
+        with:
+          name: fuzz-corpus-${{ matrix.target }}
+          path: fuzz/corpus/${{ matrix.target }}
+          retention-days: 90
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: failure()
         with:
