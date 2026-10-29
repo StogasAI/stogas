@@ -103,29 +103,53 @@ def crate_metadata(path):
         }
 
 
+CRATES = ("stogas-sigstore", "stogas-core", "stogas", "stogas-cli")
+# publish.yml in the release environment, the only workflow a registry may trust.
+PUBLISHER = {"repository_owner": "StogasAI", "repository_name": "stogas", "workflow_filename": "publish.yml", "environment": "release"}
+
+
+# Never forward an authorization header to a redirect target.
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def crates_api(method, path, token, body=None, content_type="application/json"):
+    data = body if body is None or isinstance(body, bytes) else json.dumps(body).encode()
+    request = urllib.request.Request(f"https://crates.io/api/v1/{path}", data=data, method=method, headers={
+        "Authorization": token, "Content-Type": content_type, "Accept": "application/json",
+        "User-Agent": "stogas-sdk-release/1 (https://github.com/StogasAI/stogas)",
+    })
+    try:
+        with urllib.request.build_opener(NoRedirect).open(request, timeout=120) as response:
+            return json.loads(response.read(1024 * 1024) or b"null")
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"crates.io {method} {path.split('?')[0]} failed (HTTP {error.code})") from None
+
+
 def crate_upload(path, metadata, token):
     encoded = json.dumps(metadata, separators=(",", ":")).encode()
     archive = path.read_bytes()
     body = struct.pack("<I", len(encoded)) + encoded + struct.pack("<I", len(archive)) + archive
-    request = urllib.request.Request("https://crates.io/api/v1/crates/new", data=body, method="PUT", headers={
-        "Authorization": token, "Content-Type": "application/octet-stream", "Accept": "application/json",
-        "User-Agent": "stogas-sdk-release/1 (https://github.com/StogasAI/stogas)",
-    })
-    # Never forward an authorization header to a redirect target.
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *args, **kwargs):
-            return None
-    try:
-        with urllib.request.build_opener(NoRedirect).open(request, timeout=120) as response:
-            result = json.loads(response.read(1024 * 1024))
-    except urllib.error.HTTPError as error:
-        raise RuntimeError(f"crates.io upload failed (HTTP {error.code})") from None
+    result = crates_api("PUT", "crates/new", token, body, "application/octet-stream")
     if result.get("errors") or any(result.get("warnings", {}).values()):
         raise RuntimeError("crates.io returned errors or publication warnings; inspect the registry before continuing")
 
 
-def crates(packages, version):
-    for name in ("stogas-sigstore", "stogas-core", "stogas", "stogas-cli"):
+def crates_trust(token):
+    """After the first upload, let only publish.yml publish each crate and revoke the token.
+    The token needs the publish-new and trusted-publishing scopes."""
+    for name in CRATES:
+        configs = crates_api("GET", f"trusted_publishing/github_configs?crate={name}", token)["github_configs"]
+        if not any(all(config.get(key) == value for key, value in PUBLISHER.items()) for config in configs):
+            crates_api("POST", "trusted_publishing/github_configs", token, {"github_config": {"crate": name, **PUBLISHER}})
+        crates_api("PATCH", f"crates/{name}", token, {"crate": {"trustpub_only": True}})
+    crates_api("DELETE", "tokens/current", token)
+    print("crates: publish.yml is each crate's only publisher, and the one-time token is revoked")
+
+
+def crates(packages, version, trust=False):
+    for name in CRATES:
         path = packages / f"{name}-{version}.crate"
         url = f"https://static.crates.io/crates/{name}/{path.name}"
         check = lambda: exact_remote(path, url)
@@ -147,6 +171,8 @@ def crates(packages, version):
                     return True
             return False
         wait_for(indexed)
+    if trust:
+        crates_trust(os.environ["CARGO_REGISTRY_TOKEN"])
 
 
 def npm(packages, version, stage=False):
@@ -308,15 +334,20 @@ if __name__ == "__main__":
     parser.add_argument("ecosystem", choices=["crates", "npm", "pypi", "ruby", "nuget", "maven", "go"])
     parser.add_argument("packages", type=Path)
     parser.add_argument("--stage", action="store_true", help="npm only: leave each new version for a maintainer to approve")
+    parser.add_argument("--trust", action="store_true", help="crates only: then trust publish.yml alone and revoke the one-time token")
     args = parser.parse_args()
     if args.stage and args.ecosystem != "npm":
         parser.error("only npm stages packages")
+    if args.trust and args.ecosystem != "crates":
+        parser.error("only crates hand over to trusted publishing here")
     packages = args.packages.resolve()
     manifest = json.loads((packages / "release-manifest.json").read_text())
     if args.ecosystem == "go":
         go(packages, manifest["version"], manifest["source"])
     elif args.ecosystem == "npm":
         npm(packages, manifest["version"], args.stage)
+    elif args.ecosystem == "crates":
+        crates(packages, manifest["version"], args.trust)
     else:
         globals()[args.ecosystem](packages, manifest["version"])
     if not args.stage:

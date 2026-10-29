@@ -94,5 +94,28 @@ class NpmStageTests(unittest.TestCase):
             self.stage()
 
 
+class CratesTrustTests(unittest.TestCase):
+
+    def test_trusts_only_publish_yml_then_revokes_the_token(self):
+        calls = []
+        existing = {"stogas-core": [{**publish.PUBLISHER, "crate": "stogas-core", "id": 1}]}
+
+        def api(method, path, token, body=None):
+            self.assertEqual(token, "one-time")
+            calls.append((method, path, body))
+            if method == "GET":
+                return {"github_configs": existing.get(path.rsplit("=", 1)[1], [])}
+            return None
+
+        with mock.patch.object(publish, "crates_api", side_effect=api), contextlib.redirect_stdout(io.StringIO()):
+            publish.crates_trust("one-time")
+        # A rerun keeps an existing configuration instead of adding a second one.
+        created = [body["github_config"]["crate"] for method, _, body in calls if method == "POST"]
+        self.assertEqual(created, ["stogas-sigstore", "stogas", "stogas-cli"])
+        updated = [(path, body) for method, path, body in calls if method == "PATCH"]
+        self.assertEqual(updated, [(f"crates/{name}", {"crate": {"trustpub_only": True}}) for name in publish.CRATES])
+        self.assertEqual(calls[-1][:2], ("DELETE", "tokens/current"))
+
+
 if __name__ == "__main__":
     unittest.main()
