@@ -220,7 +220,9 @@ jobs:
             # cgo links with MinGW, so Go takes the GNU build of the library.
             go-target: x86_64-pc-windows-gnu
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # Without a cache the Intel Mac takes about an hour and then saves the cache for
+    # four minutes. A job that runs out of time saves none, so the next starts cold.
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
