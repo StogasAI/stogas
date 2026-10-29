@@ -4,7 +4,6 @@ use stogas_sigstore::{GithubPolicy, Subject, verify_github_attestation};
 
 const IGVM_DIGEST: &str = "1b75d0ea7f94bc5f5a21080dd30e21370e14278a5b90eb19858c90dcc83a1bc6";
 const POLICY_DIGEST: &str = "8cc8926592b179283c8cab267a27dfb3df4d1086dff2504e51df5fa12b8ff008";
-const NOW_UNIX_MS: i64 = 1_784_246_400_000;
 
 fn embedded() -> &'static stogas_sigstore::TrustedRoot {
     stogas_sigstore::TrustedRoot::embedded().unwrap()
@@ -57,8 +56,7 @@ fn verifies_real_gateway_release_attestation() {
     let artifact = include_bytes!("../../../tests/fixtures/gateway-v0.0.1-launch-policy.json");
     assert_eq!(hex::encode(Sha256::digest(artifact)), POLICY_DIGEST);
     let bundle = include_bytes!("../../../tests/fixtures/gateway-v0.0.1-attestation.jsonl");
-    let result =
-        verify_github_attestation(embedded(), bundle, &subjects(), &policy(), NOW_UNIX_MS).unwrap();
+    let result = verify_github_attestation(embedded(), bundle, &subjects(), &policy()).unwrap();
     assert_eq!(result.subjects.len(), 2);
 }
 
@@ -81,8 +79,7 @@ fn rejects_every_mutated_sigstore_trust_boundary() {
         flip_string(&mut value, pointer);
         let bytes = serde_json::to_vec(&value).unwrap();
         assert!(
-            verify_github_attestation(embedded(), &bytes, &subjects(), &policy(), NOW_UNIX_MS)
-                .is_err(),
+            verify_github_attestation(embedded(), &bytes, &subjects(), &policy()).is_err(),
             "mutation at {pointer} was accepted"
         );
     }
@@ -102,9 +99,7 @@ fn rejects_invalid_merkle_path_without_relying_on_the_set() {
     );
 
     let bytes = serde_json::to_vec(&value).unwrap();
-    assert!(
-        verify_github_attestation(embedded(), &bytes, &subjects(), &policy(), NOW_UNIX_MS).is_err()
-    );
+    assert!(verify_github_attestation(embedded(), &bytes, &subjects(), &policy()).is_err());
 }
 
 #[test]
@@ -137,8 +132,7 @@ fn rejects_each_github_identity_and_provenance_mismatch() {
 
     for changed_policy in policies {
         assert!(
-            verify_github_attestation(embedded(), bytes, &subjects(), &changed_policy, NOW_UNIX_MS)
-                .is_err()
+            verify_github_attestation(embedded(), bytes, &subjects(), &changed_policy).is_err()
         );
     }
 }

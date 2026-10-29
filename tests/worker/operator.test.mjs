@@ -12,16 +12,18 @@ const json = async (path) => JSON.parse(await readFile(resolve(root, path), 'utf
 // packages. Run it in workerd, the runtime that uses it.
 test('operator Worker verifies remote signatures, Rekor submissions, key manifests and releases', async () => {
 	const signing = await json('tests/fixtures/mldsa65-v1.json');
+	// The fixture authority's manifest stays valid at the Worker's own clock.
+	const session = await json('tests/fixtures/hardware-session-v1.json');
 	const fixtures = {
 		signing,
 		remote: await json('tests/fixtures/mldsa65-ed25519-remote-v1.json'),
-		manifest: await json('tests/fixtures/staging-key-manifest.json'),
+		root: session.root,
+		manifest: session.evidence.document.keys,
 		attestation: {
 			bundle: await readFile(
 				resolve(root, 'tests/fixtures/gateway-v0.0.1-attestation.jsonl'),
 				'utf8'
 			),
-			now: 1_784_246_400_000,
 			subjects: [
 				{
 					name: 'gateway.igvm',

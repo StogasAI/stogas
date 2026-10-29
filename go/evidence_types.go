@@ -12,6 +12,8 @@ func (err *VerificationError) Error() string { return err.Message }
 type TrustRoot struct {
 	KeyID     string `json:"key_id"`
 	PublicKey string `json:"public_key"`
+	// RekorPublicKey is the only key that may log this root's key manifests.
+	RekorPublicKey string `json:"rekor_public_key"`
 }
 
 // EvidenceOptions selects the environment. A nil Root selects the compiled Stogas authority.

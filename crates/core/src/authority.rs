@@ -109,6 +109,9 @@ impl Environment {
 pub struct RootKey {
     pub key_id: String,
     pub public_key: String,
+    /// Canonical standard-base64 Ed25519 `SubjectPublicKeyInfo` DER of the only key that may
+    /// log this root's key manifests in Rekor, so a search by it finds every one.
+    pub rekor_public_key: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -117,7 +120,8 @@ pub struct OnlineKey {
     pub key_id: String,
     /// Canonical standard-base64 composite ML-DSA-65 and Ed25519 `SubjectPublicKeyInfo` DER.
     pub public_key: String,
-    /// Root-authenticated Ed25519 publisher association for Rekor searches, not signing authority.
+    /// Canonical standard-base64 Ed25519 `SubjectPublicKeyInfo` DER of the only key that may log
+    /// this key's signatures in Rekor, so a search by it finds every one. It approves nothing.
     pub rekor_public_key: String,
 }
 
@@ -368,14 +372,9 @@ impl VerifiedEvidence {
     ///
     /// # Errors
     /// Rejects an invalid launch manifest, build proof or placeholder proof in production.
-    pub(crate) fn verify_gateway(
-        &self,
-        release: &AllowedIgvm,
-        now_unix_ms: i64,
-    ) -> Result<VerifiedRelease, Error> {
-        let verified =
-            crate::verify_gateway_release(release, self.sigstore.trusted_root(), now_unix_ms)
-                .map_err(|error| Error::Evidence(error.to_string()))?;
+    pub(crate) fn verify_gateway(&self, release: &AllowedIgvm) -> Result<VerifiedRelease, Error> {
+        let verified = crate::verify_gateway_release(release, self.sigstore.trusted_root())
+            .map_err(|error| Error::Evidence(error.to_string()))?;
         if !self.accepts_provenance(&verified.provenance) {
             return Err(Error::Authority);
         }
@@ -389,11 +388,9 @@ impl VerifiedEvidence {
     pub(crate) fn verify_catalog(
         &self,
         catalog: &AllowedCatalog,
-        now_unix_ms: i64,
     ) -> Result<VerifiedCatalogRelease, Error> {
-        let verified =
-            crate::verify_catalog_release(catalog, self.sigstore.trusted_root(), now_unix_ms)
-                .map_err(|error| Error::Evidence(error.to_string()))?;
+        let verified = crate::verify_catalog_release(catalog, self.sigstore.trusted_root())
+            .map_err(|error| Error::Evidence(error.to_string()))?;
         if !self.accepts_provenance(&verified.provenance) {
             return Err(Error::Authority);
         }
@@ -446,17 +443,40 @@ impl Authority {
         trust: &TrustedRoot,
         now_unix_ms: i64,
     ) -> Result<KeyManifest, Error> {
-        let keys = self.observe_keys(bytes, trust, now_unix_ms)?.document;
+        let keys = self.observe_keys(bytes, trust)?.document;
         if now_unix_ms >= keys.expiry_unix_ms()? {
             return Err(Error::Expired);
         }
         Ok(keys)
     }
 
+    /// Verify the manifest that authorized a signature Rekor logged at `signed_unix_ms`. Rekor
+    /// must have logged the manifest first, so a key cannot sign before its authorization, and
+    /// the manifest must not have expired by then. A later expiry does not invalidate it.
+    ///
+    /// # Errors
+    /// Rejects everything [`Self::verify_key_manifest`] rejects, and a later manifest.
+    pub(crate) fn verify_key_manifest_at(
+        &self,
+        bytes: &[u8],
+        trust: &TrustedRoot,
+        signed_unix_ms: i64,
+    ) -> Result<KeyManifest, Error> {
+        let keys = self.verify_keys(bytes, trust)?;
+        if keys.published_unix_ms > signed_unix_ms {
+            return Err(invalid("key manifest was logged after the signature"));
+        }
+        if signed_unix_ms >= keys.document.expiry_unix_ms()? {
+            return Err(Error::Expired);
+        }
+        Ok(keys.document)
+    }
+
     /// # Errors
     /// Rejects malformed or weak root keys and ambiguous key identifiers.
     pub fn new(environment: Environment, root: RootKey) -> Result<Self, Error> {
         decode_key(&root.key_id, &root.public_key)?;
+        decode_rekor_key(&root.rekor_public_key)?;
         Ok(Self {
             environment,
             root,
@@ -465,12 +485,7 @@ impl Authority {
         })
     }
 
-    fn verify_keys(
-        &self,
-        bytes: &[u8],
-        trust: &TrustedRoot,
-        now_unix_ms: i64,
-    ) -> Result<VerifiedKeys, Error> {
+    fn verify_keys(&self, bytes: &[u8], trust: &TrustedRoot) -> Result<VerifiedKeys, Error> {
         if bytes.len() > MAX_INPUT_BYTES {
             return Err(Error::TooLarge);
         }
@@ -483,23 +498,22 @@ impl Authority {
             &self.root.key_id,
             &self.root.public_key,
         )?;
-        // Logging proves publication; only the root signature authorizes this manifest.
+        // Only the root signature authorizes this manifest. The root's own Rekor key must log
+        // it, so a stolen root cannot authorize keys where a search by that key misses them.
         let published = verify_document_inclusion(
             &document,
             &keys.signature,
             &keys.inclusion,
             trust,
-            now_unix_ms,
+            &self.root.rekor_public_key,
         )?;
-        let published = published
-            .checked_mul(1000)
-            .ok_or_else(|| invalid("log time overflow"))?;
         if keys.document.expiry_unix_ms()? <= published {
             return Err(invalid("key authorization expired before publication"));
         }
         Ok(VerifiedKeys {
             digest: payload_sha256(&keys.document)?,
             document: keys.document,
+            published_unix_ms: published,
         })
     }
 
@@ -507,9 +521,8 @@ impl Authority {
         &self,
         bytes: &[u8],
         trust: &TrustedRoot,
-        now_unix_ms: i64,
     ) -> Result<VerifiedKeys, Error> {
-        let keys = self.verify_keys(bytes, trust, now_unix_ms)?;
+        let keys = self.verify_keys(bytes, trust)?;
         self.key_state.learn(keys.clone())?;
         Ok(keys)
     }
@@ -580,7 +593,6 @@ pub(crate) fn verify_proof(
     candidate: &mut VerifiedEvidence,
     signature: StogasSignature,
     inclusion: Value,
-    now_unix_ms: i64,
 ) -> Result<(), Error> {
     let document = serde_json::to_value(&candidate.document).map_err(invalid)?;
     let key = &candidate.document.keys.document.active_key;
@@ -590,7 +602,7 @@ pub(crate) fn verify_proof(
         &signature,
         &inclusion,
         candidate.sigstore.trusted_root(),
-        now_unix_ms,
+        &key.rekor_public_key,
     )?;
     candidate.proof = Some(Proof {
         signature,
@@ -681,10 +693,15 @@ fn validate_keys(
     }
     let mut ids = BTreeSet::from([root.key_id.as_str()]);
     let mut public_keys = BTreeSet::from([root.public_key.as_str()]);
+    // One Rekor key per signer attributes each logged entry to exactly one key.
+    let mut rekor_keys = BTreeSet::from([root.rekor_public_key.as_str()]);
     for key in std::iter::once(&keys.active_key).chain(&keys.retired_keys) {
         decode_key(&key.key_id, &key.public_key)?;
-        decode_rekor_key(key)?;
-        if !ids.insert(&key.key_id) || !public_keys.insert(&key.public_key) {
+        decode_rekor_key(&key.rekor_public_key)?;
+        if !ids.insert(&key.key_id)
+            || !public_keys.insert(&key.public_key)
+            || !rekor_keys.insert(&key.rekor_public_key)
+        {
             return Err(Error::Invalid("duplicate or root operational key".into()));
         }
     }
@@ -707,12 +724,14 @@ pub(crate) fn verify_signature(
         .map_err(|_| Error::Signature)
 }
 
+/// Verify that `submitter`, a Rekor key from validated authorization, logged this signed
+/// document, and return the log time in Unix milliseconds.
 pub(crate) fn verify_document_inclusion(
     document: &Value,
     signature: &StogasSignature,
     inclusion: &Value,
     trust: &TrustedRoot,
-    now_unix_ms: i64,
+    submitter: &str,
 ) -> Result<i64, Error> {
     let artifact = canonical_json(&serde_json::json!({"document":document, "signature":signature}))
         .map_err(invalid)?;
@@ -720,9 +739,11 @@ pub(crate) fn verify_document_inclusion(
         trust,
         &serde_json::to_vec(inclusion).map_err(invalid)?,
         artifact.as_bytes(),
-        now_unix_ms,
+        &STANDARD.decode(submitter).map_err(invalid)?,
     )
-    .map_err(|error| Error::Transparency(error.to_string()))
+    .map_err(|error| Error::Transparency(error.to_string()))?
+    .checked_mul(1000)
+    .ok_or_else(|| invalid("log time overflow"))
 }
 
 pub(crate) fn valid_key_id(key_id: &str) -> bool {
@@ -745,9 +766,9 @@ fn decode_key(key_id: &str, public_key: &str) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-fn decode_rekor_key(key: &OnlineKey) -> Result<Vec<u8>, Error> {
-    let bytes = STANDARD.decode(&key.rekor_public_key).map_err(invalid)?;
-    if bytes.len() != 44 || STANDARD.encode(&bytes) != key.rekor_public_key {
+fn decode_rekor_key(key: &str) -> Result<Vec<u8>, Error> {
+    let bytes = STANDARD.decode(key).map_err(invalid)?;
+    if bytes.len() != 44 || STANDARD.encode(&bytes) != key {
         return Err(Error::Invalid("Rekor public key encoding".into()));
     }
     let public = VerifyingKey::from_public_key_der(&bytes).map_err(invalid)?;

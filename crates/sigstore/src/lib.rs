@@ -90,27 +90,29 @@ pub struct VerifiedAttestation {
     pub subjects: Vec<(String, String)>,
 }
 
-/// Verify publication of exact artifact bytes through Rekor's SHA-512/Ed25519ph profile.
+/// Verify that the designated submitter logged exact artifact bytes through Rekor's
+/// SHA-512/Ed25519ph profile, and return the authenticated log time in Unix seconds.
 ///
-/// The entry's submission key authenticates its Rekor envelope, not the artifact's
-/// author or approval. This proves exact log inclusion and time without requiring a
-/// designated publisher. Separately authenticate the artifact with its trusted signing
-/// policy, including any post-quantum signature.
+/// `submitter` is the Ed25519 `SubjectPublicKeyInfo` DER that must have submitted the entry,
+/// so a Rekor search by that key finds every accepted entry. The submission key does not
+/// approve the artifact: separately authenticate it with its trusted signing policy,
+/// including any post-quantum signature.
 ///
 /// # Errors
-/// Rejects malformed bundles, substituted artifacts, invalid signatures, log proofs or times.
+/// Rejects malformed bundles, substituted artifacts, other submitters, invalid signatures,
+/// log proofs or times.
 pub fn verify_rekor_document_inclusion(
     trust: &TrustedRoot,
     bundle: &[u8],
     artifact: &[u8],
-    now_unix_ms: i64,
+    submitter: &[u8],
 ) -> Result<i64, Error> {
     if bundle.len() > MAX_BUNDLE_BYTES || artifact.len() > MAX_DOCUMENT_BYTES {
         return Err(Error::TooLarge);
     }
     let value =
         strict_json::from_slice(bundle).map_err(|error| Error::InvalidBundle(error.to_string()))?;
-    hashedrekord::verify(&value, artifact, now_unix_ms, trust).map_err(Error::Cryptographic)
+    hashedrekord::verify(&value, artifact, submitter, trust).map_err(Error::Cryptographic)
 }
 
 /// Offline Sigstore verification failure.
@@ -147,10 +149,9 @@ pub fn verify_github_attestation(
     bundle_bytes: &[u8],
     expected_subjects: &[Subject<'_>],
     policy: &GithubPolicy,
-    now_unix_ms: i64,
 ) -> Result<VerifiedAttestation, Error> {
     verify_single_attestation(bundle_bytes, |value| {
-        verify_github_attestation_value(trust, value, expected_subjects, policy, now_unix_ms)
+        verify_github_attestation_value(trust, value, expected_subjects, policy)
     })
 }
 
@@ -167,10 +168,9 @@ pub fn verify_dsse_attestation(
     bundle_bytes: &[u8],
     expected_subjects: &[Subject<'_>],
     policy: &IdentityPolicy,
-    now_unix_ms: i64,
 ) -> Result<VerifiedAttestation, Error> {
     verify_single_attestation(bundle_bytes, |value| {
-        verify_dsse_attestation_value(trust, value, expected_subjects, policy, now_unix_ms)
+        verify_dsse_attestation_value(trust, value, expected_subjects, policy)
     })
 }
 
@@ -205,7 +205,6 @@ fn verify_dsse_attestation_value(
     value: &Value,
     expected_subjects: &[Subject<'_>],
     policy: &IdentityPolicy,
-    now_unix_ms: i64,
 ) -> Result<VerifiedAttestation, Error> {
     verify_statement(
         trust,
@@ -217,7 +216,6 @@ fn verify_dsse_attestation_value(
             issuer: &policy.certificate_oidc_issuer,
             extensions: &[],
         },
-        now_unix_ms,
     )
 }
 
@@ -226,7 +224,6 @@ fn verify_github_attestation_value(
     value: &Value,
     expected_subjects: &[Subject<'_>],
     policy: &GithubPolicy,
-    now_unix_ms: i64,
 ) -> Result<VerifiedAttestation, Error> {
     verify_statement(
         trust,
@@ -243,7 +240,6 @@ fn verify_github_attestation_value(
                 (RUNNER_ENVIRONMENT, "github-hosted"),
             ],
         },
-        now_unix_ms,
     )
 }
 
@@ -253,7 +249,6 @@ fn verify_statement(
     expected_subjects: &[Subject<'_>],
     predicate_type: &str,
     certificate: &CertificatePolicy<'_>,
-    now_unix_ms: i64,
 ) -> Result<VerifiedAttestation, Error> {
     check_bundle_shape(value)?;
     let payload = decode_dsse_payload(value)?;
@@ -270,7 +265,7 @@ fn verify_statement(
         ));
     }
     let integrated_time =
-        sigstore::verify(trust, value, certificate, now_unix_ms).map_err(Error::Cryptographic)?;
+        sigstore::verify(trust, value, certificate).map_err(Error::Cryptographic)?;
     Ok(VerifiedAttestation {
         integrated_time,
         predicate_type: statement.predicate_type,
@@ -474,7 +469,7 @@ mod tests {
     fn rejects_oversized_input_before_parsing() {
         let bytes = vec![b' '; MAX_BUNDLE_BYTES + 1];
         assert!(matches!(
-            verify_github_attestation(TrustedRoot::embedded().unwrap(), &bytes, &[], &policy(), 0),
+            verify_github_attestation(TrustedRoot::embedded().unwrap(), &bytes, &[], &policy()),
             Err(Error::TooLarge)
         ));
     }

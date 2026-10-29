@@ -19,38 +19,18 @@ fn to_js_value<T: Serialize>(value: &T) -> Result<JsValue, JsError> {
         .map_err(|error| JsError::new(&error.to_string()))
 }
 
-/// Verify a GitHub/Sigstore attestation using one captured platform wall-clock value.
+/// Verify a GitHub/Sigstore attestation. Signed log and timestamp times decide validity, so the
+/// result does not depend on the platform clock.
 ///
 /// # Errors
 ///
-/// Returns a JavaScript error for malformed policy, invalid platform time, or untrusted evidence.
+/// Returns a JavaScript error for malformed policy or untrusted evidence.
 #[wasm_bindgen]
 pub fn verify_github_attestation(
     bundle: &[u8],
     expected_subjects_json: &str,
     policy_json: &str,
 ) -> Result<JsValue, JsError> {
-    verify_github_attestation_at(
-        bundle,
-        expected_subjects_json,
-        policy_json,
-        js_sys::Date::now(),
-    )
-}
-
-/// Verify at an injected time for deterministic tests and audits.
-///
-/// # Errors
-///
-/// Returns a JavaScript error for malformed policy, invalid time, or untrusted evidence.
-#[wasm_bindgen]
-pub fn verify_github_attestation_at(
-    bundle: &[u8],
-    expected_subjects_json: &str,
-    policy_json: &str,
-    now_unix_ms: f64,
-) -> Result<JsValue, JsError> {
-    let now_unix_ms = parse_unix_ms(now_unix_ms)?;
     let owned: Vec<OwnedSubject> = serde_json::from_str(expected_subjects_json)
         .map_err(|error| JsError::new(&format!("invalid subjects: {error}")))?;
     let subjects = owned
@@ -63,16 +43,7 @@ pub fn verify_github_attestation_at(
     let policy: GithubPolicy = serde_json::from_str(policy_json)
         .map_err(|error| JsError::new(&format!("invalid policy: {error}")))?;
     let trust = TrustedRoot::embedded().map_err(|error| JsError::new(&error.to_string()))?;
-    let output = verify_core(trust, bundle, &subjects, &policy, now_unix_ms)
+    let output = verify_core(trust, bundle, &subjects, &policy)
         .map_err(|error| JsError::new(&error.to_string()))?;
     to_js_value(&output)
-}
-
-#[allow(clippy::cast_possible_truncation)]
-fn parse_unix_ms(value: f64) -> Result<i64, JsError> {
-    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
-    if !value.is_finite() || value.fract() != 0.0 || value.abs() > MAX_SAFE_INTEGER {
-        return Err(JsError::new("now_unix_ms must be a safe integer"));
-    }
-    Ok(value as i64)
 }

@@ -14,7 +14,6 @@ pub async fn verify_directory(directory: &Path) -> Result<()> {
         &read(directory, ATTESTATION).await?,
         &read(directory, QUALIFICATION).await?,
         &read(directory, SIGNATURE).await?,
-        super::wall_clock_ms(),
     )?;
     let mut verified = verify_artifacts(directory, &manifest).await?;
     verified.sort();

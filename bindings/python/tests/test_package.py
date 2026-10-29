@@ -19,7 +19,11 @@ from stogas import (
 
 # Local offline trust configuration, never accepted by the managed transport.
 _root = json.loads((Path(__file__).resolve().parents[3] / "tests/fixtures/hardware-session-v1.json").read_text())["root"]
-ROOT = {"root_key_id": _root["key_id"], "root_public_key": _root["public_key"]}
+ROOT = {
+    "root_key_id": _root["key_id"],
+    "root_public_key": _root["public_key"],
+    "root_rekor_public_key": _root["rekor_public_key"],
+}
 
 
 class PackageTests(unittest.TestCase):
@@ -41,7 +45,9 @@ class PackageTests(unittest.TestCase):
             {"environment": "unknown", **ROOT},
             {"root_key_id": "partial"},
             {"root_public_key": ROOT["root_public_key"]},
-            {"root_key_id": "invalid", "root_public_key": "bad-key"},
+            {"root_key_id": "partial", "root_public_key": ROOT["root_public_key"]},
+            {**ROOT, "root_key_id": "invalid", "root_public_key": "bad-key"},
+            {**ROOT, "root_rekor_public_key": "bad-key"},
         ):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 EvidenceVerifier(**options)

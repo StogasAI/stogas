@@ -97,7 +97,6 @@ pub fn verify_all(
     timestamps: &[SignedTimestamp],
     signature: &[u8],
     root: &TrustedRoot,
-    now_seconds: i64,
 ) -> Result<Option<i64>, String> {
     if timestamps.len() > MAX_TIMESTAMPS {
         return Err("too many RFC 3161 timestamps".into());
@@ -108,9 +107,6 @@ pub fn verify_all(
             .decode(&timestamp.signed_timestamp)
             .map_err(|error| format!("invalid RFC 3161 timestamp encoding: {error}"))?;
         let verified = verify_timestamp(&bytes, signature, root)?;
-        if verified > now_seconds + 60 {
-            return Err("RFC 3161 timestamp is in the future".into());
-        }
         earliest = Some(earliest.map_or(verified, |current: i64| current.min(verified)));
     }
     Ok(earliest)
@@ -505,7 +501,7 @@ mod tests {
     fn verifies_real_github_sha384_timestamp() {
         let (signature, timestamp, root) = fixture();
         assert_eq!(
-            verify_all(&[timestamp], &signature, &root, 1_772_448_000).unwrap(),
+            verify_all(&[timestamp], &signature, &root).unwrap(),
             Some(1_772_445_135)
         );
     }
@@ -515,15 +511,7 @@ mod tests {
         let (signature, timestamp, root) = fixture();
         let mut changed_signature = signature.clone();
         changed_signature[0] ^= 1;
-        assert!(
-            verify_all(
-                std::slice::from_ref(&timestamp),
-                &changed_signature,
-                &root,
-                1_772_448_000
-            )
-            .is_err()
-        );
+        assert!(verify_all(std::slice::from_ref(&timestamp), &changed_signature, &root).is_err());
 
         let mut token = STANDARD.decode(timestamp.signed_timestamp).unwrap();
         let last = token.len() - 1;
@@ -531,12 +519,6 @@ mod tests {
         let changed = SignedTimestamp {
             signed_timestamp: STANDARD.encode(token),
         };
-        assert!(verify_all(&[changed], &signature, &root, 1_772_448_000).is_err());
-    }
-
-    #[test]
-    fn rejects_a_timestamp_after_the_captured_time() {
-        let (signature, timestamp, root) = fixture();
-        assert!(verify_all(&[timestamp], &signature, &root, 1_772_445_074).is_err());
+        assert!(verify_all(&[changed], &signature, &root).is_err());
     }
 }

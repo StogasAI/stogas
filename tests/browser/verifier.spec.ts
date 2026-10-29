@@ -10,7 +10,6 @@ const WASM = resolve(ROOT, 'target/browser/stogas_bg.wasm');
 const SIGSTORE_GLUE = resolve(ROOT, 'target/sigstore-browser/stogas_sigstore.js');
 const SIGSTORE_WASM = resolve(ROOT, 'target/sigstore-browser/stogas_sigstore_bg.wasm');
 const FIXTURE = resolve(ROOT, 'tests/fixtures/gateway-v0.0.1-attestation.jsonl');
-const NOW_UNIX_MS = 1_784_246_400_000;
 const SUBJECTS = [
 	{
 		name: 'gateway.igvm',
@@ -59,7 +58,8 @@ test('browser boot history remains offline and separate from current evidence', 
 			const core = new api.EvidenceVerifier(
 				'staging',
 				fixture.root.key_id,
-				fixture.root.public_key
+				fixture.root.public_key,
+				fixture.root.rekor_public_key
 			);
 			const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
 			const previousNow = Date.now;
@@ -108,7 +108,8 @@ test('encrypted setup cannot release a browser session without its own verified 
 		const verifier = new api.EvidenceVerifier(
 			'staging',
 			fixture.root.key_id,
-			fixture.root.public_key
+			fixture.root.public_key,
+			fixture.root.rekor_public_key
 		);
 		let snapshot: InstanceType<typeof api.EvidenceSnapshot> | undefined;
 		let pending: InstanceType<typeof api.EncryptedSetup> | undefined;
@@ -224,27 +225,25 @@ test('standalone lightweight package verifies GitHub evidence with networking di
 	const requests = await initializeSigstore(page);
 	const fixture = await readFile(FIXTURE, 'utf8');
 	const result = await page.evaluate(
-		({ fixture, subjects, policy, now }) => {
+		({ fixture, subjects, policy }) => {
 			const api = (
 				globalThis as typeof globalThis & {
 					stogasSigstoreBindings: {
-						verify_github_attestation_at(
+						verify_github_attestation(
 							bundle: Uint8Array,
 							subjects: string,
-							policy: string,
-							now: number
+							policy: string
 						): { subjects: unknown[] };
 					};
 				}
 			).stogasSigstoreBindings;
-			return api.verify_github_attestation_at(
+			return api.verify_github_attestation(
 				new TextEncoder().encode(fixture),
 				JSON.stringify(subjects),
-				JSON.stringify(policy),
-				now
+				JSON.stringify(policy)
 			);
 		},
-		{ fixture, subjects: SUBJECTS, policy: POLICY, now: NOW_UNIX_MS }
+		{ fixture, subjects: SUBJECTS, policy: POLICY }
 	);
 	expect(result.subjects).toHaveLength(2);
 	expect(requests).toEqual([]);

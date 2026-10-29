@@ -38,17 +38,10 @@ pub fn verify_sdk_release(
     github_attestation: &[u8],
     qualification: &[u8],
     signature: &[u8],
-    now_unix_ms: f64,
 ) -> Result<(), JsError> {
-    stogas_core::sdk_release::verify(
-        manifest,
-        github_attestation,
-        qualification,
-        signature,
-        parse_unix_ms(now_unix_ms, "current time")?,
-    )
-    .map(drop)
-    .map_err(|error| JsError::new(&error.to_string()))
+    stogas_core::sdk_release::verify(manifest, github_attestation, qualification, signature)
+        .map(drop)
+        .map_err(|error| JsError::new(&error.to_string()))
 }
 
 /// Seal one boot's provisioning envelope to its attested X-Wing public key.
@@ -74,15 +67,13 @@ pub fn seal_boot_provisioning(
 ///
 /// # Errors
 ///
-/// Returns a JavaScript error for malformed policy, time, or untrusted evidence.
+/// Returns a JavaScript error for malformed policy or untrusted evidence.
 #[wasm_bindgen]
 pub fn verify_sigstore_github_attestation(
     bundle: &[u8],
     expected_subjects_json: &str,
     policy_json: &str,
-    now_unix_ms: f64,
 ) -> Result<JsValue, JsError> {
-    let now_unix_ms = parse_unix_ms(now_unix_ms, "now_unix_ms")?;
     let owned: Vec<OwnedSubject> = serde_json::from_str(expected_subjects_json)
         .map_err(|error| JsError::new(&format!("invalid subjects: {error}")))?;
     let subjects = owned
@@ -95,7 +86,7 @@ pub fn verify_sigstore_github_attestation(
     let policy: GithubPolicy = serde_json::from_str(policy_json)
         .map_err(|error| JsError::new(&format!("invalid policy: {error}")))?;
     let trust = TrustedRoot::embedded().map_err(|error| JsError::new(&error.to_string()))?;
-    let output = verify_github_attestation(trust, bundle, &subjects, &policy, now_unix_ms)
+    let output = verify_github_attestation(trust, bundle, &subjects, &policy)
         .map_err(|error| JsError::new(&error.to_string()))?;
     to_js_value(&output)
 }

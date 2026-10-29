@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { verify_github_attestation_at } from '../../packages/sigstore/bindings/node/node.js';
+import { verify_github_attestation } from '../../packages/sigstore/bindings/node/node.js';
 
 const attestation = readFileSync(
 	new URL('../fixtures/gateway-v0.0.1-attestation.jsonl', import.meta.url)
@@ -24,34 +24,22 @@ const policy = {
 		'https://github.com/StogasAI/gateway/.github/workflows/gateway-igvm-release.yml@refs/tags/v0.0.1'
 };
 
-const verified = verify_github_attestation_at(
+const verified = verify_github_attestation(
 	attestation,
 	JSON.stringify(subjects),
-	JSON.stringify(policy),
-	1_784_246_400_000
+	JSON.stringify(policy)
 );
 assert.equal(verified.subjects.length, 2);
-assert.throws(
-	() =>
-		verify_github_attestation_at(
-			attestation,
-			JSON.stringify(subjects),
-			JSON.stringify(policy),
-			Number.MAX_SAFE_INTEGER + 1
-		),
-	/safe integer/
-);
 
 const mutation = JSON.parse(attestation);
 const hash = mutation.verificationMaterial.tlogEntries[0].inclusionProof.hashes[0];
 mutation.verificationMaterial.tlogEntries[0].inclusionProof.hashes[0] = `${hash.startsWith('A') ? 'B' : 'A'}${hash.slice(1)}`;
 assert.throws(
 	() =>
-		verify_github_attestation_at(
+		verify_github_attestation(
 			new TextEncoder().encode(JSON.stringify(mutation)),
 			JSON.stringify(subjects),
-			JSON.stringify(policy),
-			1_784_246_400_000
+			JSON.stringify(policy)
 		),
 	/Sigstore cryptographic verification failed/
 );

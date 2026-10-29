@@ -1,4 +1,4 @@
-//! Rekor v1 hashedrekord: verify publication of exact artifact bytes independently of authorship.
+//! Rekor v1 hashedrekord: verify that one designated key logged the exact artifact bytes.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ed25519_dalek::{Signature, VerifyingKey, pkcs8::DecodePublicKey as _};
@@ -92,10 +92,10 @@ struct PublicKey {
 pub fn verify(
     value: &serde_json::Value,
     artifact: &[u8],
-    now_unix_ms: i64,
+    submitter: &[u8],
     root: &TrustedRoot,
 ) -> Result<i64, String> {
-    let bundle: Bundle = serde_json::from_value(value.clone())
+    let bundle = Bundle::deserialize(value)
         .map_err(|error| format!("invalid Rekor document bundle: {error}"))?;
     if bundle.media_type != crate::SIGSTORE_BUNDLE_MEDIA_TYPE
         || bundle.verification_material.tlog_entries.len() != 1
@@ -103,11 +103,11 @@ pub fn verify(
         return Err("unsupported or ambiguous Rekor document bundle".into());
     }
     let entry = &bundle.verification_material.tlog_entries[0];
-    verify_binding(&bundle, artifact)?;
-    tlog::verify_publication(entry, now_unix_ms.div_euclid(1000), root)
+    verify_binding(&bundle, artifact, submitter)?;
+    tlog::verify_publication(entry, root)
 }
 
-fn verify_binding(bundle: &Bundle, artifact: &[u8]) -> Result<(), String> {
+fn verify_binding(bundle: &Bundle, artifact: &[u8], submitter: &[u8]) -> Result<(), String> {
     let entry = &bundle.verification_material.tlog_entries[0];
     if entry.kind_version.kind != "hashedrekord" || entry.kind_version.version != "0.0.1" {
         return Err("only Rekor hashedrekord v0.0.1 is supported for document inclusion".into());
@@ -134,6 +134,10 @@ fn verify_binding(bundle: &Bundle, artifact: &[u8]) -> Result<(), String> {
             != hex::encode(Sha256::digest(pem.contents()))
     {
         return Err("Rekor submission key differs from its bundle hint".into());
+    }
+    // Rekor indexes entries by this key, so a search by the designated key finds every entry.
+    if pem.contents() != submitter {
+        return Err("Rekor entry was not submitted by the designated key".into());
     }
     let key = VerifyingKey::from_public_key_der(pem.contents())
         .map_err(|_| "Rekor document profile requires an Ed25519 submission key")?;

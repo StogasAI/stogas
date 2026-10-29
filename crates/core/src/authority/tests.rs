@@ -45,6 +45,7 @@ fn root(seed: u8) -> RootKey {
     RootKey {
         key_id: key.key_id,
         public_key: key.public_key,
+        rekor_public_key: key.rekor_public_key,
     }
 }
 
@@ -96,6 +97,7 @@ fn verified_keys(keys: &KeyManifest) -> VerifiedKeys {
     VerifiedKeys {
         digest: payload_sha256(keys).unwrap(),
         document: keys.clone(),
+        published_unix_ms: 0,
     }
 }
 
@@ -163,11 +165,10 @@ fn verify_logged(
     let keys = authority.verify_keys(
         &serde_json::to_vec(&document["keys"]).unwrap(),
         sigstore.trusted_root(),
-        now,
     )?;
     let signed: SignedEvidence = serde_json::from_value(evidence.clone()).map_err(invalid)?;
     let mut candidate = authority.check(keys, signed.document, sigstore, now)?;
-    verify_proof(&mut candidate, signed.signature, signed.inclusion, now)?;
+    verify_proof(&mut candidate, signed.signature, signed.inclusion)?;
     Ok(candidate)
 }
 
@@ -207,35 +208,84 @@ fn actual_logged_evidence_verifies_and_rejects_substituted_material() {
 
 #[cfg(feature = "staging")]
 #[test]
-fn another_publisher_can_log_the_same_root_authorization() {
+fn only_the_designated_rekor_key_can_log_a_signature() {
     let session = session();
+    let root: RootKey = serde_json::from_value(session["root"].clone()).unwrap();
+    let authority = Authority::new(Environment::Staging, root.clone()).unwrap();
+    let trust = stogas_sigstore::TrustedRoot::embedded().unwrap();
     let mut keys = session["evidence"]["document"]["keys"].clone();
+    let verify = |keys: &Value| authority.verify_keys(&serde_json::to_vec(keys).unwrap(), trust);
+    verify(&keys).unwrap();
+    // Another Rekor key logged the same root-signed manifest; a search by the root's key
+    // would miss that entry.
     let republication: Value = serde_json::from_str(include_str!(
         "../../../../tests/fixtures/rekor-republication-v1.json"
     ))
     .unwrap();
+    keys["inclusion"] = republication["inclusion"].clone();
+    assert!(matches!(verify(&keys), Err(Error::Transparency(_))));
+
+    let evidence: SignedEvidence = serde_json::from_value(session["evidence"].clone()).unwrap();
+    let document = serde_json::to_value(&evidence.document).unwrap();
+    let logged = |submitter: &str| {
+        verify_document_inclusion(
+            &document,
+            &evidence.signature,
+            &evidence.inclusion,
+            trust,
+            submitter,
+        )
+    };
+    logged(&evidence.document.keys.document.active_key.rekor_public_key).unwrap();
+    assert!(matches!(
+        logged(&root.rekor_public_key),
+        Err(Error::Transparency(_))
+    ));
+}
+
+#[cfg(feature = "staging")]
+#[test]
+fn a_signature_needs_a_manifest_logged_before_it_and_unexpired_then() {
+    let session = session();
     let root: RootKey = serde_json::from_value(session["root"].clone()).unwrap();
     let authority = Authority::new(Environment::Staging, root).unwrap();
-    let now = session["verified_at_ms"].as_i64().unwrap();
     let trust = stogas_sigstore::TrustedRoot::embedded().unwrap();
-    let verify =
-        |keys: &Value| authority.verify_keys(&serde_json::to_vec(keys).unwrap(), trust, now);
-    let original = verify(&keys).unwrap();
-    keys["inclusion"] = republication["inclusion"].clone();
-    assert_eq!(verify(&keys).unwrap().digest, original.digest);
-
-    // The manifest's publisher association is still root-signed public metadata.
-    keys["document"]["active_key"]["rekor_public_key"] = json!(key(187).0.rekor_public_key);
-    assert!(verify(&keys).is_err());
+    let keys = &session["evidence"]["document"]["keys"];
+    let bytes = serde_json::to_vec(keys).unwrap();
+    let logged = authority
+        .verify_keys(&bytes, trust)
+        .unwrap()
+        .published_unix_ms;
+    let expiry = authority
+        .verify_key_manifest_at(&bytes, trust, logged)
+        .unwrap()
+        .expiry_unix_ms()
+        .unwrap();
+    authority
+        .verify_key_manifest_at(&bytes, trust, expiry - 1)
+        .unwrap();
+    assert!(matches!(
+        authority.verify_key_manifest_at(&bytes, trust, logged - 1),
+        Err(Error::Invalid(_))
+    ));
+    assert_eq!(
+        authority
+            .verify_key_manifest_at(&bytes, trust, expiry)
+            .unwrap_err(),
+        Error::Expired
+    );
 }
 
 #[test]
-fn distinct_signers_can_share_publisher_metadata() {
-    let mut manifest = keys(1, 3, &[2]);
-    manifest.retired_keys[0].rekor_public_key = manifest.active_key.rekor_public_key.clone();
-    validate_keys(&manifest, Environment::Production, &root(1)).unwrap();
-    manifest.retired_keys[0].public_key = manifest.active_key.public_key.clone();
-    assert!(validate_keys(&manifest, Environment::Production, &root(1)).is_err());
+fn each_signer_has_its_own_rekor_key() {
+    let root = root(1);
+    validate_keys(&keys(1, 3, &[2]), Environment::Production, &root).unwrap();
+    let mut shared = keys(1, 3, &[2]);
+    shared.retired_keys[0].rekor_public_key = shared.active_key.rekor_public_key.clone();
+    assert!(validate_keys(&shared, Environment::Production, &root).is_err());
+    let mut root_key = keys(1, 3, &[]);
+    root_key.active_key.rekor_public_key = root.rekor_public_key.clone();
+    assert!(validate_keys(&root_key, Environment::Production, &root).is_err());
 }
 
 #[test]
@@ -393,7 +443,7 @@ fn root_decisions_can_omit_retired_keys_without_authorizing_them() {
     let value = serde_json::to_value(unsigned.document()).unwrap();
     for signer in [1, 2, 4] {
         assert_eq!(
-            verify_proof(&mut unsigned, sign(&value, signer), Value::Null, NOW).unwrap_err(),
+            verify_proof(&mut unsigned, sign(&value, signer), Value::Null).unwrap_err(),
             Error::InactiveKey
         );
     }
@@ -408,7 +458,7 @@ fn signatures_are_bound_to_the_active_key_document_and_purpose() {
     let value = serde_json::to_value(&original).unwrap();
     let verify = |document: EvidenceDocument, signature: StogasSignature| {
         let mut candidate = check(document)?;
-        verify_proof(&mut candidate, signature, Value::Null, NOW)
+        verify_proof(&mut candidate, signature, Value::Null)
     };
     // The signature passes; only the absent unit-test log entry remains.
     assert!(matches!(
@@ -536,7 +586,6 @@ fn root_inclusion_is_mandatory_and_failure_never_advances_state() {
         .observe_keys(
             &serde_json::to_vec(&keys).unwrap(),
             sigstore().1.trusted_root(),
-            NOW,
         )
         .unwrap_err();
     assert!(matches!(error, Error::Transparency(_)));
@@ -559,13 +608,13 @@ fn strict_boundary_rejects_unknown_duplicate_trailing_and_oversized_inputs() {
         valid.replacen("\"generation\":1", "\"generation\":1,\"extra\":true", 1),
     ] {
         assert!(matches!(
-            authority.observe_keys(input.as_bytes(), trust, 0),
+            authority.observe_keys(input.as_bytes(), trust),
             Err(Error::Invalid(_))
         ));
     }
     assert_eq!(
         authority
-            .observe_keys(&vec![b' '; MAX_INPUT_BYTES + 1], trust, 0)
+            .observe_keys(&vec![b' '; MAX_INPUT_BYTES + 1], trust)
             .unwrap_err(),
         Error::TooLarge
     );
@@ -604,8 +653,8 @@ fn staging_capable_verifier_rejects_placeholders_in_a_production_context() {
         let mut keys = keys(1, 2, &[]);
         keys.environment = environment;
         let evidence = check(document(&keys, 1)).unwrap();
-        let gateway = evidence.verify_gateway(&gateway, NOW);
-        let catalog = evidence.verify_catalog(&catalog, NOW);
+        let gateway = evidence.verify_gateway(&gateway);
+        let catalog = evidence.verify_catalog(&catalog);
         if allowed {
             gateway.unwrap();
             catalog.unwrap();
@@ -655,19 +704,19 @@ fn compiled_staging_root_verifies_actual_logged_operational_delegation() {
         keys.active_key.key_id,
         "staging-stogas-online-2026-10-10-01"
     );
-    assert_eq!(keys.generation, 1);
+    assert_eq!(keys.generation, 58);
     assert!(keys.retired_keys.is_empty());
     let mut changed = value;
-    changed["document"]["generation"] = json!(2);
+    changed["document"]["generation"] = json!(59);
     assert!(
         verifier
             .verify_key_manifest(&serde_json::to_vec(&changed).unwrap(), now)
             .is_err()
     );
+    // The production root has no Rekor key yet, so its authority fails closed; once it has one,
+    // it must still reject this staging delegation.
     assert!(
-        crate::evidence::Verifier::stogas(Environment::Production)
-            .unwrap()
-            .verify_key_manifest(bytes, now)
-            .is_err()
+        !crate::evidence::Verifier::stogas(Environment::Production)
+            .is_ok_and(|production| production.verify_key_manifest(bytes, now).is_ok())
     );
 }

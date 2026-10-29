@@ -18,7 +18,6 @@ pub fn verify(
     certificate_der: &[u8],
     certificate_not_before: i64,
     certificate_not_after: i64,
-    now_seconds: i64,
     root: &TrustedRoot,
 ) -> Result<i64, String> {
     if entry.kind_version.kind != "dsse" || entry.kind_version.version != "0.0.1" {
@@ -28,11 +27,8 @@ pub fn verify(
     if integrated_time <= 0
         || integrated_time < certificate_not_before
         || integrated_time > certificate_not_after
-        || integrated_time > now_seconds + 60
     {
-        return Err(
-            "Rekor integrated time is invalid, outside the certificate, or in the future".into(),
-        );
+        return Err("Rekor integrated time is invalid or outside the certificate".into());
     }
     let log_id = decode_32(&entry.log_id.key_id, "Rekor log id")?;
     let log_key = root.rekor_key_at(&log_id, integrated_time)?;
@@ -43,14 +39,10 @@ pub fn verify(
 }
 
 /// Verify log signatures, time and inclusion. The caller binds the entry body to its artifact.
-pub fn verify_publication(
-    entry: &TransparencyLogEntry,
-    now_seconds: i64,
-    root: &TrustedRoot,
-) -> Result<i64, String> {
+pub fn verify_publication(entry: &TransparencyLogEntry, root: &TrustedRoot) -> Result<i64, String> {
     let integrated_time = parse_i64(&entry.integrated_time, "integrated time")?;
-    if integrated_time <= 0 || integrated_time > now_seconds + 60 {
-        return Err("Rekor integrated time is invalid or in the future".into());
+    if integrated_time <= 0 {
+        return Err("Rekor integrated time is invalid".into());
     }
     let log_id = decode_32(&entry.log_id.key_id, "Rekor log id")?;
     let log_key = root.rekor_key_at(&log_id, integrated_time)?;

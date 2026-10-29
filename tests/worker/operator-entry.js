@@ -28,7 +28,7 @@ const rejects = (operation) => {
 // from OpenBao Transit vectors; nothing here holds a signing private key.
 export default {
 	async fetch() {
-		const { signing, remote, manifest, attestation } = fixtures;
+		const { signing, remote, root, manifest, attestation } = fixtures;
 		const message = bytes(signing.message);
 		const remoteKey = base64(remote.public_key);
 		const representatives = remote.vectors.map((vector) => {
@@ -47,7 +47,12 @@ export default {
 		const retry = JSON.parse(prepare_rekor_submission_with_seed(seed, message));
 		const badSeed = new Uint8Array(31).fill(42);
 		const rejectedSeed = rejects(() => prepare_rekor_submission_with_seed(badSeed, message));
-		const verifier = EvidenceVerifier.for_stogas('staging');
+		const verifier = new EvidenceVerifier(
+			'staging',
+			root.key_id,
+			root.public_key,
+			root.rekor_public_key
+		);
 		const encoded = (value) => new TextEncoder().encode(JSON.stringify(value));
 		const altered = structuredClone(manifest);
 		altered.document.generation++;
@@ -58,8 +63,7 @@ export default {
 			verify_sigstore_github_attestation(
 				new TextEncoder().encode(bundle),
 				JSON.stringify(attestation.subjects),
-				JSON.stringify(attestation.policy),
-				attestation.now
+				JSON.stringify(attestation.policy)
 			);
 		try {
 			return Response.json({

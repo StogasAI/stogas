@@ -5,6 +5,8 @@ use std::sync::Mutex;
 pub struct VerifiedKeys {
     pub(super) document: KeyManifest,
     pub(super) digest: String,
+    /// When Rekor logged the manifest, in Unix milliseconds.
+    pub(super) published_unix_ms: i64,
 }
 
 #[derive(Debug)]
@@ -95,6 +97,7 @@ mod tests {
         VerifiedKeys {
             digest: crate::authority::payload_sha256(&document).unwrap(),
             document: serde_json::from_value(document).unwrap(),
+            published_unix_ms: 0,
         }
     }
 
