@@ -444,6 +444,8 @@ impl Verifier {
         // release, altered signature or other malformed object prevents acceptance.
         #[cfg(feature = "snp")]
         let vendor = self.revocations.observe(document, now_unix_ms);
+        #[cfg(not(feature = "snp"))]
+        let _ = now_unix_ms;
         #[cfg(feature = "snp")]
         if keys.is_ok() && vendor.is_ok() {
             checked(VerificationStep::VendorRevocations, None, false);
