@@ -46,7 +46,6 @@ jobs:
           cargo clippy --locked --package stogas-core --all-targets --no-default-features -- -D warnings
           cargo clippy --locked --package stogas-core --all-targets --features staging,gateway -- -D warnings
           cargo clippy --locked --package stogas-ffi --all-targets --no-default-features --features staging,gateway -- -D warnings
-          # The nightly fuzz campaign is the only other build of these targets.
           cargo clippy --locked --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
       - name: Audit the SDK and Rust example dependencies
         if: ${{ !cancelled() }}
@@ -57,6 +56,41 @@ jobs:
       - name: Test the release scripts
         if: ${{ !cancelled() }}
         run: python3 -B -m unittest discover -s release -p 'test_*.py' -v
+
+  fuzz-regressions:
+    name: Fuzz regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      # The corpora that the nightly fuzz campaigns kept.
+      actions: read
+      contents: read
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-07-01
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - run: rustup install --no-self-update --profile minimal "$RUSTUP_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: fuzz
+      - run: cargo install cargo-fuzz --version =0.13.2 --locked
+      # Each input runs once, so a release needs every seed and every input that a
+      # campaign kept to pass, not only the crashes that became tests.
+      - name: Run every kept input
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cargo fuzz build
+          targets=$(cargo metadata --manifest-path fuzz/Cargo.toml --no-deps --format-version 1 |
+            jq -r '.packages[].targets[] | select(.kind == ["bin"]) | .name')
+          test -n "$targets"
+          for target in $targets; do
+            scripts/fuzz-corpus.sh "fuzz/corpus/$target" "$target"
+            cargo fuzz run "$target" "fuzz/corpus/$target" -- -runs=0 -timeout=15
+          done
 
   minimum-rust:
     name: Minimum supported Rust

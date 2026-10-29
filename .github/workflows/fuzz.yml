@@ -1,13 +1,15 @@
 name: Fuzz Campaign
 
-# Runs nightly instead of gating releases; each crash it finds becomes a
-# regression test, which then gates releases through CI.
+# Runs nightly instead of gating releases. CI runs every input the campaigns kept
+# on each push, and each crash found here also becomes a regression test.
 on:
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
 
 permissions:
+  # The fuzz jobs read the corpora that earlier campaigns kept.
+  actions: read
   contents: read
 
 jobs:
@@ -49,14 +51,11 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: fuzz
-      - name: Restore generated fuzz corpus
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-        with:
-          path: fuzz/corpus/${{ matrix.target }}
-          key: verifier-fuzz-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('fuzz/Cargo.lock', 'fuzz/Cargo.toml') }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            verifier-fuzz-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('fuzz/Cargo.lock', 'fuzz/Cargo.toml') }}-
-            verifier-fuzz-${{ runner.os }}-${{ matrix.target }}-
+      - name: Restore the corpus an earlier campaign kept
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ matrix.target }}
+        run: scripts/fuzz-corpus.sh "fuzz/corpus/$TARGET" "$TARGET"
       - run: cargo install cargo-fuzz --version =0.13.2 --locked
       - env:
           TARGET: ${{ matrix.target }}
