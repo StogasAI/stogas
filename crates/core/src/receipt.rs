@@ -317,6 +317,22 @@ mod tests {
     }
 
     #[test]
+    fn released_events_do_not_keep_the_whole_read_allocated() {
+        // Each event that a server packs into one read is released on its own. Had each kept
+        // the read's buffer, one megabyte of tiny events would hold gigabytes.
+        let wire = [
+            b"data: a\n\n".repeat(10_000).as_slice(),
+            b"data: [DONE]\n\n",
+        ]
+        .concat();
+        let mut guard = StreamCompletion::default();
+        let events = guard.push(&wire).unwrap();
+        assert_eq!(events.concat(), wire[..wire.len() - 2]);
+        assert!(events.iter().map(Vec::capacity).sum::<usize>() <= 2 * wire.len());
+        guard.finish().unwrap();
+    }
+
+    #[test]
     fn go_receipt_vector_binds_content_metadata_and_the_resolved_boot_key() {
         let vector: serde_json::Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/content-receipt-v1.json"
