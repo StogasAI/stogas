@@ -14,6 +14,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Line tables keep backtraces readable. Full debug information made the build
+  # caches pass the 10 GB that GitHub keeps for a repository, so it dropped some.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 jobs:
   lint:
     name: Lint, audit and release script tests
