@@ -72,5 +72,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "receipts"
+path = "fuzz_targets/receipts.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]
