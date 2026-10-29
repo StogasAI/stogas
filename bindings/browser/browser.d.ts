@@ -18,7 +18,8 @@ export interface StogasEvidenceSnapshot {
 	readonly error: string | null;
 	readonly fetchedAtUnixMs: number | null;
 	readonly status: 'idle' | 'refreshing' | 'ready' | 'error';
-	/** Network acquisition and body reading across attempted origins, excluding verification. */
+	/** Time spent waiting for origins, from the start of acquisition until this delivery,
+	 * excluding verification. A slow or failed first origin is included. */
 	readonly fetchDurationMs: number | null;
 	/** Local verifier work that accepted the current evidence, across attempted origins. May
 	 * reuse authenticated artifacts. A refresh that delivers the same bytes keeps it. */

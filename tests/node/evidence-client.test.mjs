@@ -139,16 +139,70 @@ test('invalid delivery preserves usable state but authentic retirement still con
 	revoked.close();
 });
 
-test('304 without origin representation fails and failed lookups share a cooldown', async () => {
+test('304 without origin representation fails and failed lookups share a cooldown', async (t) => {
+	let wall = 1_800_000_000_000;
+	t.mock.method(Date, 'now', () => wall);
 	let calls = 0;
 	const client = new EvidenceClient(verifier(), origins, async () => {
 		calls++;
 		return new Response(null, { status: 304 });
 	});
 	await assert.rejects(client.acquire(), /HTTP 304/);
+	wall += 4_499;
 	await assert.rejects(client.acquire(), /cooling down/);
 	assert.equal(calls, 2);
+	// A clock that moved back ends the cooldown instead of extending it.
+	wall -= 3_600_000;
+	await assert.rejects(client.acquire(), /HTTP 304/);
+	await assert.rejects(client.acquire(), /cooling down/);
+	assert.equal(calls, 4);
+	wall += 5_501;
+	await assert.rejects(client.acquire(), /HTTP 304/);
+	assert.equal(calls, 6);
 	client.close();
+});
+
+test('a slow primary starts the replica after a second, and the first verified answer wins', async () => {
+	await Promise.all(
+		origins.map(async (winner, index) => {
+			const answers = new Map();
+			const canceled = [];
+			let replicaStarted;
+			const replica = new Promise((resolve) => {
+				replicaStarted = resolve;
+			});
+			const client = new EvidenceClient(
+				verifier(),
+				origins,
+				(url, { signal }) =>
+					new Promise((resolve, reject) => {
+						answers.set(url, resolve);
+						if (url === origins[1]) replicaStarted(performance.now());
+						signal.addEventListener(
+							'abort',
+							() => {
+								canceled.push(url);
+								reject(signal.reason);
+							},
+							{ once: true }
+						);
+					})
+			);
+			const started = performance.now();
+			const loading = client.acquire();
+			assert.deepEqual([...answers.keys()], [origins[0]]);
+			// Well before the primary's own five-second limit.
+			const delay = (await replica) - started;
+			assert.ok(delay >= 900 && delay < 4_000, `replica started after ${delay} ms`);
+			answers.get(winner)(response(index + 1));
+			assert.deepEqual(await loading, { revision: index + 1 });
+			assert.deepEqual(
+				canceled,
+				origins.filter((url) => url !== winner)
+			);
+			client.close();
+		})
+	);
 });
 
 test('closing during acquisition cancels network work before freeing the verifier', async () => {
