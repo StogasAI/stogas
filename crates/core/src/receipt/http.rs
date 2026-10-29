@@ -17,7 +17,12 @@ const SSE_KEEPALIVE: &[u8] = b": STOGAS PROCESSING\n\n";
 /// the two terminal forms emitted by the `OpenAI` Chat Completions and Responses endpoints.
 pub struct SseBody {
     response_hasher: Sha256,
+    /// Received bytes, of which those before `taken` are already released or held.
     buffer: Vec<u8>,
+    taken: usize,
+    /// How many pending bytes hold no event end, so that a frame arriving in small pieces is
+    /// searched once rather than again with each piece.
+    searched: usize,
     state: SseState,
     proof_bytes: Option<Vec<u8>>,
     receipt_frame: Option<Vec<u8>>,
@@ -49,6 +54,8 @@ impl SseBody {
         Self {
             response_hasher: Sha256::new(),
             buffer: Vec::new(),
+            taken: 0,
+            searched: 0,
             state: SseState::Boundary,
             proof_bytes: None,
             receipt_frame: None,
@@ -87,7 +94,9 @@ impl SseBody {
                 Ok(parts) => output.extend(parts),
                 Err(error) => {
                     self.failed = true;
-                    self.buffer.clear();
+                    self.buffer = Vec::new();
+                    self.taken = 0;
+                    self.searched = 0;
                     return Err(error);
                 }
             }
@@ -117,6 +126,12 @@ impl SseBody {
                 break;
             }
         }
+        // Dropping taken bytes once per part, not once per event, copies the rest of a part
+        // once however many events it holds.
+        if self.taken > 0 {
+            self.buffer.drain(..self.taken);
+            self.taken = 0;
+        }
         Ok(output)
     }
 
@@ -131,7 +146,7 @@ impl SseBody {
     }
 
     pub fn require_complete(&self) -> Result<(), Error> {
-        if self.failed || self.state != SseState::AfterTerminal || !self.buffer.is_empty() {
+        if self.failed || self.state != SseState::AfterTerminal || !self.pending().is_empty() {
             return Err(stream_error(
                 "stream ended before its signed terminal event",
             ));
@@ -150,10 +165,10 @@ impl SseBody {
     }
 
     fn push_boundary(&mut self, output: &mut Vec<Vec<u8>>) -> Result<PushAction, Error> {
-        if self.buffer.is_empty() {
+        if self.pending().is_empty() {
             return Ok(PushAction::Stop);
         }
-        match classify_sse_boundary(&self.buffer) {
+        match classify_sse_boundary(self.pending()) {
             BoundaryKind::NeedMore => return Ok(PushAction::Stop),
             BoundaryKind::Receipt => {
                 if self.proof_bytes.is_some() {
@@ -184,7 +199,7 @@ impl SseBody {
     }
 
     fn push_regular(&mut self, output: &mut Vec<Vec<u8>>) -> PushAction {
-        if let Some(end) = find_bytes(&self.buffer, SSE_EVENT_END) {
+        if let Some(end) = self.find_event_end() {
             let bytes = self.take_buffer_prefix(end + SSE_EVENT_END.len());
             self.hash_and_forward(bytes, output);
             self.state = SseState::Boundary;
@@ -207,8 +222,9 @@ impl SseBody {
     }
 
     fn push_receipt(&mut self) -> Result<PushAction, Error> {
-        let Some(end) = find_bytes(&self.buffer, SSE_EVENT_END) else {
-            if self.buffer.len() > SSE_RECEIPT_PREFIX.len() + MAX_PROOF_BYTES + SSE_EVENT_END.len()
+        let Some(end) = self.find_event_end() else {
+            if self.pending().len()
+                > SSE_RECEIPT_PREFIX.len() + MAX_PROOF_BYTES + SSE_EVENT_END.len()
             {
                 return Err(stream_error("stream receipt exceeds its size limit"));
             }
@@ -232,8 +248,8 @@ impl SseBody {
         let mut expected = Vec::with_capacity(SSE_CHAT_TERMINAL_PREFIX.len() + SSE_EVENT_END.len());
         expected.extend_from_slice(SSE_CHAT_TERMINAL_PREFIX);
         expected.extend_from_slice(SSE_EVENT_END);
-        if self.buffer.len() < expected.len() {
-            if !expected.starts_with(&self.buffer) {
+        if self.pending().len() < expected.len() {
+            if !expected.starts_with(self.pending()) {
                 return Err(stream_error("Chat terminal event is malformed"));
             }
             return Ok(PushAction::Stop);
@@ -247,7 +263,7 @@ impl SseBody {
     }
 
     fn push_responses_terminal(&mut self, output: &mut Vec<Vec<u8>>) -> Result<PushAction, Error> {
-        if let Some(end) = find_bytes(&self.buffer, SSE_EVENT_END) {
+        if let Some(end) = self.find_event_end() {
             let frame = self.take_buffer_prefix(end + SSE_EVENT_END.len());
             self.finish_terminal_frame(&frame, output)?;
             return Ok(PushAction::Stop);
@@ -272,7 +288,7 @@ impl SseBody {
     }
 
     fn push_after_terminal(&self) -> Result<PushAction, Error> {
-        if !self.buffer.is_empty() {
+        if !self.pending().is_empty() {
             return Err(stream_error(
                 "stream contains bytes after its terminal event",
             ));
@@ -281,14 +297,30 @@ impl SseBody {
     }
 
     fn safe_incomplete_length(&self) -> usize {
-        self.buffer
+        let pending = self.pending();
+        pending
             .len()
-            .saturating_sub(usize::from(self.buffer.last() == Some(&b'\n')))
+            .saturating_sub(usize::from(pending.last() == Some(&b'\n')))
+    }
+
+    fn pending(&self) -> &[u8] {
+        &self.buffer[self.taken..]
+    }
+
+    /// Where the pending event ends, searching only the bytes that arrived since the last search
+    /// and the one before them.
+    fn find_event_end(&mut self) -> Option<usize> {
+        let from = self.searched.saturating_sub(SSE_EVENT_END.len() - 1);
+        let end = find_bytes(&self.pending()[from..], SSE_EVENT_END).map(|end| from + end);
+        self.searched = self.pending().len();
+        end
     }
 
     fn take_buffer_prefix(&mut self, length: usize) -> Vec<u8> {
-        let remainder = self.buffer.split_off(length);
-        std::mem::replace(&mut self.buffer, remainder)
+        let bytes = self.pending()[..length].to_vec();
+        self.taken += length;
+        self.searched = 0;
+        bytes
     }
 
     fn hash_and_forward(&mut self, bytes: Vec<u8>, output: &mut Vec<Vec<u8>>) {
