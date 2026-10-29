@@ -208,3 +208,101 @@ fn hex_digest(value: &str, length: usize) -> bool {
 fn invalid(error: impl std::fmt::Display) -> authority::Error {
     authority::Error::Invalid(error.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn manifest() -> Value {
+        json!({
+            "schema": "stogas.sdk-release.v1",
+            "environment": "prod",
+            "version": "0.1.0",
+            "source": {
+                "commit": "0123456789abcdef0123456789abcdef01234567",
+                "sha256": "ab".repeat(32),
+                "dirty": false,
+                "epoch": 1_761_696_000,
+            },
+            "targets": ["linux-amd64", "windows-amd64"],
+            "artifacts": [
+                { "name": "stogas-0.1.0.crate", "sha256": "cd".repeat(32), "size": 1 },
+                { "name": "stogas_cli-0.1.0-linux-amd64.tar.gz", "sha256": "ef".repeat(32), "size": 2 },
+            ],
+        })
+    }
+
+    fn parse(value: &Value) -> Manifest {
+        serde_json::from_value(value.clone()).unwrap()
+    }
+
+    #[test]
+    fn accepts_a_well_formed_production_manifest() {
+        validate_manifest(&parse(&manifest())).unwrap();
+    }
+
+    #[test]
+    fn rejects_each_malformed_manifest_field() {
+        let cases = [
+            ("/schema", json!("stogas.sdk-release.v2")),
+            ("/source/dirty", json!(true)),
+            (
+                "/source/commit",
+                json!("0123456789ABCDEF0123456789abcdef01234567"),
+            ),
+            ("/source/commit", json!("0123456789abcdef")),
+            ("/source/sha256", json!("ab".repeat(31))),
+            ("/source/epoch", json!(0x1_0000_0000_u64)),
+            ("/version", json!("")),
+            ("/version", json!("../0.1.0")),
+            ("/targets", json!([])),
+            ("/targets", json!(["windows-amd64", "linux-amd64"])),
+            ("/targets", json!(["linux-amd64", "linux-amd64"])),
+            ("/targets/0", json!("linux amd64")),
+            ("/artifacts", json!([])),
+            ("/artifacts/1/name", json!("stogas-0.1.0.crate")),
+            // A release file may not pose as an artifact.
+            ("/artifacts/0/name", json!(MANIFEST)),
+            ("/artifacts/0/name", json!(".stogas-0.1.0.crate")),
+            ("/artifacts/0/sha256", json!("CD".repeat(32))),
+            ("/artifacts/0/size", json!(0)),
+            ("/artifacts/0/size", json!(2_u64 * 1024 * 1024 * 1024 + 1)),
+        ];
+        for (pointer, replacement) in cases {
+            let mut value = manifest();
+            *value.pointer_mut(pointer).unwrap() = replacement.clone();
+            assert!(
+                validate_manifest(&parse(&value)).is_err(),
+                "{pointer} = {replacement} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_oversized_unknown_and_staging_releases_before_any_signature() {
+        let oversized = vec![b' '; MAX_INPUT_BYTES + 1];
+        for inputs in [
+            [oversized.as_slice(), b"", b"", b""],
+            [b"", oversized.as_slice(), b"", b""],
+            [b"", b"", oversized.as_slice(), b""],
+            [b"", b"", b"", oversized.as_slice()],
+        ] {
+            assert!(matches!(
+                verify(inputs[0], inputs[1], inputs[2], inputs[3]),
+                Err(authority::Error::TooLarge)
+            ));
+        }
+        let mut unknown = manifest();
+        unknown["notes"] = json!("unsigned");
+        let mut staging = manifest();
+        staging["environment"] = json!("staging");
+        for value in [unknown, staging] {
+            let bytes = serde_json::to_vec(&value).unwrap();
+            assert!(matches!(
+                verify(&bytes, b"", b"", b"{}"),
+                Err(authority::Error::Invalid(_))
+            ));
+        }
+    }
+}
