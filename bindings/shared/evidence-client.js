@@ -2,6 +2,9 @@ import { readBoundedBody } from './http.js';
 
 const MAX_EVIDENCE_BYTES = 16 * 1024 * 1024;
 const ORIGIN_TIMEOUT_MS = 5_000;
+// The primary answers within a second about 98% of the time. When it has not, the replica starts
+// too and the first verified answer wins, so a slow origin costs about a second, not five.
+const HEDGE_DELAY_MS = 1_000;
 export const SETUP_TIMEOUT_MS = 15_000;
 
 export function deadlineSignal(signal, milliseconds) {
@@ -54,6 +57,8 @@ export class EvidenceClient {
 	#accepted;
 	#pending;
 	#onSnapshot;
+	// Wall time, as for sessions: a clock that moved back ends the cooldown instead of extending it.
+	#failedAt = 0;
 	#retryAt = 0;
 	#closed = new AbortController();
 
@@ -106,7 +111,9 @@ export class EvidenceClient {
 					}
 				}
 			}
-			if (Date.now() < this.#retryAt) throw new Error('evidence recovery is cooling down');
+			const now = Date.now();
+			if (now >= this.#failedAt && now < this.#retryAt)
+				throw new Error('evidence recovery is cooling down');
 			const pending = this.#load(combined, check);
 			this.#pending = pending;
 			try {
@@ -119,73 +126,111 @@ export class EvidenceClient {
 		}
 	}
 
+	// The next origin starts when the previous one fails, delivers evidence that leaves the miss
+	// unresolved or, once, when the first has not answered within the hedge delay. The first
+	// verified answer wins and cancels the other.
 	async #load(signal, check) {
+		const acquiring = performance.now();
 		let failure;
-		let fetchDurationMs = 0;
 		let verificationDurationMs = 0;
-		for (let index = 0; index < this.#origins.length; index++) {
-			signal.throwIfAborted();
-			const attempt = deadlineSignal(signal, ORIGIN_TIMEOUT_MS);
-			try {
-				const fetching = performance.now();
-				let representation;
-				try {
-					representation = await this.#loadRepresentation(index, attempt.signal);
-				} finally {
-					fetchDurationMs += performance.now() - fetching;
+		const running = new Map();
+		let started = 0;
+		const startNext = () => {
+			if (signal.aborted || started === this.#origins.length) return;
+			const index = started++;
+			const cancel = new AbortController();
+			const attempt = deadlineSignal(AbortSignal.any([signal, cancel.signal]), ORIGIN_TIMEOUT_MS);
+			const delivery = this.#loadRepresentation(index, attempt.signal).then(
+				(representation) => ({ index, representation }),
+				(error) => ({ index, error })
+			);
+			running.set(index, { attempt, cancel, delivery });
+		};
+		let hedge;
+		let hedging = new Promise((resolve) => {
+			hedge = setTimeout(resolve, HEDGE_DELAY_MS);
+		});
+		try {
+			startNext();
+			while (running.size > 0) {
+				const settled = await Promise.race([
+					...Array.from(running.values(), ({ delivery }) => delivery),
+					...(hedging ? [hedging] : [])
+				]);
+				if (!settled) {
+					hedging = undefined;
+					startNext();
+					continue;
 				}
-				attempt.signal.throwIfAborted();
-				// Rust retains authentic revocations even if another candidate object
-				// fails validation. A 304 still rechecks time and those decisions.
-				const started = performance.now();
-				let checkpoint = started;
-				const verificationChecks = [];
-				const observe = (check) => {
-					const finished = performance.now();
-					verificationChecks.push(Object.freeze({ ...check, durationMs: finished - checkpoint }));
-					checkpoint = finished;
-				};
-				let snapshot;
+				const { index, representation, error } = settled;
+				const { attempt } = running.get(index);
+				running.delete(index);
 				try {
-					snapshot = this.#verifier.refresh(representation.bytes, observe);
-				} finally {
-					verificationDurationMs += performance.now() - started;
-				}
-				this.#representations[index] = representation;
-				const old = this.#current;
-				// Repeated bytes return the current snapshot, which keeps its summary and the
-				// report of the verification that accepted it.
-				if (!old?.same_as(snapshot)) {
-					this.#accepted = {
-						evidence: deepFreeze(snapshot.summary()),
-						verificationDurationMs,
-						verificationChecks: Object.freeze(verificationChecks)
+					if (error) throw error;
+					attempt.signal.throwIfAborted();
+					// Rust retains authentic revocations even if another candidate object
+					// fails validation. A 304 still rechecks time and those decisions.
+					const verifying = performance.now();
+					let checkpoint = verifying;
+					const verificationChecks = [];
+					const observe = (check) => {
+						const finished = performance.now();
+						verificationChecks.push(Object.freeze({ ...check, durationMs: finished - checkpoint }));
+						checkpoint = finished;
 					};
+					let snapshot;
+					try {
+						snapshot = this.#verifier.refresh(representation.bytes, observe);
+					} finally {
+						verificationDurationMs += performance.now() - verifying;
+					}
+					// Verification runs on this thread, so the rest of the wait was for origins.
+					const fetchDurationMs = performance.now() - acquiring - verificationDurationMs;
+					this.#representations[index] = representation;
+					const old = this.#current;
+					// Repeated bytes return the current snapshot, which keeps its summary and the
+					// report of the verification that accepted it.
+					if (!old?.same_as(snapshot)) {
+						this.#accepted = {
+							evidence: deepFreeze(snapshot.summary()),
+							verificationDurationMs,
+							verificationChecks: Object.freeze(verificationChecks)
+						};
+					}
+					this.#current = snapshot;
+					old?.free(); // Requests own independent Arc-backed snapshot handles.
+					try {
+						this.#onSnapshot({
+							...this.#accepted,
+							evidenceURL: this.#origins[index],
+							fetchedAtUnixMs: Date.now(),
+							fetchDurationMs
+						});
+					} catch {
+						/* An observer cannot change authenticated state or delivery. */
+					}
+					snapshot.require_current_keys();
+					const result = check ? check(snapshot) : this.#accepted.evidence;
+					this.#retryAt = 0;
+					return result;
+				} catch (error) {
+					failure = error;
+					hedging = undefined;
+					startNext();
+				} finally {
+					attempt.dispose();
 				}
-				this.#current = snapshot;
-				old?.free(); // Requests own independent Arc-backed snapshot handles.
-				try {
-					this.#onSnapshot({
-						...this.#accepted,
-						evidenceURL: this.#origins[index],
-						fetchedAtUnixMs: Date.now(),
-						fetchDurationMs
-					});
-				} catch {
-					/* An observer cannot change authenticated state or delivery. */
-				}
-				snapshot.require_current_keys();
-				const result = check ? check(snapshot) : this.#accepted.evidence;
-				this.#retryAt = 0;
-				return result;
-			} catch (error) {
-				failure = error;
-			} finally {
+			}
+		} finally {
+			clearTimeout(hedge);
+			for (const { attempt, cancel } of running.values()) {
+				cancel.abort();
 				attempt.dispose();
 			}
 		}
 		signal.throwIfAborted();
-		this.#retryAt = Date.now() + 4_500 + Math.floor(Math.random() * 1_001);
+		this.#failedAt = Date.now();
+		this.#retryAt = this.#failedAt + 4_500 + Math.floor(Math.random() * 1_001);
 		throw failure;
 	}
 
