@@ -45,7 +45,7 @@ Streamed content can arrive before final verification. Treat a response as compl
 cargo test --locked --workspace --all-targets
 ```
 
-[CI](.github/workflows/ci.yml) covers the core, transports, and language bindings; [fuzzing](.github/workflows/fuzz.yml) covers parsers and verification boundaries; a [daily check](.github/workflows/sigstore-root.yml) compares the compiled Sigstore trusted root with Sigstore's current one. [`scripts/live-test.py`](scripts/live-test.py) runs every language's tests against the live gateway. Report vulnerabilities through the [security policy](SECURITY.md).
+[CI](.github/workflows/ci.yml) covers the core, transports, and language bindings; [fuzzing](.github/workflows/fuzz.yml) covers parsers and verification boundaries; a [release](.github/workflows/release.yml) requires the compiled Sigstore trusted root to match Sigstore's current one. [`scripts/live-test.py`](scripts/live-test.py) runs every language's tests against the live gateway. Report vulnerabilities through the [security policy](SECURITY.md).
 
 ## License
 
