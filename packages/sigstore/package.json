@@ -13,7 +13,6 @@
 	"engines": {
 		"node": ">=20"
 	},
-	"sideEffects": false,
 	"publishConfig": {
 		"access": "public",
 		"provenance": true
