@@ -218,12 +218,7 @@ impl EvidenceClient {
         {
             let check = Arc::clone(check);
             let checked = run_cpu(Arc::clone(&self.cpu), move || {
-                current.require_current_keys()?;
-                current
-                    .evidence()
-                    .valid_until(wall_clock_ms()?)
-                    .map_err(evidence::Error::from)?;
-                check(&current)?;
+                satisfies(&current, &check)?;
                 Ok(current)
             })
             .await;
@@ -309,22 +304,14 @@ impl EvidenceClient {
                 // Before the snapshot is current, so no connection that it allows misses the address.
                 network.learn(snapshot.evidence().document().onion_services.as_ref());
                 *current.write().map_err(|_| Error::State)? = Some(Arc::clone(&snapshot));
+                // Verified evidence stays current even when it does not satisfy this check. The
+                // check holds the same permit, so the other origin's copy cannot replace it first.
+                if let Some(check) = check {
+                    satisfies(&snapshot, &check)?;
+                }
                 Ok(snapshot)
             })
             .await?;
-            if let Some(check) = check {
-                let owned = Arc::clone(&snapshot);
-                run_cpu(Arc::clone(&self.cpu), move || {
-                    owned.require_current_keys()?;
-                    owned
-                        .evidence()
-                        .valid_until(wall_clock_ms()?)
-                        .map_err(evidence::Error::from)?;
-                    check(&owned)?;
-                    Ok(())
-                })
-                .await?;
-            }
             Ok((snapshot, candidate))
         })
         .await
@@ -370,6 +357,17 @@ impl EvidenceClient {
             etag,
         })
     }
+}
+
+/// Whether a snapshot's keys and validity are current and it passes the caller's check.
+fn satisfies(snapshot: &Snapshot, check: &Check) -> Result<(), Error> {
+    snapshot.require_current_keys()?;
+    snapshot
+        .evidence()
+        .valid_until(wall_clock_ms()?)
+        .map_err(evidence::Error::from)?;
+    check(snapshot)?;
+    Ok(())
 }
 
 async fn run_cpu<T: Send + 'static>(
