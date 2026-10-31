@@ -26,7 +26,7 @@ class TransportTest {
             Map.of("proxy", "socks5://127.0.0.1:9050"), "use socks5h://",
             Map.of("proxy", "socks5h://127.0.0.1"), "needs a host and a port",
             Map.of("onion", true), "onion needs a proxy",
-            Map.of("proxy", "socks5h://127.0.0.1:9050", "onion", true), "no onion address yet");
+            Map.of("proxy", "socks5://127.0.0.1:9050", "onion", true), "use socks5h://");
         cases.forEach((options, message) -> {
             var error = assertThrows(Transport.VerificationException.class, () -> new Transport(options));
             assertTrue(error.getMessage().contains(message), error.getMessage());

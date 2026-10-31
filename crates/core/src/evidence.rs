@@ -45,6 +45,8 @@ pub enum VerificationStep {
     CatalogRelease,
     HardwarePolicy,
     VendorCollateral,
+    /// The evidence signs onion addresses, each a valid version 3 address.
+    OnionServices,
     Accepted,
 }
 
@@ -501,6 +503,10 @@ impl Verifier {
             Arc::clone(&self.revocations),
         )?;
         checked(VerificationStep::VendorCollateral, None, false);
+        // The document check validated the addresses with the rest of its shape.
+        if evidence.document().onion_services.is_some() {
+            checked(VerificationStep::OnionServices, None, false);
+        }
         Ok(Snapshot {
             #[cfg(feature = "snp")]
             identity: Arc::new(()),

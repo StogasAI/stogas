@@ -21,7 +21,7 @@ foreach (var (options, message) in new[] {
     (new TransportOptions { Proxy = "socks5://127.0.0.1:9050" }, "use socks5h://"),
     (new TransportOptions { Proxy = "socks5h://127.0.0.1" }, "needs a host and a port"),
     (new TransportOptions { Onion = true }, "onion needs a proxy"),
-    (new TransportOptions { Proxy = "socks5h://127.0.0.1:9050", Onion = true }, "no onion address yet"),
+    (new TransportOptions { Proxy = "socks5://127.0.0.1:9050", Onion = true }, "use socks5h://"),
 })
 {
     try

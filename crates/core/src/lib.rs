@@ -1909,6 +1909,29 @@ mod tests {
         assert!(error.contains("committed firmware version exceeds current"));
     }
 
+    /// The onion address of an Ed25519 key, with the checksum computed for `version`.
+    pub fn onion_address(key: [u8; 32], version: u8) -> String {
+        let mut input = b".onion checksum".to_vec();
+        input.extend_from_slice(&key);
+        input.push(version);
+        let mut raw = key.to_vec();
+        raw.extend_from_slice(&libcrux_sha3::sha256(&input)[..2]);
+        raw.push(version);
+        let alphabet = b"abcdefghijklmnopqrstuvwxyz234567";
+        let mut label = String::new();
+        for chunk in raw.chunks(5) {
+            let bits = chunk
+                .iter()
+                .fold(0_u64, |bits, byte| bits << 8 | u64::from(*byte));
+            for shift in (0..8).rev() {
+                label.push(char::from(
+                    alphabet[usize::try_from(bits >> (shift * 5) & 31).unwrap()],
+                ));
+            }
+        }
+        format!("{label}.onion")
+    }
+
     pub fn release_fixture() -> AllowedIgvm {
         let launch = serde_json::json!({
             "author_key_digest": "00".repeat(48),

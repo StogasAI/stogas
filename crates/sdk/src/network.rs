@@ -6,8 +6,15 @@
 
 use anyhow::{Result, bail};
 use futures_util::{StreamExt as _, stream::FuturesUnordered};
-use std::{fmt, future::Future, io, net::SocketAddr, sync::Arc, time::Duration};
-use stogas_core::authority::Environment;
+use std::{
+    fmt,
+    future::Future,
+    io,
+    net::SocketAddr,
+    sync::{Arc, PoisonError, RwLock},
+    time::Duration,
+};
+use stogas_core::authority::{Environment, OnionServices};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::{TcpStream, lookup_host},
@@ -38,10 +45,23 @@ enum Route {
     },
 }
 
+/// The environment's onion address, which only verified evidence names, so no build carries it.
 struct Onion {
-    address: &'static str,
-    /// The environment's hosts that the onion address serves.
+    address: RwLock<Address>,
+    /// The API and E2EE hosts, which connect only through the onion address.
     hosts: Vec<String>,
+    /// The evidence hosts. Until verified evidence names the address, they connect through the
+    /// proxy's exit, which sees only the host name, because TLS still checks the host.
+    evidence: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Address {
+    /// No evidence has been verified yet.
+    Unknown,
+    /// The verified evidence names no onion address.
+    Unpublished,
+    Named(Arc<str>),
 }
 
 impl Network {
@@ -51,11 +71,11 @@ impl Network {
     }
 
     /// `proxy` is a `socks5h://host:port` URL, such as Tor's `socks5h://127.0.0.1:9050`.
-    /// `onion` sends connections to the environment's own hosts to its onion address.
+    /// `onion` sends connections to the environment's own hosts to the onion address that its
+    /// verified evidence names.
     ///
     /// # Errors
-    /// Rejects a proxy URL in another form, and `onion` without a proxy or in an environment that
-    /// has no onion address.
+    /// Rejects a proxy URL in another form, and `onion` without a proxy.
     pub fn new(environment: Environment, proxy: Option<&str>, onion: bool) -> Result<Self> {
         let Some(proxy) = proxy else {
             if onion {
@@ -84,20 +104,22 @@ impl Network {
             bail!("the proxy URL takes only a host and a port, such as socks5h://127.0.0.1:9050");
         }
         let onion = if onion {
-            let Some(address) = environment.onion_address() else {
-                bail!("this environment has no onion address yet");
+            let hosts = |origins: &[&str]| {
+                origins
+                    .iter()
+                    .map(|origin| {
+                        Url::parse(origin)
+                            .ok()
+                            .and_then(|url| url.host_str().map(str::to_owned))
+                            .ok_or_else(|| anyhow::anyhow!("invalid compiled origin"))
+                    })
+                    .collect::<Result<Vec<_>>>()
             };
-            let hosts = [environment.api_origin(), environment.e2ee_origin()]
-                .into_iter()
-                .chain(environment.evidence_origins())
-                .map(|origin| {
-                    Url::parse(origin)
-                        .ok()
-                        .and_then(|url| url.host_str().map(str::to_owned))
-                        .ok_or_else(|| anyhow::anyhow!("invalid compiled origin"))
-                })
-                .collect::<Result<_>>()?;
-            Some(Onion { address, hosts })
+            Some(Onion {
+                address: RwLock::new(Address::Unknown),
+                hosts: hosts(&[environment.api_origin(), environment.e2ee_origin()])?,
+                evidence: hosts(&environment.evidence_origins())?,
+            })
         } else {
             None
         };
@@ -109,6 +131,23 @@ impl Network {
             port,
             onion,
         })))
+    }
+
+    /// Takes the onion addresses of evidence that the verifier has just accepted. The verifier
+    /// rejects older revisions, so the address follows the newest evidence.
+    pub(crate) fn learn(&self, services: Option<&OnionServices>) {
+        if let Route::Socks {
+            onion: Some(onion), ..
+        } = &*self.0
+        {
+            let address = services.map_or(Address::Unpublished, |services| {
+                Address::Named(services.api.as_str().into())
+            });
+            *onion
+                .address
+                .write()
+                .unwrap_or_else(PoisonError::into_inner) = address;
+        }
     }
 
     /// Opens a TCP connection to `host`, through the proxy when there is one.
@@ -130,15 +169,11 @@ impl Network {
                 port: proxy_port,
                 onion,
             } => {
-                let target = onion
-                    .as_ref()
-                    .filter(|onion| {
-                        onion
-                            .hosts
-                            .iter()
-                            .any(|name| name.eq_ignore_ascii_case(host))
-                    })
-                    .map_or(host, |onion| onion.address);
+                let target = match onion {
+                    Some(onion) => onion.target(host)?,
+                    None => host.into(),
+                };
+                let target = &*target;
                 let request = connect_request(target, port)?;
                 timeout(PROXIED_CONNECT, async {
                     let mut stream = connect_any(proxy, *proxy_port).await.map_err(|error| {
@@ -179,8 +214,42 @@ impl fmt::Debug for Network {
             Route::Socks { host, port, onion } => formatter
                 .debug_struct("Network::Socks")
                 .field("proxy", &format_args!("{host}:{port}"))
-                .field("onion", &onion.as_ref().map(|onion| onion.address))
+                .field(
+                    "onion",
+                    &onion.as_ref().map(|onion| {
+                        onion
+                            .address
+                            .read()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .clone()
+                    }),
+                )
                 .finish(),
+        }
+    }
+}
+
+impl Onion {
+    /// Where the proxy connects for `host`: the onion address for the environment's hosts, and the
+    /// host itself for others. Before verified evidence names the address, only an evidence host
+    /// connects, through the exit, to fetch it.
+    fn target(&self, host: &str) -> io::Result<Arc<str>> {
+        let names = |hosts: &[String]| hosts.iter().any(|name| name.eq_ignore_ascii_case(host));
+        let evidence = names(&self.evidence);
+        if !evidence && !names(&self.hosts) {
+            return Ok(host.into());
+        }
+        match &*self.address.read().unwrap_or_else(PoisonError::into_inner) {
+            Address::Named(address) => Ok(Arc::clone(address)),
+            _ if evidence => Ok(host.into()),
+            Address::Unknown => Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                format!("{host} waits for verified evidence to name the onion address"),
+            )),
+            Address::Unpublished => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "this environment's evidence names no onion address",
+            )),
         }
     }
 }

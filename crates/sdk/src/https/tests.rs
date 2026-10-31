@@ -439,29 +439,29 @@ async fn tls_goes_direct_without_a_proxy() {
     );
 }
 
-#[cfg(feature = "staging")]
 #[tokio::test]
 async fn the_onion_address_carries_tls_for_the_original_host() {
-    let mut server = tls_server("api-staging.stogas.ai", &[b"h2"]).await;
+    let mut server = tls_server("api.stogas.ai", &[b"h2"]).await;
     let mut proxy = forwarding(server.address).await;
-    let network = Network::new(Environment::Staging, Some(&proxy.url), true).unwrap();
+    let network = Network::new(Environment::Production, Some(&proxy.url), true).unwrap();
+    let address = "api.onion";
+    network.learn(Some(&stogas_core::authority::OnionServices {
+        api: address.into(),
+        app: "app.onion".into(),
+        website: "website.onion".into(),
+    }));
     let client = trusting(network, &server.certificate);
     assert_eq!(
-        version(&client, "https://api-staging.stogas.ai/")
-            .await
-            .unwrap(),
+        version(&client, "https://api.stogas.ai/").await.unwrap(),
         "HTTP/2.0"
     );
     // The proxy reaches the onion address; TLS still names, and checks, the original host.
     assert_eq!(
         proxy.requests.try_recv().unwrap(),
-        (
-            Environment::Staging.onion_address().unwrap().to_owned(),
-            443
-        )
+        (address.to_owned(), 443)
     );
     assert_eq!(
         server.names.try_recv().unwrap().as_deref(),
-        Some("api-staging.stogas.ai")
+        Some("api.stogas.ai")
     );
 }
