@@ -27,6 +27,7 @@ fn root(seed: u8) -> RootKey {
         key_id: key.key_id,
         public_key: key.public_key,
         rekor_public_key: key.rekor_public_key,
+        rekor_v2: None,
     }
 }
 
@@ -93,7 +94,7 @@ fn verified_keys(keys: &KeyManifest) -> VerifiedKeys {
 
 fn check(document: EvidenceDocument) -> Result<VerifiedEvidence, Error> {
     let keys = verified_keys(&document.keys.document);
-    check_document(keys, document, Arc::clone(&sigstore_fixture().1))
+    check_document(keys, document, Arc::clone(&sigstore_fixture().1), None)
 }
 
 // Exercises acceptance independently of Rekor's existing cryptographic test suite. Production
@@ -224,6 +225,7 @@ fn only_the_designated_rekor_key_can_log_a_signature() {
             &evidence.inclusion,
             trust,
             submitter,
+            None,
         )
     };
     logged(&evidence.document.keys.document.active_key.rekor_public_key).unwrap();
@@ -231,6 +233,124 @@ fn only_the_designated_rekor_key_can_log_a_signature() {
         logged(&root.rekor_public_key),
         Err(Error::Transparency(_))
     ));
+}
+
+const V2_LOG: &str = "log2025-1.rekor.sigstore.dev";
+
+fn scope(first_index: u64, opened_from: &str) -> RekorV2Scope {
+    RekorV2Scope {
+        first_indexes: BTreeMap::from([(V2_LOG.to_owned(), first_index)]),
+        opened_from: opened_from.into(),
+    }
+}
+
+fn position(origin: &str, index: u64, log_start: Option<i64>) -> LogPosition {
+    LogPosition {
+        origin: origin.into(),
+        index,
+        log_start,
+    }
+}
+
+#[test]
+fn rekor_v2_entries_count_only_where_the_watcher_reads_every_entry() {
+    // 2026-10-31T00:00:00Z.
+    const OPENED_FROM: i64 = 1_793_404_800;
+    let scope = scope(1000, "2026-10-31T00:00:00Z");
+    for (position, counts) in [
+        // A listed log counts from its first index on, whenever it opened.
+        (position(V2_LOG, 1000, Some(1_758_585_600)), true),
+        (position(V2_LOG, u64::MAX, None), true),
+        (position(V2_LOG, 999, Some(OPENED_FROM)), false),
+        (position(V2_LOG, 0, Some(OPENED_FROM + 1)), false),
+        // Another log counts whole if it opened at or after the scope's time.
+        (
+            position("log2026-1.rekor.sigstore.dev", 0, Some(OPENED_FROM)),
+            true,
+        ),
+        (
+            position("log2027-1.rekor.sigstore.dev", 7, Some(OPENED_FROM + 1)),
+            true,
+        ),
+        (
+            position("log2026-1.rekor.sigstore.dev", 0, Some(OPENED_FROM - 1)),
+            false,
+        ),
+        (position("log2026-1.rekor.sigstore.dev", 0, None), false),
+        // Origins match exactly.
+        (position("LOG2025-1.rekor.sigstore.dev", 1000, None), false),
+    ] {
+        assert_eq!(
+            check_rekor_v2_scope(Some(&position), Some(&scope)).is_ok(),
+            counts,
+            "{position:?}"
+        );
+    }
+    // Rekor v1 has a search index, and a root without a scope accepts no Rekor v2 entry.
+    check_rekor_v2_scope(None, None).unwrap();
+    check_rekor_v2_scope(None, Some(&scope)).unwrap();
+    assert_eq!(
+        check_rekor_v2_scope(Some(&position(V2_LOG, 1000, Some(OPENED_FROM))), None),
+        Err(Error::Transparency(format!(
+            "Rekor v2 entry 1000 of {V2_LOG} is outside the root's Rekor v2 scope"
+        )))
+    );
+}
+
+#[test]
+fn roots_name_rekor_v2_scopes_exactly() {
+    let with = |rekor_v2| RootKey {
+        rekor_v2,
+        ..root(1)
+    };
+    Authority::new(Environment::Production, with(None)).unwrap();
+    Authority::new(
+        Environment::Production,
+        with(Some(scope(0, "2026-10-31T00:00:00Z"))),
+    )
+    .unwrap();
+    for opened_from in [
+        "2026-10-31",
+        "2026-10-31T00:00:00.5Z",
+        "2026-10-31T00:00:00+00:00",
+        "2026-10-31T01:00:00+01:00",
+        "",
+    ] {
+        assert!(
+            Authority::new(Environment::Production, with(Some(scope(0, opened_from)))).is_err(),
+            "{opened_from}"
+        );
+    }
+    for origin in [
+        "",
+        "Log.example",
+        "log example",
+        "https://log.example",
+        "log.example/",
+    ] {
+        let mut scope = scope(0, "2026-10-31T00:00:00Z");
+        scope.first_indexes = BTreeMap::from([(origin.to_owned(), 0)]);
+        assert!(
+            Authority::new(Environment::Production, with(Some(scope))).is_err(),
+            "{origin}"
+        );
+    }
+    // The compiled roots parse, and a root without a scope serializes as it did before.
+    let json = serde_json::to_value(with(None)).unwrap();
+    assert!(json.get("rekor_v2").is_none());
+    let scoped: RootKey = serde_json::from_value(serde_json::json!({
+        "key_id": "k", "public_key": "p", "rekor_public_key": "r",
+        "rekor_v2": {"first_indexes": {V2_LOG: 5}, "opened_from": "2026-10-31T00:00:00Z"}
+    }))
+    .unwrap();
+    assert_eq!(scoped.rekor_v2, Some(scope(5, "2026-10-31T00:00:00Z")));
+    assert!(
+        serde_json::from_value::<RootKey>(serde_json::json!({
+            "key_id": "k", "public_key": "p", "rekor_public_key": "r",
+            "rekor_v2": {"first_indexes": {}, "opened_from": "2026-10-31T00:00:00Z", "other": 1}
+        }))
+        .is_err()
+    );
 }
 
 #[cfg(feature = "staging")]
@@ -500,7 +620,8 @@ fn signatures_are_bound_to_the_active_key_document_and_purpose() {
             check_document(
                 verified_keys(&keys),
                 substituted,
-                Arc::clone(&sigstore_fixture().1)
+                Arc::clone(&sigstore_fixture().1),
+                None
             )
             .unwrap_err(),
             Error::Invalid("verified keys or Sigstore files differ".into())

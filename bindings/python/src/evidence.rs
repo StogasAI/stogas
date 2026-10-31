@@ -52,6 +52,7 @@ impl EvidenceVerifier {
                     key_id,
                     public_key,
                     rekor_public_key,
+                    rekor_v2: None,
                 },
             ),
             _ => {

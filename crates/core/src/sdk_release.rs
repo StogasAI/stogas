@@ -96,6 +96,10 @@ pub fn verify(
             .map_err(invalid)?;
     let document = serde_json::to_value(&manifest).map_err(invalid)?;
     let trust = sigstore.trusted_root();
+    let authority = Authority::new(
+        Environment::Production,
+        Environment::Production.stogas_root()?,
+    )?;
     // The root signature over this key manifest, checked next, authenticates its Rekor key.
     let published = authority::verify_document_inclusion(
         &document,
@@ -103,10 +107,7 @@ pub fn verify(
         &signed.inclusion,
         trust,
         &signed.keys.document.active_key.rekor_public_key,
-    )?;
-    let authority = Authority::new(
-        Environment::Production,
-        Environment::Production.stogas_root()?,
+        authority.rekor_v2(),
     )?;
     let keys = authority.verify_key_manifest_at(
         &serde_json::to_vec(&signed.keys).map_err(invalid)?,

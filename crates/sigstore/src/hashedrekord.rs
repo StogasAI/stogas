@@ -94,7 +94,7 @@ pub fn verify(
     artifact: &[u8],
     submitter: &[u8],
     root: &TrustedRoot,
-) -> Result<i64, String> {
+) -> Result<crate::DocumentEntry, String> {
     let bundle = Bundle::deserialize(value)
         .map_err(|error| format!("invalid Rekor document bundle: {error}"))?;
     if bundle.media_type != crate::SIGSTORE_BUNDLE_MEDIA_TYPE
@@ -113,7 +113,10 @@ pub fn verify(
     ) {
         ("hashedrekord", "0.0.1") if timestamps.is_empty() => {
             verify_binding(&bundle, artifact, submitter)?;
-            tlog::verify_publication(entry, root)
+            Ok(crate::DocumentEntry {
+                time: tlog::verify_publication(entry, root)?,
+                v2: None,
+            })
         }
         ("hashedrekord", "0.0.2") => {
             let signature = verify_submission(&bundle, artifact, submitter)?;
@@ -127,8 +130,11 @@ pub fn verify(
                 "PKIX_ED25519_PH",
                 &serde_json::json!({"publicKey": {"rawBytes": STANDARD.encode(submitter)}}),
             )?;
-            tlog::verify_v2(entry, &body, time, root)?;
-            Ok(time)
+            let position = tlog::verify_v2(entry, &body, time, root)?;
+            Ok(crate::DocumentEntry {
+                time,
+                v2: Some(position),
+            })
         }
         _ => Err("only Rekor hashedrekord v0.0.1 and v0.0.2 entries are supported for document inclusion".into()),
     }

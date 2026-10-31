@@ -399,6 +399,7 @@ impl Snapshot {
             &proof.inclusion,
             self.evidence.sigstore().trusted_root(),
             &signer.rekor_public_key,
+            self.evidence.rekor_v2(),
         )?;
         let identity = self.verify_boot_report(document, record, now_unix_ms)?;
         Ok(VerifiedBoot {

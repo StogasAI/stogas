@@ -57,12 +57,13 @@ pub fn verify_publication(entry: &TransparencyLogEntry, root: &TrustedRoot) -> R
 ///
 /// Rekor v2 signs no entry time, so `time`, which an RFC 3161 timestamp authenticated, selects
 /// the log key.
+/// Verifies a Rekor v2 entry dated `time` and returns where the log holds it.
 pub fn verify_v2(
     entry: &TransparencyLogEntry,
     body: &[u8],
     time: i64,
     root: &TrustedRoot,
-) -> Result<(), String> {
+) -> Result<crate::LogPosition, String> {
     // Rekor v2 returns neither; a bundle that has them is not one it made.
     if entry.inclusion_promise.is_some()
         || entry
@@ -87,7 +88,12 @@ pub fn verify_v2(
     if proof.log_index != entry.log_index {
         return Err("Rekor inclusion proof is for another entry".into());
     }
-    verify_inclusion(entry, log_key)
+    verify_inclusion(entry, log_key)?;
+    Ok(crate::LogPosition {
+        origin: log_key.origin.clone(),
+        index: parse_u64(&entry.log_index, "log index")?,
+        log_start: log_key.start()?,
+    })
 }
 
 fn integrated_time(entry: &TransparencyLogEntry) -> Result<i64, String> {
