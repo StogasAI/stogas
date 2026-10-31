@@ -34,7 +34,7 @@ stogas api GET /api/account          # send a dashboard API request with the sav
 stogas probe --security tls          # check a fresh verified connection without an API key
 stogas verify evidence.json --json   # verify saved evidence offline
 stogas encryption-key --output org.key
-stogas verify-release ./release      # verify downloaded release assets offline
+stogas verify-release ./release      # verify downloaded release assets
 ```
 
 Streamed content can arrive before final verification. Treat a response as complete only after verified completion. See the [CLI guide](https://stogas.ai/docs/cli) for sign-in, top-ups, customer encryption and proofs.
@@ -45,7 +45,7 @@ Streamed content can arrive before final verification. Treat a response as compl
 cargo test --locked --workspace --all-targets
 ```
 
-[CI](.github/workflows/ci.yml) covers the core, transports, and language bindings; [fuzzing](.github/workflows/fuzz.yml) covers parsers and verification boundaries; a [release](.github/workflows/release.yml) requires the compiled Sigstore trusted root to match Sigstore's current one. [`scripts/live-test.py`](scripts/live-test.py) runs every language's tests against the live gateway. Report vulnerabilities through the [security policy](SECURITY.md).
+[CI](.github/workflows/ci.yml) covers the core, transports, and language bindings; [fuzzing](.github/workflows/fuzz.yml) covers parsers and verification boundaries. [`scripts/live-test.py`](scripts/live-test.py) runs every language's tests against the live gateway. Report vulnerabilities through the [security policy](SECURITY.md).
 
 ## License
 

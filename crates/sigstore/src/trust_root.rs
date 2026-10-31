@@ -4,7 +4,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
-use std::{collections::HashSet, sync::LazyLock};
+use std::collections::HashSet;
 
 // Sigstore's v0.2 adds fields that this verifier does not need, and newer roots must use it.
 const MEDIA_TYPES: [&str; 3] = [
@@ -118,19 +118,6 @@ pub struct TrustedRoot {
 }
 
 impl TrustedRoot {
-    /// The copy compiled into this release, for checks without signed evidence.
-    ///
-    /// # Errors
-    /// Returns an error if the compiled copy is malformed or incomplete.
-    pub fn embedded() -> Result<&'static Self, crate::Error> {
-        // Only decoding of the compiled copy is shared. Each proof still selects keys and
-        // authorities at its own authenticated time and verifies every signature.
-        static ROOT: LazyLock<Result<TrustedRoot, String>> =
-            LazyLock::new(|| TrustedRoot::complete(include_str!("trusted_root.json")));
-        ROOT.as_ref()
-            .map_err(|error| crate::Error::Trust(error.clone()))
-    }
-
     /// Parses a Sigstore trusted root. The caller vouches for it: take it from
     /// [`crate::verify_trust_update`], or from evidence whose verification did.
     ///
@@ -138,6 +125,18 @@ impl TrustedRoot {
     /// Rejects malformed roots, unsupported media types and duplicate keys.
     pub fn from_json(json: &str) -> Result<Self, crate::Error> {
         Self::parse(json).map_err(crate::Error::Trust)
+    }
+
+    /// Sigstore's production trusted root as the TUF fixture captured it.
+    #[cfg(test)]
+    pub(crate) fn production() -> &'static Self {
+        static ROOT: std::sync::LazyLock<TrustedRoot> = std::sync::LazyLock::new(|| {
+            TrustedRoot::complete(include_str!(
+                "../../../tests/fixtures/sigstore-tuf/trusted_root.json"
+            ))
+            .unwrap()
+        });
+        &ROOT
     }
 
     /// Parse a trusted root that has every key type the supported proofs use.

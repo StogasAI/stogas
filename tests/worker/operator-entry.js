@@ -5,9 +5,9 @@ import {
 	verify_mldsa65_ed25519,
 	mldsa65_ed25519_signing_input,
 	rekor_public_key_from_seed,
-	prepare_rekor_submission_with_seed,
-	verify_sigstore_github_attestation
+	prepare_rekor_submission_with_seed
 } from '../../target/operator/stogas.js';
+import { verify_github_attestation } from '../../packages/sigstore/bindings/worker/worker.js';
 import fixtures from './operator-fixtures.js';
 
 initSync({ module: wasmModule });
@@ -24,11 +24,12 @@ const rejects = (operation) => {
 	}
 };
 
-// Operator primitives in the Workers runtime that runs them. Signatures come
-// from OpenBao Transit vectors; nothing here holds a signing private key.
+// Operator primitives in the Workers runtime that runs them, and the Sigstore
+// package beside them. Signatures come from OpenBao Transit vectors; nothing
+// here holds a signing private key.
 export default {
 	async fetch() {
-		const { signing, remote, root, manifest, attestation } = fixtures;
+		const { signing, remote, root, manifest, sigstore, alteredSigstore, attestation } = fixtures;
 		const message = bytes(signing.message);
 		const remoteKey = base64(remote.public_key);
 		const representatives = remote.vectors.map((vector) => {
@@ -59,11 +60,13 @@ export default {
 		const changedProof = JSON.parse(attestation.bundle);
 		const proof = changedProof.verificationMaterial.tlogEntries[0].inclusionProof;
 		proof.hashes[0] = `${proof.hashes[0].startsWith('A') ? 'B' : 'A'}${proof.hashes[0].slice(1)}`;
-		const sigstore = (bundle) =>
-			verify_sigstore_github_attestation(
+		const sigstoreFiles = JSON.stringify(sigstore);
+		const attested = (bundle) =>
+			verify_github_attestation(
 				new TextEncoder().encode(bundle),
 				JSON.stringify(attestation.subjects),
-				JSON.stringify(attestation.policy)
+				JSON.stringify(attestation.policy),
+				attestation.trustedRoot
 			);
 		try {
 			return Response.json({
@@ -77,10 +80,16 @@ export default {
 				stable: JSON.stringify(submission) === JSON.stringify(retry),
 				seedUnchanged: hex(seed) === signing.rekor_seed,
 				badSeed: rejectedSeed,
-				manifestKey: verifier.verify_key_manifest(encoded(manifest)).active_key.key_id,
-				alteredManifest: rejects(() => verifier.verify_key_manifest(encoded(altered))),
-				attestedSubjects: sigstore(attestation.bundle).subjects.length,
-				changedInclusion: rejects(() => sigstore(JSON.stringify(changedProof)))
+				manifestKey: verifier.verify_key_manifest(encoded(manifest), sigstoreFiles).active_key
+					.key_id,
+				alteredManifest: rejects(() =>
+					verifier.verify_key_manifest(encoded(altered), sigstoreFiles)
+				),
+				unsignedSigstore: rejects(() =>
+					verifier.verify_key_manifest(encoded(manifest), JSON.stringify(alteredSigstore))
+				),
+				attestedSubjects: attested(attestation.bundle).subjects.length,
+				changedInclusion: rejects(() => attested(JSON.stringify(changedProof)))
 			});
 		} finally {
 			verifier.free();

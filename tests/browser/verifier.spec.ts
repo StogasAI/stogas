@@ -10,6 +10,7 @@ const WASM = resolve(ROOT, 'target/browser/stogas_bg.wasm');
 const SIGSTORE_GLUE = resolve(ROOT, 'target/sigstore-browser/stogas_sigstore.js');
 const SIGSTORE_WASM = resolve(ROOT, 'target/sigstore-browser/stogas_sigstore_bg.wasm');
 const FIXTURE = resolve(ROOT, 'tests/fixtures/gateway-v0.0.1-attestation.jsonl');
+const TRUSTED_ROOT = resolve(ROOT, 'tests/fixtures/sigstore-tuf/trusted_root.json');
 const SUBJECTS = [
 	{
 		name: 'gateway.igvm',
@@ -224,15 +225,17 @@ test('standalone lightweight package verifies GitHub evidence with networking di
 }) => {
 	const requests = await initializeSigstore(page);
 	const fixture = await readFile(FIXTURE, 'utf8');
+	const trustedRoot = await readFile(TRUSTED_ROOT, 'utf8');
 	const result = await page.evaluate(
-		({ fixture, subjects, policy }) => {
+		({ fixture, subjects, policy, trustedRoot }) => {
 			const api = (
 				globalThis as typeof globalThis & {
 					stogasSigstoreBindings: {
 						verify_github_attestation(
 							bundle: Uint8Array,
 							subjects: string,
-							policy: string
+							policy: string,
+							trustedRoot: string
 						): { subjects: unknown[] };
 					};
 				}
@@ -240,10 +243,11 @@ test('standalone lightweight package verifies GitHub evidence with networking di
 			return api.verify_github_attestation(
 				new TextEncoder().encode(fixture),
 				JSON.stringify(subjects),
-				JSON.stringify(policy)
+				JSON.stringify(policy),
+				trustedRoot
 			);
 		},
-		{ fixture, subjects: SUBJECTS, policy: POLICY }
+		{ fixture, subjects: SUBJECTS, policy: POLICY, trustedRoot }
 	);
 	expect(result.subjects).toHaveLength(2);
 	expect(requests).toEqual([]);

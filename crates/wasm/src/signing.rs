@@ -76,21 +76,27 @@ pub fn prepare_rekor_submission_with_seed(
 }
 
 /// Verify that the `submitter` Ed25519 `SubjectPublicKeyInfo` DER logged exact signed bytes,
-/// and return the log time in Unix seconds. This does not establish document authorship.
+/// and return the log time in Unix seconds. Sigstore's keys come from the given TUF files. This
+/// does not establish document authorship.
 ///
 /// # Errors
-/// Rejects malformed proofs, changed documents, other submitters and invalid log signatures.
+/// Rejects invalid Sigstore files, malformed proofs, changed documents, other submitters and
+/// invalid log signatures.
 #[wasm_bindgen]
 pub fn verify_rekor_document_inclusion(
     bundle: &[u8],
     signed_document: &[u8],
     submitter: &[u8],
+    sigstore_files_json: &str,
 ) -> Result<f64, JsError> {
-    let trust = stogas_sigstore::TrustedRoot::embedded()
-        .map_err(|error| JsError::new(&error.to_string()))?;
-    let time =
-        stogas_sigstore::verify_rekor_document_inclusion(trust, bundle, signed_document, submitter)
-            .map_err(|error| JsError::new(&error.to_string()))?;
+    let sigstore = super::verified_sigstore(sigstore_files_json)?;
+    let time = stogas_sigstore::verify_rekor_document_inclusion(
+        sigstore.trusted_root(),
+        bundle,
+        signed_document,
+        submitter,
+    )
+    .map_err(|error| JsError::new(&error.to_string()))?;
     // JavaScript numbers represent every whole number below 2^53 exactly.
     if time >= 1 << 53 {
         return Err(JsError::new("Rekor log time is out of range"));

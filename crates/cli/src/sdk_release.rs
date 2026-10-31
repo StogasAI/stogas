@@ -1,19 +1,86 @@
-use std::path::Path;
+use std::{path::Path, time::Duration};
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
+use http::{HeaderMap, StatusCode};
+use serde::Deserialize as _;
+use stogas::{https::HttpsClient, network::Network};
 use stogas_core::{
     MAX_INPUT_BYTES,
+    authority::{Environment, SigstoreFiles, VerifiedSigstore},
     sdk_release::{self, ATTESTATION, MANIFEST, METADATA, QUALIFICATION, SIGNATURE},
 };
+use tokio::time::timeout;
+use url::Url;
+
+const ORIGIN_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Sigstore's keys from saved evidence, or else from current production evidence.
+async fn sigstore(evidence: Option<&Path>, network: Network) -> Result<VerifiedSigstore> {
+    match evidence {
+        Some(path) => {
+            sigstore_files(&super::read_bounded_file(path, MAX_INPUT_BYTES, "evidence").await?)
+        }
+        None => current_sigstore(network).await,
+    }
+}
+
+/// Tries each production evidence origin in turn.
+async fn current_sigstore(network: Network) -> Result<VerifiedSigstore> {
+    let deadline = network.patient(ORIGIN_DEADLINE);
+    let client = HttpsClient::public(network)?;
+    let mut failures = Vec::new();
+    for origin in Environment::Production.evidence_origins() {
+        let url = Url::parse(origin)?;
+        let fetched = async {
+            let response = client.get(&url, HeaderMap::new()).await?;
+            if response.status() != StatusCode::OK {
+                bail!("HTTP {}", response.status());
+            }
+            sigstore_files(&response.decoded(MAX_INPUT_BYTES).await?)
+        };
+        let host = url.host_str().unwrap_or_default();
+        match timeout(deadline, fetched).await {
+            Ok(Ok(sigstore)) => return Ok(sigstore),
+            Ok(Err(error)) => failures.push(format!("{host}: {error:#}")),
+            Err(_) => failures.push(format!("{host}: timed out")),
+        }
+    }
+    bail!(
+        "Sigstore keys are unavailable from evidence ({})",
+        failures.join("; ")
+    )
+}
+
+/// Sigstore's TUF signatures authenticate the Sigstore files that evidence carries from the root
+/// compiled into this CLI, so their source needs no trust.
+fn sigstore_files(evidence: &[u8]) -> Result<VerifiedSigstore> {
+    let evidence: serde_json::Value =
+        serde_json::from_slice(evidence).context("evidence is not JSON")?;
+    let files = evidence
+        .pointer("/document/sigstore")
+        .context("evidence carries no Sigstore files")?;
+    let files = SigstoreFiles::deserialize(files).context("invalid Sigstore files")?;
+    Ok(VerifiedSigstore::verify(&files)?)
+}
 
 /// Verify the release proofs and each release artifact beside them.
-pub async fn verify_directory(directory: &Path) -> Result<()> {
+pub async fn verify_directory(
+    directory: &Path,
+    evidence: Option<&Path>,
+    network: Network,
+) -> Result<()> {
     let manifest_bytes = read(directory, MANIFEST).await?;
+    let attestation = read(directory, ATTESTATION).await?;
+    let qualification = read(directory, QUALIFICATION).await?;
+    let signature = read(directory, SIGNATURE).await?;
+    // An incomplete release fails before any request.
+    let sigstore = sigstore(evidence, network).await?;
     let manifest = sdk_release::verify(
         &manifest_bytes,
-        &read(directory, ATTESTATION).await?,
-        &read(directory, QUALIFICATION).await?,
-        &read(directory, SIGNATURE).await?,
+        &attestation,
+        &qualification,
+        &signature,
+        &sigstore,
     )?;
     let mut verified = verify_artifacts(directory, &manifest).await?;
     verified.sort();

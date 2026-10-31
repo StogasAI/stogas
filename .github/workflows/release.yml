@@ -33,8 +33,6 @@ jobs:
             echo "::error::CI has not passed for $GITHUB_SHA"
             exit 1
           fi
-      - name: Require Sigstore's current trusted root
-        run: scripts/check-sigstore-root.sh
       - name: Check package versions and list the build targets
         id: targets
         run: |

@@ -3,11 +3,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
-use stogas_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};
+use stogas_sigstore::{GithubPolicy, Subject, verify_github_attestation};
 
 use crate::{
     MAX_INPUT_BYTES, StogasSignature,
-    authority::{self, Authority, Environment, SignedKeyManifest},
+    authority::{self, Authority, Environment, SignedKeyManifest, VerifiedSigstore},
     strict_json,
 };
 
@@ -62,7 +62,8 @@ pub struct Signature {
 /// GitHub's one proof names every artifact, the manifest and the test report, so it exists
 /// only for files that passed every test in the same workflow run. This authenticates
 /// historical publication, without granting current gateway authority. The caller must also
-/// compare artifact bytes with the returned manifest.
+/// compare artifact bytes with the returned manifest. Sigstore keeps a replaced key with its
+/// validity ended, so current Sigstore keys also verify older releases.
 ///
 /// # Errors
 /// Rejects unsigned, altered, staging or dirty releases, and signing keys that a key manifest
@@ -73,6 +74,7 @@ pub fn verify(
     github_attestation: &[u8],
     qualification: &[u8],
     signature_bytes: &[u8],
+    sigstore: &VerifiedSigstore,
 ) -> Result<Manifest, authority::Error> {
     if [
         manifest_bytes.len(),
@@ -93,9 +95,7 @@ pub fn verify(
         serde_json::from_value(strict_json::from_slice(signature_bytes).map_err(invalid)?)
             .map_err(invalid)?;
     let document = serde_json::to_value(&manifest).map_err(invalid)?;
-    // Without current evidence, the Sigstore keys compiled into this release check its successors.
-    let trust =
-        TrustedRoot::embedded().map_err(|error| authority::Error::Sigstore(error.to_string()))?;
+    let trust = sigstore.trusted_root();
     // The root signature over this key manifest, checked next, authenticates its Rekor key.
     let published = authority::verify_document_inclusion(
         &document,
@@ -281,6 +281,7 @@ mod tests {
 
     #[test]
     fn refuses_oversized_unknown_and_staging_releases_before_any_signature() {
+        let sigstore = &authority::sigstore_fixture().1;
         let oversized = vec![b' '; MAX_INPUT_BYTES + 1];
         for inputs in [
             [oversized.as_slice(), b"", b"", b""],
@@ -289,7 +290,7 @@ mod tests {
             [b"", b"", b"", oversized.as_slice()],
         ] {
             assert!(matches!(
-                verify(inputs[0], inputs[1], inputs[2], inputs[3]),
+                verify(inputs[0], inputs[1], inputs[2], inputs[3], sigstore),
                 Err(authority::Error::TooLarge)
             ));
         }
@@ -300,7 +301,7 @@ mod tests {
         for value in [unknown, staging] {
             let bytes = serde_json::to_vec(&value).unwrap();
             assert!(matches!(
-                verify(&bytes, b"", b"", b"{}"),
+                verify(&bytes, b"", b"", b"{}", sigstore),
                 Err(authority::Error::Invalid(_))
             ));
         }
