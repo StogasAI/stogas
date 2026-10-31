@@ -180,7 +180,7 @@ jobs:
       - name: Run the official conformance cases
         run: |
           set -euo pipefail
-          cargo build --locked --package stogas-sigstore --bin stogas-sigstore-conformance
+          cargo build --locked --package stogas-sigstore-conformance
           client="$GITHUB_WORKSPACE/target/debug/stogas-sigstore-conformance"
           assets="$GITHUB_WORKSPACE/sigstore-conformance/test/assets/bundle-verify"
           default_identity="https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main"

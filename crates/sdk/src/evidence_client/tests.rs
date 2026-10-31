@@ -25,7 +25,7 @@ struct Origins {
     requests: Mutex<Vec<(usize, Option<String>)>>,
 }
 
-struct Server {
+pub struct Server {
     state: Arc<Origins>,
     origins: [Url; 2],
     task: tokio::task::JoinHandle<()>,
@@ -102,6 +102,20 @@ impl Server {
         client.origins.clone_from(&self.origins);
         client
     }
+}
+
+/// Both origins serving the fixture evidence, or both answering `status` instead, and a client
+/// that reads them.
+pub async fn serving(status: StatusCode) -> (Server, EvidenceClient) {
+    let (root, document) = fixture();
+    let body = Bytes::from(signed(&document));
+    let server = Server::new([0, 1].map(|_| Reply {
+        status,
+        ..reply(body.clone(), "\"fixture\"")
+    }))
+    .await;
+    let client = server.client(root);
+    (server, client)
 }
 
 fn fixture() -> (RootKey, Value) {

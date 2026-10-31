@@ -322,18 +322,32 @@ impl Drop for TlsServer {
 /// An HTTPS server for `name` that offers `protocols` by ALPN and answers with the HTTP version
 /// of each request.
 async fn tls_server(name: &str, protocols: &[&[u8]]) -> TlsServer {
-    let key = rcgen::generate_simple_self_signed(vec![name.to_owned()]).unwrap();
-    let mut config = ServerConfig::builder_with_provider(Arc::new(
+    tls_server_with(
+        name,
+        protocols,
         rustls::crypto::aws_lc_rs::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .with_no_client_auth()
-    .with_single_cert(
-        vec![key.cert.der().clone()],
-        PrivatePkcs8KeyDer::from(key.signing_key.serialize_der()).into(),
+        rustls::DEFAULT_VERSIONS,
     )
-    .unwrap();
+    .await
+}
+
+/// A [`tls_server`] limited to the key exchanges of `provider` and to `versions`.
+async fn tls_server_with(
+    name: &str,
+    protocols: &[&[u8]],
+    provider: rustls::crypto::CryptoProvider,
+    versions: &[&'static rustls::SupportedProtocolVersion],
+) -> TlsServer {
+    let key = rcgen::generate_simple_self_signed(vec![name.to_owned()]).unwrap();
+    let mut config = ServerConfig::builder_with_provider(Arc::new(provider))
+        .with_protocol_versions(versions)
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![key.cert.der().clone()],
+            PrivatePkcs8KeyDer::from(key.signing_key.serialize_der()).into(),
+        )
+        .unwrap();
     config.alpn_protocols = protocols.iter().map(|protocol| protocol.to_vec()).collect();
     let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = tcp.local_addr().unwrap();
@@ -464,4 +478,56 @@ async fn the_onion_address_carries_tls_for_the_original_host() {
         server.names.try_recv().unwrap().as_deref(),
         Some("api.stogas.ai")
     );
+}
+
+#[tokio::test]
+async fn the_post_quantum_client_needs_hybrid_key_exchange_and_tls_1_3() {
+    let classical = || {
+        let mut provider = rustls::crypto::aws_lc_rs::default_provider();
+        provider
+            .kx_groups
+            .retain(|group| group.name() != rustls::NamedGroup::X25519MLKEM768);
+        provider
+    };
+    let default = rustls::crypto::aws_lc_rs::default_provider;
+    let post_quantum = HttpsClient::post_quantum(Network::direct()).unwrap();
+    for (client, provider, versions, expected) in [
+        // Key exchange succeeds, so only the self-signed certificate fails.
+        (
+            &post_quantum,
+            default(),
+            rustls::DEFAULT_VERSIONS,
+            "invalid peer certificate",
+        ),
+        (
+            &post_quantum,
+            classical(),
+            rustls::DEFAULT_VERSIONS,
+            "HandshakeFailure",
+        ),
+        (
+            &post_quantum,
+            default(),
+            &[&rustls::version::TLS12][..],
+            "ProtocolVersion",
+        ),
+        // The ordinary client reaches the same servers.
+        (
+            &direct(),
+            classical(),
+            rustls::DEFAULT_VERSIONS,
+            "invalid peer certificate",
+        ),
+        (
+            &direct(),
+            default(),
+            &[&rustls::version::TLS12][..],
+            "invalid peer certificate",
+        ),
+    ] {
+        let server = tls_server_with("localhost", &[b"h2"], provider, versions).await;
+        let url = format!("https://localhost:{}/", server.address.port());
+        let error = version(client, &url).await.unwrap_err().to_string();
+        assert!(error.contains(expected), "{expected}: {error}");
+    }
 }

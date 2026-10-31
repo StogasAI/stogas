@@ -1,0 +1,20 @@
+[package]
+name = "stogas-sigstore-conformance"
+description = "Client for Sigstore's verification conformance suite; never shipped"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+base64.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+stogas-sigstore = { path = "../sigstore" }
+
+[lints]
+workspace = true

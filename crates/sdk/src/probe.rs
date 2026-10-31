@@ -1,12 +1,12 @@
 //! A fresh verified connection and admission check without provider credentials or inference.
 
 use crate::{
-    SecurityMode, TransportOptions,
+    SecurityMode, TransportError, TransportOptions,
     evidence_client::EvidenceClient,
     native_http::RequestContext,
     upstream::{self, Upstream},
 };
-use anyhow::{Result, bail};
+use anyhow::Result;
 use axum::{
     body::{Body, Bytes, to_bytes},
     http::{Request, Response, StatusCode},
@@ -14,6 +14,7 @@ use axum::{
 use serde::Serialize;
 use std::{sync::Arc, time::Duration};
 use tokio::time::{Instant, timeout_at};
+use url::Url;
 
 const PROBE_BODY: &[u8] =
     br#"{"model":"stogas-status-monitor","messages":[{"role":"user","content":"ping"}]}"#;
@@ -54,12 +55,20 @@ impl ProbeReport {
 /// # Errors
 /// Rejects invalid options or a zero timeout. Network, verification and response
 /// failures are returned as fixed report codes without response bodies or credentials.
-pub async fn check(options: &TransportOptions, timeout: Duration) -> Result<ProbeReport> {
-    let origin = upstream::origin(options)?;
+pub async fn check(
+    options: &TransportOptions,
+    timeout: Duration,
+) -> Result<ProbeReport, TransportError> {
+    let origin = upstream::origin(options).map_err(TransportError::options)?;
     if timeout.is_zero() {
-        bail!("probe timeout must be positive");
+        return Err(TransportError::options("probe timeout must be positive"));
     }
-    let deadline = Instant::now() + timeout;
+    run(options, &origin, Instant::now() + timeout)
+        .await
+        .map_err(TransportError::internal)
+}
+
+async fn run(options: &TransportOptions, origin: &Url, deadline: Instant) -> Result<ProbeReport> {
     let mut report = ProbeReport::new(options.security);
     let environment = options.environment;
     let evidence = Arc::new(EvidenceClient::new(
@@ -71,7 +80,7 @@ pub async fn check(options: &TransportOptions, timeout: Duration) -> Result<Prob
         report.error_code = Some(error.code());
         return Ok(report);
     }
-    let client = Upstream::new(options, &origin, evidence)?;
+    let client = Upstream::new(options, origin, evidence)?;
     let request = Request::post(origin.join("/v1/chat/completions")?.as_str())
         .header(
             "authorization",
