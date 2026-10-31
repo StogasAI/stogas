@@ -249,18 +249,20 @@ impl EvidenceClient {
         let mut failure = Error::Deadline;
         match early {
             Some(Ok(accepted)) => return Ok(Self::accept(&mut acquisition, 0, accepted)),
-            Some(Err(error)) => (primary_failed, failure) = (true, error),
+            Some(Err(failed)) => {
+                (primary_failed, failure) = (true, Self::keep(&mut acquisition, 0, failed));
+            }
             None => {}
         }
         while !(primary_failed && replica_failed) {
             tokio::select! {
                 result = &mut primary, if !primary_failed => match result {
                     Ok(accepted) => return Ok(Self::accept(&mut acquisition, 0, accepted)),
-                    Err(error) => (primary_failed, failure) = (true, error),
+                    Err(failed) => (primary_failed, failure) = (true, Self::keep(&mut acquisition, 0, failed)),
                 },
                 result = &mut replica, if !replica_failed => match result {
                     Ok(accepted) => return Ok(Self::accept(&mut acquisition, 1, accepted)),
-                    Err(error) => (replica_failed, failure) = (true, error),
+                    Err(failed) => (replica_failed, failure) = (true, Self::keep(&mut acquisition, 1, failed)),
                 },
             }
         }
@@ -280,6 +282,19 @@ impl EvidenceClient {
         snapshot
     }
 
+    /// A copy that verified but did not satisfy the caller is current evidence too, so it makes
+    /// its origin's next request conditional.
+    fn keep(
+        acquisition: &mut Acquisition,
+        index: usize,
+        (error, verified): (Error, Option<Representation>),
+    ) -> Error {
+        if verified.is_some() {
+            acquisition.representations[index] = verified;
+        }
+        error
+    }
+
     /// One origin's download and verification within its own budget and the caller's deadline.
     async fn attempt(
         &self,
@@ -287,15 +302,18 @@ impl EvidenceClient {
         cached: Option<Representation>,
         check: Option<Check>,
         deadline: Instant,
-    ) -> Result<(Arc<Snapshot>, Representation), Error> {
+    ) -> Result<(Arc<Snapshot>, Representation), (Error, Option<Representation>)> {
         let attempt_deadline = deadline.min(Instant::now() + self.network().patient(ORIGIN_BUDGET));
         timeout_at(attempt_deadline, async {
-            let candidate = self.download(&self.origins[index], cached.as_ref()).await?;
+            let candidate = self
+                .download(&self.origins[index], cached.as_ref())
+                .await
+                .map_err(|error| (error, None))?;
             let verifier = Arc::clone(&self.verifier);
             let current = Arc::clone(&self.current);
             let network = self.network().clone();
             let bytes = Arc::clone(&candidate.bytes);
-            let snapshot = run_cpu(Arc::clone(&self.cpu), move || {
+            let checked = run_cpu(Arc::clone(&self.cpu), move || {
                 let now = wall_clock_ms()?;
                 let snapshot = verifier
                     .lock()
@@ -306,16 +324,19 @@ impl EvidenceClient {
                 *current.write().map_err(|_| Error::State)? = Some(Arc::clone(&snapshot));
                 // Verified evidence stays current even when it does not satisfy this check. The
                 // check holds the same permit, so the other origin's copy cannot replace it first.
-                if let Some(check) = check {
-                    satisfies(&snapshot, &check)?;
-                }
-                Ok(snapshot)
+                Ok(check
+                    .map_or(Ok(()), |check| satisfies(&snapshot, &check))
+                    .map(|()| snapshot))
             })
-            .await?;
-            Ok((snapshot, candidate))
+            .await
+            .map_err(|error| (error, None))?;
+            match checked {
+                Ok(snapshot) => Ok((snapshot, candidate)),
+                Err(error) => Err((error, Some(candidate))),
+            }
         })
         .await
-        .unwrap_or(Err(Error::Deadline))
+        .unwrap_or(Err((Error::Deadline, None)))
     }
 
     async fn download(

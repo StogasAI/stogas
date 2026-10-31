@@ -933,8 +933,8 @@ struct Case {
 #[derive(Debug, PartialEq, Eq)]
 struct Outcome {
     result: Result<Edition, Failure>,
-    /// The entity tag the client keeps for each origin's conditional requests. Only the
-    /// origin whose answer the caller accepted gets a new one.
+    /// The entity tag the client keeps for each origin's conditional requests: that of the
+    /// last copy from it that verified, whether or not it satisfied the caller.
     cached: [Option<String>; 2],
     /// Each request an origin receives, with its conditional header.
     requests: Vec<(usize, Option<String>)>,
@@ -983,12 +983,15 @@ impl Case {
         }
         // Stable, so a primary that fails at once is handled before the replica it starts.
         answers.sort_by_key(|answer| answer.0);
+        let held = self.warm.then(|| Edition::Old.etag().to_owned());
+        let mut cached = [held.clone(), None];
         let mut current = self.warm.then_some(Edition::Old);
         let mut outcome = None;
         for (at, index, delivered, satisfied) in answers {
             // Verified evidence becomes current unless the client holds a newer revision.
             if let Ok(edition) = delivered {
                 current = current.max(Some(edition));
+                cached[index] = Some(edition.etag().to_owned());
             }
             outcome = Some((at, satisfied.map(|edition| (index, edition))));
             if satisfied.is_ok() {
@@ -996,17 +999,12 @@ impl Case {
             }
         }
         let (elapsed, result) = outcome.unwrap();
-        let held = self.warm.then(|| Edition::Old.etag().to_owned());
         let mut requests = vec![];
         if self.origins[0] != Behavior::Refused {
-            requests.push((0, held.clone()));
+            requests.push((0, held));
         }
         if replica_start.is_some() && self.origins[1] != Behavior::Refused {
             requests.push((1, None));
-        }
-        let mut cached = [held, None];
-        if let Ok((index, edition)) = result {
-            cached[index] = Some(edition.etag().to_owned());
         }
         let outcome = Outcome {
             result: result.map(|(_, edition)| edition),
