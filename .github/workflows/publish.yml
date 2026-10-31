@@ -70,7 +70,7 @@ jobs:
         run: |
           mkdir "$RUNNER_TEMP/wheels"
           cp "$RUNNER_TEMP/approved/"*.whl "$RUNNER_TEMP/wheels/"
-      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086
         with:
           packages-dir: ${{ runner.temp }}/wheels
           skip-existing: true
