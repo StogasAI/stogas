@@ -277,23 +277,19 @@ impl Verifier {
     }
 
     /// Learn a root-signed key manifest without requiring complete evidence. Its log proof
-    /// uses the current snapshot's Sigstore keys, or the compiled ones before any.
+    /// uses the given Sigstore keys, such as current evidence's.
     ///
     /// # Errors
     /// Rejects unauthenticated or conflicting root decisions.
     pub fn verify_key_manifest(
         &self,
         bytes: &[u8],
+        sigstore: &VerifiedSigstore,
         now_unix_ms: i64,
     ) -> Result<KeyManifest, Error> {
-        let trust = match &self.current {
-            Some(snapshot) => snapshot.evidence.sigstore().trusted_root(),
-            None => stogas_sigstore::TrustedRoot::embedded()
-                .map_err(|error| authority::Error::Sigstore(error.to_string()))?,
-        };
         Ok(self
             .authority
-            .verify_key_manifest(bytes, trust, now_unix_ms)?)
+            .verify_key_manifest(bytes, sigstore.trusted_root(), now_unix_ms)?)
     }
 
     /// # Errors

@@ -174,12 +174,20 @@ impl EvidenceSnapshot {
 #[cfg(feature = "operator")]
 #[wasm_bindgen(js_class = EvidenceVerifier)]
 impl EvidenceVerifier {
+    /// Its log proof uses Sigstore's keys from the given TUF files, such as current evidence's.
+    ///
     /// # Errors
-    /// Rejects invalid root signatures/inclusion and conflicting or retired key decisions.
-    pub fn verify_key_manifest(&self, bytes: &[u8]) -> Result<JsValue, JsValue> {
+    /// Rejects invalid Sigstore files, root signatures or inclusion, and conflicting or retired
+    /// key decisions.
+    pub fn verify_key_manifest(
+        &self,
+        bytes: &[u8],
+        sigstore_files_json: &str,
+    ) -> Result<JsValue, JsValue> {
+        let sigstore = super::verified_sigstore(sigstore_files_json)?;
         let keys = self
             .core
-            .verify_key_manifest(bytes, super::wall_clock_ms()?)
+            .verify_key_manifest(bytes, &sigstore, super::wall_clock_ms()?)
             .map_err(|error| verification_error(&error))?;
         Ok(super::to_js_value(&keys)?)
     }

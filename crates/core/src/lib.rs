@@ -1717,8 +1717,8 @@ mod tests {
 
     use super::*;
 
-    fn embedded() -> &'static TrustedRoot {
-        TrustedRoot::embedded().unwrap()
+    fn production() -> &'static TrustedRoot {
+        authority::sigstore_fixture().1.trusted_root()
     }
 
     #[test]
@@ -2193,7 +2193,7 @@ mod tests {
 
         #[cfg(feature = "staging")]
         {
-            let verified = verify_gateway_release(&release, embedded()).unwrap();
+            let verified = verify_gateway_release(&release, production()).unwrap();
             assert!(verified.github_integrated_time_unix_ms.is_none());
             assert!(matches!(verified.provenance, ReleaseProvenance::Staging));
 
@@ -2201,14 +2201,14 @@ mod tests {
                 let mut changed = release.clone();
                 changed.provenance["subject"][subject]["digest"]["sha256"] =
                     Value::String("00".repeat(32));
-                assert!(verify_gateway_release(&changed, embedded()).is_err());
+                assert!(verify_gateway_release(&changed, production()).is_err());
             }
             let mut missing = release;
             missing.provenance["subject"].as_array_mut().unwrap().pop();
-            assert!(verify_gateway_release(&missing, embedded()).is_err());
+            assert!(verify_gateway_release(&missing, production()).is_err());
         }
         #[cfg(not(feature = "staging"))]
-        assert!(verify_gateway_release(&release, embedded()).is_err());
+        assert!(verify_gateway_release(&release, production()).is_err());
     }
 
     #[test]
@@ -2228,7 +2228,7 @@ mod tests {
 
         #[cfg(feature = "staging")]
         {
-            let verified = verify_catalog_release(&catalog, embedded()).unwrap();
+            let verified = verify_catalog_release(&catalog, production()).unwrap();
             assert!(verified.github_integrated_time_unix_ms.is_none());
             assert!(matches!(verified.provenance, ReleaseProvenance::Staging));
 
@@ -2236,14 +2236,14 @@ mod tests {
                 let mut changed = catalog.clone();
                 changed.provenance["subject"][subject]["digest"]["sha256"] =
                     Value::String("00".repeat(32));
-                assert!(verify_catalog_release(&changed, embedded()).is_err());
+                assert!(verify_catalog_release(&changed, production()).is_err());
             }
             let mut missing = catalog;
             missing.provenance["subject"].as_array_mut().unwrap().pop();
-            assert!(verify_catalog_release(&missing, embedded()).is_err());
+            assert!(verify_catalog_release(&missing, production()).is_err());
         }
         #[cfg(not(feature = "staging"))]
-        assert!(verify_catalog_release(&catalog, embedded()).is_err());
+        assert!(verify_catalog_release(&catalog, production()).is_err());
     }
 
     #[test]

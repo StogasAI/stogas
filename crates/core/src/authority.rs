@@ -321,7 +321,8 @@ impl VerifiedSigstore {
         &self.digest
     }
 
-    pub(crate) const fn trusted_root(&self) -> &TrustedRoot {
+    #[must_use]
+    pub const fn trusted_root(&self) -> &TrustedRoot {
         &self.trusted_root
     }
 
@@ -843,6 +844,26 @@ fn canonical_payload(value: &Value) -> Result<Vec<u8>, Error> {
 
 fn parse<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
     serde_json::from_value(strict_json::from_slice(bytes).map_err(invalid)?).map_err(invalid)
+}
+
+/// Sigstore files with no roots after the compiled one, as the TUF fixtures captured them.
+#[cfg(test)]
+pub(crate) fn sigstore_fixture() -> &'static (SigstoreFiles, Arc<VerifiedSigstore>) {
+    static SIGSTORE: std::sync::LazyLock<(SigstoreFiles, Arc<VerifiedSigstore>)> =
+        std::sync::LazyLock::new(|| {
+            let files = SigstoreFiles {
+                roots: vec![],
+                targets: STANDARD.encode(include_bytes!(
+                    "../../../tests/fixtures/sigstore-tuf/14.targets.json"
+                )),
+                trusted_root: STANDARD.encode(include_bytes!(
+                    "../../../tests/fixtures/sigstore-tuf/trusted_root.json"
+                )),
+            };
+            let verified = Arc::new(VerifiedSigstore::verify(&files).unwrap());
+            (files, verified)
+        });
+    &SIGSTORE
 }
 
 fn sigstore(error: impl std::fmt::Display) -> Error {

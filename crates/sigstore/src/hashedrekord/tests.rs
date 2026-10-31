@@ -102,7 +102,7 @@ fn proves_exact_publication_by_the_designated_submitter_but_never_trusts_a_suppl
     assert!(verify_binding(&parsed, artifact, &submitter(9)).is_err());
     assert!(
         crate::verify_rekor_document_inclusion(
-            crate::TrustedRoot::embedded().unwrap(),
+            TrustedRoot::production(),
             &serde_json::to_vec(&seed["bundle"]).unwrap(),
             artifact,
             &go_submitter
@@ -121,7 +121,7 @@ fn proves_exact_publication_by_the_designated_submitter_but_never_trusts_a_suppl
         assert!(verify(&bundle, ARTIFACT, &submitter(seed + 1), &root()).is_err());
         assert!(
             crate::verify_rekor_document_inclusion(
-                crate::TrustedRoot::embedded().unwrap(),
+                TrustedRoot::production(),
                 &serde_json::to_vec(&bundle).unwrap(),
                 ARTIFACT,
                 &designated
@@ -237,7 +237,7 @@ fn even_a_valid_log_cannot_substitute_the_artifact_hash_key_or_signature() {
 fn bounds_outer_input_and_rejects_duplicate_fields() {
     assert!(matches!(
         crate::verify_rekor_document_inclusion(
-            crate::TrustedRoot::embedded().unwrap(),
+            TrustedRoot::production(),
             b"{}",
             &vec![0; crate::MAX_DOCUMENT_BYTES + 1],
             &submitter(9)
@@ -250,7 +250,7 @@ fn bounds_outer_input_and_rejects_duplicate_fields() {
     ] {
         assert!(
             crate::verify_rekor_document_inclusion(
-                crate::TrustedRoot::embedded().unwrap(),
+                TrustedRoot::production(),
                 input,
                 ARTIFACT,
                 &submitter(9)

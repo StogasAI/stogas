@@ -9,8 +9,15 @@ use stogas_sigstore::{GithubPolicy, Subject, verify_github_attestation};
 const IGVM_DIGEST: &str = "1b75d0ea7f94bc5f5a21080dd30e21370e14278a5b90eb19858c90dcc83a1bc6";
 const POLICY_DIGEST: &str = "8cc8926592b179283c8cab267a27dfb3df4d1086dff2504e51df5fa12b8ff008";
 
-fn embedded() -> &'static stogas_sigstore::TrustedRoot {
-    stogas_sigstore::TrustedRoot::embedded().unwrap()
+fn production() -> &'static stogas_sigstore::TrustedRoot {
+    static ROOT: std::sync::LazyLock<stogas_sigstore::TrustedRoot> =
+        std::sync::LazyLock::new(|| {
+            stogas_sigstore::TrustedRoot::from_json(include_str!(
+                "../../../tests/fixtures/sigstore-tuf/trusted_root.json"
+            ))
+            .unwrap()
+        });
+    &ROOT
 }
 
 fn policy() -> GithubPolicy {
@@ -73,7 +80,7 @@ fn flip(value: &mut Value, pointer: &str) {
 fn rustcrypto_matches_sigstore_rust_for_the_claimed_profile() {
     let fixture = include_bytes!("../../../tests/fixtures/gateway-v0.0.1-attestation.jsonl");
     assert!(native_accepts(fixture));
-    assert!(verify_github_attestation(embedded(), fixture, &subjects(), &policy()).is_ok());
+    assert!(verify_github_attestation(production(), fixture, &subjects(), &policy()).is_ok());
 
     let mutations = [
         "/dsseEnvelope/signatures/0/sig",
@@ -95,7 +102,7 @@ fn rustcrypto_matches_sigstore_rust_for_the_claimed_profile() {
             "native verifier accepted {pointer}"
         );
         assert!(
-            verify_github_attestation(embedded(), &bytes, &subjects(), &policy()).is_err(),
+            verify_github_attestation(production(), &bytes, &subjects(), &policy()).is_err(),
             "RustCrypto verifier accepted {pointer}"
         );
     }

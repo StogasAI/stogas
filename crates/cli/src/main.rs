@@ -93,8 +93,14 @@ enum Command {
     },
     /// Add credit with a cryptocurrency payment.
     Topup(topup::Args),
-    /// Verify downloaded SDK release artifacts, build provenance and the Stogas signature offline.
-    VerifyRelease { directory: PathBuf },
+    /// Verify downloaded SDK release artifacts, build provenance and the Stogas signature.
+    /// Sigstore's keys come from current production evidence, or from saved evidence.
+    VerifyRelease {
+        directory: PathBuf,
+        /// Saved evidence/latest.json to take Sigstore's keys from without a network request.
+        #[arg(long)]
+        evidence: Option<PathBuf>,
+    },
     /// Check fresh session verification and gateway admission without a provider call.
     Probe {
         #[arg(long, default_value = "prod", value_parser = parse_environment)]
@@ -249,7 +255,17 @@ async fn run() -> Result<()> {
             input,
         } => run_api(method, &path, input.as_deref(), &dashboard()?).await?,
         Command::Topup(args) => topup::run(args, &dashboard()?).await?,
-        Command::VerifyRelease { directory } => sdk_release::verify_directory(&directory).await?,
+        Command::VerifyRelease {
+            directory,
+            evidence,
+        } => {
+            sdk_release::verify_directory(
+                &directory,
+                evidence.as_deref(),
+                network(Environment::Production)?,
+            )
+            .await?;
+        }
         Command::Probe {
             environment,
             upstream,

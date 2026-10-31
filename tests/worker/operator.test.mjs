@@ -10,16 +10,30 @@ const json = async (path) => JSON.parse(await readFile(resolve(root, path), 'utf
 
 // The operator build runs in Stogas services and the CLI, never in customer
 // packages. Run it in workerd, the runtime that uses it.
-test('operator Worker verifies remote signatures, Rekor submissions, key manifests and releases', async () => {
+test('operator Worker verifies remote signatures, Rekor submissions, key manifests and attestations', async () => {
 	const signing = await json('tests/fixtures/mldsa65-v1.json');
 	// The fixture authority's manifest stays valid at the Worker's own clock.
 	const session = await json('tests/fixtures/hardware-session-v1.json');
+	const trustedRoot = await readFile(
+		resolve(root, 'tests/fixtures/sigstore-tuf/trusted_root.json'),
+		'utf8'
+	);
 	const fixtures = {
 		signing,
 		remote: await json('tests/fixtures/mldsa65-ed25519-remote-v1.json'),
 		root: session.root,
 		manifest: session.evidence.document.keys,
+		sigstore: session.evidence.document.sigstore,
+		// Sigstore's TUF signatures cover the exact trusted root bytes.
+		alteredSigstore: {
+			...session.evidence.document.sigstore,
+			trusted_root: Buffer.concat([
+				Buffer.from(session.evidence.document.sigstore.trusted_root, 'base64'),
+				Buffer.from('\n')
+			]).toString('base64')
+		},
 		attestation: {
+			trustedRoot,
 			bundle: await readFile(
 				resolve(root, 'tests/fixtures/gateway-v0.0.1-attestation.jsonl'),
 				'utf8'
@@ -62,6 +76,15 @@ test('operator Worker verifies remote signatures, Rekor submissions, key manifes
 							'tests/worker/operator-entry.js': await module('tests/worker/operator-entry.js'),
 							'target/operator/stogas.js': await module('target/operator/stogas.js'),
 							'target/operator/stogas_bg.wasm': await module('target/operator/stogas_bg.wasm'),
+							...Object.fromEntries(
+								await Promise.all(
+									[
+										'packages/sigstore/bindings/worker/worker.js',
+										'packages/sigstore/pkg/browser/stogas_sigstore.js',
+										'packages/sigstore/pkg/browser/stogas_sigstore_bg.wasm'
+									].map(async (name) => [name, await module(name)])
+								)
+							),
 							'tests/worker/operator-fixtures.js': {
 								type: 'esm',
 								contents: `export default ${JSON.stringify(fixtures)};`
@@ -89,6 +112,7 @@ test('operator Worker verifies remote signatures, Rekor submissions, key manifes
 			badSeed: true,
 			manifestKey: fixtures.manifest.document.active_key.key_id,
 			alteredManifest: true,
+			unsignedSigstore: true,
 			attestedSubjects: 2,
 			changedInclusion: true
 		});

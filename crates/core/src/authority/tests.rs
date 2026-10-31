@@ -1,27 +1,8 @@
 use super::*;
 use crate::signing::SigningKey;
 use serde_json::json;
-use std::sync::LazyLock;
 
 const NOW: i64 = 1_789_900_000_000;
-
-/// Sigstore files with no roots after the compiled one.
-fn sigstore() -> &'static (SigstoreFiles, Arc<VerifiedSigstore>) {
-    static SIGSTORE: LazyLock<(SigstoreFiles, Arc<VerifiedSigstore>)> = LazyLock::new(|| {
-        let files = SigstoreFiles {
-            roots: vec![],
-            targets: STANDARD.encode(include_bytes!(
-                "../../../../tests/fixtures/sigstore-tuf/14.targets.json"
-            )),
-            trusted_root: STANDARD.encode(include_bytes!(
-                "../../../../tests/fixtures/sigstore-tuf/trusted_root.json"
-            )),
-        };
-        let verified = Arc::new(VerifiedSigstore::verify(&files).unwrap());
-        (files, verified)
-    });
-    &SIGSTORE
-}
 
 fn key(seed: u8) -> (OnlineKey, SigningKey) {
     let signer = SigningKey::from_seeds(&[[seed; 32]; 2]);
@@ -72,7 +53,7 @@ fn document(keys: &KeyManifest, revision: u64) -> EvidenceDocument {
             document: keys.clone(),
             inclusion: Value::Null,
         },
-        sigstore: sigstore().0.clone(),
+        sigstore: sigstore_fixture().0.clone(),
         gateways: vec![crate::tests::release_fixture()],
         catalogs: vec![crate::tests::catalog_fixture()],
         hardware_policies: serde_json::from_str(include_str!(
@@ -112,7 +93,7 @@ fn verified_keys(keys: &KeyManifest) -> VerifiedKeys {
 
 fn check(document: EvidenceDocument) -> Result<VerifiedEvidence, Error> {
     let keys = verified_keys(&document.keys.document);
-    check_document(keys, document, Arc::clone(&sigstore().1))
+    check_document(keys, document, Arc::clone(&sigstore_fixture().1))
 }
 
 // Exercises acceptance independently of Rekor's existing cryptographic test suite. Production
@@ -131,7 +112,7 @@ fn candidate(document: EvidenceDocument, seed: u8) -> VerifiedEvidence {
 fn admit(authority: &mut Authority, document: EvidenceDocument, seed: u8) -> Result<(), Error> {
     let keys = verified_keys(&document.keys.document);
     authority.key_state.learn(keys.clone())?;
-    let mut candidate = authority.check(keys, document, Arc::clone(&sigstore().1), NOW)?;
+    let mut candidate = authority.check(keys, document, Arc::clone(&sigstore_fixture().1), NOW)?;
     candidate.proof = Some(Proof {
         signature: sign(&serde_json::to_value(&candidate.document).unwrap(), seed),
         inclusion: Value::Null,
@@ -221,7 +202,7 @@ fn only_the_designated_rekor_key_can_log_a_signature() {
     let session = session();
     let root: RootKey = serde_json::from_value(session["root"].clone()).unwrap();
     let authority = Authority::new(Environment::Staging, root.clone()).unwrap();
-    let trust = stogas_sigstore::TrustedRoot::embedded().unwrap();
+    let trust = sigstore_fixture().1.trusted_root();
     let mut keys = session["evidence"]["document"]["keys"].clone();
     let verify = |keys: &Value| authority.verify_keys(&serde_json::to_vec(keys).unwrap(), trust);
     verify(&keys).unwrap();
@@ -258,7 +239,7 @@ fn a_signature_needs_a_manifest_logged_before_it_and_unexpired_then() {
     let session = session();
     let root: RootKey = serde_json::from_value(session["root"].clone()).unwrap();
     let authority = Authority::new(Environment::Staging, root).unwrap();
-    let trust = stogas_sigstore::TrustedRoot::embedded().unwrap();
+    let trust = sigstore_fixture().1.trusted_root();
     let keys = &session["evidence"]["document"]["keys"];
     let bytes = serde_json::to_vec(keys).unwrap();
     let logged = authority
@@ -322,7 +303,7 @@ fn unsigned_candidates_are_checked_but_never_accepted() {
         .check(
             verified_keys(&keys),
             document(&keys, 1),
-            Arc::clone(&sigstore().1),
+            Arc::clone(&sigstore_fixture().1),
             NOW,
         )
         .unwrap();
@@ -360,7 +341,7 @@ fn root_expiry_bounds_every_revision_and_renewal_needs_a_new_generation() {
             .check(
                 verified_keys(&keys),
                 document(&keys, 2),
-                Arc::clone(&sigstore().1),
+                Arc::clone(&sigstore_fixture().1),
                 deadline
             )
             .unwrap_err(),
@@ -516,8 +497,12 @@ fn signatures_are_bound_to_the_active_key_document_and_purpose() {
     other_keys.keys.document.generation += 1;
     for substituted in [other_sigstore, other_keys] {
         assert_eq!(
-            check_document(verified_keys(&keys), substituted, Arc::clone(&sigstore().1))
-                .unwrap_err(),
+            check_document(
+                verified_keys(&keys),
+                substituted,
+                Arc::clone(&sigstore_fixture().1)
+            )
+            .unwrap_err(),
             Error::Invalid("verified keys or Sigstore files differ".into())
         );
     }
@@ -594,7 +579,7 @@ fn root_inclusion_is_mandatory_and_failure_never_advances_state() {
     let error = authority
         .observe_keys(
             &serde_json::to_vec(&keys).unwrap(),
-            sigstore().1.trusted_root(),
+            sigstore_fixture().1.trusted_root(),
         )
         .unwrap_err();
     assert!(matches!(error, Error::Transparency(_)));
@@ -685,7 +670,7 @@ fn strict_boundary_rejects_unknown_duplicate_trailing_and_oversized_inputs() {
         inclusion: json!({}),
     };
     let valid = serde_json::to_string(&keys).unwrap();
-    let trust = sigstore().1.trusted_root();
+    let trust = sigstore_fixture().1.trusted_root();
     for input in [
         format!("{valid}{{}}"),
         valid.replacen("\"generation\":1", "\"generation\":1,\"generation\":2", 1),
@@ -783,7 +768,8 @@ fn compiled_staging_root_verifies_actual_logged_operational_delegation() {
         * 1000
         + 1000;
     let verifier = crate::evidence::Verifier::stogas(Environment::Staging).unwrap();
-    let keys = verifier.verify_key_manifest(bytes, now).unwrap();
+    let sigstore = &sigstore_fixture().1;
+    let keys = verifier.verify_key_manifest(bytes, sigstore, now).unwrap();
     assert_eq!(
         keys.active_key.key_id,
         "staging-stogas-online-2026-10-10-01"
@@ -794,13 +780,13 @@ fn compiled_staging_root_verifies_actual_logged_operational_delegation() {
     changed["document"]["generation"] = json!(59);
     assert!(
         verifier
-            .verify_key_manifest(&serde_json::to_vec(&changed).unwrap(), now)
+            .verify_key_manifest(&serde_json::to_vec(&changed).unwrap(), sigstore, now)
             .is_err()
     );
     // The production root has no Rekor key yet, so its authority fails closed; once it has one,
     // it must still reject this staging delegation.
     assert!(
         !crate::evidence::Verifier::stogas(Environment::Production)
-            .is_ok_and(|production| production.verify_key_manifest(bytes, now).is_ok())
+            .is_ok_and(|production| production.verify_key_manifest(bytes, sigstore, now).is_ok())
     );
 }

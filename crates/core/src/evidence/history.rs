@@ -64,7 +64,11 @@ mod tests {
         .unwrap();
         let later = now + 366 * 24 * 60 * 60 * 1000;
         verifier
-            .verify_key_manifest(&bytes(&rotated["document"]["keys"]), later)
+            .verify_key_manifest(
+                &bytes(&rotated["document"]["keys"]),
+                current.evidence.sigstore(),
+                later,
+            )
             .unwrap();
         assert!(current.require_current_keys().is_err());
         let summary = verifier

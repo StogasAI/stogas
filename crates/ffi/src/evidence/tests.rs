@@ -88,12 +88,25 @@ fn compiled_authorities_never_substitute_another_environment() {
         // authority selected through this ABI.
         assert_eq!(result["ok"], !handle.is_null());
         if !handle.is_null() {
+            use base64::{Engine as _, engine::general_purpose::STANDARD};
+            let sigstore = stogas_core::authority::VerifiedSigstore::verify(
+                &stogas_core::authority::SigstoreFiles {
+                    roots: vec![],
+                    targets: STANDARD.encode(include_bytes!(
+                        "../../../../tests/fixtures/sigstore-tuf/14.targets.json"
+                    )),
+                    trusted_root: STANDARD.encode(include_bytes!(
+                        "../../../../tests/fixtures/sigstore-tuf/trusted_root.json"
+                    )),
+                },
+            )
+            .unwrap();
             assert!(
                 (*handle)
                     .core
                     .lock()
                     .unwrap()
-                    .verify_key_manifest(keys, now)
+                    .verify_key_manifest(keys, &sigstore, now)
                     .is_err()
             );
             stogas_evidence_free(handle);

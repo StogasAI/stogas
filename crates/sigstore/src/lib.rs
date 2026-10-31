@@ -470,7 +470,7 @@ mod tests {
     fn rejects_oversized_input_before_parsing() {
         let bytes = vec![b' '; MAX_BUNDLE_BYTES + 1];
         assert!(matches!(
-            verify_github_attestation(TrustedRoot::embedded().unwrap(), &bytes, &[], &policy()),
+            verify_github_attestation(TrustedRoot::production(), &bytes, &[], &policy()),
             Err(Error::TooLarge)
         ));
     }

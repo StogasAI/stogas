@@ -5,6 +5,10 @@ import { verify_github_attestation } from '../../packages/sigstore/bindings/node
 const attestation = readFileSync(
 	new URL('../fixtures/gateway-v0.0.1-attestation.jsonl', import.meta.url)
 );
+const trustedRoot = readFileSync(
+	new URL('../fixtures/sigstore-tuf/trusted_root.json', import.meta.url),
+	'utf8'
+);
 const subjects = [
 	{
 		name: 'gateway.igvm',
@@ -27,7 +31,8 @@ const policy = {
 const verified = verify_github_attestation(
 	attestation,
 	JSON.stringify(subjects),
-	JSON.stringify(policy)
+	JSON.stringify(policy),
+	trustedRoot
 );
 assert.equal(verified.subjects.length, 2);
 
@@ -39,7 +44,24 @@ assert.throws(
 		verify_github_attestation(
 			new TextEncoder().encode(JSON.stringify(mutation)),
 			JSON.stringify(subjects),
-			JSON.stringify(policy)
+			JSON.stringify(policy),
+			trustedRoot
 		),
 	/Sigstore cryptographic verification failed/
+);
+// Without Sigstore's keys nothing verifies.
+const withoutLogs = JSON.parse(trustedRoot);
+withoutLogs.tlogs = [];
+assert.throws(() =>
+	verify_github_attestation(
+		attestation,
+		JSON.stringify(subjects),
+		JSON.stringify(policy),
+		JSON.stringify(withoutLogs)
+	)
+);
+assert.throws(
+	() =>
+		verify_github_attestation(attestation, JSON.stringify(subjects), JSON.stringify(policy), '{}'),
+	/trusted root/i
 );
