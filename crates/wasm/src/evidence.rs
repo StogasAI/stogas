@@ -92,6 +92,7 @@ impl EvidenceVerifier {
                 key_id: root_key_id,
                 public_key: root_public_key,
                 rekor_public_key: root_rekor_public_key,
+                rekor_v2: None,
             },
         )
         .map_err(|error| verification_error(&error))?;

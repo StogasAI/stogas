@@ -114,7 +114,10 @@ fn proves_exact_publication_by_the_designated_submitter_but_never_trusts_a_suppl
         let designated = submitter(seed);
         assert_eq!(
             verify(&bundle, ARTIFACT, &designated, &root()).unwrap(),
-            NOW / 1000
+            crate::DocumentEntry {
+                time: NOW / 1000,
+                v2: None
+            }
         );
         assert!(verify(&bundle, b"substituted document", &designated, &root()).is_err());
         // Anyone can log the same bytes, but only the designated key's entries are findable.
@@ -455,13 +458,22 @@ fn proves_rekor_v2_publication_at_the_timestamp_authority_time() {
     let time = chrono::DateTime::parse_from_rfc3339(TIMESTAMPED)
         .unwrap()
         .timestamp();
+    let entry = |index: usize| crate::DocumentEntry {
+        time,
+        v2: Some(crate::LogPosition {
+            origin: V2_LOG.into(),
+            index: index as u64,
+            // v2_trust's log key opens on 2026-01-01.
+            log_start: Some(1_767_225_600),
+        }),
+    };
     // Every position in trees of every shape, including each tree's right edge.
     for size in 1..=9 {
         for index in 0..size {
             let bundle = v2_fixture(9, index, size);
             assert_eq!(
                 verify(&bundle, ARTIFACT, &submitter(9), &v2_trust()),
-                Ok(time),
+                Ok(entry(index)),
                 "{index} of {size}"
             );
             assert!(verify(&bundle, b"substituted document", &submitter(9), &v2_trust()).is_err());
@@ -477,26 +489,29 @@ fn proves_rekor_v2_publication_at_the_timestamp_authority_time() {
             &submitter(9)
         )
         .unwrap(),
-        time
+        entry(2)
     );
-    // The timestamp selects the log key, and both ends of a key's validity are inclusive.
-    for (validity, valid) in [
-        (json!({"start": TIMESTAMPED}), true),
+    // The timestamp selects the log key, and both ends of a key's validity are inclusive. The
+    // entry names when its log key's validity starts, which decides whether a log counts.
+    for (validity, start) in [
+        (json!({"start": TIMESTAMPED}), Some(Some(time))),
         (
             json!({"start": "2025-09-23T00:00:00Z", "end": TIMESTAMPED}),
-            true,
+            Some(Some(1_758_585_600)),
         ),
-        (json!({}), true),
-        (json!({"start": "2026-10-31T05:16:50Z"}), false),
+        (json!({}), Some(None)),
+        (json!({"start": "2026-10-31T05:16:50Z"}), None),
         (
             json!({"start": "2025-09-23T00:00:00Z", "end": "2026-10-31T05:16:48Z"}),
-            false,
+            None,
         ),
     ] {
         let trust = TrustedRoot::from_json(&v2_root(&validity).to_string()).unwrap();
         assert_eq!(
-            verify(&bundle, ARTIFACT, &submitter(9), &trust).is_ok(),
-            valid,
+            verify(&bundle, ARTIFACT, &submitter(9), &trust)
+                .ok()
+                .map(|entry| entry.v2.unwrap().log_start),
+            start,
             "{validity}"
         );
     }

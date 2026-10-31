@@ -102,6 +102,17 @@ pub struct LogKey {
     validity: Option<Validity>,
 }
 
+impl LogKey {
+    /// When the trusted root starts this key's validity, in Unix seconds, if it names a start.
+    pub(crate) fn start(&self) -> Result<Option<i64>, String> {
+        self.validity
+            .as_ref()
+            .and_then(|validity| validity.start.as_deref())
+            .map(parse_time)
+            .transpose()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Authority {
     pub certificates: Vec<Vec<u8>>,

@@ -91,13 +91,35 @@ pub struct VerifiedAttestation {
     pub subjects: Vec<(String, String)>,
 }
 
+/// A verified Rekor entry that logged a document.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DocumentEntry {
+    /// Unix seconds: Rekor v1's signed entry time, or for Rekor v2, which signs no time, the
+    /// timestamp authority's.
+    pub time: i64,
+    /// Where a Rekor v2 log holds the entry. Rekor v1 is one log with a search index.
+    pub v2: Option<LogPosition>,
+}
+
+/// An entry's place in a Rekor v2 log.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogPosition {
+    /// The log's checkpoint origin: the host of its base URL in the trusted root.
+    pub origin: String,
+    /// The entry's index, which its inclusion proof binds.
+    pub index: u64,
+    /// When the trusted root starts the log key's validity, in Unix seconds, if it names one.
+    pub log_start: Option<i64>,
+}
+
 /// Verify that the designated submitter logged exact artifact bytes through Rekor's
-/// SHA-512/Ed25519ph profile, and return the authenticated log time in Unix seconds.
+/// SHA-512/Ed25519ph profile, and return when and, in Rekor v2, where it was logged.
 ///
 /// `submitter` is the Ed25519 `SubjectPublicKeyInfo` DER that must have submitted the entry,
-/// so a Rekor search by that key finds every accepted entry. The submission key does not
-/// approve the artifact: separately authenticate it with its trusted signing policy,
-/// including any post-quantum signature.
+/// so a Rekor v1 search by that key finds every accepted entry. Rekor v2 has no search index:
+/// a caller that must find every entry also limits the logs and indexes it accepts and reads
+/// every entry there. The submission key does not approve the artifact: separately
+/// authenticate it with its trusted signing policy, including any post-quantum signature.
 ///
 /// # Errors
 /// Rejects malformed bundles, substituted artifacts, other submitters, invalid signatures,
@@ -107,7 +129,7 @@ pub fn verify_rekor_document_inclusion(
     bundle: &[u8],
     artifact: &[u8],
     submitter: &[u8],
-) -> Result<i64, Error> {
+) -> Result<DocumentEntry, Error> {
     if bundle.len() > MAX_BUNDLE_BYTES || artifact.len() > MAX_DOCUMENT_BYTES {
         return Err(Error::TooLarge);
     }

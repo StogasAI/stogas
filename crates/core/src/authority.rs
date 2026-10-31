@@ -4,7 +4,7 @@
 //! revision. Release, hardware and vendor appraisal remain in `evidence`.
 
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -14,7 +14,7 @@ use ed25519_dalek::{VerifyingKey, pkcs8::DecodePublicKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use stogas_sigstore::TrustedRoot;
+use stogas_sigstore::{LogPosition, TrustedRoot};
 use thiserror::Error;
 
 use crate::{
@@ -99,6 +99,50 @@ pub struct RootKey {
     /// Canonical standard-base64 Ed25519 `SubjectPublicKeyInfo` DER of the only key that may
     /// log this root's key manifests in Rekor, so a search by it finds every one.
     pub rekor_public_key: String,
+    /// Where this root's documents count in Rekor v2. Without it, no Rekor v2 entry counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rekor_v2: Option<RekorV2Scope>,
+}
+
+/// Where a root's documents count in Rekor v2.
+///
+/// Rekor v2 has no search index, so Control's Rekor watcher reads every entry in this scope
+/// instead: a stolen submission key cannot log a document that clients accept anywhere the
+/// watcher does not read.
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RekorV2Scope {
+    /// Logs by checkpoint origin, each with the first index that counts: the watcher reads
+    /// each from there.
+    pub first_indexes: BTreeMap<String, u64>,
+    /// Any other log counts from its first entry if its key's validity in Sigstore's trusted
+    /// root starts at or after this time, in whole UTC seconds, so a log that Sigstore opens
+    /// later needs no verifier release.
+    pub opened_from: String,
+}
+
+impl RekorV2Scope {
+    /// Whether a Rekor v2 entry at `position` counts.
+    pub(crate) fn admits(&self, position: &LogPosition) -> Result<bool, Error> {
+        if let Some(first) = self.first_indexes.get(&position.origin) {
+            return Ok(position.index >= *first);
+        }
+        let opened_from = utc_seconds(&self.opened_from, "Rekor v2 opening time")? / 1000;
+        Ok(position.log_start.is_some_and(|start| start >= opened_from))
+    }
+
+    fn validate(&self) -> Result<(), Error> {
+        utc_seconds(&self.opened_from, "Rekor v2 opening time")?;
+        if self.first_indexes.keys().any(|origin| {
+            origin.is_empty()
+                || !origin
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-.".contains(&b))
+        }) {
+            return Err(invalid("Rekor v2 log origin"));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -132,18 +176,21 @@ pub struct KeyManifest {
 
 impl KeyManifest {
     fn expiry_unix_ms(&self) -> Result<i64, Error> {
-        if self.expires_at.len() != 20 {
-            return Err(invalid("key manifest expiry must use whole UTC seconds"));
-        }
-        let expiry = chrono::DateTime::parse_from_rfc3339(&self.expires_at)
-            .map_err(|_| invalid("key manifest expiry is not a UTC timestamp"))?;
-        if expiry.timestamp_subsec_nanos() != 0
-            || expiry.format("%Y-%m-%dT%H:%M:%SZ").to_string() != self.expires_at
-        {
-            return Err(invalid("key manifest expiry must use whole UTC seconds"));
-        }
-        Ok(expiry.timestamp_millis())
+        utc_seconds(&self.expires_at, "key manifest expiry")
     }
+}
+
+/// Unix milliseconds of an RFC 3339 time in whole UTC seconds, such as `2026-10-31T00:00:00Z`.
+fn utc_seconds(value: &str, label: &str) -> Result<i64, Error> {
+    let time = chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .filter(|time| {
+            value.len() == 20
+                && time.timestamp_subsec_nanos() == 0
+                && time.format("%Y-%m-%dT%H:%M:%SZ").to_string() == value
+        })
+        .ok_or_else(|| invalid(format!("{label} must use whole UTC seconds")))?;
+    Ok(time.timestamp_millis())
 }
 
 pub type SignedKeyManifest = crate::LoggedDocument<KeyManifest>;
@@ -382,6 +429,8 @@ pub struct VerifiedEvidence {
     keys_digest: String,
     digest: String,
     expires_unix_ms: i64,
+    /// The Rekor v2 scope of the root that checked it, which the entries it authorizes need.
+    rekor_v2: Option<RekorV2Scope>,
 }
 
 impl VerifiedEvidence {
@@ -421,6 +470,11 @@ impl VerifiedEvidence {
     #[must_use]
     pub const fn sigstore(&self) -> &Arc<VerifiedSigstore> {
         &self.sigstore
+    }
+
+    #[cfg(feature = "snp")]
+    pub(crate) const fn rekor_v2(&self) -> Option<&RekorV2Scope> {
+        self.rekor_v2.as_ref()
     }
 
     /// Verify one listed release's launch manifest and its independent build proof.
@@ -532,6 +586,9 @@ impl Authority {
     pub fn new(environment: Environment, root: RootKey) -> Result<Self, Error> {
         decode_key(&root.key_id, &root.public_key)?;
         decode_rekor_key(&root.rekor_public_key)?;
+        if let Some(scope) = &root.rekor_v2 {
+            scope.validate()?;
+        }
         Ok(Self {
             environment,
             root,
@@ -561,6 +618,7 @@ impl Authority {
             &keys.inclusion,
             trust,
             &self.root.rekor_public_key,
+            self.root.rekor_v2.as_ref(),
         )?;
         if keys.document.expiry_unix_ms()? <= published {
             return Err(invalid("key authorization expired before publication"));
@@ -595,10 +653,15 @@ impl Authority {
         sigstore: Arc<VerifiedSigstore>,
         now_unix_ms: i64,
     ) -> Result<VerifiedEvidence, Error> {
-        let candidate = check_document(keys, document, sigstore)?;
+        let candidate = check_document(keys, document, sigstore, self.root.rekor_v2.clone())?;
         candidate.valid_until(now_unix_ms)?;
         self.check_update(&candidate)?;
         Ok(candidate)
+    }
+
+    /// The root's Rekor v2 scope.
+    pub(crate) const fn rekor_v2(&self) -> Option<&RekorV2Scope> {
+        self.root.rekor_v2.as_ref()
     }
 
     /// Installs a candidate that [`Self::check`] returned in the same refresh, once its signature
@@ -658,6 +721,7 @@ pub(crate) fn verify_proof(
         &inclusion,
         candidate.sigstore.trusted_root(),
         &key.rekor_public_key,
+        candidate.rekor_v2.as_ref(),
     )?;
     candidate.proof = Some(Proof {
         signature,
@@ -679,6 +743,7 @@ fn check_document(
     keys: VerifiedKeys,
     document: EvidenceDocument,
     sigstore: Arc<VerifiedSigstore>,
+    rekor_v2: Option<RekorV2Scope>,
 ) -> Result<VerifiedEvidence, Error> {
     if document.schema != EVIDENCE_SCHEMA || !valid_revision(document.revision) {
         return Err(Error::Invalid("evidence schema or revision".into()));
@@ -720,6 +785,7 @@ fn check_document(
         proof: None,
         sigstore,
         keys_digest: keys.digest,
+        rekor_v2,
     })
 }
 
@@ -783,25 +849,47 @@ pub(crate) fn verify_signature(
 }
 
 /// Verify that `submitter`, a Rekor key from validated authorization, logged this signed
-/// document, and return the log time in Unix milliseconds.
+/// document in Rekor v1 or within the root's Rekor v2 scope, and return the log time in Unix
+/// milliseconds.
 pub(crate) fn verify_document_inclusion(
     document: &Value,
     signature: &StogasSignature,
     inclusion: &Value,
     trust: &TrustedRoot,
     submitter: &str,
+    rekor_v2: Option<&RekorV2Scope>,
 ) -> Result<i64, Error> {
     let artifact = canonical_json(&serde_json::json!({"document":document, "signature":signature}))
         .map_err(invalid)?;
-    stogas_sigstore::verify_rekor_document_inclusion(
+    let entry = stogas_sigstore::verify_rekor_document_inclusion(
         trust,
         &serde_json::to_vec(inclusion).map_err(invalid)?,
         artifact.as_bytes(),
         &STANDARD.decode(submitter).map_err(invalid)?,
     )
-    .map_err(|error| Error::Transparency(error.to_string()))?
-    .checked_mul(1000)
-    .ok_or_else(|| invalid("log time overflow"))
+    .map_err(|error| Error::Transparency(error.to_string()))?;
+    check_rekor_v2_scope(entry.v2.as_ref(), rekor_v2)?;
+    entry
+        .time
+        .checked_mul(1000)
+        .ok_or_else(|| invalid("log time overflow"))
+}
+
+/// Rekor v2 has no search index, so an entry counts only where the watcher reads every entry.
+fn check_rekor_v2_scope(
+    position: Option<&LogPosition>,
+    scope: Option<&RekorV2Scope>,
+) -> Result<(), Error> {
+    let Some(position) = position else {
+        return Ok(());
+    };
+    if scope.map_or(Ok(false), |scope| scope.admits(position))? {
+        return Ok(());
+    }
+    Err(Error::Transparency(format!(
+        "Rekor v2 entry {} of {} is outside the root's Rekor v2 scope",
+        position.index, position.origin
+    )))
 }
 
 pub(crate) fn valid_key_id(key_id: &str) -> bool {
