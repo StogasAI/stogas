@@ -354,3 +354,187 @@ test('a failed candidate never replaces accepted evidence while the replica is v
 	);
 	client.close();
 });
+
+// What each origin does with every request of a case. The fake verifier takes no time, so real
+// timers give the race's exact timing.
+const BEHAVIORS = [
+	'fresh',
+	'stale',
+	'corrupt',
+	'unavailable',
+	'missing',
+	'oversized',
+	'unmodified',
+	'refused',
+	'slow',
+	'hung'
+];
+const SLOW_MS = 2_000;
+const HEDGE_MS = 1_000;
+const ORIGIN_MS = 5_000;
+// Revision 2 satisfies a check that needs it; revision 1 verifies without satisfying it.
+const ETAGS = { 1: '"old"', 2: '"latest"' };
+
+function serve(behavior, etag, signal) {
+	switch (behavior) {
+		case 'fresh':
+		case 'stale': {
+			const revision = behavior === 'fresh' ? 2 : 1;
+			return etag === ETAGS[revision]
+				? new Response(null, { status: 304 })
+				: response(revision, ETAGS[revision]);
+		}
+		case 'corrupt':
+			return response(9, '"corrupt"', { invalid: true });
+		case 'unavailable':
+			return new Response(null, { status: 503 });
+		case 'missing':
+			return new Response(null, { status: 404 });
+		case 'oversized':
+			return new Response(new Uint8Array(1), {
+				headers: { 'content-length': String(16 * 1024 * 1024 + 1) }
+			});
+		case 'unmodified':
+			return new Response(null, { status: 304 });
+		case 'refused':
+			throw new TypeError('fetch failed');
+		default:
+			return new Promise((resolve, reject) => {
+				const timer =
+					behavior === 'slow' ? setTimeout(() => resolve(response(2, ETAGS[2])), SLOW_MS) : 0;
+				signal.addEventListener(
+					'abort',
+					() => {
+						clearTimeout(timer);
+						reject(signal.reason);
+					},
+					{ once: true }
+				);
+			});
+	}
+}
+
+function failureOf(error) {
+	if (error?.name === 'TimeoutError') return 'deadline';
+	if (error instanceof TypeError) return 'delivery';
+	const message = String(error?.message);
+	if (/unknown release|invalid evidence/.test(message)) return 'verification';
+	if (/byte limit/.test(message)) return 'too large';
+	if (/cooling down/.test(message)) return 'cooldown';
+	const status = /HTTP (\d+)/.exec(message);
+	if (status) return `http ${status[1]}`;
+	throw error;
+}
+
+// The model of the hedged race, as the Rust client's test states it.
+function expected({ behaviors, check, warm }) {
+	const held = [warm ? 1 : undefined, undefined];
+	const answer = (index, start) => {
+		const [after, delivered] = {
+			fresh: [0, { revision: 2 }],
+			stale: [0, { revision: 1 }],
+			corrupt: [0, { failure: 'verification' }],
+			unavailable: [0, { failure: 'http 503' }],
+			missing: [0, { failure: 'http 404' }],
+			oversized: [0, { failure: 'too large' }],
+			unmodified: [0, held[index] ? { revision: held[index] } : { failure: 'http 304' }],
+			refused: [0, { failure: 'delivery' }],
+			slow: [SLOW_MS, { revision: 2 }],
+			hung: [ORIGIN_MS, { failure: 'deadline' }]
+		}[behaviors[index]];
+		const satisfied = check && delivered.revision === 1 ? { failure: 'verification' } : delivered;
+		return { at: start + after, index, delivered, satisfied };
+	};
+	const primary = answer(0, 0);
+	// The replica starts when the primary fails or at the hedge delay, whichever is first.
+	const replicaStart =
+		primary.satisfied.failure || primary.at >= HEDGE_MS ? Math.min(primary.at, HEDGE_MS) : null;
+	const answers = [primary];
+	if (replicaStart !== null) answers.push(answer(1, replicaStart));
+	// Stable, so a primary that fails at once is handled before the replica it starts.
+	answers.sort((a, b) => a.at - b.at);
+	let current = held[0];
+	const cached = held.map((revision) => ETAGS[revision] ?? null);
+	let outcome;
+	for (const next of answers) {
+		// Every verified copy becomes current and makes its origin's next request conditional.
+		if (next.delivered.revision) {
+			current = Math.max(current ?? 0, next.delivered.revision);
+			cached[next.index] = ETAGS[next.delivered.revision];
+		}
+		outcome = next;
+		if (!next.satisfied.failure) break;
+	}
+	const requests = [[0, ETAGS[held[0]] ?? null]];
+	if (replicaStart !== null) requests.push([1, null]);
+	return {
+		state: { result: outcome.satisfied, requests, current },
+		cached,
+		elapsed: outcome.at
+	};
+}
+
+test('every pair of origin behaviors follows the hedged acquisition model', async (t) => {
+	const realNow = Date.now.bind(Date);
+	let skipped = 0;
+	t.mock.method(Date, 'now', () => realNow() + skipped);
+	const cases = BEHAVIORS.flatMap((primary) =>
+		BEHAVIORS.flatMap((replica) =>
+			[false, true].flatMap((check) =>
+				[false, true].map((warm) => ({ behaviors: [primary, replica], check, warm }))
+			)
+		)
+	);
+	assert.equal(cases.length, 400);
+	const run = async (kase) => {
+		const log = [];
+		let behaviors = ['stale', 'stale'];
+		const client = new EvidenceClient(verifier(), origins, async (url, { signal, headers }) => {
+			const index = origins.indexOf(url);
+			const etag = headers['if-none-match'] ?? null;
+			log.push([index, etag]);
+			return serve(behaviors[index], etag, signal);
+		});
+		if (kase.warm) await client.acquire();
+		log.length = 0;
+		behaviors = kase.behaviors;
+		const { state, cached, elapsed } = expected(kase);
+		const check = kase.check ? requireRevision(2) : undefined;
+		const started = performance.now();
+		let result;
+		try {
+			const value = await client.acquire(undefined, check);
+			result = { revision: kase.check ? value : value.revision };
+		} catch (error) {
+			result = { failure: failureOf(error) };
+		}
+		const took = performance.now() - started;
+		let current;
+		try {
+			current = client.check((snapshot) => snapshot.revision);
+		} catch {
+			current = undefined;
+		}
+		const label = JSON.stringify(kase);
+		assert.deepEqual({ result, requests: log.splice(0), current }, state, label);
+		assert.ok(took >= elapsed - 2 && took < elapsed + 250, `${label} took ${took} ms`);
+		if (result.failure) {
+			// A failed acquisition pauses every caller without contacting either origin.
+			await assert.rejects(client.acquire(undefined, check), /cooling down/, label);
+			assert.equal(log.length, 0, label);
+		}
+		// After every pause, a request to each origin shows the copy the client kept for it.
+		return async () => {
+			behaviors = ['unavailable', 'unavailable'];
+			await assert.rejects(client.acquire(), /HTTP 503/, label);
+			assert.deepEqual(log.splice(0), [
+				[0, cached[0]],
+				[1, cached[1]]
+			]);
+			client.close();
+		};
+	};
+	const probes = await Promise.all(cases.map(run));
+	skipped = 60_000;
+	await Promise.all(probes.map((probe) => probe()));
+});
