@@ -32,7 +32,8 @@ export async function loadServer() {
 				'--no-run',
 				'--message-format=json'
 			],
-			{ cwd: root, env, maxBuffer: 16 * 1024 * 1024 }
+			// Bounded, so a stalled build fails with its own output before the test's time limit.
+			{ cwd: root, env, maxBuffer: 16 * 1024 * 1024, timeout: 300_000 }
 		);
 		const artifact = stdout
 			.split('\n')
@@ -48,7 +49,7 @@ export async function loadServer() {
 		await execute(
 			'wasm-bindgen',
 			[artifact.executable, '--target', 'web', '--out-dir', directory, '--out-name', 'client_load'],
-			{ cwd: root, env }
+			{ cwd: root, env, timeout: 60_000 }
 		);
 		const files = new Map();
 		for (const name of ['client_load.js', 'client_load_bg.wasm'])

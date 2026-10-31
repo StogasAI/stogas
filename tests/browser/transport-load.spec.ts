@@ -36,8 +36,8 @@ const SCENARIOS = [
 	}
 ];
 
-// Each browser is its own test and each scenario a step with its own limit, so a stall names
-// its browser and scenario. A scenario takes at most about 10 seconds on two cores.
+// Each browser is its own test, and every wait has its own limit, so a stall names its browser
+// and what it waited for. A scenario takes at most about 20 seconds on two cores.
 for (const engine of [chromium, firefox, webkit]) {
 	test(`real encrypted Fetch requests wait for capacity, stream, cancel and release ownership in ${engine.name()}`, async () => {
 		// A first local run also builds the Wasm test artifact.
@@ -49,7 +49,7 @@ for (const engine of [chromium, firefox, webkit]) {
 				const page = await browser.newPage();
 				page.on('pageerror', (error) => console.log(`${engine.name()}: ${error.stack}`));
 				page.on('crash', () => console.log(`${engine.name()}: the page crashed`));
-				await page.goto(server.url);
+				await page.goto(server.url, { timeout: 60_000 });
 				await page.waitForFunction(
 					() => typeof (globalThis as LoadRuntime).runTransportLoad === 'function',
 					undefined,
@@ -95,7 +95,7 @@ for (const engine of [chromium, firefox, webkit]) {
 				await test.step('close the browser', () => browser.close(), { timeout: 60_000 });
 			}
 		} finally {
-			await server.close();
+			await test.step('stop the page server', () => server.close(), { timeout: 30_000 });
 		}
 	});
 }
