@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Clone)]
 struct Reply {
-    body: Vec<u8>,
+    body: Bytes,
     etag: &'static str,
     status: StatusCode,
     encoding: Option<&'static str>,
@@ -132,9 +132,9 @@ fn signed(document: &Value) -> Vec<u8> {
     .unwrap()
 }
 
-const fn reply(body: Vec<u8>, etag: &'static str) -> Reply {
+fn reply(body: impl Into<Bytes>, etag: &'static str) -> Reply {
     Reply {
-        body,
+        body: body.into(),
         etag,
         status: StatusCode::OK,
         encoding: None,
@@ -313,7 +313,7 @@ async fn bad_or_oversized_delivery_preserves_snapshot_and_never_caches_the_candi
         *server.state.replies.write().unwrap() = [
             reply(hostile, "\"bad\""),
             Reply {
-                body: vec![],
+                body: Bytes::new(),
                 etag: "",
                 status: StatusCode::SERVICE_UNAVAILABLE,
                 encoding: None,
@@ -366,14 +366,14 @@ async fn native_setup_sends_nothing_before_evidence_and_never_redials_an_unresol
     let (root, document) = fixture();
     let server = Server::new([
         Reply {
-            body: vec![],
+            body: Bytes::new(),
             etag: "",
             status: StatusCode::SERVICE_UNAVAILABLE,
             encoding: None,
             delay: Duration::ZERO,
         },
         Reply {
-            body: vec![],
+            body: Bytes::new(),
             etag: "",
             status: StatusCode::SERVICE_UNAVAILABLE,
             encoding: None,
@@ -841,4 +841,418 @@ async fn encrypted_setup_bounds_delivery_and_never_recovers_invalid_protocol_dat
     assert!(matches!(result, Err(Error::Deadline)));
     assert_eq!(calls.load(Ordering::SeqCst), calls_before_expired_setup);
     task.abort();
+}
+
+/// What one origin does with each request of an acquisition case.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Behavior {
+    /// Serves evidence that satisfies the caller's check.
+    Fresh,
+    /// Serves verified evidence without what the caller's check needs.
+    Stale,
+    Corrupt,
+    Unavailable,
+    Missing,
+    Oversized,
+    /// Answers 304 whether or not the client holds this origin's copy.
+    Unmodified,
+    /// Accepts no connection.
+    Refused,
+    /// Serves fresh evidence after the hedge delay.
+    Slow,
+    /// Never answers within an origin's budget.
+    Hung,
+}
+
+const BEHAVIORS: [Behavior; 10] = [
+    Behavior::Fresh,
+    Behavior::Stale,
+    Behavior::Corrupt,
+    Behavior::Unavailable,
+    Behavior::Missing,
+    Behavior::Oversized,
+    Behavior::Unmodified,
+    Behavior::Refused,
+    Behavior::Slow,
+    Behavior::Hung,
+];
+const SLOW: Duration = Duration::from_secs(2);
+
+/// The two verified revisions that origins serve. Only the latest has the required catalog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Edition {
+    Old,
+    Latest,
+}
+
+impl Edition {
+    const fn etag(self) -> &'static str {
+        match self {
+            Self::Old => "\"old\"",
+            Self::Latest => "\"latest\"",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Failure {
+    Verification,
+    Http(StatusCode),
+    TooLarge,
+    MissingRepresentation,
+    Delivery,
+    Deadline,
+    Cooldown,
+}
+
+impl Failure {
+    fn of(error: &Error) -> Self {
+        match error {
+            Error::Verification(_) => Self::Verification,
+            Error::Http(status) => Self::Http(*status),
+            Error::TooLarge => Self::TooLarge,
+            Error::MissingRepresentation => Self::MissingRepresentation,
+            Error::Delivery(_) => Self::Delivery,
+            Error::Deadline => Self::Deadline,
+            Error::Cooldown => Self::Cooldown,
+            other => panic!("unexpected acquisition error: {other}"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Case {
+    origins: [Behavior; 2],
+    /// A recovery whose check needs the latest edition, or else an explicit refresh.
+    check: bool,
+    /// The client already holds the old edition from the primary.
+    warm: bool,
+}
+
+/// What an acquisition must leave behind, from a model of the hedged race between the origins.
+#[derive(Debug, PartialEq, Eq)]
+struct Outcome {
+    result: Result<Edition, Failure>,
+    /// The entity tag the client keeps for each origin's conditional requests. Only the
+    /// origin whose answer the caller accepted gets a new one.
+    cached: [Option<String>; 2],
+    /// Each request an origin receives, with its conditional header.
+    requests: Vec<(usize, Option<String>)>,
+    current: Option<Edition>,
+}
+
+type Answer = (Duration, Result<Edition, Failure>, Result<Edition, Failure>);
+
+impl Case {
+    /// When an origin answers after it starts, the verified edition it delivers, and whether
+    /// that edition satisfies the caller.
+    fn answer(self, index: usize) -> Answer {
+        let held = (self.warm && index == 0).then_some(Edition::Old);
+        let (after, delivered) = match self.origins[index] {
+            Behavior::Fresh => (Duration::ZERO, Ok(Edition::Latest)),
+            Behavior::Stale => (Duration::ZERO, Ok(Edition::Old)),
+            Behavior::Corrupt => (Duration::ZERO, Err(Failure::Verification)),
+            Behavior::Unavailable => (
+                Duration::ZERO,
+                Err(Failure::Http(StatusCode::SERVICE_UNAVAILABLE)),
+            ),
+            Behavior::Missing => (Duration::ZERO, Err(Failure::Http(StatusCode::NOT_FOUND))),
+            Behavior::Oversized => (Duration::ZERO, Err(Failure::TooLarge)),
+            Behavior::Unmodified => (Duration::ZERO, held.ok_or(Failure::MissingRepresentation)),
+            Behavior::Refused => (Duration::ZERO, Err(Failure::Delivery)),
+            Behavior::Slow => (SLOW, Ok(Edition::Latest)),
+            Behavior::Hung => (ORIGIN_BUDGET, Err(Failure::Deadline)),
+        };
+        let satisfied = match delivered {
+            Ok(Edition::Old) if self.check => Err(Failure::Verification),
+            other => other,
+        };
+        (after, delivered, satisfied)
+    }
+
+    /// The outcome, and when the call returns after it starts.
+    fn expected(self) -> (Outcome, Duration) {
+        let (after, delivered, primary) = self.answer(0);
+        // The replica starts when the primary fails or at the hedge delay, whichever is first.
+        let replica_start =
+            (primary.is_err() || after >= HEDGE_DELAY).then(|| after.min(HEDGE_DELAY));
+        let mut answers = vec![(after, 0, delivered, primary)];
+        if let Some(start) = replica_start {
+            let (after, delivered, satisfied) = self.answer(1);
+            answers.push((start + after, 1, delivered, satisfied));
+        }
+        // Stable, so a primary that fails at once is handled before the replica it starts.
+        answers.sort_by_key(|answer| answer.0);
+        let mut current = self.warm.then_some(Edition::Old);
+        let mut outcome = None;
+        for (at, index, delivered, satisfied) in answers {
+            // Verified evidence becomes current unless the client holds a newer revision.
+            if let Ok(edition) = delivered {
+                current = current.max(Some(edition));
+            }
+            outcome = Some((at, satisfied.map(|edition| (index, edition))));
+            if satisfied.is_ok() {
+                break;
+            }
+        }
+        let (elapsed, result) = outcome.unwrap();
+        let held = self.warm.then(|| Edition::Old.etag().to_owned());
+        let mut requests = vec![];
+        if self.origins[0] != Behavior::Refused {
+            requests.push((0, held.clone()));
+        }
+        if replica_start.is_some() && self.origins[1] != Behavior::Refused {
+            requests.push((1, None));
+        }
+        let mut cached = [held, None];
+        if let Ok((index, edition)) = result {
+            cached[index] = Some(edition.etag().to_owned());
+        }
+        let outcome = Outcome {
+            result: result.map(|(_, edition)| edition),
+            cached,
+            requests,
+            current,
+        };
+        (outcome, elapsed)
+    }
+}
+
+/// Everything a case needs, shared by all cases.
+#[derive(Clone)]
+struct Editions {
+    root: RootKey,
+    old: Bytes,
+    latest: Bytes,
+    oversized: Bytes,
+    target: Arc<str>,
+    closed: Url,
+}
+
+impl Editions {
+    fn new() -> Self {
+        let (root, mut latest) = fixture();
+        let target = stogas_core::authority::payload_sha256(
+            &latest["catalogs"].as_array().unwrap().last().unwrap()["document"],
+        )
+        .unwrap();
+        let mut old = latest.clone();
+        old["catalogs"].as_array_mut().unwrap().pop();
+        latest["revision"] = json!(2);
+        // A port that refuses connections: bound once, then released.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        drop(listener);
+        Self {
+            root,
+            old: signed(&old).into(),
+            latest: signed(&latest).into(),
+            oversized: vec![b' '; MAX_INPUT_BYTES + 1].into(),
+            target: target.into(),
+            closed,
+        }
+    }
+
+    fn reply(&self, behavior: Behavior) -> Reply {
+        let status = |status| Reply {
+            status,
+            ..reply(Bytes::new(), "")
+        };
+        let latest = reply(self.latest.clone(), Edition::Latest.etag());
+        match behavior {
+            Behavior::Fresh => latest,
+            Behavior::Stale => reply(self.old.clone(), Edition::Old.etag()),
+            Behavior::Corrupt => reply(&b"{malformed"[..], "\"corrupt\""),
+            Behavior::Unavailable => status(StatusCode::SERVICE_UNAVAILABLE),
+            Behavior::Missing => status(StatusCode::NOT_FOUND),
+            Behavior::Oversized => reply(self.oversized.clone(), "\"oversized\""),
+            Behavior::Unmodified | Behavior::Refused => status(StatusCode::NOT_MODIFIED),
+            Behavior::Slow => Reply {
+                delay: SLOW,
+                ..latest
+            },
+            Behavior::Hung => Reply {
+                delay: Duration::from_mins(1),
+                ..latest
+            },
+        }
+    }
+
+    fn edition(&self, snapshot: &Snapshot) -> Edition {
+        if snapshot.catalog(&self.target).is_some() {
+            Edition::Latest
+        } else {
+            Edition::Old
+        }
+    }
+
+    async fn acquire(&self, client: &EvidenceClient, check: bool) -> Result<Arc<Snapshot>, Error> {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        if !check {
+            return client.refresh(deadline).await;
+        }
+        let target = Arc::clone(&self.target);
+        client
+            .recover(deadline, move |snapshot| {
+                snapshot
+                    .catalog(&target)
+                    .map(|_| ())
+                    .ok_or_else(|| stogas_core::authority::Error::NotApproved("catalog").into())
+            })
+            .await
+    }
+
+    /// Builds the case's origins and client, then returns a future that runs and checks it.
+    async fn prepare(&self, case: Case) -> impl Future<Output = ()> + Send + use<> {
+        let editions = self.clone();
+        let server = Server::new([self.reply(Behavior::Stale), self.reply(Behavior::Stale)]).await;
+        let mut client = server.client(self.root.clone());
+        let warm = if case.warm {
+            let warm = client.refresh(deadline()).await.unwrap();
+            server.state.requests.lock().unwrap().clear();
+            Some(warm)
+        } else {
+            None
+        };
+        *server.state.replies.write().unwrap() = case.origins.map(|behavior| self.reply(behavior));
+        for (index, behavior) in case.origins.into_iter().enumerate() {
+            if behavior == Behavior::Refused {
+                client.origins[index].clone_from(&self.closed);
+            }
+        }
+        async move {
+            editions.check(case, &server, &client, warm).await;
+        }
+    }
+
+    async fn check(
+        &self,
+        case: Case,
+        server: &Server,
+        client: &EvidenceClient,
+        warm: Option<Arc<Snapshot>>,
+    ) {
+        let (expected, wait) = case.expected();
+        let started = Instant::now();
+        let result = self.acquire(client, case.check).await;
+        let elapsed = started.elapsed();
+        let acquisition = client.acquisition.lock().await;
+        let actual = Outcome {
+            result: result
+                .as_ref()
+                .map(|snapshot| self.edition(snapshot))
+                .map_err(Failure::of),
+            cached: acquisition.representations.clone().map(|representation| {
+                representation
+                    .and_then(|representation| representation.etag)
+                    .map(|etag| etag.to_str().unwrap().to_owned())
+            }),
+            requests: server.state.requests.lock().unwrap().clone(),
+            current: client
+                .current()
+                .unwrap()
+                .map(|snapshot| self.edition(&snapshot)),
+        };
+        assert_eq!(actual, expected, "{case:?}");
+        assert_eq!(
+            acquisition.retry_after.is_some(),
+            result.is_err(),
+            "{case:?}"
+        );
+        drop(acquisition);
+        // A case that returns at once never waits for the hedge delay. Overlapping cases that
+        // wait share the runner, so their bound leaves room for each other's verification.
+        let slack = if wait.is_zero() {
+            Duration::from_millis(800)
+        } else {
+            Duration::from_millis(1500)
+        };
+        assert!(
+            elapsed >= wait && elapsed < wait + slack,
+            "{case:?} took {elapsed:?}, expected {wait:?}"
+        );
+        if let Ok(snapshot) = &result {
+            assert!(Arc::ptr_eq(snapshot, &client.current().unwrap().unwrap()));
+            // A repeated delivery returns the very snapshot the client held.
+            if let Some(warm) = &warm
+                && actual.result == Ok(Edition::Old)
+            {
+                assert!(Arc::ptr_eq(snapshot, warm), "{case:?}");
+            }
+        } else {
+            // A failed acquisition pauses every caller without contacting either origin.
+            let sent = server.state.requests.lock().unwrap().len();
+            let again = self.acquire(client, case.check).await;
+            assert_eq!(
+                again.map(|_| ()).map_err(|error| Failure::of(&error)),
+                Err(Failure::Cooldown),
+                "{case:?}"
+            );
+            assert_eq!(
+                server.state.requests.lock().unwrap().len(),
+                sent,
+                "{case:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_pair_of_origin_behaviors_follows_the_hedged_acquisition_model() {
+    let editions = Editions::new();
+    let mut cases = vec![];
+    for primary in BEHAVIORS {
+        for replica in BEHAVIORS {
+            for check in [false, true] {
+                for warm in [false, true] {
+                    cases.push(Case {
+                        origins: [primary, replica],
+                        check,
+                        warm,
+                    });
+                }
+            }
+        }
+    }
+    let (instant, waiting): (Vec<_>, Vec<_>) = cases
+        .into_iter()
+        .partition(|case| case.expected().1.is_zero());
+    assert_eq!((instant.len(), waiting.len()), (270, 130));
+    // Cases that return at once run a few at a time, so a busy runner cannot stretch one past the
+    // hedge delay.
+    let permits = Arc::new(Semaphore::new(4));
+    let mut running = tokio::task::JoinSet::new();
+    for case in instant {
+        let permit = Arc::clone(&permits).acquire_owned().await.unwrap();
+        let editions = editions.clone();
+        running.spawn(async move {
+            editions.prepare(case).await.await;
+            drop(permit);
+        });
+    }
+    while let Some(result) = running.join_next().await {
+        result.unwrap();
+    }
+    // Cases that wait overlap once all are ready. Their starts are spread, and similar cases
+    // are spread apart, so only a few verify evidence at any moment.
+    let mut preparing = tokio::task::JoinSet::new();
+    for (index, case) in waiting.into_iter().enumerate() {
+        let order = index * 37 % 130;
+        let permit = Arc::clone(&permits).acquire_owned().await.unwrap();
+        let editions = editions.clone();
+        preparing.spawn(async move {
+            let prepared = editions.prepare(case).await;
+            drop(permit);
+            (order, prepared)
+        });
+    }
+    for (order, case) in preparing.join_all().await {
+        running.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(60) * u32::try_from(order).unwrap()).await;
+            case.await;
+        });
+    }
+    while let Some(result) = running.join_next().await {
+        result.unwrap();
+    }
 }
