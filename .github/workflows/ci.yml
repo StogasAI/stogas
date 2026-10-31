@@ -451,6 +451,9 @@ jobs:
             --target web \
             --out-dir target/operator \
             --out-name stogas
+          # The browser load test's own artifact, so that its time limit covers no compiling.
+          cargo test --locked --release --package stogas-wasm --lib --features staging \
+            --target wasm32-unknown-unknown --no-run
       - name: Install the test browsers
         run: |
           npm ci --ignore-scripts --workspaces=false

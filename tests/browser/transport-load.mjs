@@ -154,6 +154,14 @@ export async function runLoad(
 	const failures = [];
 	let next = 0;
 	const start = performance.now();
+	// A stalled run reports its counts and the last phase of each unfinished request.
+	const phases = new Map();
+	let stage = 'sending';
+	globalThis.transportLoadProgress = () => {
+		const unfinished = {};
+		for (const phase of phases.values()) unfinished[phase] = (unfinished[phase] ?? 0) + 1;
+		return { stage, ...counts, active, started: Math.min(next, requests), unfinished };
+	};
 	try {
 		await Promise.all(
 			Array.from({ length: concurrency }, async () => {
@@ -165,6 +173,7 @@ export async function runLoad(
 					const cancelling = cancelEvery > 0 && number % cancelEvery === 0;
 					active++;
 					counts.peakRequests = Math.max(active, counts.peakRequests);
+					phases.set(number, 'queued');
 					try {
 						const response = await transport.send(
 							new Request('https://fixture.example/v1/chat/completions', {
@@ -174,6 +183,7 @@ export async function runLoad(
 								headers: { authorization: 'Bearer private-test-key' }
 							}),
 							(phase) => {
+								phases.set(number, phase);
 								if (phase === 'acknowledged') {
 									counts.acknowledged++;
 									if (cancelling) controller.abort();
@@ -181,6 +191,7 @@ export async function runLoad(
 							}
 						);
 						if (response.status !== 200) throw new Error(`HTTP ${response.status}`);
+						phases.set(number, 'reading');
 						const reader = response.body.getReader();
 						let size = 0;
 						try {
@@ -207,6 +218,7 @@ export async function runLoad(
 									.join('\ncaused by: ')
 							);
 					} finally {
+						phases.delete(number);
 						active--;
 						latencies.push(performance.now() - started);
 					}
@@ -214,7 +226,9 @@ export async function runLoad(
 			})
 		);
 	} finally {
+		stage = 'closing';
 		await transport.close();
+		stage = 'closed';
 	}
 	const durationMs = performance.now() - start;
 	latencies.sort((a, b) => a - b);
