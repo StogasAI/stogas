@@ -6,7 +6,12 @@ use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use std::{collections::HashSet, sync::LazyLock};
 
-const MEDIA_TYPE: &str = "application/vnd.dev.sigstore.trustedroot+json;version=0.1";
+// Sigstore's v0.2 adds fields that this verifier does not need, and newer roots must use it.
+const MEDIA_TYPES: [&str; 3] = [
+    "application/vnd.dev.sigstore.trustedroot+json;version=0.1",
+    "application/vnd.dev.sigstore.trustedroot.v0.1+json",
+    "application/vnd.dev.sigstore.trustedroot.v0.2+json",
+];
 
 // Evidence delivers Sigstore's current trusted root to every released verifier, so parsing
 // ignores fields and skips logs that a later Sigstore format adds. A proof that needs a
@@ -48,6 +53,8 @@ struct CertificateEntry {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TransparencyLog {
+    #[serde(default)]
+    base_url: String,
     hash_algorithm: String,
     public_key: PublicKey,
     log_id: LogId,
@@ -89,6 +96,9 @@ impl Validity {
 pub struct LogKey {
     pub id: Vec<u8>,
     pub spki: Vec<u8>,
+    /// The host of the log's base URL: the name that signs its checkpoints, and a Rekor v2
+    /// checkpoint's origin.
+    pub origin: String,
     validity: Option<Validity>,
 }
 
@@ -121,19 +131,28 @@ impl TrustedRoot {
             .map_err(|error| crate::Error::Trust(error.clone()))
     }
 
+    /// Parses a Sigstore trusted root. The caller vouches for it: take it from
+    /// [`crate::verify_trust_update`], or from evidence whose verification did.
+    ///
+    /// # Errors
+    /// Rejects malformed roots, unsupported media types and duplicate keys.
+    pub fn from_json(json: &str) -> Result<Self, crate::Error> {
+        Self::parse(json).map_err(crate::Error::Trust)
+    }
+
     /// Parse a trusted root that has every key type the supported proofs use.
     pub(crate) fn complete(json: &str) -> Result<Self, String> {
-        let root = Self::from_json(json)?;
+        let root = Self::parse(json)?;
         if root.fulcio.is_empty() || root.rekor.is_empty() || root.ct.is_empty() {
             return Err("Sigstore trusted root is incomplete".into());
         }
         Ok(root)
     }
 
-    fn from_json(json: &str) -> Result<Self, String> {
+    fn parse(json: &str) -> Result<Self, String> {
         let document: TrustedRootDocument = serde_json::from_str(json)
             .map_err(|error| format!("invalid Sigstore trusted root: {error}"))?;
-        if document.media_type != MEDIA_TYPE {
+        if !MEDIA_TYPES.contains(&document.media_type.as_str()) {
             return Err("unsupported Sigstore trusted-root media type".into());
         }
         let fulcio = parse_authorities(document.certificate_authorities, "Fulcio")?;
@@ -146,11 +165,6 @@ impl TrustedRoot {
             ct,
             tsa,
         })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_root(json: &str) -> Result<Self, String> {
-        Self::from_json(json)
     }
 
     pub(crate) fn fulcio_certificates_at(&self, time: i64) -> Result<Vec<Vec<u8>>, String> {
@@ -233,10 +247,30 @@ fn parse_logs(logs: Vec<TransparencyLog>, label: &str) -> Result<Vec<LogKey>, St
             Ok(LogKey {
                 id,
                 spki,
+                origin: host(&log.base_url),
                 validity: log.public_key.valid_for,
             })
         })
         .collect()
+}
+
+/// Like sigstore-go's `url.Hostname`, so `https://log2025-1.rekor.sigstore.dev` names
+/// `log2025-1.rekor.sigstore.dev`. Without a scheme there is no host, so no checkpoint matches.
+fn host(base_url: &str) -> String {
+    let Some((_, rest)) = base_url.split_once("://") else {
+        return String::new();
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    host.strip_prefix('[')
+        .map_or_else(
+            || host.split(':').next(),
+            |bracketed| bracketed.split(']').next(),
+        )
+        .unwrap_or_default()
+        .to_owned()
 }
 
 fn key_at<'a>(keys: &'a [LogKey], id: &[u8], time: i64, label: &str) -> Result<&'a LogKey, String> {
@@ -309,9 +343,9 @@ mod tests {
     // never deletes the old one. Each proof uses the key that was valid at its logged time.
     #[test]
     fn rotated_keys_verify_only_proofs_from_their_own_validity_window() {
-        let root = TrustedRoot::test_root(
+        let root = TrustedRoot::from_json(
             &json!({
-                "mediaType": MEDIA_TYPE,
+                "mediaType": MEDIA_TYPES[0],
                 "tlogs": [
                     log(1, &json!({"start": "2021-01-12T11:53:27Z", "end": CHANGE})),
                     log(2, &json!({"start": CHANGE}))
@@ -354,7 +388,7 @@ mod tests {
         extended["checkpointKeyId"] = json!({"keyId": STANDARD.encode([1; 32])});
         let root = TrustedRoot::complete(
             &json!({
-                "mediaType": MEDIA_TYPE, "tlogs": [extended, p384], "ctlogs": [log(2, &json!({}))],
+                "mediaType": MEDIA_TYPES[0], "tlogs": [extended, p384], "ctlogs": [log(2, &json!({}))],
                 "certificateAuthorities": [authority(1, &json!({}))], "signingConfig": {}
             })
             .to_string(),
@@ -366,5 +400,51 @@ mod tests {
         let other =
             json!({"mediaType": "application/vnd.dev.sigstore.trustedroot+json;version=0.2"});
         assert!(TrustedRoot::complete(&other.to_string()).is_err());
+    }
+
+    // Sigstore requires new trusted roots to use v0.2, which only adds fields.
+    #[test]
+    fn accepts_each_published_media_type() {
+        let root = |media_type: &str| {
+            TrustedRoot::from_json(
+                &json!({"mediaType": media_type, "tlogs": [log(1, &json!({}))]}).to_string(),
+            )
+        };
+        for media_type in MEDIA_TYPES {
+            assert!(root(media_type).is_ok(), "{media_type}");
+        }
+        for media_type in [
+            "application/vnd.dev.sigstore.trustedroot.v0.3+json",
+            "application/vnd.dev.sigstore.trustedroot+json;version=0.2",
+            "application/vnd.dev.sigstore.trustedroot.v0.2+json ",
+            "",
+        ] {
+            assert!(root(media_type).is_err(), "{media_type}");
+        }
+    }
+
+    #[test]
+    fn names_each_log_by_its_base_url_host() {
+        for (base_url, origin) in [
+            (
+                "https://log2025-1.rekor.sigstore.dev",
+                "log2025-1.rekor.sigstore.dev",
+            ),
+            (
+                "https://log2025-1.rekor.sigstore.dev/",
+                "log2025-1.rekor.sigstore.dev",
+            ),
+            ("https://rekor.sigstore.dev/api/v1", "rekor.sigstore.dev"),
+            (
+                "https://user@log.example:8443/path?query#fragment",
+                "log.example",
+            ),
+            ("https://log.example?query", "log.example"),
+            ("http://[2001:db8::1]:8080/", "2001:db8::1"),
+            ("log.example", ""),
+            ("", ""),
+        ] {
+            assert_eq!(host(base_url), origin, "{base_url}");
+        }
     }
 }

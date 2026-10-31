@@ -2,6 +2,7 @@
 
 mod crypto;
 mod hashedrekord;
+mod note;
 mod sct;
 mod sigstore;
 pub mod strict_json;

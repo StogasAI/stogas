@@ -40,6 +40,7 @@ struct Arguments {
     bundle: PathBuf,
     identity: String,
     issuer: String,
+    trusted_root: PathBuf,
 }
 
 fn main() {
@@ -51,6 +52,9 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let arguments = parse_arguments()?;
+    let trust = std::fs::read_to_string(&arguments.trusted_root)
+        .map_err(|error| format!("could not read trusted root: {error}"))
+        .and_then(|json| TrustedRoot::from_json(&json).map_err(|error| error.to_string()))?;
     let bundle = read_bounded_bundle(&arguments.bundle)?;
     let digest = artifact_digest(&arguments.artifact)?;
     let shape: BundleShape = serde_json::from_slice(&bundle)
@@ -73,7 +77,7 @@ fn run() -> Result<(), String> {
         sha256: &digest,
     }];
     verify_dsse_attestation(
-        TrustedRoot::embedded().map_err(|error| error.to_string())?,
+        &trust,
         &bundle,
         &expected,
         &IdentityPolicy {
@@ -95,15 +99,15 @@ fn parse_arguments() -> Result<Arguments, String> {
     let mut identity = None;
     let mut issuer = None;
     let mut artifact = None;
+    let mut trusted_root = None;
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--staging" => return Err("staging Sigstore roots are unsupported".into()),
             "--bundle" => bundle = arguments.next().map(PathBuf::from),
             "--certificate-identity" => identity = arguments.next(),
             "--certificate-oidc-issuer" => issuer = arguments.next(),
-            "--trusted-root" | "--key" => {
-                return Err("custom roots and managed keys are outside the claimed profile".into());
-            }
+            "--trusted-root" => trusted_root = arguments.next().map(PathBuf::from),
+            "--key" => return Err("managed keys are outside the claimed profile".into()),
             value if value.starts_with('-') => return Err(format!("unsupported option: {value}")),
             value if artifact.is_none() => artifact = Some(value.to_owned()),
             value => return Err(format!("unexpected argument: {value}")),
@@ -114,6 +118,8 @@ fn parse_arguments() -> Result<Arguments, String> {
         bundle: bundle.ok_or_else(|| "bundle is absent".to_owned())?,
         identity: identity.ok_or_else(|| "certificate identity is absent".to_owned())?,
         issuer: issuer.ok_or_else(|| "certificate issuer is absent".to_owned())?,
+        // Sigstore's TUF repository delivers its trusted root; this adapter has no network.
+        trusted_root: trusted_root.ok_or_else(|| "trusted root is absent".to_owned())?,
     })
 }
 
