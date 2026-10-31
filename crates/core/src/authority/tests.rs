@@ -80,6 +80,15 @@ fn document(keys: &KeyManifest, revision: u64) -> EvidenceDocument {
         ))
         .unwrap(),
         vendor_collateral: vec![],
+        onion_services: None,
+    }
+}
+
+fn onion_services() -> OnionServices {
+    OnionServices {
+        api: crate::tests::onion_address([1; 32], 3),
+        app: crate::tests::onion_address([2; 32], 3),
+        website: crate::tests::onion_address([3; 32], 3),
     }
 }
 
@@ -590,6 +599,81 @@ fn root_inclusion_is_mandatory_and_failure_never_advances_state() {
         .unwrap_err();
     assert!(matches!(error, Error::Transparency(_)));
     assert_eq!(authority.accepted().unwrap().keys().generation, 1);
+}
+
+#[test]
+fn onion_addresses_must_be_canonical_version_3_addresses() {
+    // The Tor Project's published address pins the encoding and checksum to Tor's own.
+    for address in [
+        "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion",
+        &crate::tests::onion_address([0; 32], 3),
+        &crate::tests::onion_address([255; 32], 3),
+    ] {
+        assert!(valid_onion_address(address), "{address}");
+    }
+    let valid = crate::tests::onion_address([9; 32], 3);
+    let label = valid.trim_end_matches(".onion");
+    let swapped = format!(
+        "{}{}.onion",
+        if label.starts_with('a') { 'b' } else { 'a' },
+        &label[1..]
+    );
+    for address in [
+        swapped.as_str(),
+        &valid.to_uppercase(),
+        &format!("{label}.onion."),
+        &format!("http://{valid}"),
+        &format!("www.{valid}"),
+        label,
+        &format!("{}.onion", &label[1..]),
+        &format!("{label}a.onion"),
+        &format!("{}1.onion", &label[1..]),
+        "expyuzz4wqqyqhjn.onion",
+        &crate::tests::onion_address([9; 32], 2),
+        &crate::tests::onion_address([9; 32], 4),
+        "",
+    ] {
+        assert!(!valid_onion_address(address), "{address}");
+    }
+}
+
+#[test]
+fn evidence_may_sign_onion_addresses_and_rejects_invalid_ones() {
+    let keys = keys(1, 2, &[]);
+    let mut signed = document(&keys, 1);
+    signed.onion_services = Some(onion_services());
+    let verified = check(signed.clone()).unwrap();
+    assert_eq!(verified.document().onion_services, Some(onion_services()));
+    // Signatures cover the serialized document, so the field must round-trip exactly, and
+    // revisions from before it existed must serialize as they were signed.
+    let value = serde_json::to_value(&signed).unwrap();
+    assert_eq!(
+        value["onion_services"]["api"],
+        json!(crate::tests::onion_address([1; 32], 3))
+    );
+    let earlier = serde_json::to_value(document(&keys, 1)).unwrap();
+    assert!(earlier.get("onion_services").is_none());
+    assert!(
+        serde_json::from_value::<EvidenceDocument>(earlier)
+            .unwrap()
+            .onion_services
+            .is_none()
+    );
+    for edit in [
+        |services: &mut OnionServices| services.api = "expyuzz4wqqyqhjn.onion".into(),
+        |services: &mut OnionServices| services.app = services.app.to_uppercase(),
+        |services: &mut OnionServices| services.website = crate::tests::onion_address([3; 32], 2),
+    ] {
+        let mut invalid = signed.clone();
+        edit(invalid.onion_services.as_mut().unwrap());
+        assert_eq!(
+            check(invalid).unwrap_err(),
+            Error::Invalid("onion address".into())
+        );
+    }
+    let mut extra = value;
+    extra["onion_services"]["status"] = json!("onion");
+    assert!(serde_json::from_value::<EvidenceDocument>(extra).is_err());
 }
 
 #[test]

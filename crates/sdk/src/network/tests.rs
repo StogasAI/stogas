@@ -165,17 +165,24 @@ fn takes_only_a_socks5h_url_with_a_host_and_a_port() {
 }
 
 #[test]
-fn onion_needs_a_proxy_and_an_onion_address() {
+fn onion_needs_a_proxy_but_not_a_compiled_address() {
     assert!(refusal_of(Environment::Production, None, true).contains("onion needs a proxy"));
-    assert!(
-        refusal_of(Environment::Production, Some(PROXY), true)
-            .contains("this environment has no onion address yet")
-    );
+    // Only verified evidence names the address, so every environment accepts the option.
+    Network::new(Environment::Production, Some(PROXY), true).unwrap();
+}
+
+/// Onion addresses for tests; the checksums are not real, and the network does not check them.
+fn services(api: &str) -> OnionServices {
+    OnionServices {
+        api: format!("{api}.onion"),
+        app: "app.onion".into(),
+        website: "website.onion".into(),
+    }
 }
 
 #[cfg(feature = "staging")]
 #[test]
-fn the_onion_address_serves_every_host_of_its_environment() {
+fn the_onion_address_serves_every_host_of_its_environment_once_evidence_names_it() {
     let network = Network::new(Environment::Staging, Some(PROXY), true).unwrap();
     let Route::Socks {
         onion: Some(onion), ..
@@ -183,22 +190,35 @@ fn the_onion_address_serves_every_host_of_its_environment() {
     else {
         panic!("an onion route");
     };
-    assert_eq!(Some(onion.address), Environment::Staging.onion_address());
     assert_eq!(
         onion.hosts,
-        [
-            "api-staging.stogas.ai",
-            "e2ee-staging.stogas.ai",
-            "evidence-staging.stogas.ai",
-            "evidence2-staging.stogas.ai",
-        ]
+        ["api-staging.stogas.ai", "e2ee-staging.stogas.ai"]
+    );
+    assert_eq!(
+        onion.evidence,
+        ["evidence-staging.stogas.ai", "evidence2-staging.stogas.ai"]
     );
     assert_eq!(
         format!("{network:?}"),
-        format!(
-            "Network::Socks {{ proxy: 127.0.0.1:9050, onion: Some({:?}) }}",
-            onion.address
-        )
+        "Network::Socks { proxy: 127.0.0.1:9050, onion: Some(Unknown) }"
+    );
+    // Clones share the route, so the evidence client teaches every connection.
+    network.clone().learn(Some(&services("first")));
+    assert_eq!(
+        format!("{network:?}"),
+        "Network::Socks { proxy: 127.0.0.1:9050, onion: Some(Named(\"first.onion\")) }"
+    );
+    network.learn(None);
+    assert_eq!(
+        format!("{network:?}"),
+        "Network::Socks { proxy: 127.0.0.1:9050, onion: Some(Unpublished) }"
+    );
+    // Without onion there is nothing to learn.
+    let plain = Network::new(Environment::Staging, Some(PROXY), false).unwrap();
+    plain.learn(Some(&services("first")));
+    assert_eq!(
+        format!("{plain:?}"),
+        "Network::Socks { proxy: 127.0.0.1:9050, onion: None }"
     );
 }
 
@@ -342,33 +362,85 @@ async fn ipv6_literals_lose_their_brackets() {
     );
 }
 
-#[cfg(feature = "staging")]
+/// Where the proxy is asked to connect for `host`, or why the network refused.
+async fn proxied_target(
+    network_onion: bool,
+    learned: &[Option<&OnionServices>],
+    host: &str,
+) -> Result<String, String> {
+    let (url, proxy) = answering([5, 0], vec![5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+    let network = Network::new(Environment::Production, Some(&url), network_onion).unwrap();
+    for services in learned {
+        network.learn(*services);
+    }
+    match network.connect(host, 443).await {
+        Ok(stream) => {
+            ready(stream).await;
+            let (target, port) = parse_request(&proxy.await.unwrap());
+            assert_eq!(port, 443);
+            Ok(target)
+        }
+        Err(error) => {
+            proxy.abort();
+            Err(error.to_string())
+        }
+    }
+}
+
 #[tokio::test]
 async fn the_onion_address_replaces_only_its_environment_s_hosts() {
-    let onion = Environment::Staging.onion_address().unwrap();
-    for (host, expected) in [
-        ("api-staging.stogas.ai", onion),
-        ("E2EE-Staging.Stogas.AI", onion),
-        ("evidence-staging.stogas.ai", onion),
-        ("evidence2-staging.stogas.ai", onion),
-        ("app-staging.stogas.ai", "app-staging.stogas.ai"),
-        ("api.stogas.ai", "api.stogas.ai"),
+    let first = services("first");
+    let second = services("second");
+    let other = ["app.stogas.ai", "api-staging.stogas.ai", "example.com"];
+    // Before verified evidence: evidence comes through the exit, the API and E2EE wait.
+    for host in ["evidence.stogas.ai", "EVIDENCE2.stogas.ai"]
+        .into_iter()
+        .chain(other)
+    {
+        assert_eq!(proxied_target(true, &[], host).await, Ok(host.to_owned()));
+    }
+    for host in ["api.stogas.ai", "E2EE.Stogas.AI"] {
+        let refusal = proxied_target(true, &[], host).await.unwrap_err();
+        assert!(refusal.contains("waits for verified evidence"), "{refusal}");
+    }
+    // Once evidence names it, every host of the environment goes to the onion address.
+    for host in [
+        "api.stogas.ai",
+        "E2EE.Stogas.AI",
+        "evidence.stogas.ai",
+        "evidence2.stogas.ai",
     ] {
-        let (url, proxy) = answering([5, 0], vec![5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await;
-        let network = Network::new(Environment::Staging, Some(&url), true).unwrap();
-        ready(network.connect(host, 443).await.unwrap()).await;
         assert_eq!(
-            parse_request(&proxy.await.unwrap()),
-            (expected.to_owned(), 443)
+            proxied_target(true, &[Some(&first)], host).await,
+            Ok("first.onion".to_owned())
+        );
+        // A newer revision moves every later connection to its address.
+        assert_eq!(
+            proxied_target(true, &[Some(&first), Some(&second)], host).await,
+            Ok("second.onion".to_owned())
         );
     }
-    // Without onion, the proxy reaches the same hosts by name.
-    let (url, proxy) = answering([5, 0], vec![5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await;
-    let network = Network::new(Environment::Staging, Some(&url), false).unwrap();
-    ready(network.connect("api-staging.stogas.ai", 443).await.unwrap()).await;
+    for host in other {
+        assert_eq!(
+            proxied_target(true, &[Some(&first)], host).await,
+            Ok(host.to_owned())
+        );
+    }
+    // Evidence that names no address leaves only the exit, which the API and E2EE refuse.
     assert_eq!(
-        parse_request(&proxy.await.unwrap()).0,
-        "api-staging.stogas.ai"
+        proxied_target(true, &[Some(&first), None], "evidence.stogas.ai").await,
+        Ok("evidence.stogas.ai".to_owned())
+    );
+    for host in ["api.stogas.ai", "e2ee.stogas.ai"] {
+        let refusal = proxied_target(true, &[Some(&first), None], host)
+            .await
+            .unwrap_err();
+        assert!(refusal.contains("names no onion address"), "{refusal}");
+    }
+    // Without onion, the proxy reaches the same hosts by name.
+    assert_eq!(
+        proxied_target(false, &[Some(&first)], "api.stogas.ai").await,
+        Ok("api.stogas.ai".to_owned())
     );
 }
 

@@ -356,6 +356,54 @@ mod staging {
     }
 
     #[test]
+    fn signed_onion_addresses_are_checked_and_reported() {
+        let (verifier, evidence, now) = fixture();
+        let address = |seed| crate::tests::onion_address([seed; 32], 3);
+        let services = json!({ "api": address(1), "app": address(2), "website": address(3) });
+        let steps = |services: Option<&Value>| -> Result<Vec<VerificationStep>, Error> {
+            let mut document = evidence["document"].clone();
+            if let Some(services) = services {
+                document["onion_services"] = services.clone();
+            }
+            let (keys, sigstore) = verifier.observe(&document, now, &mut |_, _, _| {})?;
+            let document = serde_json::from_value(document).map_err(invalid)?;
+            let candidate = verifier.authority.check(keys, document, sigstore, now)?;
+            let mut steps = Vec::new();
+            let snapshot =
+                verifier.verify_snapshot(candidate, now, &mut |step, _, _| steps.push(step))?;
+            assert_eq!(
+                snapshot.summary()["document"].get("onion_services"),
+                services
+            );
+            Ok(steps)
+        };
+        assert!(
+            !steps(None)
+                .unwrap()
+                .contains(&VerificationStep::OnionServices)
+        );
+        let reported = steps(Some(&services)).unwrap();
+        let position = |step| reported.iter().position(|reported| *reported == step);
+        assert!(
+            position(VerificationStep::OnionServices)
+                > position(VerificationStep::VendorCollateral)
+        );
+        for (field, value) in [
+            ("api", json!("expyuzz4wqqyqhjn.onion")),
+            ("app", json!(address(2).to_uppercase())),
+            ("website", json!(crate::tests::onion_address([3; 32], 2))),
+            ("status", json!("online")),
+        ] {
+            let mut invalid = services.clone();
+            invalid[field] = value;
+            assert!(steps(Some(&invalid)).is_err(), "accepted {field}");
+        }
+        let mut missing = services;
+        missing.as_object_mut().unwrap().remove("website");
+        assert!(steps(Some(&missing)).is_err());
+    }
+
+    #[test]
     fn edits_and_unsigned_extensions_do_not_grant_authority() {
         let (mut verifier, evidence, now) = fixture();
         for pointer in [

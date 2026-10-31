@@ -20,7 +20,7 @@ final class TransportTests: XCTestCase {
             (.init(proxy: "socks5://127.0.0.1:9050"), "use socks5h://"),
             (.init(proxy: "socks5h://127.0.0.1"), "needs a host and a port"),
             (.init(onion: true), "onion needs a proxy"),
-            (.init(proxy: "socks5h://127.0.0.1:9050", onion: true), "no onion address yet"),
+            (.init(proxy: "socks5://127.0.0.1:9050", onion: true), "use socks5h://"),
         ]
         for (options, expected) in cases {
             XCTAssertThrowsError(try Transport(options: options)) { error in

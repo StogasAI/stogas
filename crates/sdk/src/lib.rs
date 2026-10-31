@@ -52,7 +52,8 @@ pub struct TransportOptions {
     pub base_url: Option<String>,
     /// A `socks5h://host:port` proxy, such as Tor's, for every connection.
     pub proxy: Option<String>,
-    /// Reach the environment's hosts at its onion address, through `proxy`.
+    /// Reach the environment's API, E2EE and evidence hosts at the onion address that its
+    /// verified evidence names, through `proxy`. The first evidence comes through the proxy's exit.
     pub onion: bool,
 }
 
@@ -93,7 +94,7 @@ impl TransportOptions {
     /// The route that every connection of this transport takes.
     ///
     /// # Errors
-    /// Rejects an invalid proxy, or `onion` without a proxy or an onion address.
+    /// Rejects an invalid proxy, or `onion` without a proxy.
     pub fn network(&self) -> Result<network::Network> {
         network::Network::new(self.environment, self.proxy.as_deref(), self.onion)
     }

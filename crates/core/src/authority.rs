@@ -74,19 +74,6 @@ impl Environment {
         }
     }
 
-    /// The onion address that serves the API, E2EE and evidence hosts through Tor. Its relay reads
-    /// only the server name in each TLS handshake and passes the connection on unread, so clients
-    /// check the same certificates and attestation as without Tor.
-    #[must_use]
-    pub const fn onion_address(self) -> Option<&'static str> {
-        match self {
-            // Production has no onion address yet.
-            Self::Production => None,
-            #[cfg(feature = "staging")]
-            Self::Staging => Some("rauebvifjq4az3tzwa2kamihflt6d5pu6ftz7ib265dkgvhz2r5a5iyd.onion"),
-        }
-    }
-
     /// Compiled Stogas trust seed; evidence cannot select or replace this authority.
     ///
     /// # Errors
@@ -177,6 +164,73 @@ pub struct EvidenceDocument {
     pub catalogs: Vec<AllowedCatalog>,
     pub hardware_policies: Vec<AmdSevSnpPolicy>,
     pub vendor_collateral: Vec<AmdCollateral>,
+    /// Absent until Stogas signs the environment's onion addresses, and in revisions before then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub onion_services: Option<OnionServices>,
+}
+
+/// The onion addresses of an environment's public hosts.
+///
+/// The API's address also serves the E2EE and evidence hosts. Its relay reads only the server
+/// name in each TLS handshake and passes the connection on unread, so clients check the same
+/// certificates and attestation as without Tor.
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct OnionServices {
+    pub api: String,
+    pub app: String,
+    pub website: String,
+}
+
+impl OnionServices {
+    fn validate(&self) -> Result<(), Error> {
+        if [&self.api, &self.app, &self.website]
+            .into_iter()
+            .all(|address| valid_onion_address(address))
+        {
+            Ok(())
+        } else {
+            Err(Error::Invalid("onion address".into()))
+        }
+    }
+}
+
+/// Whether `address` is a canonical version 3 onion address: the lowercase base32 of an Ed25519
+/// key, its two-byte checksum and the version byte 3, then `.onion` (Tor's rend-spec-v3).
+fn valid_onion_address(address: &str) -> bool {
+    const CHECKSUM: &[u8] = b".onion checksum";
+    let Some(label) = address.strip_suffix(".onion") else {
+        return false;
+    };
+    // 56 characters of 5 bits each carry exactly the 35 bytes, with no padding.
+    if label.len() != 56 {
+        return false;
+    }
+    let mut decoded = [0_u8; 35];
+    let (mut buffer, mut bits, mut next) = (0_u16, 0, 0);
+    for character in label.bytes() {
+        let value = match character {
+            b'a'..=b'z' => character - b'a',
+            b'2'..=b'7' => character - b'2' + 26,
+            _ => return false,
+        };
+        buffer = (buffer << 5 | u16::from(value)) & 0x1fff;
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            decoded[next] = (buffer >> bits).to_le_bytes()[0];
+            next += 1;
+        }
+    }
+    let (key, rest) = decoded.split_at(32);
+    if rest[2] != 3 {
+        return false;
+    }
+    let mut input = Vec::with_capacity(CHECKSUM.len() + 33);
+    input.extend_from_slice(CHECKSUM);
+    input.extend_from_slice(key);
+    input.push(3);
+    libcrux_sha3::sha256(&input)[..2] == rest[..2]
 }
 
 /// The published `evidence/latest.json`.
@@ -654,6 +708,9 @@ fn check_document(
         return Err(Error::Invalid(
             "approved releases must be ordered by unique sequence".into(),
         ));
+    }
+    if let Some(onion) = &document.onion_services {
+        onion.validate()?;
     }
     Ok(VerifiedEvidence {
         digest: payload_sha256(&document)?,

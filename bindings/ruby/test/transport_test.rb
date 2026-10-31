@@ -16,7 +16,7 @@ class TransportTest < Minitest::Test
       {proxy: 'socks5://127.0.0.1:9050'} => 'use socks5h://',
       {proxy: 'socks5h://127.0.0.1'} => 'needs a host and a port',
       {onion: true} => 'onion needs a proxy',
-      {proxy: 'socks5h://127.0.0.1:9050', onion: true} => 'no onion address yet'
+      {proxy: 'socks5://127.0.0.1:9050', onion: true} => 'use socks5h://'
     }.each do |options, message|
       error = assert_raises(Stogas::VerificationError) { Stogas::Transport.new(**options) }
       assert_includes error.message, message

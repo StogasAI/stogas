@@ -40,6 +40,7 @@ export interface StogasVerificationCheck {
 		| 'catalog_release'
 		| 'hardware_policy'
 		| 'vendor_collateral'
+		| 'onion_services'
 		| 'accepted';
 	readonly reference: string | null;
 	/** Reused authenticated artifact bytes; current selection is still checked. */

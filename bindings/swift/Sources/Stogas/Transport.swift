@@ -8,7 +8,7 @@ public struct TransportOptions: Encodable, Sendable {
     public var baseURL: String?
     /// A `socks5h://host:port` proxy, such as Tor's, for every connection to Stogas.
     public var proxy: String?
-    /// Reach the environment at its onion address, through `proxy`.
+    /// Reach the environment at the onion address that its verified evidence names, through `proxy`.
     public var onion: Bool
 
     public init(

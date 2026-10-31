@@ -80,7 +80,7 @@ class PackageTests(unittest.TestCase):
             ({"proxy": "socks5://127.0.0.1:9050"}, "use socks5h://"),
             ({"proxy": "socks5h://127.0.0.1"}, "needs a host and a port"),
             ({"onion": True}, "onion needs a proxy"),
-            ({"proxy": "socks5h://127.0.0.1:9050", "onion": True}, "no onion address yet"),
+            ({"proxy": "socks5://127.0.0.1:9050", "onion": True}, "use socks5h://"),
         ):
             with self.subTest(options=options), self.assertRaisesRegex(ValueError, message):
                 Transport(**options)

@@ -298,6 +298,7 @@ impl EvidenceClient {
             let candidate = self.download(&self.origins[index], cached.as_ref()).await?;
             let verifier = Arc::clone(&self.verifier);
             let current = Arc::clone(&self.current);
+            let network = self.network().clone();
             let bytes = Arc::clone(&candidate.bytes);
             let snapshot = run_cpu(Arc::clone(&self.cpu), move || {
                 let now = wall_clock_ms()?;
@@ -305,6 +306,8 @@ impl EvidenceClient {
                     .lock()
                     .map_err(|_| Error::State)?
                     .refresh(&bytes, now)?;
+                // Before the snapshot is current, so no connection that it allows misses the address.
+                network.learn(snapshot.evidence().document().onion_services.as_ref());
                 *current.write().map_err(|_| Error::State)? = Some(Arc::clone(&snapshot));
                 Ok(snapshot)
             })

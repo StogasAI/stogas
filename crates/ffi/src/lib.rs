@@ -185,10 +185,9 @@ mod tests {
                 "must be positive",
             ),
             (br#"{"onion":true}"#, "onion needs a proxy"),
-            (br#"{"proxy":"socks5://127.0.0.1:9050"}"#, "use socks5h://"),
             (
-                br#"{"proxy":"socks5h://127.0.0.1:9050","onion":true}"#,
-                "no onion address yet",
+                br#"{"proxy":"socks5://127.0.0.1:9050","onion":true}"#,
+                "use socks5h://",
             ),
             (
                 br#"{"proxy":"socks5h://127.0.0.1:9050","onion":true,"base_url":"https://example.com"}"#,

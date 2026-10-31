@@ -41,7 +41,7 @@ struct Cli {
     /// A SOCKS5 proxy for every connection, such as Tor's `socks5h://127.0.0.1:9050`.
     #[arg(long, global = true, env = "STOGAS_PROXY", value_name = "URL")]
     proxy: Option<String>,
-    /// Reach the environment at its onion address, through --proxy.
+    /// Reach the environment at the onion address that its verified evidence names, through --proxy.
     #[arg(long, global = true, env = "STOGAS_ONION", value_parser = BoolishValueParser::new())]
     onion: bool,
     #[command(subcommand)]
