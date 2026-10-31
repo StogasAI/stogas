@@ -55,6 +55,11 @@ const requireRevision = (revision) => (snapshot) => {
 	if (snapshot.revision < revision) throw new Error('unknown release');
 	return snapshot.revision;
 };
+// Deno's node:test leaves a test's mocks in place after it ends, so each test restores its own.
+function mock(t, object, name, implementation) {
+	t.mock.method(object, name, implementation);
+	t.after(() => t.mock.restoreAll());
+}
 
 test('R2-first recovery checks progress before accepting 200/304 and keeps origin ETags separate', async () => {
 	const calls = [];
@@ -141,7 +146,7 @@ test('invalid delivery preserves usable state but authentic retirement still con
 
 test('304 without origin representation fails and failed lookups share a cooldown', async (t) => {
 	let wall = 1_800_000_000_000;
-	t.mock.method(Date, 'now', () => wall);
+	mock(t, Date, 'now', () => wall);
 	let calls = 0;
 	const client = new EvidenceClient(verifier(), origins, async () => {
 		calls++;
@@ -269,7 +274,7 @@ test('measured checks follow actual verification and observer failures cannot re
 
 test('fetch and verification timings include fallback work, and a repeated delivery keeps its report', async (t) => {
 	let now = 0;
-	t.mock.method(performance, 'now', () => now);
+	mock(t, performance, 'now', () => now);
 	const core = verifier();
 	const refresh = core.refresh.bind(core);
 	let warm = false;
@@ -474,67 +479,72 @@ function expected({ behaviors, check, warm }) {
 	};
 }
 
-test('every pair of origin behaviors follows the hedged acquisition model', async (t) => {
-	const realNow = Date.now.bind(Date);
-	let skipped = 0;
-	t.mock.method(Date, 'now', () => realNow() + skipped);
-	const cases = BEHAVIORS.flatMap((primary) =>
-		BEHAVIORS.flatMap((replica) =>
-			[false, true].flatMap((check) =>
-				[false, true].map((warm) => ({ behaviors: [primary, replica], check, warm }))
+// Hung origins wait out their real 5-second budget, longer than Bun's default test timeout.
+test(
+	'every pair of origin behaviors follows the hedged acquisition model',
+	{ timeout: 30_000 },
+	async (t) => {
+		const realNow = Date.now.bind(Date);
+		let skipped = 0;
+		mock(t, Date, 'now', () => realNow() + skipped);
+		const cases = BEHAVIORS.flatMap((primary) =>
+			BEHAVIORS.flatMap((replica) =>
+				[false, true].flatMap((check) =>
+					[false, true].map((warm) => ({ behaviors: [primary, replica], check, warm }))
+				)
 			)
-		)
-	);
-	assert.equal(cases.length, 400);
-	const run = async (kase) => {
-		const log = [];
-		let behaviors = ['stale', 'stale'];
-		const client = new EvidenceClient(verifier(), origins, async (url, { signal, headers }) => {
-			const index = origins.indexOf(url);
-			const etag = headers['if-none-match'] ?? null;
-			log.push([index, etag]);
-			return serve(behaviors[index], etag, signal);
-		});
-		if (kase.warm) await client.acquire();
-		log.length = 0;
-		behaviors = kase.behaviors;
-		const { state, cached, elapsed } = expected(kase);
-		const check = kase.check ? requireRevision(2) : undefined;
-		const started = performance.now();
-		let result;
-		try {
-			const value = await client.acquire(undefined, check);
-			result = { revision: kase.check ? value : value.revision };
-		} catch (error) {
-			result = { failure: failureOf(error) };
-		}
-		const took = performance.now() - started;
-		let current;
-		try {
-			current = client.check((snapshot) => snapshot.revision);
-		} catch {
-			current = undefined;
-		}
-		const label = JSON.stringify(kase);
-		assert.deepEqual({ result, requests: log.splice(0), current }, state, label);
-		assert.ok(took >= elapsed - 2 && took < elapsed + 250, `${label} took ${took} ms`);
-		if (result.failure) {
-			// A failed acquisition pauses every caller without contacting either origin.
-			await assert.rejects(client.acquire(undefined, check), /cooling down/, label);
-			assert.equal(log.length, 0, label);
-		}
-		// After every pause, a request to each origin shows the copy the client kept for it.
-		return async () => {
-			behaviors = ['unavailable', 'unavailable'];
-			await assert.rejects(client.acquire(), /HTTP 503/, label);
-			assert.deepEqual(log.splice(0), [
-				[0, cached[0]],
-				[1, cached[1]]
-			]);
-			client.close();
+		);
+		assert.equal(cases.length, 400);
+		const run = async (kase) => {
+			const log = [];
+			let behaviors = ['stale', 'stale'];
+			const client = new EvidenceClient(verifier(), origins, async (url, { signal, headers }) => {
+				const index = origins.indexOf(url);
+				const etag = headers['if-none-match'] ?? null;
+				log.push([index, etag]);
+				return serve(behaviors[index], etag, signal);
+			});
+			if (kase.warm) await client.acquire();
+			log.length = 0;
+			behaviors = kase.behaviors;
+			const { state, cached, elapsed } = expected(kase);
+			const check = kase.check ? requireRevision(2) : undefined;
+			const started = performance.now();
+			let result;
+			try {
+				const value = await client.acquire(undefined, check);
+				result = { revision: kase.check ? value : value.revision };
+			} catch (error) {
+				result = { failure: failureOf(error) };
+			}
+			const took = performance.now() - started;
+			let current;
+			try {
+				current = client.check((snapshot) => snapshot.revision);
+			} catch {
+				current = undefined;
+			}
+			const label = JSON.stringify(kase);
+			assert.deepEqual({ result, requests: log.splice(0), current }, state, label);
+			assert.ok(took >= elapsed - 2 && took < elapsed + 250, `${label} took ${took} ms`);
+			if (result.failure) {
+				// A failed acquisition pauses every caller without contacting either origin.
+				await assert.rejects(client.acquire(undefined, check), /cooling down/, label);
+				assert.equal(log.length, 0, label);
+			}
+			// After every pause, a request to each origin shows the copy the client kept for it.
+			return async () => {
+				behaviors = ['unavailable', 'unavailable'];
+				await assert.rejects(client.acquire(), /HTTP 503/, label);
+				assert.deepEqual(log.splice(0), [
+					[0, cached[0]],
+					[1, cached[1]]
+				]);
+				client.close();
+			};
 		};
-	};
-	const probes = await Promise.all(cases.map(run));
-	skipped = 60_000;
-	await Promise.all(probes.map((probe) => probe()));
-});
+		const probes = await Promise.all(cases.map(run));
+		skipped = 60_000;
+		await Promise.all(probes.map((probe) => probe()));
+	}
+);
