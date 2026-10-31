@@ -262,38 +262,39 @@ fn extract_certificates(signed_data: &SignedData) -> Result<Vec<Certificate>, St
 }
 
 fn find_signer(id: &SignerIdentifier, certificates: &[Certificate]) -> Result<Certificate, String> {
-    let matches = certificates
-        .iter()
-        .filter(|certificate| match id {
-            SignerIdentifier::IssuerAndSerialNumber(issuer) => {
-                certificate.tbs_certificate.issuer == issuer.issuer
-                    && certificate.tbs_certificate.serial_number == issuer.serial_number
-            }
-            SignerIdentifier::SubjectKeyIdentifier(expected) => {
-                certificate
-                    .tbs_certificate
-                    .extensions
-                    .as_ref()
-                    .into_iter()
-                    .flat_map(|extensions| extensions.iter())
-                    .find(|extension| {
-                        extension.extn_id == db::rfc5280::ID_CE_SUBJECT_KEY_IDENTIFIER
-                    })
-                    .and_then(|extension| {
-                        x509_cert::ext::pkix::SubjectKeyIdentifier::from_der(
-                            extension.extn_value.as_bytes(),
-                        )
-                        .ok()
-                    })
-                    .as_ref()
-                    == Some(expected)
-            }
-        })
-        .collect::<Vec<_>>();
-    if matches.len() != 1 {
-        return Err("RFC 3161 signer identifier is absent or ambiguous".into());
+    let mut matches: Vec<&Certificate> = Vec::new();
+    for certificate in certificates.iter().filter(|certificate| match id {
+        SignerIdentifier::IssuerAndSerialNumber(issuer) => {
+            certificate.tbs_certificate.issuer == issuer.issuer
+                && certificate.tbs_certificate.serial_number == issuer.serial_number
+        }
+        SignerIdentifier::SubjectKeyIdentifier(expected) => {
+            certificate
+                .tbs_certificate
+                .extensions
+                .as_ref()
+                .into_iter()
+                .flat_map(|extensions| extensions.iter())
+                .find(|extension| extension.extn_id == db::rfc5280::ID_CE_SUBJECT_KEY_IDENTIFIER)
+                .and_then(|extension| {
+                    x509_cert::ext::pkix::SubjectKeyIdentifier::from_der(
+                        extension.extn_value.as_bytes(),
+                    )
+                    .ok()
+                })
+                .as_ref()
+                == Some(expected)
+        }
+    }) {
+        // Timestamp authorities embed the signing certificate that trusted roots also list.
+        if !matches.contains(&certificate) {
+            matches.push(certificate);
+        }
     }
-    Ok(matches[0].clone())
+    let [signer] = matches[..] else {
+        return Err("RFC 3161 signer identifier is absent or ambiguous".into());
+    };
+    Ok(signer.clone())
 }
 
 fn verify_single_attribute_digest(
@@ -490,7 +491,7 @@ mod tests {
         let timestamp = SignedTimestamp {
             signed_timestamp: fixture.timestamp,
         };
-        let root = TrustedRoot::test_root(include_str!(
+        let root = TrustedRoot::from_json(include_str!(
             "../../../tests/fixtures/github-rfc3161-trusted-root.json"
         ))
         .unwrap();
@@ -520,5 +521,97 @@ mod tests {
             signed_timestamp: STANDARD.encode(token),
         };
         assert!(verify_all(&[changed], &signature, &root).is_err());
+    }
+
+    // timestamp.sigstore.dev embeds its signing certificate, which Sigstore's trusted root also
+    // lists, so one certificate is found twice.
+    #[test]
+    fn verifies_a_production_sigstore_timestamp() {
+        use ed25519_dalek::SigningKey;
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/rekor-v2-vectors.json"
+        ))
+        .unwrap();
+        let root = TrustedRoot::from_json(
+            &serde_json::json!({
+                "mediaType": "application/vnd.dev.sigstore.trustedroot.v0.2+json",
+                "timestampAuthorities": vectors["timestamp_authorities"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let signature = SigningKey::from_bytes(&[9; 32])
+            .sign_prehashed(
+                Sha512::new_with_prefix(
+                    b"exact document bytes, including its independent author signature\n",
+                ),
+                None,
+            )
+            .unwrap()
+            .to_bytes();
+        let timestamp = SignedTimestamp {
+            signed_timestamp: vectors["document_signature_timestamp"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        };
+        assert_eq!(
+            verify_all(std::slice::from_ref(&timestamp), &signature, &root).unwrap(),
+            Some(1_793_423_809)
+        );
+        assert!(verify_all(&[timestamp], &[0; 64], &root).is_err());
+    }
+
+    #[test]
+    fn official_timestamp_cases() {
+        // Copied unchanged from sigstore/sigstore-conformance at
+        // acb38c9ee4274fa058127e6a5a4cdb9e94e449e1 (test/assets/bundle-verify), which is licensed
+        // under the Apache License 2.0. Each case's message signature is what its token dates.
+        let cases = [
+            ("rekor2-happy-path", true),
+            ("rekor2-timestamp-with-embedded-cert", true),
+            ("rekor2-timestamp-without-embedded-cert", true),
+            ("rekor2-timestamp-with-expired-cert-chain", true),
+            ("trust-root-tsa-validity-end-inclusive", true),
+            // Bundle verification rejects this one because it dates the signature outside the
+            // Fulcio certificate. Here it already fails: its base64 is line-wrapped, which Go
+            // tolerates but no Sigstore client writes.
+            ("rekor2-timestamp-with-incorrect-time_fail", false),
+            (
+                "rekor2-timestamp-outside-trust-root-tsa-validity_fail",
+                false,
+            ),
+            ("rekor2-timestamp-outside-tsa-cert-validity_fail", false),
+            ("rekor2-timestamp-payload-mismatch_fail", false),
+            (
+                "rekor2-timestamp-untrusted-tsa-with-embedded-cert_fail",
+                false,
+            ),
+            (
+                "rekor2-timestamp-untrusted-tsa-without-embedded-cert_fail",
+                false,
+            ),
+        ];
+        let directory = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/sigstore-conformance"
+        );
+        for (case, valid) in cases {
+            let read =
+                |file: &str| std::fs::read_to_string(format!("{directory}/{case}/{file}")).unwrap();
+            let bundle: serde_json::Value =
+                serde_json::from_str(&read("bundle.sigstore.json")).unwrap();
+            let root = TrustedRoot::from_json(&read("trusted_root.json")).unwrap();
+            let signature = STANDARD
+                .decode(bundle["messageSignature"]["signature"].as_str().unwrap())
+                .unwrap();
+            let timestamps: Vec<SignedTimestamp> = serde_json::from_value(
+                bundle["verificationMaterial"]["timestampVerificationData"]["rfc3161Timestamps"]
+                    .clone(),
+            )
+            .unwrap();
+            let verified = verify_all(&timestamps, &signature, &root);
+            assert_eq!(verified.is_ok(), valid, "{case}: {verified:?}");
+        }
     }
 }

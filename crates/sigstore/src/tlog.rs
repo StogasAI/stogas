@@ -1,16 +1,17 @@
-//! Rekor SET, RFC 6962 inclusion proof, checkpoint, and body binding.
+//! Rekor entries: v1's signed entry timestamp and body binding, and for both versions the
+//! RFC 6962 inclusion proof under a checkpoint that the log signed.
 
 use crate::{
     crypto::verify_spki_auto,
+    note,
     sigstore::{DsseEnvelope, TransparencyLogEntry},
-    trust_root::TrustedRoot,
+    trust_root::{LogKey, TrustedRoot},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 const MAX_PROOF_HASHES: usize = 64;
-const MAX_CHECKPOINT_BYTES: usize = 16 * 1024;
 
 pub fn verify(
     entry: &TransparencyLogEntry,
@@ -23,7 +24,7 @@ pub fn verify(
     if entry.kind_version.kind != "dsse" || entry.kind_version.version != "0.0.1" {
         return Err("only Rekor DSSE v0.0.1 is supported for GitHub attestations".into());
     }
-    let integrated_time = parse_i64(&entry.integrated_time, "integrated time")?;
+    let integrated_time = integrated_time(entry)?;
     if integrated_time <= 0
         || integrated_time < certificate_not_before
         || integrated_time > certificate_not_after
@@ -33,22 +34,70 @@ pub fn verify(
     let log_id = decode_32(&entry.log_id.key_id, "Rekor log id")?;
     let log_key = root.rekor_key_at(&log_id, integrated_time)?;
     verify_set(entry, &log_id, &log_key.spki)?;
-    verify_inclusion(entry, &log_id, &log_key.spki)?;
+    verify_inclusion(entry, log_key)?;
     verify_body_binding(entry, envelope, certificate_der)?;
     Ok(integrated_time)
 }
 
 /// Verify log signatures, time and inclusion. The caller binds the entry body to its artifact.
 pub fn verify_publication(entry: &TransparencyLogEntry, root: &TrustedRoot) -> Result<i64, String> {
-    let integrated_time = parse_i64(&entry.integrated_time, "integrated time")?;
+    let integrated_time = integrated_time(entry)?;
     if integrated_time <= 0 {
         return Err("Rekor integrated time is invalid".into());
     }
     let log_id = decode_32(&entry.log_id.key_id, "Rekor log id")?;
     let log_key = root.rekor_key_at(&log_id, integrated_time)?;
     verify_set(entry, &log_id, &log_key.spki)?;
-    verify_inclusion(entry, &log_id, &log_key.spki)?;
+    verify_inclusion(entry, log_key)?;
     Ok(integrated_time)
+}
+
+/// Verify a Rekor v2 entry whose canonical body the caller rebuilt from the bundle, as
+/// sigstore-go does, so the logged leaf commits to the bundle's digest, signature and key.
+///
+/// Rekor v2 signs no entry time, so `time`, which an RFC 3161 timestamp authenticated, selects
+/// the log key.
+pub fn verify_v2(
+    entry: &TransparencyLogEntry,
+    body: &[u8],
+    time: i64,
+    root: &TrustedRoot,
+) -> Result<(), String> {
+    // Rekor v2 returns neither; a bundle that has them is not one it made.
+    if entry.inclusion_promise.is_some()
+        || entry
+            .integrated_time
+            .as_deref()
+            .is_some_and(|time| time != "0")
+    {
+        return Err("Rekor v2 entries have no signed entry timestamp or integrated time".into());
+    }
+    let log_id = decode_32(&entry.log_id.key_id, "Rekor log id")?;
+    let log_key = root.rekor_key_at(&log_id, time)?;
+    let logged = STANDARD
+        .decode(&entry.canonicalized_body)
+        .map_err(|error| format!("invalid Rekor body encoding: {error}"))?;
+    if logged != body {
+        return Err("Rekor v2 entry does not log this bundle's digest, signature and key".into());
+    }
+    let proof = entry
+        .inclusion_proof
+        .as_ref()
+        .ok_or_else(|| "Rekor v2 entries require an inclusion proof".to_owned())?;
+    if proof.log_index != entry.log_index {
+        return Err("Rekor inclusion proof is for another entry".into());
+    }
+    verify_inclusion(entry, log_key)
+}
+
+fn integrated_time(entry: &TransparencyLogEntry) -> Result<i64, String> {
+    parse_i64(
+        entry
+            .integrated_time
+            .as_deref()
+            .ok_or_else(|| "Rekor v1 entries require an integrated time".to_owned())?,
+        "integrated time",
+    )
 }
 
 #[derive(Serialize)]
@@ -72,7 +121,7 @@ fn verify_set(entry: &TransparencyLogEntry, log_id: &[u8; 32], key: &[u8]) -> Re
         .map_err(|error| format!("invalid Rekor SET encoding: {error}"))?;
     let payload = RekorSetPayload {
         body: &entry.canonicalized_body,
-        integrated_time: parse_i64(&entry.integrated_time, "integrated time")?,
+        integrated_time: integrated_time(entry)?,
         log_index: parse_i64(&entry.log_index, "log index")?,
         log_id: hex::encode(log_id),
     };
@@ -82,18 +131,12 @@ fn verify_set(entry: &TransparencyLogEntry, log_id: &[u8; 32], key: &[u8]) -> Re
         .map_err(|error| format!("Rekor SET verification failed: {error}"))
 }
 
-fn verify_inclusion(
-    entry: &TransparencyLogEntry,
-    log_id: &[u8; 32],
-    key: &[u8],
-) -> Result<(), String> {
+fn verify_inclusion(entry: &TransparencyLogEntry, log: &LogKey) -> Result<(), String> {
     let proof = entry
         .inclusion_proof
         .as_ref()
         .ok_or_else(|| "GitHub Sigstore profile requires a Rekor inclusion proof".to_owned())?;
-    if proof.hashes.len() > MAX_PROOF_HASHES
-        || proof.checkpoint.envelope.len() > MAX_CHECKPOINT_BYTES
-    {
+    if proof.hashes.len() > MAX_PROOF_HASHES {
         return Err("Rekor proof exceeds resource limits".into());
     }
     let leaf_index = parse_u64(&proof.log_index, "proof log index")?;
@@ -108,81 +151,31 @@ fn verify_inclusion(
         .decode(&entry.canonicalized_body)
         .map_err(|error| format!("invalid Rekor body encoding: {error}"))?;
     verify_merkle(&body, leaf_index, tree_size, &siblings, &expected_root)?;
-    verify_checkpoint(
-        &proof.checkpoint.envelope,
-        tree_size,
-        &expected_root,
-        log_id,
-        key,
-    )
-}
-
-fn verify_checkpoint(
-    envelope: &str,
-    expected_tree_size: u64,
-    expected_root: &[u8; 32],
-    log_id: &[u8; 32],
-    key: &[u8],
-) -> Result<(), String> {
-    if envelope.contains('\r') {
-        return Err("Rekor checkpoint must use canonical LF line endings".into());
+    let v1 = entry.kind_version.version == "0.0.1";
+    let hash = if v1 {
+        let digest = Sha256::digest(&log.spki);
+        [digest[0], digest[1], digest[2], digest[3]]
+    } else {
+        note::key_hash(&log.origin, &log.spki)?
+    };
+    let checkpoint =
+        note::open_checkpoint(&proof.checkpoint.envelope, &log.origin, hash, &log.spki)
+            .map_err(|error| format!("Rekor {error}"))?;
+    // Rekor v1 names its tree in the origin: `rekor.sigstore.dev - 1193050959916656506`.
+    let origin = if v1 {
+        checkpoint
+            .origin
+            .strip_prefix(&log.origin)
+            .and_then(|rest| rest.strip_prefix(" - "))
+            .is_some_and(|tree| !tree.is_empty() && tree.bytes().all(|byte| byte.is_ascii_digit()))
+    } else {
+        checkpoint.origin == log.origin
+    };
+    if !origin {
+        return Err("Rekor checkpoint origin is not the log's".into());
     }
-    let (body, signatures) = envelope
-        .split_once("\n\n")
-        .ok_or_else(|| "Rekor checkpoint has no signed-note separator".to_owned())?;
-    if signatures.contains("\n\n") {
-        return Err("Rekor checkpoint contains multiple signature sections".into());
-    }
-    let mut lines = body.lines();
-    let origin = lines
-        .next()
-        .ok_or_else(|| "Rekor checkpoint origin is absent".to_owned())?;
-    if !origin.starts_with("rekor.sigstore.dev - ") {
-        return Err("Rekor checkpoint origin is not the public-good log".into());
-    }
-    let tree_size = lines
-        .next()
-        .ok_or_else(|| "Rekor checkpoint tree size is absent".to_owned())?
-        .parse::<u64>()
-        .map_err(|_| "Rekor checkpoint tree size is invalid".to_owned())?;
-    let root_hash = decode_32(
-        lines
-            .next()
-            .ok_or_else(|| "Rekor checkpoint root is absent".to_owned())?,
-        "checkpoint root",
-    )?;
-    if tree_size != expected_tree_size || &root_hash != expected_root {
+    if checkpoint.size != tree_size || checkpoint.root != expected_root {
         return Err("Rekor checkpoint does not bind the inclusion proof tree".into());
-    }
-    if lines.any(|line| line.len() > 256) {
-        return Err("Rekor checkpoint metadata exceeds resource limits".into());
-    }
-    let signed = format!("{body}\n");
-    let expected_hint = &log_id[..4];
-    let mut matching_signatures = 0usize;
-    for line in signatures.lines().filter(|line| !line.is_empty()) {
-        let mut fields = line.split_whitespace();
-        if fields.next() != Some("—") || fields.next() != Some("rekor.sigstore.dev") {
-            return Err("Rekor checkpoint signature line is malformed".into());
-        }
-        let encoded = fields
-            .next()
-            .ok_or_else(|| "Rekor checkpoint signature is absent".to_owned())?;
-        if fields.next().is_some() {
-            return Err("Rekor checkpoint signature has extra fields".into());
-        }
-        let decoded = STANDARD
-            .decode(encoded)
-            .map_err(|error| format!("invalid checkpoint signature encoding: {error}"))?;
-        if decoded.len() <= 4 || &decoded[..4] != expected_hint {
-            continue;
-        }
-        verify_spki_auto(key, signed.as_bytes(), &decoded[4..])
-            .map_err(|error| format!("Rekor checkpoint verification failed: {error}"))?;
-        matching_signatures += 1;
-    }
-    if matching_signatures != 1 {
-        return Err("Rekor checkpoint requires exactly one matching valid signature".into());
     }
     Ok(())
 }

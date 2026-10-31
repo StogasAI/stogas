@@ -185,13 +185,16 @@ jobs:
           assets="$GITHUB_WORKSPACE/sigstore-conformance/test/assets/bundle-verify"
           default_identity="https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main"
           default_issuer="https://token.actions.githubusercontent.com"
+          production_root="$GITHUB_WORKSPACE/tests/fixtures/sigstore-tuf/trusted_root.json"
           cases=0
-          # The verifier accepts only v0.3 bundles that carry SLSA provenance in DSSE.
+          # The verifier accepts only v0.3 bundles that carry SLSA provenance in DSSE. A case
+          # without its own trusted root uses Sigstore's production root as TUF delivered it.
           for case_dir in "$assets"/*; do
             bundle="$case_dir/bundle.sigstore.json"
             [ -f "$bundle" ] || continue
             [ ! -f "$case_dir/key.pub" ] || continue
-            [ ! -f "$case_dir/trusted_root.json" ] || continue
+            root="$production_root"
+            [ ! -f "$case_dir/trusted_root.json" ] || root="$case_dir/trusted_root.json"
             jq -e '.mediaType == "application/vnd.dev.sigstore.bundle.v0.3+json" and has("dsseEnvelope")' "$bundle" >/dev/null || continue
             jq -r '.dsseEnvelope.payload' "$bundle" | base64 -d > "$RUNNER_TEMP/statement.json"
             jq -e '._type == "https://in-toto.io/Statement/v1" and .predicateType == "https://slsa.dev/provenance/v1"' "$RUNNER_TEMP/statement.json" >/dev/null || continue
@@ -203,7 +206,7 @@ jobs:
             [ ! -f "$case_dir/issuer" ] || issuer="$(tr -d '\r\n' < "$case_dir/issuer")"
             [ ! -f "$case_dir/artifact" ] || artifact="$case_dir/artifact"
             cases=$((cases + 1))
-            if "$client" verify-bundle --bundle "$bundle" --certificate-identity "$identity" --certificate-oidc-issuer "$issuer" "$artifact"; then
+            if "$client" verify-bundle --bundle "$bundle" --trusted-root "$root" --certificate-identity "$identity" --certificate-oidc-issuer "$issuer" "$artifact"; then
               if [[ "$case_name" == *_fail ]]; then
                 echo "Official negative conformance case was accepted: $case_name" >&2
                 exit 1
@@ -213,7 +216,7 @@ jobs:
               exit 1
             fi
           done
-          test "$cases" -ge 4
+          test "$cases" -ge 8
       - name: Verify a gateway release with gh
         env:
           GH_TOKEN: ${{ github.token }}

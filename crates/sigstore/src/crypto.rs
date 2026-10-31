@@ -10,7 +10,7 @@ use sha2::{Digest as _, Sha256, Sha384, Sha512};
 use signature::Verifier as _;
 use spki::SubjectPublicKeyInfoRef;
 
-const ED25519_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.101.112");
+pub const ED25519_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.101.112");
 
 /// Signature schemes accepted by the supported Sigstore profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

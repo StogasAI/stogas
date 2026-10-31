@@ -9,6 +9,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use const_oid::{ObjectIdentifier, db::rfc5912::ID_KP_CODE_SIGNING};
 use rustls_pki_types::{CertificateDer, UnixTime};
 use serde::Deserialize;
+use sha2::Digest as _;
 use std::time::Duration;
 use webpki::{EndEntityCert, KeyUsage, anchor_from_trusted_cert};
 use x509_cert::{
@@ -60,9 +61,9 @@ struct RawBytes {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TimestampVerificationData {
+pub struct TimestampVerificationData {
     #[serde(default)]
-    rfc3161_timestamps: Vec<SignedTimestamp>,
+    pub rfc3161_timestamps: Vec<SignedTimestamp>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -77,7 +78,9 @@ pub struct TransparencyLogEntry {
     pub log_index: String,
     pub log_id: LogId,
     pub kind_version: KindVersion,
-    pub integrated_time: String,
+    /// Rekor v1 signs an entry time. Rekor v2 has none, so an RFC 3161 timestamp dates its entries.
+    #[serde(default)]
+    pub integrated_time: Option<String>,
     pub inclusion_promise: Option<InclusionPromise>,
     pub inclusion_proof: Option<InclusionProof>,
     pub canonicalized_body: String,
@@ -181,10 +184,19 @@ pub fn verify(
     }
 
     let entry = &bundle.verification_material.tlog_entries[0];
-    let integrated_time = entry
-        .integrated_time
-        .parse::<i64>()
-        .map_err(|_| "invalid Rekor integrated time".to_owned())?;
+    let rekor_v2 = match (
+        entry.kind_version.kind.as_str(),
+        entry.kind_version.version.as_str(),
+    ) {
+        ("dsse", "0.0.1") => false,
+        // Rekor v2 logs a DSSE envelope as a hashedrekord of its pre-authentication encoding.
+        ("hashedrekord", "0.0.2") => true,
+        _ => {
+            return Err(
+                "only Rekor DSSE v0.0.1 and hashedrekord v0.0.2 entries are supported".into(),
+            );
+        }
+    };
     let signature = STANDARD
         .decode(&bundle.dsse_envelope.signatures[0].sig)
         .map_err(|error| format!("invalid DSSE signature encoding: {error}"))?;
@@ -198,7 +210,15 @@ pub fn verify(
     )?;
     // Rekor's and the timestamp authority's signatures authenticate these times, so they are
     // never compared with the local clock: a slow clock must not reject fresh entries.
-    let validation_time = timestamp_time.unwrap_or(integrated_time);
+    let validation_time = match (timestamp_time, rekor_v2) {
+        (Some(time), _) => time,
+        (None, false) => entry
+            .integrated_time
+            .as_deref()
+            .and_then(|time| time.parse::<i64>().ok())
+            .ok_or_else(|| "invalid Rekor integrated time".to_owned())?,
+        (None, true) => return Err("Rekor v2 entries require an RFC 3161 timestamp".into()),
+    };
     if validation_time <= 0 {
         return Err("authenticated Sigstore time is absent".into());
     }
@@ -208,16 +228,42 @@ pub fn verify(
 
     let issuer_spki = verify_certificate_chain(&certificate.der, validation_time, root)?;
     sct::verify(&certificate.der, &issuer_spki, validation_time, root)?;
-    let verified_integrated_time = tlog::verify(
-        entry,
-        &bundle.dsse_envelope,
-        &certificate.der,
-        certificate.not_before,
-        certificate.not_after,
-        root,
-    )?;
+    let logged_time = if rekor_v2 {
+        let body = dsse_v2_body(&bundle.dsse_envelope, &signature, &certificate.der)?;
+        tlog::verify_v2(entry, &body, validation_time, root)?;
+        validation_time
+    } else {
+        tlog::verify(
+            entry,
+            &bundle.dsse_envelope,
+            &certificate.der,
+            certificate.not_before,
+            certificate.not_after,
+            root,
+        )?
+    };
     verify_dsse_signature(&bundle.dsse_envelope, &certificate.spki)?;
-    Ok(verified_integrated_time)
+    Ok(logged_time)
+}
+
+/// The canonical Rekor v2 body for this envelope: a hashedrekord of the SHA-256 of its
+/// pre-authentication encoding, signed by the Fulcio certificate's P-256 key.
+fn dsse_v2_body(
+    envelope: &DsseEnvelope,
+    signature: &[u8],
+    certificate_der: &[u8],
+) -> Result<Vec<u8>, String> {
+    let payload = STANDARD
+        .decode(&envelope.payload)
+        .map_err(|error| format!("invalid DSSE payload encoding: {error}"))?;
+    let digest = sha2::Sha256::digest(pae(&envelope.payload_type, &payload));
+    crate::hashedrekord::v2_body(
+        "SHA2_256",
+        &digest,
+        signature,
+        "PKIX_ECDSA_P256_SHA_256",
+        &serde_json::json!({"x509Certificate": {"rawBytes": STANDARD.encode(certificate_der)}}),
+    )
 }
 
 fn parse_certificate(der: Vec<u8>) -> Result<CertificateInfo, String> {
