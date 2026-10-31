@@ -24,6 +24,18 @@ pub fn transport_configuration(environment: &str) -> Result<JsValue, JsError> {
     }))
 }
 
+#[wasm_bindgen(typescript_custom_section)]
+const ROOT_KEY: &str = r#"
+/** A root document, as an environment's root file gives it. */
+export interface RootKey {
+    key_id: string;
+    public_key: string;
+    rekor_public_key: string;
+    /** Where the root's documents count in Rekor v2. Without it, no Rekor v2 entry counts. */
+    rekor_v2?: { first_indexes: Record<string, number>; opened_from: string };
+}
+"#;
+
 /// Stateful offline verifier. The trust seed comes from local configuration, never the evidence.
 #[wasm_bindgen(js_name = EvidenceVerifier)]
 pub struct EvidenceVerifier {
@@ -75,27 +87,26 @@ impl EvidenceVerifier {
         })
     }
 
+    /// Construct a verifier that trusts a root document, as an environment's root file gives it,
+    /// in place of the compiled Stogas root.
+    ///
     /// # Errors
     /// Rejects unsupported environments and malformed locally configured root keys.
     #[wasm_bindgen(constructor)]
     pub fn new(
         environment: &str,
-        root_key_id: String,
-        root_public_key: String,
-        root_rekor_public_key: String,
+        #[wasm_bindgen(unchecked_param_type = "RootKey")] root: &JsValue,
     ) -> Result<Self, JsValue> {
         let environment = serde_json::from_value(json!(environment))
             .map_err(|_| js_sys::Error::new("unsupported verification environment"))?;
-        let core = evidence::Verifier::new(
-            environment,
-            RootKey {
-                key_id: root_key_id,
-                public_key: root_public_key,
-                rekor_public_key: root_rekor_public_key,
-                rekor_v2: None,
-            },
-        )
-        .map_err(|error| verification_error(&error))?;
+        // Parsed as JSON text, so an unknown field fails as in every other binding.
+        let root: RootKey = js_sys::JSON::stringify(root)
+            .ok()
+            .and_then(|text| text.as_string())
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .ok_or_else(|| js_sys::Error::new("invalid root key"))?;
+        let core = evidence::Verifier::new(environment, root)
+            .map_err(|error| verification_error(&error))?;
         Ok(Self { core })
     }
 

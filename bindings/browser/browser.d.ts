@@ -83,6 +83,7 @@ export {
 	EvidenceSnapshot,
 	inspect_snp_report
 } from '../../pkg/browser/stogas.js';
+export type { RootKey } from '../../pkg/browser/stogas.js';
 
 export {
 	EncryptedSetup,

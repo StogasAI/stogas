@@ -11,7 +11,7 @@ export default {
 	async fetch(request) {
 		const path = new URL(request.url).pathname;
 		if (path === '/core') {
-			const verifier = new EvidenceVerifier('prod', root.key_id, root.public_key, root.rekor_public_key);
+			const verifier = new EvidenceVerifier('prod', root);
 			try {
 				verifier.refresh(new Uint8Array());
 				throw new Error('accepted empty evidence');

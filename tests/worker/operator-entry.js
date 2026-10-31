@@ -48,12 +48,7 @@ export default {
 		const retry = JSON.parse(prepare_rekor_submission_with_seed(seed, message));
 		const badSeed = new Uint8Array(31).fill(42);
 		const rejectedSeed = rejects(() => prepare_rekor_submission_with_seed(badSeed, message));
-		const verifier = new EvidenceVerifier(
-			'staging',
-			root.key_id,
-			root.public_key,
-			root.rekor_public_key
-		);
+		const verifier = new EvidenceVerifier('staging', root);
 		const encoded = (value) => new TextEncoder().encode(JSON.stringify(value));
 		const altered = structuredClone(manifest);
 		altered.document.generation++;

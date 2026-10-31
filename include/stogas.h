@@ -12,8 +12,10 @@ typedef struct StogasTransport StogasTransport;
 typedef struct StogasEvidence StogasEvidence;
 typedef struct StogasEvidenceSnapshot StogasEvidenceSnapshot;
 
-/* Offline evidence. Configuration: {"environment":"staging"|"prod", "root"?:
- * {"key_id":"...", "public_key":"..."}}. Omit root for the compiled Stogas authority.
+/* Offline evidence. Configuration: {"environment":"staging"|"prod", "root"?: {...}}, where
+ * root is a root document as an environment's root file gives it: key_id, public_key,
+ * rekor_public_key and, for Rekor v2 entries, rekor_v2. Omit root for the compiled Stogas
+ * authority.
  * An explicit root is local caller configuration, never downloaded evidence input.
  * Calls return the same owned JSON envelope, with a fixed `code` on errors.
  * Snapshots own their verified state and may outlive refresh or the verifier.

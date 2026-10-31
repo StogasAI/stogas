@@ -19,11 +19,8 @@ from stogas import (
 
 # Local offline trust configuration, never accepted by the managed transport.
 _root = json.loads((Path(__file__).resolve().parents[3] / "tests/fixtures/hardware-session-v1.json").read_text())["root"]
-ROOT = {
-    "root_key_id": _root["key_id"],
-    "root_public_key": _root["public_key"],
-    "root_rekor_public_key": _root["rekor_public_key"],
-}
+ROOT = {"root": _root}
+SCOPE = {"first_indexes": {"log2025-1.rekor.sigstore.dev": 1}, "opened_from": "2026-10-31T00:00:00Z"}
 
 
 class PackageTests(unittest.TestCase):
@@ -43,14 +40,22 @@ class PackageTests(unittest.TestCase):
     def test_offline_authority_is_explicit(self):
         for options in (
             {"environment": "unknown", **ROOT},
-            {"root_key_id": "partial"},
-            {"root_public_key": ROOT["root_public_key"]},
-            {"root_key_id": "partial", "root_public_key": ROOT["root_public_key"]},
-            {**ROOT, "root_key_id": "invalid", "root_public_key": "bad-key"},
-            {**ROOT, "root_rekor_public_key": "bad-key"},
+            {"root": {"key_id": "partial"}},
+            {"root": {"key_id": _root["key_id"], "public_key": _root["public_key"]}},
+            {"root": {**_root, "key_id": "invalid", "public_key": "bad-key"}},
+            {"root": {**_root, "rekor_public_key": "bad-key"}},
+            {"root": {**_root, "unknown": True}},
+            {"root": json.dumps(_root)},
+            # The scope reaches the core, which rejects an invalid one.
+            {"root": {**_root, "rekor_v2": {**SCOPE, "opened_from": "2026-10-31"}}},
+            {"root": {**_root, "rekor_v2": {**SCOPE, "first_indexes": {"Log.Example": 1}}}},
+            {"root": {**_root, "rekor_v2": {"first_indexes": {}}}},
         ):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 EvidenceVerifier(**options)
+
+    def test_root_document_keeps_its_rekor_v2_scope(self):
+        EvidenceVerifier(root={**_root, "rekor_v2": SCOPE})
 
     def test_verified_values_cannot_be_fabricated(self):
         for value in (EvidenceSnapshot, VerifiedBoot):
