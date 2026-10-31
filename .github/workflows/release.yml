@@ -8,6 +8,13 @@ on:
 permissions:
   contents: read
 
+env:
+  # Cargo and rustup retry a failed download three times by default. Cargo's
+  # take about 10 seconds, which a hosted runner's DNS failure can outlast; ten
+  # take about 80.
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+
 jobs:
   metadata:
     name: Check the tag and list targets

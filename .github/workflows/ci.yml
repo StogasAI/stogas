@@ -18,6 +18,11 @@ env:
   # Line tables keep backtraces readable. Full debug information made the build
   # caches pass the 10 GB that GitHub keeps for a repository, so it dropped some.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  # Cargo and rustup retry a failed download three times by default. Cargo's
+  # take about 10 seconds, which a hosted runner's DNS failure can outlast; ten
+  # take about 80.
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
 
 jobs:
   lint:

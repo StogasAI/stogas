@@ -13,6 +13,13 @@ permissions:
 # A publication uploads only the approved release files, never a cache that another run wrote.
 cache-mode: none
 
+env:
+  # Cargo and rustup retry a failed download three times by default. Cargo's
+  # take about 10 seconds, which a hosted runner's DNS failure can outlast; ten
+  # take about 80.
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+
 concurrency:
   group: sdk-registry-publication
   cancel-in-progress: false
