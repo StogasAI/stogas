@@ -1,6 +1,6 @@
 use crate::{
     TransportOptions, encrypted_client,
-    evidence_client::EvidenceClient,
+    evidence_client::{self, EvidenceClient},
     http2_pool, native_http,
     network::SETUP_BUDGET,
     upstream::{self, Upstream},
@@ -19,7 +19,7 @@ use rand::Rng as _;
 use std::{
     collections::HashSet,
     net::SocketAddr,
-    sync::{Arc, mpsc::SyncSender},
+    sync::{Arc, Weak, mpsc::SyncSender},
     time::Duration,
 };
 use tokio::{
@@ -105,9 +105,9 @@ impl ProxyState {
 }
 
 pub struct EmbeddedEndpoints {
-    pub address: SocketAddr,
     pub base_url: String,
-    pub refresh_path: String,
+    pub evidence: Weak<EvidenceClient>,
+    pub runtime: tokio::runtime::Handle,
 }
 pub async fn serve(config: ServeConfig, exit_on_stdin_close: bool) -> Result<()> {
     let stdin_closed = if exit_on_stdin_close {
@@ -162,6 +162,16 @@ pub async fn serve(config: ServeConfig, exit_on_stdin_close: bool) -> Result<()>
     )
     .await
 }
+/// Refreshes the evidence now, within the first evidence's budget, and reports whether the
+/// verified evidence changed.
+pub async fn refresh(evidence: &EvidenceClient) -> Result<bool, evidence_client::Error> {
+    let original = evidence.current()?;
+    let snapshot = evidence
+        .refresh(Instant::now() + evidence.network().patient(SETUP_BUDGET))
+        .await?;
+    Ok(original.is_none_or(|old| old.evidence_sha256() != snapshot.evidence_sha256()))
+}
+
 pub async fn serve_embedded(
     config: ServeConfig,
     shutdown: oneshot::Receiver<()>,
@@ -202,9 +212,9 @@ async fn run(
     if let Some(ready) = ready {
         if ready
             .send(Ok(EmbeddedEndpoints {
-                address: state.config.listen,
                 base_url: state.config.base_url(),
-                refresh_path: state.config.refresh_path(),
+                evidence: Arc::downgrade(&state.evidence),
+                runtime: tokio::runtime::Handle::current(),
             }))
             .is_err()
         {
@@ -426,17 +436,9 @@ async fn proxy_request_inner(
 ) -> Result<Response<Body>, Failure> {
     match route(&state.config, &request)? {
         Route::Refresh => {
-            let original = state
-                .evidence
-                .current()
-                .map_err(|error| Failure::evidence(&error))?;
-            let snapshot = state
-                .evidence
-                .refresh(Instant::now() + state.evidence.network().patient(SETUP_BUDGET))
+            let changed = refresh(&state.evidence)
                 .await
                 .map_err(|error| Failure::evidence(&error))?;
-            let changed =
-                original.is_none_or(|old| old.evidence_sha256() != snapshot.evidence_sha256());
             Ok(Response::builder()
                 .status(if changed {
                     StatusCode::OK

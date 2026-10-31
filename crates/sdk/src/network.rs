@@ -4,7 +4,7 @@
 //! onion address apply to attested TLS, E2EE, evidence and the dashboard alike. Without a proxy,
 //! connections go direct and proxy environment variables have no effect.
 
-use anyhow::{Result, bail};
+use crate::TransportError;
 use futures_util::{StreamExt as _, stream::FuturesUnordered};
 use std::{
     fmt,
@@ -76,24 +76,38 @@ impl Network {
     ///
     /// # Errors
     /// Rejects a proxy URL in another form, and `onion` without a proxy.
-    pub fn new(environment: Environment, proxy: Option<&str>, onion: bool) -> Result<Self> {
+    pub fn new(
+        environment: Environment,
+        proxy: Option<&str>,
+        onion: bool,
+    ) -> Result<Self, TransportError> {
         let Some(proxy) = proxy else {
             if onion {
-                bail!("onion needs a proxy, such as socks5h://127.0.0.1:9050");
+                return Err(TransportError::options(
+                    "onion needs a proxy, such as socks5h://127.0.0.1:9050",
+                ));
             }
             return Ok(Self::direct());
         };
-        let url = Url::parse(proxy).map_err(|_| anyhow::anyhow!("invalid proxy URL"))?;
+        let url = Url::parse(proxy).map_err(|_| TransportError::options("invalid proxy URL"))?;
         match url.scheme() {
             "socks5h" => {}
-            "socks5" => bail!(
-                "use socks5h:// so the proxy looks up host names; socks5:// would look them up \
-                 on this computer, where its network can see them"
-            ),
-            _ => bail!("the proxy must be a SOCKS5 proxy URL, such as socks5h://127.0.0.1:9050"),
+            "socks5" => {
+                return Err(TransportError::options(
+                    "use socks5h:// so the proxy looks up host names; socks5:// would look them \
+                     up on this computer, where its network can see them",
+                ));
+            }
+            _ => {
+                return Err(TransportError::options(
+                    "the proxy must be a SOCKS5 proxy URL, such as socks5h://127.0.0.1:9050",
+                ));
+            }
         }
         let (Some(host), Some(port)) = (url.host_str(), url.port()) else {
-            bail!("the proxy URL needs a host and a port, such as socks5h://127.0.0.1:9050");
+            return Err(TransportError::options(
+                "the proxy URL needs a host and a port, such as socks5h://127.0.0.1:9050",
+            ));
         };
         if !url.username().is_empty()
             || url.password().is_some()
@@ -101,7 +115,9 @@ impl Network {
             || url.query().is_some()
             || url.fragment().is_some()
         {
-            bail!("the proxy URL takes only a host and a port, such as socks5h://127.0.0.1:9050");
+            return Err(TransportError::options(
+                "the proxy URL takes only a host and a port, such as socks5h://127.0.0.1:9050",
+            ));
         }
         let onion = if onion {
             let hosts = |origins: &[&str]| {
@@ -111,9 +127,9 @@ impl Network {
                         Url::parse(origin)
                             .ok()
                             .and_then(|url| url.host_str().map(str::to_owned))
-                            .ok_or_else(|| anyhow::anyhow!("invalid compiled origin"))
+                            .ok_or_else(|| TransportError::local("invalid compiled origin"))
                     })
-                    .collect::<Result<Vec<_>>>()
+                    .collect::<Result<Vec<_>, _>>()
             };
             Some(Onion {
                 address: RwLock::new(Address::Unknown),

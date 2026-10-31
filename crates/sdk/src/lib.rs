@@ -1,22 +1,19 @@
 //! Managed Stogas HTTP transport shared by the SDK bindings and the CLI.
 
 use anyhow::{Result, bail};
+use evidence_client::EvidenceClient;
 use std::{
-    io::{BufRead as _, BufReader, Read as _, Write as _},
-    net::{SocketAddr, TcpStream},
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Mutex, Weak, mpsc},
     thread,
-    time::Duration,
 };
-use tokio::sync::oneshot;
+use tokio::{runtime::Handle, sync::oneshot};
 
 pub use stogas_core::evidence::{Error, Snapshot, Verifier};
 
 pub mod encrypted_client;
 pub mod encrypted_http;
 pub mod encrypted_setup;
-pub mod evidence_archive;
 pub mod evidence_client;
 pub mod http2_pool;
 pub mod https;
@@ -28,10 +25,53 @@ mod proxy;
 pub mod receipt_http;
 mod upstream;
 
-const MAX_MANAGED_RESPONSE_LINE_BYTES: usize = 8 * 1024;
-const MAX_MANAGED_ERROR_BYTES: usize = 8 * 1024;
-
 pub use stogas_core::authority::Environment;
+
+/// Why a transport could not start, refresh its evidence or serve.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum TransportError {
+    /// Options that no transport accepts, such as `onion` without a proxy.
+    #[error("{0}")]
+    Options(String),
+    /// No origin delivered evidence that verifies.
+    #[error(transparent)]
+    Evidence(#[from] evidence_client::Error),
+    /// The transport was closed or has stopped.
+    #[error("{0}")]
+    Stopped(String),
+    /// A local part failed, such as the listener or the runtime.
+    #[error(transparent)]
+    Local(Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl TransportError {
+    /// A stable identifier for the failure, the same in every binding.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Options(_) | Self::Stopped(_) => "invalid_operation",
+            Self::Evidence(error) => error.code(),
+            Self::Local(_) => "transport_unavailable",
+        }
+    }
+
+    fn options(error: impl std::fmt::Display) -> Self {
+        Self::Options(error.to_string())
+    }
+
+    fn local(message: &str) -> Self {
+        Self::Local(message.into())
+    }
+
+    /// Keeps a typed evidence failure from internals that use `anyhow`.
+    fn internal(error: anyhow::Error) -> Self {
+        match error.downcast::<evidence_client::Error>() {
+            Ok(error) => Self::Evidence(error),
+            Err(error) => Self::Local(error.into()),
+        }
+    }
+}
 
 /// The two independently verified transport profiles.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -81,12 +121,14 @@ impl Default for TransportOptions {
     }
 }
 impl TransportOptions {
-    fn validate(&self) -> Result<()> {
+    fn validate(&self) -> Result<(), TransportError> {
         if self.max_connections == 0 {
-            bail!("max_connections must be positive");
+            return Err(TransportError::options("max_connections must be positive"));
         }
         if self.onion && self.base_url.is_some() {
-            bail!("onion reaches only the environment's own hosts, so it cannot use base_url");
+            return Err(TransportError::options(
+                "onion reaches only the environment's own hosts, so it cannot use base_url",
+            ));
         }
         self.network().map(drop)
     }
@@ -95,7 +137,7 @@ impl TransportOptions {
     ///
     /// # Errors
     /// Rejects an invalid proxy, or `onion` without a proxy.
-    pub fn network(&self) -> Result<network::Network> {
+    pub fn network(&self) -> Result<network::Network, TransportError> {
         network::Network::new(self.environment, self.proxy.as_deref(), self.onion)
     }
 }
@@ -107,8 +149,10 @@ impl TransportOptions {
 /// encrypted streaming and receipt verification.
 pub struct Transport {
     base_url: String,
-    refresh_address: SocketAddr,
-    refresh_path: String,
+    /// The worker's evidence, which ends with the worker.
+    evidence: Weak<EvidenceClient>,
+    /// The worker's runtime, which also runs refreshes.
+    runtime: Handle,
     shutdown: Option<oneshot::Sender<()>>,
     thread: Option<thread::JoinHandle<()>>,
     terminal_error: Arc<Mutex<Option<String>>>,
@@ -121,9 +165,9 @@ impl Transport {
     ///
     /// Returns an error when configuration is invalid, the first evidence cannot be verified, or the
     /// local transport runtime cannot start.
-    pub fn start(options: &TransportOptions) -> Result<Self> {
-        options.validate()?;
-        let config = proxy::ServeConfig::new(options, "127.0.0.1:0", None)?;
+    pub fn start(options: &TransportOptions) -> Result<Self, TransportError> {
+        let config = proxy::ServeConfig::new(options, "127.0.0.1:0", None)
+            .map_err(TransportError::options)?;
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let terminal_error = Arc::new(Mutex::new(None));
@@ -157,52 +201,64 @@ impl Transport {
                     Err(_) => "managed transport worker panicked".to_owned(),
                 };
                 record_transport_terminal_error(&worker_terminal_error, message);
-            })?;
+            })
+            .map_err(|error| TransportError::Local(error.into()))?;
         let endpoints = match ready_rx.recv() {
             Ok(Ok(endpoints)) => endpoints,
             Ok(Err(error)) => {
                 if worker.join().is_err() {
-                    bail!("Stogas transport worker panicked during initialization");
+                    return Err(TransportError::local(
+                        "Stogas transport worker panicked during initialization",
+                    ));
                 }
-                return Err(error);
+                return Err(TransportError::internal(error));
             }
             Err(_) => {
                 if worker.join().is_err() {
-                    bail!("Stogas transport worker panicked during initialization");
+                    return Err(TransportError::local(
+                        "Stogas transport worker panicked during initialization",
+                    ));
                 }
                 if let Some(error) = read_transport_terminal_error(&terminal_error) {
-                    bail!("Stogas transport stopped before initialization completed: {error}");
+                    return Err(TransportError::Local(
+                        format!(
+                            "Stogas transport stopped before initialization completed: {error}"
+                        )
+                        .into(),
+                    ));
                 }
-                bail!("Stogas transport stopped before initialization completed");
+                return Err(TransportError::local(
+                    "Stogas transport stopped before initialization completed",
+                ));
             }
         };
         Ok(Self {
             base_url: endpoints.base_url,
-            refresh_address: endpoints.address,
-            refresh_path: endpoints.refresh_path,
+            evidence: endpoints.evidence,
+            runtime: endpoints.runtime,
             shutdown: Some(shutdown_tx),
             thread: Some(worker),
             terminal_error,
         })
     }
 
-    fn ensure_running(&self) -> Result<()> {
-        if let Some(error) = read_transport_terminal_error(&self.terminal_error) {
-            bail!(error);
-        }
-        if self
-            .thread
-            .as_ref()
-            .is_none_or(thread::JoinHandle::is_finished)
+    fn ensure_running(&self) -> Result<(), TransportError> {
+        if read_transport_terminal_error(&self.terminal_error).is_some()
+            || self
+                .thread
+                .as_ref()
+                .is_none_or(thread::JoinHandle::is_finished)
         {
-            bail!("managed transport is not running");
+            return Err(self.stopped());
         }
         Ok(())
     }
 
-    fn io_error(&self, error: std::io::Error) -> anyhow::Error {
-        read_transport_terminal_error(&self.terminal_error)
-            .map_or_else(|| error.into(), anyhow::Error::msg)
+    fn stopped(&self) -> TransportError {
+        TransportError::Stopped(
+            read_transport_terminal_error(&self.terminal_error)
+                .unwrap_or_else(|| "managed transport is not running".to_owned()),
+        )
     }
 
     /// Capability-protected loopback URL to pass to an OpenAI-compatible client.
@@ -211,73 +267,28 @@ impl Transport {
         &self.base_url
     }
 
-    /// Fetch and atomically activate newer evidence now.
+    /// Fetch and atomically activate newer evidence now, within the budget of the first
+    /// evidence: 15 seconds, or longer through a proxy.
     ///
     /// Returns `true` when the verified evidence changed.
     ///
     /// # Errors
     ///
-    /// Returns an error when the local transport is unavailable or the fetched replacement fails
-    /// verification.
-    pub fn refresh_evidence(&self) -> Result<bool> {
+    /// Returns an error when the transport has stopped or no origin delivers evidence that
+    /// verifies.
+    pub fn refresh_evidence(&self) -> Result<bool, TransportError> {
         self.ensure_running()?;
-        let mut stream = TcpStream::connect_timeout(&self.refresh_address, Duration::from_secs(5))
-            .map_err(|error| self.io_error(error))?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(15)))
-            .map_err(|error| self.io_error(error))?;
-        stream
-            .set_write_timeout(Some(Duration::from_secs(5)))
-            .map_err(|error| self.io_error(error))?;
-        write!(
-            stream,
-            "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            self.refresh_path, self.refresh_address
-        )
-        .map_err(|error| self.io_error(error))?;
-        stream.flush().map_err(|error| self.io_error(error))?;
-
-        let mut response = BufReader::new(stream);
-        let mut status_line = String::new();
-        {
-            let mut status_reader = (&mut response).take(
-                u64::try_from(MAX_MANAGED_RESPONSE_LINE_BYTES.saturating_add(1))
-                    .unwrap_or(u64::MAX),
-            );
-            status_reader
-                .read_line(&mut status_line)
-                .map_err(|error| self.io_error(error))?;
-        }
-        if status_line.len() > MAX_MANAGED_RESPONSE_LINE_BYTES || !status_line.ends_with('\n') {
-            bail!("managed transport returned an invalid HTTP response");
-        }
-        let status = status_line
-            .split_ascii_whitespace()
-            .nth(1)
-            .and_then(|value| value.parse::<u16>().ok())
-            .ok_or_else(|| {
-                anyhow::anyhow!("managed transport returned an invalid HTTP response")
-            })?;
-        match status {
-            200 => Ok(true),
-            204 => Ok(false),
-            _ => {
-                let mut remainder = Vec::new();
-                response
-                    .take(
-                        u64::try_from(MAX_MANAGED_ERROR_BYTES.saturating_add(1))
-                            .unwrap_or(u64::MAX),
-                    )
-                    .read_to_end(&mut remainder)
-                    .map_err(|error| self.io_error(error))?;
-                if remainder.len() > MAX_MANAGED_ERROR_BYTES {
-                    bail!("evidence refresh failed with HTTP {status}");
-                }
-                bail!(
-                    "evidence refresh failed with HTTP {status}: {}",
-                    String::from_utf8_lossy(&remainder).trim()
-                );
+        let evidence = Weak::clone(&self.evidence);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        // A stopping worker drops this task, and with it the sender.
+        self.runtime.spawn(async move {
+            if let Some(evidence) = evidence.upgrade() {
+                let _ = sender.send(proxy::refresh(&evidence).await);
             }
+        });
+        match receiver.recv() {
+            Ok(changed) => Ok(changed?),
+            Err(_) => Err(self.stopped()),
         }
     }
 
@@ -344,27 +355,34 @@ impl Drop for Transport {
 ///
 /// Returns an error when configuration, initial evidence verification, listener binding, or the
 /// transport runtime fails.
-pub async fn serve(options: ServeOptions) -> Result<()> {
-    proxy::serve(
-        proxy::ServeConfig::new(
-            &options.transport,
-            &options.listen,
-            options.browser_origin.as_deref(),
-        )?,
-        options.exit_on_stdin_close,
+pub async fn serve(options: ServeOptions) -> Result<(), TransportError> {
+    let config = proxy::ServeConfig::new(
+        &options.transport,
+        &options.listen,
+        options.browser_origin.as_deref(),
     )
-    .await
+    .map_err(TransportError::options)?;
+    proxy::serve(config, options.exit_on_stdin_close)
+        .await
+        .map_err(TransportError::internal)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn stopped_transport(error: Option<&str>) -> Transport {
+        // A runtime that has shut down, as a stopped worker's has.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let handle = runtime.handle().clone();
+        drop(runtime);
         Transport {
             base_url: "http://127.0.0.1:1".to_owned(),
-            refresh_address: "127.0.0.1:1".parse().expect("valid test address"),
-            refresh_path: "/refresh".to_owned(),
+            evidence: Weak::new(),
+            runtime: handle,
             shutdown: None,
             thread: None,
             terminal_error: Arc::new(Mutex::new(error.map(str::to_owned))),
@@ -428,6 +446,63 @@ mod tests {
             error.to_string(),
             "managed transport stopped: verification failed"
         );
+    }
+
+    /// A transport whose worker runs on `runtime` and refreshes `evidence`, until the returned
+    /// sender drops.
+    #[cfg(feature = "staging")]
+    fn running_transport(
+        runtime: &tokio::runtime::Runtime,
+        evidence: &Arc<EvidenceClient>,
+    ) -> (Transport, mpsc::Sender<()>) {
+        let (stop, stopped) = mpsc::channel::<()>();
+        let mut transport = stopped_transport(None);
+        transport.evidence = Arc::downgrade(evidence);
+        transport.runtime = runtime.handle().clone();
+        transport.thread = Some(thread::spawn(move || {
+            let _ = stopped.recv();
+        }));
+        (transport, stop)
+    }
+
+    #[cfg(feature = "staging")]
+    #[test]
+    fn refresh_runs_on_the_worker_and_keeps_typed_failures() {
+        use crate::evidence_client::tests::serving;
+        // Origins and refreshes share the worker's runtime while this thread waits.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (_origins, evidence) = runtime.block_on(serving(http::StatusCode::OK));
+        let evidence = Arc::new(evidence);
+        let (transport, _running) = running_transport(&runtime, &evidence);
+        assert!(transport.refresh_evidence().unwrap());
+        assert!(!transport.refresh_evidence().unwrap(), "the same evidence");
+        // The worker's evidence ends with the worker.
+        drop(evidence);
+        let error = transport.refresh_evidence().unwrap_err();
+        assert!(matches!(error, TransportError::Stopped(_)), "{error}");
+        assert_eq!(error.code(), "invalid_operation");
+
+        let (_origins, evidence) = runtime.block_on(serving(http::StatusCode::SERVICE_UNAVAILABLE));
+        let evidence = Arc::new(evidence);
+        let (transport, _running) = running_transport(&runtime, &evidence);
+        let error = transport.refresh_evidence().unwrap_err();
+        assert!(matches!(error, TransportError::Evidence(_)), "{error}");
+        assert_eq!(error.code(), "evidence_unavailable");
+    }
+
+    #[test]
+    fn a_stopped_runtime_fails_the_refresh_instead_of_waiting() {
+        let mut transport = stopped_transport(None);
+        let (_running, stopped) = mpsc::channel::<()>();
+        transport.thread = Some(thread::spawn(move || {
+            let _ = stopped.recv();
+        }));
+        let error = transport.refresh_evidence().unwrap_err();
+        assert!(matches!(error, TransportError::Stopped(_)), "{error}");
     }
 
     #[test]

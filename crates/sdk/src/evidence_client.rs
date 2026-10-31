@@ -413,4 +413,4 @@ pub(crate) fn wall_clock_ms() -> Result<i64, Error> {
 }
 
 #[cfg(all(test, feature = "staging"))]
-mod tests;
+pub(crate) mod tests;

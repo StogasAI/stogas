@@ -98,15 +98,6 @@ pub unsafe extern "C" fn stogas_string_free(value: *mut c_char) {
     }
 }
 
-#[cfg(feature = "transport")]
-fn response<T, F>(operation: F) -> *mut c_char
-where
-    T: Serialize,
-    F: FnOnce() -> Result<T, String>,
-{
-    response_coded(|| operation().map_err(AbiError::from))
-}
-
 fn response_coded<T: Serialize>(operation: impl FnOnce() -> Result<T, AbiError>) -> *mut c_char {
     let result = catch_unwind(AssertUnwindSafe(operation));
     let bytes = match result {

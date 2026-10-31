@@ -3673,6 +3673,7 @@ dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
  "clap",
+ "futures-util",
  "gethostname",
  "getrandom 0.4.3",
  "hex",
@@ -3680,7 +3681,6 @@ dependencies = [
  "keyring-core",
  "qrcode",
  "rpassword",
- "rustls",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3688,7 +3688,6 @@ dependencies = [
  "stogas-core",
  "tokio",
  "url",
- "webpki-roots",
  "windows-native-keyring-store",
  "zbus-secret-service-keyring-store",
  "zeroize",
@@ -3793,6 +3792,18 @@ dependencies = [
  "thiserror",
  "tls_codec",
  "x509-cert",
+]
+
+[[package]]
+name = "stogas-sigstore-conformance"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "base64 0.22.1",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "stogas-sigstore",
 ]
 
 [[package]]

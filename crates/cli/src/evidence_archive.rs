@@ -9,13 +9,13 @@ use std::{
     time::Duration,
 };
 
-use crate::{https::HttpsClient, network::Network};
 use anyhow::{Context as _, Result, bail, ensure};
 use futures_util::{StreamExt as _, TryStreamExt as _, stream};
 use http::{HeaderMap, StatusCode};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
+use stogas::{https::HttpsClient, network::Network};
 use stogas_core::{
     MAX_INPUT_BYTES,
     authority::{EVIDENCE_SCHEMA, Environment, payload_sha256},

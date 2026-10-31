@@ -7,6 +7,7 @@ members = [
   "crates/sdk",
   "crates/ffi",
   "crates/sigstore",
+  "crates/sigstore-conformance",
   "crates/sigstore-wasm",
   "crates/core",
   "crates/wasm",

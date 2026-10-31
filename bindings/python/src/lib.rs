@@ -2,8 +2,13 @@
 
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyBytes};
 use std::time::{SystemTime, UNIX_EPOCH};
-use stogas_sdk::{SecurityMode, Transport as ManagedTransport, TransportOptions};
+use stogas_sdk::{SecurityMode, Transport as ManagedTransport, TransportError, TransportOptions};
 mod evidence;
+
+/// The same stable codes as every other binding, on `VerificationError`, a `ValueError`.
+fn transport_error(py: Python<'_>, error: &TransportError) -> PyErr {
+    evidence::coded_error(py, error.code(), error.to_string())
+}
 
 #[pyclass(name = "Transport")]
 struct PythonTransport {
@@ -38,7 +43,7 @@ impl PythonTransport {
         };
         let inner = py
             .detach(move || ManagedTransport::start(&options))
-            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+            .map_err(|error| transport_error(py, &error))?;
         Ok(Self { inner: Some(inner) })
     }
 
@@ -56,7 +61,7 @@ impl PythonTransport {
             .as_ref()
             .ok_or_else(|| PyValueError::new_err("Stogas transport is closed"))?;
         py.detach(|| inner.refresh_evidence())
-            .map_err(|error| PyValueError::new_err(error.to_string()))
+            .map_err(|error| transport_error(py, &error))
     }
 
     fn close(&mut self, py: Python<'_>) {

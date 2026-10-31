@@ -186,7 +186,7 @@ fn receipt_error(py: Python<'_>, error: &receipt::Error) -> PyErr {
     coded_error(py, code, error.to_string())
 }
 
-fn coded_error(py: Python<'_>, code: &str, message: String) -> PyErr {
+pub fn coded_error(py: Python<'_>, code: &str, message: String) -> PyErr {
     let error = VerificationError::new_err(message);
     match error.value(py).setattr("code", code) {
         Ok(()) => error,

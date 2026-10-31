@@ -12,6 +12,7 @@ mod altcha;
 mod credentials;
 mod customer_encryption;
 mod dashboard;
+mod evidence_archive;
 mod sdk_release;
 mod topup;
 
@@ -308,8 +309,7 @@ async fn run() -> Result<()> {
             output,
         } => {
             let archive =
-                stogas::evidence_archive::download(environment, network(environment)?, &boot)
-                    .await?;
+                evidence_archive::download(environment, network(environment)?, &boot).await?;
             for (name, bytes) in [
                 ("boot.json", archive.boot),
                 ("evidence.json", archive.evidence),
@@ -388,7 +388,8 @@ async fn run_serve(input: ServeArgs, proxy: Option<String>, onion: bool) -> Resu
         browser_origin: input.browser_origin,
         exit_on_stdin_close: input.exit_on_stdin_close,
     })
-    .await
+    .await?;
+    Ok(())
 }
 
 async fn verify_proof_files(
@@ -408,7 +409,7 @@ async fn verify_proof_files(
         let boot = signed
             .boot_sha256()
             .context("the response has no Stogas receipt")?;
-        let archive = stogas::evidence_archive::download(input.environment, network, boot).await?;
+        let archive = evidence_archive::download(input.environment, network, boot).await?;
         (archive.boot, archive.evidence)
     };
     let boot = verifier.verify_boot_archive(&archive, &evidence, now)?;

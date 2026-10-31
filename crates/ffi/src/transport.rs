@@ -1,7 +1,16 @@
-use super::{AbiError, input_slice, response, response_coded};
+use super::{AbiError, input_slice, response_coded};
 use serde::{Deserialize, Serialize};
 use std::{ffi::c_char, sync::Mutex};
-use stogas_sdk::{SecurityMode, Transport as ManagedTransport, TransportOptions};
+use stogas_sdk::{SecurityMode, Transport as ManagedTransport, TransportError, TransportOptions};
+
+impl From<TransportError> for AbiError {
+    fn from(error: TransportError) -> Self {
+        Self {
+            code: Some(error.code()),
+            message: error.to_string(),
+        }
+    }
+}
 
 /// Opaque managed HTTP transport.
 pub struct StogasTransport {
@@ -79,17 +88,7 @@ pub unsafe extern "C" fn stogas_transport_start(
             proxy: configuration.proxy,
             onion: configuration.onion,
         };
-        let transport = ManagedTransport::start(&options).map_err(|error| AbiError {
-            code: Some(
-                error
-                    .downcast_ref::<stogas_sdk::evidence_client::Error>()
-                    .map_or(
-                        "transport_unavailable",
-                        stogas_sdk::evidence_client::Error::code,
-                    ),
-            ),
-            message: error.to_string(),
-        })?;
+        let transport = ManagedTransport::start(&options)?;
         let base_url = transport.base_url().to_owned();
         let transport = Box::into_raw(Box::new(StogasTransport {
             transport: Mutex::new(transport),
@@ -109,17 +108,14 @@ pub unsafe extern "C" fn stogas_transport_start(
 pub unsafe extern "C" fn stogas_transport_refresh(
     transport: *const StogasTransport,
 ) -> *mut c_char {
-    response(|| {
+    response_coded(|| {
         // SAFETY: pointer validity is part of the public C ABI contract.
-        let transport =
-            unsafe { transport.as_ref() }.ok_or_else(|| "transport is null".to_owned())?;
+        let transport = unsafe { transport.as_ref() }.ok_or("transport is null")?;
         let transport = transport
             .transport
             .lock()
-            .map_err(|_| "transport lock is poisoned".to_owned())?;
-        transport
-            .refresh_evidence()
-            .map_err(|error| error.to_string())
+            .map_err(|_| "transport lock is poisoned")?;
+        Ok(transport.refresh_evidence()?)
     })
 }
 
