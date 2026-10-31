@@ -404,9 +404,13 @@ function serve(behavior, etag, signal) {
 		case 'refused':
 			throw new TypeError('fetch failed');
 		default:
+			// Like a real pending request's socket, a hung origin keeps the process alive. The client's
+			// own deadlines do not, and Node 20's runner cancels a test that only they keep running.
 			return new Promise((resolve, reject) => {
 				const timer =
-					behavior === 'slow' ? setTimeout(() => resolve(response(2, ETAGS[2])), SLOW_MS) : 0;
+					behavior === 'slow'
+						? setTimeout(() => resolve(response(2, ETAGS[2])), SLOW_MS)
+						: setInterval(() => {}, 1_000);
 				signal.addEventListener(
 					'abort',
 					() => {
