@@ -856,8 +856,8 @@ enum Behavior {
     Oversized,
     /// Answers 304 whether or not the client holds this origin's copy.
     Unmodified,
-    /// Accepts no connection.
-    Refused,
+    /// Closes each connection before reading a request.
+    Dropped,
     /// Serves fresh evidence after the hedge delay.
     Slow,
     /// Never answers within an origin's budget.
@@ -872,7 +872,7 @@ const BEHAVIORS: [Behavior; 10] = [
     Behavior::Missing,
     Behavior::Oversized,
     Behavior::Unmodified,
-    Behavior::Refused,
+    Behavior::Dropped,
     Behavior::Slow,
     Behavior::Hung,
 ];
@@ -959,7 +959,7 @@ impl Case {
             Behavior::Missing => (Duration::ZERO, Err(Failure::Http(StatusCode::NOT_FOUND))),
             Behavior::Oversized => (Duration::ZERO, Err(Failure::TooLarge)),
             Behavior::Unmodified => (Duration::ZERO, held.ok_or(Failure::MissingRepresentation)),
-            Behavior::Refused => (Duration::ZERO, Err(Failure::Delivery)),
+            Behavior::Dropped => (Duration::ZERO, Err(Failure::Delivery)),
             Behavior::Slow => (SLOW, Ok(Edition::Latest)),
             Behavior::Hung => (ORIGIN_BUDGET, Err(Failure::Deadline)),
         };
@@ -1000,10 +1000,10 @@ impl Case {
         }
         let (elapsed, result) = outcome.unwrap();
         let mut requests = vec![];
-        if self.origins[0] != Behavior::Refused {
+        if self.origins[0] != Behavior::Dropped {
             requests.push((0, held));
         }
-        if replica_start.is_some() && self.origins[1] != Behavior::Refused {
+        if replica_start.is_some() && self.origins[1] != Behavior::Dropped {
             requests.push((1, None));
         }
         let outcome = Outcome {
@@ -1024,7 +1024,7 @@ struct Editions {
     latest: Bytes,
     oversized: Bytes,
     target: Arc<str>,
-    closed: Url,
+    dropping: Url,
 }
 
 impl Editions {
@@ -1037,17 +1037,24 @@ impl Editions {
         let mut old = latest.clone();
         old["catalogs"].as_array_mut().unwrap().pop();
         latest["revision"] = json!(2);
-        // A port that refuses connections: bound once, then released.
+        // An origin that closes each connection unread. A port without a listener refuses at once
+        // on Linux and macOS, but Windows retries a refused connection for two seconds.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let closed = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
-        drop(listener);
+        listener.set_nonblocking(true).unwrap();
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        let dropping = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        tokio::spawn(async move {
+            while let Ok((connection, _)) = listener.accept().await {
+                drop(connection);
+            }
+        });
         Self {
             root,
             old: signed(&old).into(),
             latest: signed(&latest).into(),
             oversized: vec![b' '; MAX_INPUT_BYTES + 1].into(),
             target: target.into(),
-            closed,
+            dropping,
         }
     }
 
@@ -1064,7 +1071,7 @@ impl Editions {
             Behavior::Unavailable => status(StatusCode::SERVICE_UNAVAILABLE),
             Behavior::Missing => status(StatusCode::NOT_FOUND),
             Behavior::Oversized => reply(self.oversized.clone(), "\"oversized\""),
-            Behavior::Unmodified | Behavior::Refused => status(StatusCode::NOT_MODIFIED),
+            Behavior::Unmodified | Behavior::Dropped => status(StatusCode::NOT_MODIFIED),
             Behavior::Slow => Reply {
                 delay: SLOW,
                 ..latest
@@ -1114,8 +1121,8 @@ impl Editions {
         };
         *server.state.replies.write().unwrap() = case.origins.map(|behavior| self.reply(behavior));
         for (index, behavior) in case.origins.into_iter().enumerate() {
-            if behavior == Behavior::Refused {
-                client.origins[index].clone_from(&self.closed);
+            if behavior == Behavior::Dropped {
+                client.origins[index].clone_from(&self.dropping);
             }
         }
         async move {
