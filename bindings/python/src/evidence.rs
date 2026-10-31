@@ -27,38 +27,23 @@ struct Boot {
 
 #[pymethods]
 impl EvidenceVerifier {
+    /// Without `root`, trusts the compiled Stogas root. A `root` is a root document, as an
+    /// environment's root file gives it.
     #[new]
-    #[pyo3(signature = (
-        *,
-        environment = "prod",
-        root_key_id = None,
-        root_public_key = None,
-        root_rekor_public_key = None
-    ))]
-    fn new(
-        py: Python<'_>,
-        environment: &str,
-        root_key_id: Option<String>,
-        root_public_key: Option<String>,
-        root_rekor_public_key: Option<String>,
-    ) -> PyResult<Self> {
+    #[pyo3(signature = (*, environment = "prod", root = None))]
+    fn new(py: Python<'_>, environment: &str, root: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
         let environment: Environment = serde_json::from_value(serde_json::json!(environment))
             .map_err(|_| PyValueError::new_err("environment is unsupported by this build"))?;
-        let core = match (root_key_id, root_public_key, root_rekor_public_key) {
-            (None, None, None) => evidence::Verifier::stogas(environment),
-            (Some(key_id), Some(public_key), Some(rekor_public_key)) => evidence::Verifier::new(
-                environment,
-                RootKey {
-                    key_id,
-                    public_key,
-                    rekor_public_key,
-                    rekor_v2: None,
-                },
-            ),
-            _ => {
-                return Err(PyValueError::new_err(
-                    "root key ID, public key and Rekor public key are required together",
-                ));
+        let core = match root {
+            None => evidence::Verifier::stogas(environment),
+            Some(root) => {
+                let text: String = py
+                    .import("json")?
+                    .call_method1("dumps", (root,))?
+                    .extract()?;
+                let root: RootKey = serde_json::from_str(&text)
+                    .map_err(|_| PyValueError::new_err("invalid root key"))?;
+                evidence::Verifier::new(environment, root)
             }
         }
         .map_err(|error| evidence_error(py, &error))?;

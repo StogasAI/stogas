@@ -56,12 +56,7 @@ test('browser boot history remains offline and separate from current evidence', 
 					stogasVerifierBindings: typeof import('../../pkg/browser/stogas.js');
 				}
 			).stogasVerifierBindings;
-			const core = new api.EvidenceVerifier(
-				'staging',
-				fixture.root.key_id,
-				fixture.root.public_key,
-				fixture.root.rekor_public_key
-			);
+			const core = new api.EvidenceVerifier('staging', fixture.root);
 			const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
 			const previousNow = Date.now;
 			Date.now = () => fixture.verified_at_ms + 366 * 24 * 60 * 60 * 1000;
@@ -106,12 +101,7 @@ test('encrypted setup cannot release a browser session without its own verified 
 		).stogasVerifierBindings;
 		const platformNow = Date.now;
 		Date.now = () => fixture.verified_at_ms;
-		const verifier = new api.EvidenceVerifier(
-			'staging',
-			fixture.root.key_id,
-			fixture.root.public_key,
-			fixture.root.rekor_public_key
-		);
+		const verifier = new api.EvidenceVerifier('staging', fixture.root);
 		let snapshot: InstanceType<typeof api.EvidenceSnapshot> | undefined;
 		let pending: InstanceType<typeof api.EncryptedSetup> | undefined;
 		let second: InstanceType<typeof api.EncryptedSetup> | undefined;
