@@ -67,7 +67,7 @@ fn seal(
 ) -> Result<serde_json::Value> {
     let maximum = match purpose {
         "plugins" => 262_144,
-        "byok/openai" | "byok/anthropic" | "byok/chutes" => 4096,
+        "byok/openai" | "byok/anthropic" | "byok/chutes" | "byok/aws" | "byok/google-cloud" => 4096,
         _ => bail!("Unsupported encryption purpose"),
     };
     if root.len() != 32
@@ -132,14 +132,38 @@ pub fn encrypt(
     if root.len() != 32 || URL_SAFE_NO_PAD.encode(root.as_slice()) != text {
         bail!("Use a generated 32-byte organization key");
     }
-    let maximum = if purpose == "plugins" { 262_144 } else { 4096 };
-    let plaintext = read_private(input, maximum)?;
+    // Google's key file is larger than the credential document it becomes.
+    let maximum = match purpose {
+        "plugins" => 262_144,
+        "byok/aws" | "byok/google-cloud" => 16_384,
+        _ => 4096,
+    };
+    let input = read_private(input, maximum)?;
     let mut salt = [0_u8; 32];
     let mut nonce = [0_u8; 12];
     getrandom::fill(&mut salt)?;
     getrandom::fill(&mut nonce)?;
-    let envelope = seal(&root, organization, purpose, &plaintext, &salt, nonce)?;
-    write_new(output, &serde_json::to_vec_pretty(&envelope)?)
+    if purpose == "plugins" {
+        let envelope = seal(&root, organization, purpose, &input, &salt, nonce)?;
+        return write_new(output, &serde_json::to_vec_pretty(&envelope)?);
+    }
+    // A credential prints what the dashboard registers: the envelope, a preview and, for AWS
+    // and Google Cloud, the target that routing reads instead of the secret.
+    let registration = crate::cloud_credentials::prepare(purpose, &input)?;
+    let envelope = seal(
+        &root,
+        organization,
+        purpose,
+        &registration.plaintext,
+        &salt,
+        nonce,
+    )?;
+    let mut document =
+        serde_json::json!({ "encryptedSecret": envelope, "preview": registration.preview });
+    if let Some(target) = registration.target {
+        document["target"] = target;
+    }
+    write_new(output, &serde_json::to_vec_pretty(&document)?)
 }
 
 #[cfg(test)]
