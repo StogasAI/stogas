@@ -41,13 +41,16 @@
 		}
 	},
 	"scripts": {
+		"typecheck": "tsc -p tsconfig.json",
 		"test:browser": "playwright test --config tests/browser/playwright.config.ts",
 		"test:worker": "node --test tests/worker/*.test.mjs",
 		"test:node": "node --test tests/node/*.test.mjs"
 	},
 	"devDependencies": {
 		"@playwright/test": "1.64.0",
-		"miniflare": "5.20261006.1-alpha",
-		"openai": "7.32.0"
+		"@types/node": "24.19.2",
+		"miniflare": "5.20261023.3-beta",
+		"openai": "7.32.0",
+		"typescript": "7.0.2"
 	}
 }
