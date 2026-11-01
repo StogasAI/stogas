@@ -75,6 +75,20 @@ pub enum Error {
     Decode(io::Error),
 }
 
+/// [`HttpsClient::public`]'s TLS, checking servers against `roots`. rustls's
+/// `prefer-post-quantum` feature puts X25519MLKEM768 first and also sends an X25519 share, so a
+/// classical server needs no extra round trip.
+fn tls(roots: rustls::RootCertStore) -> Result<rustls::ClientConfig, rustls::Error> {
+    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    Ok(tls)
+}
+
 /// Displays an error with its causes, which hyper keeps out of its own messages.
 fn chain(error: &dyn StdError) -> String {
     let mut message = error.to_string();
@@ -111,43 +125,17 @@ impl HttpsClient {
         }
     }
 
-    /// Checks servers against the Mozilla roots, over TLS 1.3 or 1.2.
+    /// Checks servers against the Mozilla roots, over TLS 1.3 or 1.2. It prefers the hybrid
+    /// X25519MLKEM768 key exchange, which keeps recorded traffic private from a future quantum
+    /// computer, and accepts a server that offers only classical ones.
     ///
     /// # Errors
     /// Fails if the TLS library cannot provide these protocol versions.
     pub fn public(network: Network) -> Result<Self, rustls::Error> {
-        Self::mozilla(
-            network,
-            rustls::crypto::aws_lc_rs::default_provider(),
-            &[&rustls::version::TLS13, &rustls::version::TLS12],
-        )
-    }
-
-    /// Checks servers against the Mozilla roots, over TLS 1.3 with only the hybrid
-    /// X25519MLKEM768 key exchange, so recorded traffic stays private from a future quantum
-    /// computer. For secrets that don't expire on their own, such as passwords.
-    ///
-    /// # Errors
-    /// Fails if the TLS library cannot provide TLS 1.3.
-    pub fn post_quantum(network: Network) -> Result<Self, rustls::Error> {
-        let mut provider = rustls::crypto::aws_lc_rs::default_provider();
-        provider.kx_groups = vec![rustls::crypto::aws_lc_rs::kx_group::X25519MLKEM768];
-        Self::mozilla(network, provider, &[&rustls::version::TLS13])
-    }
-
-    fn mozilla(
-        network: Network,
-        provider: rustls::crypto::CryptoProvider,
-        versions: &[&'static rustls::SupportedProtocolVersion],
-    ) -> Result<Self, rustls::Error> {
-        let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(provider))
-            .with_protocol_versions(versions)?
-            .with_root_certificates(rustls::RootCertStore {
-                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-            })
-            .with_no_client_auth();
-        tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-        Ok(Self::new(network, tls))
+        let roots = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        Ok(Self::new(network, tls(roots)?))
     }
 
     #[must_use]

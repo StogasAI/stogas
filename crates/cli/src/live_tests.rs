@@ -4,26 +4,13 @@
 
 use crate::{
     account,
-    dashboard::{ApiError, Dashboard, ORIGIN},
+    dashboard::{ApiError, Dashboard},
     topup,
 };
 use http::{Method, StatusCode};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use stogas::network::Network;
-
-#[tokio::test]
-#[ignore = "needs the network"]
-async fn reaches_the_dashboard_with_only_a_post_quantum_key_exchange() {
-    // Any HTTP answer proves the handshake, whether or not the API serves this path.
-    let reply = Dashboard::new(ORIGIN, None, Network::direct())
-        .unwrap()
-        .send(Method::GET, "/api/auth/challenge", None)
-        .await;
-    if let Err(error) = reply {
-        assert!(error.downcast_ref::<ApiError>().is_some(), "{error:#}");
-    }
-}
 
 #[tokio::test]
 #[ignore = "needs a test dashboard and a payer"]
