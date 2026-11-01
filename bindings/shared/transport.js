@@ -30,10 +30,12 @@ function baseURL(value) {
 
 // The same Fetch adapter runs in browsers, Node and Workers. All cryptographic
 // state and trust choices come from the compiled Wasm core.
+// Patience multiplies every time limit for a binding whose requests take a slow route.
 export function createTransportClass({
 	EvidenceVerifier,
 	EncryptedSetup,
-	transport_configuration
+	transport_configuration,
+	patience = 1
 }) {
 	return class StogasTransport {
 		#baseURL;
@@ -77,8 +79,12 @@ export function createTransportClass({
 			this.#baseURL = baseURL(options.baseURL ?? `${config.e2ee_origin}/v1`);
 			this.#origins = config.evidence_origins;
 			const core = EvidenceVerifier.for_stogas(config.environment);
-			this.#evidence = new EvidenceClient(core, this.#origins, fetch, (snapshot) =>
-				this.#publish({ ...snapshot, status: 'ready', error: null })
+			this.#evidence = new EvidenceClient(
+				core,
+				this.#origins,
+				fetch,
+				(snapshot) => this.#publish({ ...snapshot, status: 'ready', error: null }),
+				patience
 			);
 			this.#sessions = new SessionTransport({
 				Setup: EncryptedSetup,
@@ -87,7 +93,8 @@ export function createTransportClass({
 				endpoint: `${this.#baseURL}/session`,
 				fetch,
 				maxSessions: maximum,
-				onMetadata: options.onMetadata
+				onMetadata: options.onMetadata,
+				patience
 			});
 			this.fetch = this.fetch.bind(this);
 		}

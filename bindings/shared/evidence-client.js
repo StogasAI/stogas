@@ -61,13 +61,16 @@ export class EvidenceClient {
 	#failedAt = 0;
 	#retryAt = 0;
 	#closed = new AbortController();
+	#patience;
 
-	constructor(verifier, origins, fetch, onSnapshot = () => {}) {
+	// Patience multiplies every time limit for a slow route, such as Tor.
+	constructor(verifier, origins, fetch, onSnapshot = () => {}, patience = 1) {
 		this.#verifier = verifier;
 		this.#fetch = fetch;
 		this.#origins = origins;
 		this.#representations = origins.map(() => undefined);
 		this.#onSnapshot = onSnapshot;
+		this.#patience = patience;
 	}
 
 	check(check) {
@@ -79,7 +82,7 @@ export class EvidenceClient {
 	// Check is synchronous and must not consume a setup secret on failure. A
 	// successful check may return its newly verified session directly.
 	async acquire(signal, check) {
-		const deadline = deadlineSignal(signal, SETUP_TIMEOUT_MS);
+		const deadline = deadlineSignal(signal, SETUP_TIMEOUT_MS * this.#patience);
 		const combined = AbortSignal.any([deadline.signal, this.#closed.signal]);
 		try {
 			combined.throwIfAborted();
@@ -139,7 +142,10 @@ export class EvidenceClient {
 			if (signal.aborted || started === this.#origins.length) return;
 			const index = started++;
 			const cancel = new AbortController();
-			const attempt = deadlineSignal(AbortSignal.any([signal, cancel.signal]), ORIGIN_TIMEOUT_MS);
+			const attempt = deadlineSignal(
+				AbortSignal.any([signal, cancel.signal]),
+				ORIGIN_TIMEOUT_MS * this.#patience
+			);
 			const delivery = this.#loadRepresentation(index, attempt.signal).then(
 				(representation) => ({ index, representation }),
 				(error) => ({ index, error })
@@ -148,7 +154,7 @@ export class EvidenceClient {
 		};
 		let hedge;
 		let hedging = new Promise((resolve) => {
-			hedge = setTimeout(resolve, HEDGE_DELAY_MS);
+			hedge = setTimeout(resolve, HEDGE_DELAY_MS * this.#patience);
 		});
 		try {
 			startNext();

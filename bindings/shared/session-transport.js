@@ -19,6 +19,7 @@ export class SessionTransport {
 	#fetch;
 	#maximum;
 	#onMetadata;
+	#setupTimeout;
 	#sessions = [];
 	#opening;
 	#closing;
@@ -27,7 +28,16 @@ export class SessionTransport {
 	#changed = {};
 	#waiters = new Set();
 
-	constructor({ Setup, evidence, environment, endpoint, fetch, maxSessions = 1, onMetadata }) {
+	constructor({
+		Setup,
+		evidence,
+		environment,
+		endpoint,
+		fetch,
+		maxSessions = 1,
+		onMetadata,
+		patience = 1
+	}) {
 		if (!Number.isSafeInteger(maxSessions) || maxSessions <= 0)
 			throw new RangeError('maxSessions must be a positive safe integer');
 
@@ -38,6 +48,7 @@ export class SessionTransport {
 		this.#fetch = fetch;
 		this.#maximum = maxSessions;
 		this.#onMetadata = onMetadata;
+		this.#setupTimeout = SETUP_TIMEOUT_MS * patience;
 	}
 
 	// A request the gateway refused without processing it goes once more through
@@ -117,7 +128,7 @@ export class SessionTransport {
 	async #select(signal, receipt) {
 		const deadline = deadlineSignal(
 			AbortSignal.any([signal, this.#shutdown.signal].filter(Boolean)),
-			SETUP_TIMEOUT_MS
+			this.#setupTimeout
 		);
 		try {
 			for (;;) {
@@ -176,7 +187,7 @@ export class SessionTransport {
 				}
 				// Setup belongs to the transport. Canceling one waiter must not
 				// cancel a shared handshake needed by another request.
-				const setupDeadline = deadlineSignal(this.#shutdown.signal, SETUP_TIMEOUT_MS);
+				const setupDeadline = deadlineSignal(this.#shutdown.signal, this.#setupTimeout);
 				const opening = this.#open(setupDeadline.signal).finally(() => {
 					setupDeadline.dispose();
 					if (this.#opening === opening) this.#opening = undefined;
@@ -304,7 +315,7 @@ export class SessionTransport {
 				}
 				if (exchange) {
 					owner.active++;
-					const deadline = deadlineSignal(undefined, SETUP_TIMEOUT_MS);
+					const deadline = deadlineSignal(undefined, this.#setupTimeout);
 					closing.push(
 						sendSessionRequest({
 							exchange,

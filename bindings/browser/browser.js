@@ -30,8 +30,21 @@ export {
 	ResponseReceipt,
 	inspect_snp_report
 };
+// A page served from an onion address reaches every origin through Tor, where each request
+// crosses several relays and may wait for a new circuit. As the Rust SDK does through a proxy,
+// every time limit is then four times as long.
+function onOnionAddress() {
+	try {
+		return globalThis.location?.hostname.endsWith('.onion') === true;
+	} catch {
+		// Deno throws when a script started without --location reads its location.
+		return false;
+	}
+}
+
 export const StogasTransport = createTransportClass({
 	EvidenceVerifier,
 	EncryptedSetup,
-	transport_configuration
+	transport_configuration,
+	patience: onOnionAddress() ? 4 : 1
 });

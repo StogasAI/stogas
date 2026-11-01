@@ -552,3 +552,31 @@ test(
 		await Promise.all(probes.map((probe) => probe()));
 	}
 );
+
+// A binding on a slow route, such as a page on an onion address, multiplies every time limit.
+test('patience stretches the hedge delay', { timeout: 15_000 }, async () => {
+	const started = performance.now();
+	const requests = [];
+	const client = new EvidenceClient(
+		verifier(),
+		origins,
+		async (url, { signal, headers }) => {
+			const index = origins.indexOf(url);
+			requests.push([index, performance.now() - started]);
+			return serve(index === 0 ? 'hung' : 'fresh', headers['if-none-match'] ?? null, signal);
+		},
+		undefined,
+		4
+	);
+	assert.equal((await client.acquire()).revision, 2);
+	assert.deepEqual(
+		requests.map(([index]) => index),
+		[0, 1]
+	);
+	const replica = requests[1][1];
+	assert.ok(
+		replica >= 4 * HEDGE_MS - 2 && replica < 4 * HEDGE_MS + 250,
+		`replica at ${replica} ms`
+	);
+	client.close();
+});
