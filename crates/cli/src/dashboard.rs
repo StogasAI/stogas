@@ -64,10 +64,9 @@ impl fmt::Display for ApiError {
 impl std::error::Error for ApiError {}
 
 impl Dashboard {
-    /// Post-quantum only, because passwords and tokens do not expire on their own.
     pub fn new(origin: &str, token: Option<Zeroizing<String>>, network: Network) -> Result<Self> {
         Ok(Self {
-            client: HttpsClient::post_quantum(network)?,
+            client: HttpsClient::public(network)?,
             origin: Url::parse(origin)?,
             token,
         })

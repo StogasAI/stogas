@@ -30,7 +30,7 @@ ed25519-dalek = { version = "2.2.0", default-features = false, features = ["allo
 getrandom = "0.4.3"
 hex = "0.4.3"
 reqwest = { version = "0.12.23", default-features = false, features = ["brotli", "gzip", "http2", "json", "rustls-tls-webpki-roots-no-provider", "stream"] }
-rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "prefer-post-quantum", "std", "tls12"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.143", features = ["preserve_order"] }
 sha2 = "0.10.9"

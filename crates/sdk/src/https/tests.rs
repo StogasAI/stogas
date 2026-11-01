@@ -8,7 +8,7 @@ use axum::{
 };
 use http::header::LOCATION;
 use rustls::{
-    ClientConfig, RootCertStore, ServerConfig,
+    RootCertStore, ServerConfig,
     pki_types::{CertificateDer, PrivatePkcs8KeyDer},
 };
 use std::net::SocketAddr;
@@ -278,11 +278,13 @@ async fn plain_http_reaches_only_loopback() {
     }
 }
 
-/// Accepts TLS connections and reports the server name that each asked for.
+/// Accepts TLS connections and reports the server name that each asked for and the key exchange
+/// it used.
 struct TlsListener {
     tcp: TcpListener,
     acceptor: TlsAcceptor,
     names: mpsc::UnboundedSender<Option<String>>,
+    groups: mpsc::UnboundedSender<Option<rustls::NamedGroup>>,
 }
 impl axum::serve::Listener for TlsListener {
     type Io = tokio_rustls::server::TlsStream<TcpStream>;
@@ -294,9 +296,13 @@ impl axum::serve::Listener for TlsListener {
                 continue;
             };
             if let Ok(stream) = self.acceptor.accept(tcp).await {
-                let _ = self
-                    .names
-                    .send(stream.get_ref().1.server_name().map(str::to_owned));
+                let connection = stream.get_ref().1;
+                let _ = self.names.send(connection.server_name().map(str::to_owned));
+                let _ = self.groups.send(
+                    connection
+                        .negotiated_key_exchange_group()
+                        .map(rustls::crypto::SupportedKxGroup::name),
+                );
                 return (stream, address);
             }
         }
@@ -311,6 +317,7 @@ struct TlsServer {
     address: SocketAddr,
     certificate: CertificateDer<'static>,
     names: mpsc::UnboundedReceiver<Option<String>>,
+    groups: mpsc::UnboundedReceiver<Option<rustls::NamedGroup>>,
     task: JoinHandle<()>,
 }
 impl Drop for TlsServer {
@@ -352,10 +359,12 @@ async fn tls_server_with(
     let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = tcp.local_addr().unwrap();
     let (sender, names) = mpsc::unbounded_channel();
+    let (group_sender, groups) = mpsc::unbounded_channel();
     let listener = TlsListener {
         tcp,
         acceptor: TlsAcceptor::from(Arc::new(config)),
         names: sender,
+        groups: group_sender,
     };
     let app = Router::new().route(
         "/",
@@ -365,23 +374,16 @@ async fn tls_server_with(
         address,
         certificate: key.cert.der().clone(),
         names,
+        groups,
         task: tokio::spawn(async move { axum::serve(listener, app).await.unwrap() }),
     }
 }
 
-/// Trusts only `certificate`, with the same protocols as [`HttpsClient::public`].
+/// [`HttpsClient::public`], trusting only `certificate`.
 fn trusting(network: Network, certificate: &CertificateDer<'static>) -> HttpsClient {
     let mut roots = RootCertStore::empty();
     roots.add(certificate.clone()).unwrap();
-    let mut tls = ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::aws_lc_rs::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .with_root_certificates(roots)
-    .with_no_client_auth();
-    tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    HttpsClient::new(network, tls)
+    HttpsClient::new(network, tls(roots).unwrap())
 }
 
 async fn version(client: &HttpsClient, url: &str) -> Result<String, Error> {
@@ -481,7 +483,7 @@ async fn the_onion_address_carries_tls_for_the_original_host() {
 }
 
 #[tokio::test]
-async fn the_post_quantum_client_needs_hybrid_key_exchange_and_tls_1_3() {
+async fn tls_prefers_the_hybrid_key_exchange_and_accepts_classical_servers() {
     let classical = || {
         let mut provider = rustls::crypto::aws_lc_rs::default_provider();
         provider
@@ -490,44 +492,27 @@ async fn the_post_quantum_client_needs_hybrid_key_exchange_and_tls_1_3() {
         provider
     };
     let default = rustls::crypto::aws_lc_rs::default_provider;
-    let post_quantum = HttpsClient::post_quantum(Network::direct()).unwrap();
-    for (client, provider, versions, expected) in [
-        // Key exchange succeeds, so only the self-signed certificate fails.
+    for (provider, versions, expected) in [
         (
-            &post_quantum,
             default(),
             rustls::DEFAULT_VERSIONS,
-            "invalid peer certificate",
+            rustls::NamedGroup::X25519MLKEM768,
         ),
         (
-            &post_quantum,
             classical(),
             rustls::DEFAULT_VERSIONS,
-            "HandshakeFailure",
+            rustls::NamedGroup::X25519,
         ),
         (
-            &post_quantum,
             default(),
             &[&rustls::version::TLS12][..],
-            "ProtocolVersion",
-        ),
-        // The ordinary client reaches the same servers.
-        (
-            &direct(),
-            classical(),
-            rustls::DEFAULT_VERSIONS,
-            "invalid peer certificate",
-        ),
-        (
-            &direct(),
-            default(),
-            &[&rustls::version::TLS12][..],
-            "invalid peer certificate",
+            rustls::NamedGroup::X25519,
         ),
     ] {
-        let server = tls_server_with("localhost", &[b"h2"], provider, versions).await;
+        let mut server = tls_server_with("localhost", &[b"h2"], provider, versions).await;
+        let client = trusting(Network::direct(), &server.certificate);
         let url = format!("https://localhost:{}/", server.address.port());
-        let error = version(client, &url).await.unwrap_err().to_string();
-        assert!(error.contains(expected), "{expected}: {error}");
+        assert_eq!(version(&client, &url).await.unwrap(), "HTTP/2.0");
+        assert_eq!(server.groups.try_recv().unwrap(), Some(expected));
     }
 }
