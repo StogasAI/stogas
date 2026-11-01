@@ -102,7 +102,7 @@ test('encrypted setup cannot release a browser session without its own verified 
 		const platformNow = Date.now;
 		Date.now = () => fixture.verified_at_ms;
 		const verifier = new api.EvidenceVerifier('staging', fixture.root);
-		let snapshot: InstanceType<typeof api.EvidenceSnapshot> | undefined;
+		let snapshot: ReturnType<typeof verifier.refresh> | undefined;
 		let pending: InstanceType<typeof api.EncryptedSetup> | undefined;
 		let second: InstanceType<typeof api.EncryptedSetup> | undefined;
 		try {

@@ -456,15 +456,30 @@ jobs:
             --target web \
             --out-dir target/operator \
             --out-name stogas
-          # The browser load test's own artifact, so that its time limit covers no compiling.
+          # The browser load page's build; the next step builds the other Wasm tests.
           cargo test --locked --release --package stogas-wasm --lib --features staging \
             --target wasm32-unknown-unknown --no-run
+      # The browser tests run these again in each engine.
+      - name: 'WebAssembly: Rust tests in Node'
+        run: |
+          cargo test --locked --release --package stogas-core --lib --target wasm32-unknown-unknown
+          cargo test --locked --release --package stogas-wasm --lib --target wasm32-unknown-unknown
       - name: Install the test browsers
         run: |
           npm ci --ignore-scripts --workspaces=false
           npx --no-install playwright install --with-deps chromium firefox webkit
-      - name: 'Browsers: verify with every network request blocked'
+      - name: 'TypeScript: browser tests'
+        run: npm run typecheck
+      - name: 'Browsers: Chromium, Firefox and WebKit'
         run: npm run test:browser
+      - name: Keep the failed browser tests' traces
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: failure()
+        with:
+          name: browser-test-results-${{ github.run_attempt }}
+          path: test-results
+          if-no-files-found: ignore
+          retention-days: 30
       - name: 'Node: package entry point and Fetch client'
         run: |
           npm run test:node

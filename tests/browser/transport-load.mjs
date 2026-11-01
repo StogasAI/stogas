@@ -6,6 +6,40 @@ import { SESSION_CONTENT_TYPE } from '../../bindings/shared/channel-http.js';
 const encode = (value) => new TextEncoder().encode(value);
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Every runtime runs these, in browsers and in Node, Bun and Deno.
+export const LOAD_SCENARIOS = {
+	'wait for session capacity': {
+		maxConnections: 1,
+		concurrency: 257,
+		requests: 300,
+		ackDelayMs: 2
+	},
+	'stream many small records to slow readers': {
+		maxConnections: 4,
+		concurrency: 32,
+		requests: 96,
+		stream: true,
+		responseBytes: 131072,
+		recordBytes: 256,
+		slowReaderMs: 1
+	},
+	'cancel after the acknowledgement': {
+		maxConnections: 1,
+		concurrency: 16,
+		requests: 64,
+		providerDelayMs: 2,
+		cancelEvery: 3
+	},
+	'send again what a draining gateway refused': {
+		maxConnections: 1,
+		concurrency: 16,
+		requests: 96,
+		responseBytes: 131072,
+		slowReaderMs: 2,
+		drainAfter: 8
+	}
+};
+
 export async function runLoad(
 	api,
 	{
