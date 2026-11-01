@@ -9,6 +9,7 @@ macro_rules! out {
 
 mod account;
 mod altcha;
+mod cloud_credentials;
 mod credentials;
 mod customer_encryption;
 mod dashboard;
@@ -127,7 +128,7 @@ enum Command {
         key_file: PathBuf,
         #[arg(long, value_parser = topup::parse_organization)]
         organization: String,
-        #[arg(long, value_parser = ["plugins", "byok/openai", "byok/anthropic", "byok/chutes"])]
+        #[arg(long, value_parser = ["plugins", "byok/anthropic", "byok/aws", "byok/chutes", "byok/google-cloud", "byok/openai"])]
         purpose: String,
         #[arg(long)]
         input: PathBuf,
