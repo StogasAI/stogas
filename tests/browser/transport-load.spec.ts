@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { expect, test as base } from '@playwright/test';
 import { LOAD_SCENARIOS } from './transport-load.mjs';
 import { loadServer } from './wasm-servers.mjs';
@@ -39,11 +40,13 @@ test.describe('real encrypted Fetch requests', () => {
 	});
 
 	// A failed or stalled run attaches its counts and the last phase of each unfinished request.
+	// A page whose JavaScript has stopped running cannot answer, so the wait is short.
 	test.afterEach(async ({ page }, testInfo) => {
 		if (testInfo.status === testInfo.expectedStatus) return;
-		const progress = await page.evaluate(() =>
-			(globalThis as LoadRuntime).transportLoadProgress?.()
-		);
+		const progress = await Promise.race([
+			page.evaluate(() => (globalThis as LoadRuntime).transportLoadProgress?.()),
+			delay(5_000, 'the page stopped running JavaScript', { ref: false })
+		]);
 		await testInfo.attach('progress', {
 			body: JSON.stringify(progress, null, 2),
 			contentType: 'application/json'
