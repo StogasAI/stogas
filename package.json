@@ -47,10 +47,10 @@
 		"test:node": "node --test tests/node/*.test.mjs"
 	},
 	"devDependencies": {
-		"@playwright/test": "1.64.0",
+		"@playwright/test": "1.64.1",
 		"@types/node": "24.19.2",
 		"miniflare": "5.20261023.3-beta",
-		"openai": "7.32.0",
+		"openai": "7.47.0",
 		"typescript": "7.0.2"
 	}
 }
