@@ -49,6 +49,12 @@ all = "warn"
 pedantic = "warn"
 nursery = "warn"
 
+# Line tables keep backtraces readable. Full debug information made the FFI's static archive,
+# which each Go test links, twice as large, and made CI's build caches pass the 10 GB that GitHub
+# keeps for a repository.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.release]
 codegen-units = 1
 lto = "thin"

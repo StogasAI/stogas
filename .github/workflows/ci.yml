@@ -15,8 +15,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Line tables keep backtraces readable. Full debug information made the build
-  # caches pass the 10 GB that GitHub keeps for a repository, so it dropped some.
+  # Cargo.toml keeps only line tables in the workspace's dev builds. This keeps
+  # the same in the fuzz and example workspaces, which read their own manifests:
+  # the example reuses the workspace's builds only with equal settings. Full
+  # debug information made the caches pass the 10 GB that GitHub keeps for a
+  # repository, so it dropped some.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   # Cargo and rustup retry a failed download three times by default. Cargo's
   # take about 10 seconds, which a hosted runner's DNS failure can outlast; ten
