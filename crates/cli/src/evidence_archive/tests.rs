@@ -76,3 +76,28 @@ fn rejects_substituted_indexes_and_objects() {
         .unwrap_err();
     assert!(error.to_string().contains("archived digest"));
 }
+
+#[test]
+fn rebuilds_signed_onion_addresses_and_rejects_an_index_without_them() {
+    let mut evidence = evidence();
+    evidence["document"]["onion_services"] = json!({
+        "api": format!("{}d.onion", "a".repeat(55)),
+        "app": format!("{}d.onion", "b".repeat(55)),
+        "website": format!("{}d.onion", "c".repeat(55)),
+    });
+    let expected = payload_sha256(&evidence["document"]).unwrap();
+    let mut index: Value = serde_json::from_slice(INDEX).unwrap();
+    index["evidence_sha256"] = json!(expected);
+    let objects = objects(&evidence["document"]);
+
+    let without = Index::parse(&serde_json::to_vec(&index).unwrap(), &expected).unwrap();
+    let error = without.assemble(&objects).unwrap_err();
+    assert!(error.to_string().contains("archived digest"));
+
+    index["onion_services"] = evidence["document"]["onion_services"].clone();
+    let rebuilt = Index::parse(&serde_json::to_vec(&index).unwrap(), &expected)
+        .unwrap()
+        .assemble(&objects)
+        .unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&rebuilt).unwrap(), evidence);
+}

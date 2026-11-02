@@ -140,6 +140,9 @@ struct Index {
     catalogs: Vec<String>,
     hardware_policies: String,
     vendor_collateral: Vec<Collateral>,
+    // Signed evidence names its onion addresses inline once Stogas publishes them.
+    #[serde(default)]
+    onion_services: Option<Map<String, Value>>,
     signature: Value,
     inclusion: Value,
 }
@@ -206,7 +209,7 @@ impl Index {
                 Ok(Value::Object(metadata))
             })
             .collect::<Result<Vec<_>>>()?;
-        let document = json!({
+        let mut document = json!({
             "schema": EVIDENCE_SCHEMA,
             "environment": self.environment,
             "revision": self.revision,
@@ -217,6 +220,9 @@ impl Index {
             "hardware_policies": object(&self.hardware_policies)?,
             "vendor_collateral": collateral,
         });
+        if let Some(services) = self.onion_services {
+            document["onion_services"] = Value::Object(services);
+        }
         ensure!(
             payload_sha256(&document)? == self.evidence_sha256,
             "rebuilt evidence differs from its archived digest"
