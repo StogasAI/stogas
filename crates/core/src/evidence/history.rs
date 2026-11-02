@@ -95,6 +95,46 @@ mod tests {
     }
 
     #[test]
+    fn archived_evidence_outlives_its_key_authorization() {
+        let (mut verifier, _, evidence, _) = fixture();
+        let expired = chrono::DateTime::parse_from_rfc3339(
+            evidence["document"]["keys"]["document"]["expires_at"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap()
+        .timestamp_millis();
+        // Live use ends with the key authorization; the record that the key signed does not.
+        assert!(verifier.refresh(&bytes(&evidence), expired).is_err());
+        let summary = verifier
+            .verify_evidence_archive(&bytes(&evidence), expired)
+            .unwrap();
+        assert_eq!(summary["document"], evidence["document"]);
+        // The appraisal runs at the authenticated log time, never one the bundle merely claims.
+        let logged =
+            evidence["inclusion"]["verificationMaterial"]["tlogEntries"][0]["integratedTime"]
+                .as_str()
+                .unwrap()
+                .parse::<i64>()
+                .unwrap()
+                * 1000;
+        let mut moved = evidence.clone();
+        moved["inclusion"]["verificationMaterial"]["tlogEntries"][0]["integratedTime"] =
+            json!((logged / 1000 + 1).to_string());
+        assert!(
+            verifier
+                .verify_evidence_archive(&bytes(&moved), expired)
+                .is_err()
+        );
+        assert!(
+            verifier
+                .verify_evidence_archive(&bytes(&evidence), logged - 1)
+                .is_err()
+        );
+        assert!(verifier.current().is_none());
+    }
+
+    #[test]
     fn history_rejects_substituted_dependencies_signatures_times_and_hardware() {
         let (verifier, archive, evidence, now) = fixture();
         verifier
@@ -156,21 +196,30 @@ mod tests {
 }
 
 impl Verifier {
-    /// Verify archived evidence without installing it as current trust. Collateral is
-    /// authenticated here; boot-specific historical validity is checked by
+    /// Verify archived evidence without installing it as current trust. It is appraised when
+    /// Rekor logged its signature, so a key authorization or collateral that expired since does
+    /// not change what it said; boot-specific historical validity is checked by
     /// `verify_boot_archive`. The returned summary cannot establish a live connection.
     ///
     /// # Errors
-    /// Rejects malformed, incomplete or unauthenticated evidence.
+    /// Rejects malformed, incomplete or unauthenticated evidence, future/forged log times and
+    /// evidence that was invalid when it was logged.
     pub fn verify_evidence_archive(
         &self,
         evidence: &[u8],
         now_unix_ms: i64,
     ) -> Result<Value, Error> {
-        Ok(self
-            .historical_verifier()?
-            .refresh(evidence, now_unix_ms)?
-            .summary())
+        let at = logged_time(&super::parse_json(evidence)?["inclusion"], now_unix_ms)?;
+        let snapshot = self.historical_verifier()?.refresh(evidence, at)?;
+        if snapshot
+            .evidence()
+            .proof()
+            .map(|proof| proof.logged_unix_ms)
+            != Some(at)
+        {
+            return Err(super::invalid("evidence archive log time differs"));
+        }
+        Ok(snapshot.summary())
     }
 
     fn historical_verifier(&self) -> Result<Self, Error> {
@@ -202,18 +251,8 @@ impl Verifier {
             crate::strict_json::from_slice(archive).map_err(super::invalid)?,
         )
         .map_err(super::invalid)?;
-        let entries = archive.inclusion["verificationMaterial"]["tlogEntries"]
-            .as_array()
-            .filter(|entries| entries.len() == 1)
-            .ok_or_else(|| super::invalid("boot archive requires one log entry"))?;
-        // This is only a candidate clock. verify_logged_boot authenticates this exact
-        // integratedTime before returning anything to the caller.
-        let at = entries[0]["integratedTime"]
-            .as_str()
-            .and_then(|value| value.parse::<i64>().ok())
-            .and_then(|value| value.checked_mul(1000))
-            .filter(|value| *value > 0 && *value <= now_unix_ms)
-            .ok_or_else(|| super::invalid("invalid boot archive log time"))?;
+        // verify_logged_boot authenticates this exact time before returning anything.
+        let at = logged_time(&archive.inclusion, now_unix_ms)?;
         let snapshot = self.historical_verifier()?.refresh(evidence, at)?;
         if archive.document.schema != super::boot::BOOT_PUBLICATION_SCHEMA
             || snapshot.evidence_sha256() != archive.document.evidence_sha256
@@ -236,4 +275,19 @@ impl Verifier {
         }
         Ok(boot)
     }
+}
+
+/// When an archive's one Rekor entry says it was logged. This is only a candidate clock: the
+/// caller must authenticate this exact time before it returns anything that it checked.
+fn logged_time(inclusion: &Value, now_unix_ms: i64) -> Result<i64, Error> {
+    let entries = inclusion["verificationMaterial"]["tlogEntries"]
+        .as_array()
+        .filter(|entries| entries.len() == 1)
+        .ok_or_else(|| super::invalid("archive requires one log entry"))?;
+    entries[0]["integratedTime"]
+        .as_str()
+        .and_then(|value| value.parse::<i64>().ok())
+        .and_then(|value| value.checked_mul(1000))
+        .filter(|value| *value > 0 && *value <= now_unix_ms)
+        .ok_or_else(|| super::invalid("invalid archive log time"))
 }

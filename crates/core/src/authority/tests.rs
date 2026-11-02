@@ -104,6 +104,7 @@ fn candidate(document: EvidenceDocument, seed: u8) -> VerifiedEvidence {
     candidate.proof = Some(Proof {
         signature: sign(&serde_json::to_value(&candidate.document).unwrap(), seed),
         inclusion: Value::Null,
+        logged_unix_ms: NOW,
     });
     candidate
 }
@@ -117,6 +118,7 @@ fn admit(authority: &mut Authority, document: EvidenceDocument, seed: u8) -> Res
     candidate.proof = Some(Proof {
         signature: sign(&serde_json::to_value(&candidate.document).unwrap(), seed),
         inclusion: Value::Null,
+        logged_unix_ms: NOW,
     });
     authority.accept(candidate)
 }

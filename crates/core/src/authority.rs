@@ -417,6 +417,8 @@ pub enum Error {
 pub struct Proof {
     pub signature: StogasSignature,
     pub inclusion: Value,
+    /// When Rekor logged the signature, as the verified inclusion authenticates it.
+    pub logged_unix_ms: i64,
 }
 
 /// Authenticated evidence contents. Never holds CRL state, checkpoints or HTTP `ETags`.
@@ -715,7 +717,7 @@ pub(crate) fn verify_proof(
     let document = serde_json::to_value(&candidate.document).map_err(invalid)?;
     let key = &candidate.document.keys.document.active_key;
     verify_signature(&document, &signature, &key.key_id, &key.public_key)?;
-    verify_document_inclusion(
+    let logged_unix_ms = verify_document_inclusion(
         &document,
         &signature,
         &inclusion,
@@ -726,6 +728,7 @@ pub(crate) fn verify_proof(
     candidate.proof = Some(Proof {
         signature,
         inclusion,
+        logged_unix_ms,
     });
     Ok(())
 }
