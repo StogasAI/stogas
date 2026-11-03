@@ -20,6 +20,25 @@ fn read_private(path: &Path, maximum: usize) -> Result<Zeroizing<Vec<u8>>> {
     Ok(bytes)
 }
 
+fn exists(path: &Path) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{} already exists, and the CLI never overwrites a file",
+        path.display()
+    )
+}
+
+/// Refuses an output file that already exists, before any work that the file would wait for.
+/// Writing it refuses again, should the file appear in the meantime.
+pub fn refuse_existing(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Err(exists(path)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => {
+            Err(anyhow::Error::new(error).context(format!("could not check {}", path.display())))
+        }
+    }
+}
+
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -29,11 +48,10 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
         options.mode(0o600);
     }
     let mut file = options.open(path).map_err(|error| {
-        let path = path.display();
         if error.kind() == std::io::ErrorKind::AlreadyExists {
-            anyhow::anyhow!("{path} already exists, and the CLI never overwrites a file")
+            exists(path)
         } else {
-            anyhow::Error::new(error).context(format!("could not create {path}"))
+            anyhow::Error::new(error).context(format!("could not create {}", path.display()))
         }
     })?;
     file.write_all(bytes)?;
@@ -97,10 +115,33 @@ pub fn write_key(path: &Path, key: &OrganizationKey) -> Result<()> {
 
 /// The plugin whose settings a purpose encrypts. Each opens only under its own purpose, so that
 /// its ciphertext cannot be moved to another plugin.
-fn plugin(purpose: &str) -> Option<&str> {
+pub fn plugin(purpose: &str) -> Option<&str> {
     purpose
         .strip_prefix("plugins/")
         .filter(|name| matches!(*name, "export" | "redaction"))
+}
+
+/// Checks what this machine can check of a plugin's settings: a JSON object that is the plugin's
+/// value, rather than an envelope or the plugins section around it. The gateway checks the rest.
+pub fn check_settings(plugin: &str, plaintext: &[u8]) -> Result<()> {
+    let value: serde_json::Value = serde_json::from_slice(plaintext)
+        .map_err(|_| anyhow::anyhow!("Plugin settings must contain JSON"))?;
+    let Some(settings) = value.as_object() else {
+        bail!("Plugin settings must contain a JSON object");
+    };
+    if settings.contains_key("encrypted") {
+        bail!("The file is already encrypted");
+    }
+    // A plugins section would open as settings that the plugin does not have.
+    if ["export", "redaction", "textExtraction"]
+        .iter()
+        .any(|name| settings.contains_key(*name))
+    {
+        bail!(
+            "Put only the settings inside plugins.{plugin} in the file, without the plugins section around them"
+        );
+    }
+    Ok(())
 }
 
 fn seal(
@@ -127,23 +168,7 @@ fn seal(
         bail!("Invalid encryption input or size");
     }
     if let Some(plugin) = plugin {
-        let value: serde_json::Value = serde_json::from_slice(plaintext)
-            .map_err(|_| anyhow::anyhow!("Plugin settings must contain JSON"))?;
-        let Some(settings) = value.as_object() else {
-            bail!("Plugin settings must contain a JSON object");
-        };
-        if settings.contains_key("encrypted") {
-            bail!("The file is already encrypted");
-        }
-        // A plugins section would open as settings that the plugin does not have.
-        if ["export", "redaction", "textExtraction"]
-            .iter()
-            .any(|name| settings.contains_key(*name))
-        {
-            bail!(
-                "Put only the settings inside plugins.{plugin} in the file, without the plugins section around them"
-            );
-        }
+        check_settings(plugin, plaintext)?;
     } else if plaintext.iter().any(|b| !(0x21..=0x7e).contains(b)) {
         bail!("Provider credentials must contain printable ASCII without whitespace");
     }
@@ -173,14 +198,8 @@ fn seal(
     )
 }
 
-pub fn encrypt(
-    key: &OrganizationKey,
-    organization: &str,
-    purpose: &str,
-    input: &Path,
-    output: &Path,
-) -> Result<()> {
-    let root = &key.root;
+/// Reads the file to encrypt for the purpose.
+pub fn read_input(purpose: &str, input: &Path) -> Result<Zeroizing<Vec<u8>>> {
     // A document can be larger than the credential that it becomes: Google's key file, and a
     // file that Windows PowerShell saved in UTF-16.
     let maximum = match purpose {
@@ -188,20 +207,31 @@ pub fn encrypt(
         "byok/aws" | "byok/azure" | "byok/google-cloud" => 16_384,
         _ => 4096,
     };
-    let input = read_private(input, maximum)?;
+    read_private(input, maximum)
+}
+
+/// Encrypts what `read_input` read, and writes what the policy or dashboard takes to a new file.
+pub fn encrypt(
+    key: &OrganizationKey,
+    organization: &str,
+    purpose: &str,
+    input: &[u8],
+    output: &Path,
+) -> Result<()> {
+    let root = &key.root;
     let mut salt = [0_u8; 32];
     let mut nonce = [0_u8; 12];
     getrandom::fill(&mut salt)?;
     getrandom::fill(&mut nonce)?;
     if plugin(purpose).is_some() {
         // What replaces the plugin's settings in the policy.
-        let envelope = seal(root, organization, purpose, &input, &salt, nonce)?;
+        let envelope = seal(root, organization, purpose, input, &salt, nonce)?;
         let value = serde_json::json!({ "encrypted": envelope });
         return write_new(output, &serde_json::to_vec_pretty(&value)?);
     }
     // A credential prints what the dashboard registers: the envelope, a preview except for Azure,
     // and for AWS and Google Cloud the target that routing reads instead of the secret.
-    let registration = crate::cloud_credentials::prepare(purpose, &input)?;
+    let registration = crate::cloud_credentials::prepare(purpose, input)?;
     let envelope = seal(
         root,
         organization,
@@ -308,6 +338,15 @@ mod tests {
             )
         );
         assert_eq!(std::fs::read(&path).unwrap(), first);
+        // `stogas encrypt` refuses the file before it asks the gateway to check anything.
+        assert_eq!(
+            refuse_existing(&path).unwrap_err().to_string(),
+            format!(
+                "{} already exists, and the CLI never overwrites a file",
+                path.display()
+            )
+        );
+        refuse_existing(&path.with_extension("missing")).unwrap();
         // A file's path cannot be a directory. Each system words the error its own way.
         let missing = path.join("key");
         let refused = std::fs::File::create(&missing).unwrap_err();

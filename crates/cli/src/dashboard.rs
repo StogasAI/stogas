@@ -263,6 +263,23 @@ pub fn api_error(status: StatusCode, body: &[u8]) -> ApiError {
 }
 
 /// Server text with control characters replaced, so it cannot drive the terminal.
+/// What a gateway's refusal says, as the terminal can show it: its error message, or its status
+/// when the body holds none.
+pub fn gateway_refusal(status: StatusCode, body: &[u8]) -> String {
+    #[derive(Deserialize)]
+    struct Refusal {
+        error: Detail,
+    }
+    #[derive(Deserialize)]
+    struct Detail {
+        message: String,
+    }
+    serde_json::from_slice::<Refusal>(body).map_or_else(
+        |_| format!("the gateway answered {status}"),
+        |refusal| printable(&refusal.error.message),
+    )
+}
+
 pub fn printable(text: &str) -> String {
     text.chars()
         .map(|character| {

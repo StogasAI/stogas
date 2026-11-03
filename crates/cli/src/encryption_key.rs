@@ -2,8 +2,9 @@
 //! each under its organization and the label that the organization policy registers it with.
 
 use crate::{
-    credentials,
+    account, credentials,
     customer_encryption::{self, OrganizationKey},
+    policy_check,
     topup::parse_organization,
 };
 use anyhow::{Context as _, Result, bail};
@@ -11,6 +12,7 @@ use std::{
     io::{self, IsTerminal as _, Read as _, Write as _},
     path::{Path, PathBuf},
 };
+use stogas::{TransportOptions, network::Network};
 use zeroize::Zeroizing;
 
 #[derive(clap::Subcommand)]
@@ -84,7 +86,8 @@ pub struct EncryptArgs {
     #[arg(long, value_parser = parse_organization)]
     organization: String,
     /// What you encrypt: the settings of the plugin that follows plugins/, or a credential for
-    /// the provider that follows byok/. Each opens only as what you chose here.
+    /// the provider that follows byok/. Each opens only as what you chose here. Before it encrypts
+    /// a plugin's settings, the CLI has the gateway check them, which needs you signed in.
     #[arg(long, value_parser = ["plugins/export", "plugins/redaction", "byok/anthropic", "byok/aws", "byok/azure", "byok/chutes", "byok/google-cloud", "byok/openai"])]
     purpose: String,
     /// The file to encrypt: the JSON object inside plugins.export or plugins.redaction, an API
@@ -98,18 +101,45 @@ pub struct EncryptArgs {
     output: PathBuf,
 }
 
-/// Encrypts with the key from its file, or with the key saved under its label.
-pub async fn encrypt(args: EncryptArgs) -> Result<()> {
+impl EncryptArgs {
+    /// Whether the command asks the gateway to check what it encrypts: a plugin's settings, which
+    /// only a gateway can read once they are sealed.
+    pub fn checks(&self) -> bool {
+        customer_encryption::plugin(&self.purpose).is_some()
+    }
+}
+
+/// Encrypts with the key from its file, or with the key saved under its label. A plugin's settings
+/// are encrypted only after the gateway accepts them, so that a mistake shows now rather than when
+/// a request needs them.
+pub async fn encrypt(
+    args: EncryptArgs,
+    network: &Network,
+    gateway: TransportOptions,
+) -> Result<()> {
+    customer_encryption::refuse_existing(&args.output)?;
     let key = match (args.key_file, args.key) {
         (Some(path), _) => customer_encryption::read_key(&path)?,
         (None, Some(label)) => saved(&args.organization, &label).await?,
         (None, None) => bail!("name the key with --key or --key-file"),
     };
+    let input = customer_encryption::read_input(&args.purpose, &args.input)?;
+    if let Some(plugin) = customer_encryption::plugin(&args.purpose) {
+        customer_encryption::check_settings(plugin, &input)?;
+        policy_check::check(
+            &account::signed_in(network).await?,
+            &policy_check::Verified(gateway),
+            &args.organization,
+            plugin,
+            &input,
+        )
+        .await?;
+    }
     customer_encryption::encrypt(
         &key,
         &args.organization,
         &args.purpose,
-        &args.input,
+        &input,
         &args.output,
     )
 }

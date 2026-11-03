@@ -81,6 +81,8 @@ async fn signs_up_tops_up_and_signs_out() {
     edits_the_organization_policy(&dashboard).await;
     #[cfg(feature = "staging")]
     checks_an_encrypted_credential(&dashboard).await;
+    #[cfg(feature = "staging")]
+    checks_plugin_settings_before_encrypting_them(&dashboard).await;
 
     account::revoke(&origin, token, &Network::direct())
         .await
@@ -201,7 +203,8 @@ async fn checks_an_encrypted_credential(dashboard: &Dashboard) {
     let generated = customer_encryption::generate().unwrap();
     customer_encryption::write_key(&key, &generated).unwrap();
     std::fs::write(&secret, format!("sk-stogas-live-{}", hex::encode(random))).unwrap();
-    customer_encryption::encrypt(&generated, &organization, "byok/openai", &secret, &sealed)
+    let input = customer_encryption::read_input("byok/openai", &secret).unwrap();
+    customer_encryption::encrypt(&generated, &organization, "byok/openai", &input, &sealed)
         .unwrap();
     let registration: Value = serde_json::from_slice(&std::fs::read(&sealed).unwrap()).unwrap();
 
@@ -264,4 +267,39 @@ async fn checks_an_encrypted_credential(dashboard: &Dashboard) {
     let revision = policy.read().await.unwrap().revision;
     policy.save(&Value::Null, revision).await.unwrap();
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// `stogas encrypt` of a redaction plugin's settings, over each kind of verified connection: with a
+/// grant from the dashboard, the staging gateway accepts the settings, and names the mistake in
+/// settings that it refuses.
+#[cfg(feature = "staging")]
+async fn checks_plugin_settings_before_encrypting_them(dashboard: &Dashboard) {
+    use crate::policy_check::{self, Verified};
+    use stogas::{Environment, SecurityMode, TransportOptions};
+
+    let organization = account::personal_organization(dashboard).await.unwrap();
+    for security in [SecurityMode::Tls, SecurityMode::E2ee] {
+        let gateway = Verified(TransportOptions {
+            environment: Environment::Staging,
+            security,
+            base_url: None,
+            max_connections: 1,
+            proxy: None,
+            onion: false,
+            no_proxy: None,
+        });
+        let check = |settings: &'static [u8]| {
+            policy_check::check(dashboard, &gateway, &organization, "redaction", settings)
+        };
+        check(br#"{"email_address":true,"literals":[{"values":["Falcon"]}]}"#)
+            .await
+            .unwrap();
+        assert_eq!(
+            check(br#"{"email_adress":true}"#)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "Policy configuration is invalid: unknown redaction preset email_adress"
+        );
+    }
 }
