@@ -3,6 +3,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use stogas_core::attestation::certificate::ParsedNativeCertificate;
+use stogas_core::log_batch;
 use stogas_core::receipt::canonical::{self, Side};
 use stogas_core::signing::SigningKey;
 
@@ -358,4 +359,117 @@ async fn offline_files_fail_closed_on_changed_evidence_content_and_oversized_rec
     std::fs::write(&proof, original).unwrap();
     std::fs::remove_file(files.path("boot")).unwrap();
     assert!(files.verify().await.is_err());
+}
+
+async fn check(input: &ProofArgs, verifier: &Verifier) -> Result<log_batch::VerifiedRow> {
+    let proof = read_log_proof(input).await?.context("not a log proof")?;
+    verify_log_proof(input, &proof, verifier, Network::direct()).await
+}
+
+#[tokio::test]
+async fn a_log_rows_proof_verifies_under_its_boot_and_stands_alone() {
+    let mut files = Files::new();
+    let verifier = Verifier::new(
+        stogas::Environment::Staging,
+        serde_json::from_value(files.fixture["root"].clone()).unwrap(),
+    )
+    .unwrap();
+    let boot = verifier
+        .verify_boot_archive(
+            &std::fs::read(files.path("boot")).unwrap(),
+            &std::fs::read(files.path("evidence")).unwrap(),
+            files.input.now_unix_ms.unwrap(),
+        )
+        .unwrap();
+    let node = boot.hardware().node_id().to_owned();
+    let rows: Vec<Value> = (0..3)
+        .map(|index| {
+            json!({
+                "request_id": format!("01a1a1a1-0000-7000-8000-00000000000{index}"),
+                "node_id": node,
+                "usage": {"billed_cost_usd": "0.01"},
+                "log_batch": {"sequence": 4, "index": index},
+                "receipt_commitments": {"request": "aa".repeat(32), "response": "bb".repeat(32)},
+            })
+        })
+        .collect();
+    let leaves = rows
+        .iter()
+        .map(|row| log_batch::leaf(row).unwrap())
+        .collect::<Vec<_>>();
+    let mut batch = log_batch::Batch {
+        schema: log_batch::SCHEMA.into(),
+        node_id: node,
+        boot_sha256: files.boot_hash.clone(),
+        sequence: 4,
+        opened_at: "2026-11-03T08:35:00.000Z".into(),
+        sealed_at: "2026-11-03T08:36:00.004Z".into(),
+        leaf_count: 3,
+        root: hex::encode(log_batch::root(&leaves)),
+        signature: String::new(),
+    };
+    // The public deterministic key of the diagnostic boot that produced the hardware sample.
+    batch.signature = URL_SAFE_NO_PAD.encode(
+        SigningKey::from_seeds(&[[42; 32]; 2])
+            .sign(&batch.message().unwrap())
+            .unwrap(),
+    );
+    let proof = |row: &Value| {
+        json!({
+            "schema": log_batch::PROOF_SCHEMA,
+            "row": row,
+            "batch": batch,
+            "path": log_batch::path(&leaves, 1).iter().map(hex::encode).collect::<Vec<_>>(),
+        })
+    };
+    // Whitespace and key order are not content.
+    std::fs::write(
+        files.path("log-proof.json"),
+        pretty_json(&proof(&rows[1])).unwrap(),
+    )
+    .unwrap();
+    files.input.proof = Some(files.path("log-proof.json"));
+    files.input.request = None;
+    files.input.response = None;
+    let row = check(&files.input, &verifier).await.unwrap();
+    assert_eq!((row.sequence, row.index, row.leaf_count), (4, 1, 3));
+    assert_eq!(row.boot_sha256, files.boot_hash);
+    assert_eq!(
+        row.request_id.as_deref(),
+        Some("01a1a1a1-0000-7000-8000-000000000001")
+    );
+    assert_eq!(
+        serde_json::to_value(&row.receipt_commitments).unwrap(),
+        json!({"request": "aa".repeat(32), "response": "bb".repeat(32)})
+    );
+
+    // A row's proof carries everything that it proves.
+    let mut input = Files::args(&files.directory, files.input.now_unix_ms);
+    input.proof.clone_from(&files.input.proof);
+    let error = check(&input, &verifier).await.unwrap_err().to_string();
+    assert!(error.contains("stands alone"), "{error}");
+
+    // A changed row fails before any evidence is read.
+    let mut changed = rows[1].clone();
+    changed["usage"]["billed_cost_usd"] = json!("0.02");
+    std::fs::write(files.path("log-proof.json"), proof(&changed).to_string()).unwrap();
+    let mut offline = Files::args(&files.directory, files.input.now_unix_ms);
+    offline.proof.clone_from(&files.input.proof);
+    (offline.request, offline.response, offline.boot) = (None, None, Some(files.path("absent")));
+    let error = check(&offline, &verifier).await.unwrap_err().to_string();
+    assert!(error.contains("does not match its signed batch"), "{error}");
+
+    // A row that claims another place in its batch fails too.
+    let mut moved = rows[1].clone();
+    moved["log_batch"]["index"] = json!(2);
+    std::fs::write(files.path("log-proof.json"), proof(&moved).to_string()).unwrap();
+    assert!(check(&files.input, &verifier).await.is_err());
+
+    // Receipt metadata in --proof still takes the receipt path.
+    std::fs::write(
+        files.path("log-proof.json"),
+        files.bag(&json!({"choices": []})).to_string(),
+    )
+    .unwrap();
+    assert!(read_log_proof(&files.input).await.unwrap().is_none());
 }

@@ -133,6 +133,91 @@ fn boot_requests_and_receipts_sign_under_the_logged_boot_key() {
     }
 }
 
+// The shared vectors' rows hash to their leaves, and their batch signs under this boot's key.
+#[test]
+fn log_batches_seal_the_shared_vectors_under_the_boot_key() {
+    let boot = boot();
+    let vectors: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../tests/fixtures/log-batch-v1.json")).unwrap();
+    let expected: log_batch::Batch = serde_json::from_value(vectors["batch"].clone()).unwrap();
+    let leaves = vectors["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            let row = serde_json::to_vec(row).unwrap();
+            let mut leaf = [0; 64];
+            // SAFETY: the row addresses its length and the leaf 64 writable bytes.
+            assert_eq!(
+                unsafe { stogas_log_row_leaf(row.as_ptr(), row.len(), leaf.as_mut_ptr()) },
+                0
+            );
+            leaf
+        })
+        .collect::<Vec<_>>();
+    let hex_leaves = leaves.iter().map(hex::encode).collect::<Vec<_>>();
+    assert_eq!(vectors["leaves"], serde_json::json!(hex_leaves));
+    let boot_sha256: [u8; 32] = hex::decode(&expected.boot_sha256)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let sign = |node: &[u8], sequence, [opened, sealed]: [i64; 2], count| {
+        let mut batch = StogasBuffer::EMPTY;
+        // SAFETY: inputs address their declared lengths and the output is writable.
+        let status = unsafe {
+            stogas_node_sign_log_batch(
+                boot.keys,
+                boot_sha256.as_ptr(),
+                node.as_ptr(),
+                node.len(),
+                sequence,
+                opened,
+                sealed,
+                leaves.as_flattened().as_ptr(),
+                count,
+                &raw mut batch,
+            )
+        };
+        (status, (status == 0).then(|| take(batch)))
+    };
+    let times = [1_793_694_840_000, 1_793_694_900_004];
+    let (status, batch) = sign(expected.node_id.as_bytes(), 12, times, leaves.len());
+    assert_eq!(status, 0);
+    let signed: log_batch::Batch = serde_json::from_slice(&batch.unwrap()).unwrap();
+    assert_eq!(
+        log_batch::Batch {
+            signature: expected.signature.clone(),
+            ..signed.clone()
+        },
+        expected
+    );
+    signed
+        .verify_key(&boot.public("signing_public_key"))
+        .unwrap();
+    let node = expected.node_id.as_bytes();
+    for (case, (status, _)) in [
+        ("empty", sign(node, 12, times, 0)),
+        ("unnumbered", sign(node, 0, times, 5)),
+        ("reversed", sign(node, 12, [times[1], times[0]], 5)),
+        ("unnamed", sign(b"", 12, times, 5)),
+        ("uppercase", sign(b"Quiet-harbor", 12, times, 5)),
+        ("too large", sign(node, 12, times, 8_193)),
+    ] {
+        assert_eq!(status, 1, "{case}");
+    }
+    let mut leaf = [0; 64];
+    for row in [
+        &b"[]"[..],
+        br#"{"a":1,"a":2}"#,
+        br#"{"a":9007199254740993}"#,
+        b"{",
+    ] {
+        // SAFETY: the row addresses its length and the leaf 64 writable bytes.
+        let status = unsafe { stogas_log_row_leaf(row.as_ptr(), row.len(), leaf.as_mut_ptr()) };
+        assert_eq!(status, 1, "{}", String::from_utf8_lossy(row));
+    }
+}
+
 #[test]
 fn provisioning_opens_once_into_an_erasable_buffer_for_its_boot() {
     let boot = boot();

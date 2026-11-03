@@ -11,6 +11,8 @@ pub mod evidence;
 #[cfg(feature = "gateway")]
 pub mod gateway;
 #[cfg(feature = "snp")]
+pub mod log_batch;
+#[cfg(feature = "snp")]
 pub mod receipt;
 pub mod sdk_release;
 pub mod secret_release;

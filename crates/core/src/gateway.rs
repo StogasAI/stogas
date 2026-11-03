@@ -10,6 +10,7 @@ use crate::{
     authority::Environment,
     evidence::boot::{self, BootRecord, BootReportData, BootRequestPurpose},
     kem::{PrivateKey, XWing},
+    log_batch::{self, Batch},
     receipt::{self, ContentDigest, Receipt, Salt, Salts, Side, SignedReceipt, canonical},
     secret_release,
     signing::{self, SIGNATURE_BYTES, SigningKey, mldsa},
@@ -178,6 +179,62 @@ impl NodeKeys {
                 request: Some(hex::encode(request_salt)),
                 response: Some(hex::encode(response_salt)),
             },
+        })
+    }
+
+    /// Seal one batch of request log rows: the root of the rows' leaves, signed with this boot's
+    /// key together with the batch's number, the times it opened and was sealed, and its size.
+    ///
+    /// # Errors
+    /// Rejects an empty or oversized batch, batch number zero, a node ID that is not one, times
+    /// that cannot be written or that run backwards, and signing failures.
+    pub fn sign_log_batch(
+        &self,
+        boot_sha256: &[u8; 32],
+        node_id: &str,
+        sequence: u32,
+        [opened_at_ms, sealed_at_ms]: [i64; 2],
+        leaves: &[log_batch::Hash],
+    ) -> Result<Batch, Error> {
+        let leaf_count = u32::try_from(leaves.len())
+            .ok()
+            .filter(|count| (1..=log_batch::MAX_LEAVES).contains(count))
+            .ok_or(Error::Input("log batch size"))?;
+        let (Some(opened_at), Some(sealed_at)) = (
+            log_batch::timestamp(opened_at_ms),
+            log_batch::timestamp(sealed_at_ms),
+        ) else {
+            return Err(Error::Input("log batch times"));
+        };
+        if sequence == 0
+            || sealed_at_ms < opened_at_ms
+            || node_id.is_empty()
+            || node_id.len() > 100
+            || !node_id
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return Err(Error::Input("log batch identity"));
+        }
+        let root = log_batch::root(leaves);
+        let signature = self.signing.sign(&log_batch::message(
+            boot_sha256,
+            sequence,
+            opened_at_ms,
+            sealed_at_ms,
+            leaf_count,
+            &root,
+        ))?;
+        Ok(Batch {
+            schema: log_batch::SCHEMA.into(),
+            node_id: node_id.into(),
+            boot_sha256: hex::encode(boot_sha256),
+            sequence,
+            opened_at,
+            sealed_at,
+            leaf_count,
+            root: hex::encode(root),
+            signature: URL_SAFE_NO_PAD.encode(signature),
         })
     }
 
