@@ -97,7 +97,9 @@ fn method_parser() -> impl TypedValueParser<Value = Method> {
 #[derive(Subcommand)]
 enum Command {
     /// Create an account and sign this machine in.
-    Signup,
+    // `signup` was its first name; old instructions keep working.
+    #[command(alias = "signup")]
+    Register,
     /// Sign this machine in with your account password.
     Login,
     /// Sign this machine out and delete its access token.
@@ -296,7 +298,7 @@ async fn run() -> Result<()> {
     // The dashboard serves production accounts.
     let dashboard = || network(Environment::Production);
     match command {
-        Command::Signup => account::signup(&dashboard()?).await?,
+        Command::Register => account::register_account(&dashboard()?).await?,
         Command::Login => account::login(&dashboard()?).await?,
         Command::Logout => account::logout(&dashboard()?).await?,
         Command::Api {
@@ -594,8 +596,8 @@ mod tests {
             return;
         }
         for (arguments, expected) in [
-            (&["stogas", "signup"][..], None),
-            (&["stogas", "--tor", "signup"], Some(route::Tor::Find)),
+            (&["stogas", "register"][..], None),
+            (&["stogas", "--tor", "register"], Some(route::Tor::Find)),
             (&["stogas", "login", "--tor"], Some(route::Tor::Find)),
             (
                 &["stogas", "--tor=9150", "login"],
@@ -607,14 +609,24 @@ mod tests {
             assert_eq!(cli.tor, expected, "{arguments:?}");
         }
         // The port needs an equals sign, so a subcommand never becomes one.
-        assert!(Cli::try_parse_from(["stogas", "--tor", "9150", "signup"]).is_err());
-        assert!(Cli::try_parse_from(["stogas", "--tor=tor", "signup"]).is_err());
+        assert!(Cli::try_parse_from(["stogas", "--tor", "9150", "register"]).is_err());
+        assert!(Cli::try_parse_from(["stogas", "--tor=tor", "register"]).is_err());
+    }
+
+    #[test]
+    fn signup_still_registers_but_help_names_only_register() {
+        use clap::CommandFactory as _;
+        let cli = Cli::try_parse_from(["stogas", "signup"]).unwrap();
+        assert!(matches!(cli.command, Command::Register));
+        let help = Cli::command().render_help().to_string();
+        assert!(help.contains("register"), "{help}");
+        assert!(!help.contains("signup"), "{help}");
     }
 
     #[test]
     fn offline_commands_never_choose_a_route() {
         for (arguments, connects) in [
-            (&["stogas", "signup"][..], true),
+            (&["stogas", "register"][..], true),
             (&["stogas", "probe"], true),
             (&["stogas", "serve"], true),
             (&["stogas", "verify", "evidence.json"], false),

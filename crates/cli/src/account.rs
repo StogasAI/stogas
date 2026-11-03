@@ -29,7 +29,7 @@ pub async fn signed_in(network: &Network) -> Result<Dashboard> {
     Dashboard::new(ORIGIN, Some(token), network.clone())
 }
 
-pub async fn signup(network: &Network) -> Result<()> {
+pub async fn register_account(network: &Network) -> Result<()> {
     refuse_environment_token()?;
     let dashboard = Dashboard::new(ORIGIN, None, network.clone())?;
     let password = register(&dashboard).await?;
