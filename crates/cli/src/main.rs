@@ -15,6 +15,7 @@ mod cloud_credentials;
 mod credentials;
 mod customer_encryption;
 mod dashboard;
+mod encryption_key;
 mod evidence_archive;
 mod policy;
 mod route;
@@ -148,34 +149,13 @@ enum Command {
         #[arg(long)]
         timeout_ms: Option<u32>,
     },
-    /// Generate an organization encryption key locally; print only its public identifier.
+    /// Create organization encryption keys and keep them in this system's keychain.
     EncryptionKey {
-        /// A new file for the key, readable only by you. The CLI never overwrites a file.
-        #[arg(long)]
-        output: PathBuf,
+        #[command(subcommand)]
+        command: encryption_key::Command,
     },
     /// Encrypt a plugin's settings or a provider credential locally.
-    Encrypt {
-        /// The file with your organization key, as `stogas encryption-key` wrote it.
-        #[arg(long)]
-        key_file: PathBuf,
-        /// The organization whose policy registers the key. Only its requests can use the result.
-        #[arg(long, value_parser = topup::parse_organization)]
-        organization: String,
-        /// What you encrypt: the settings of the plugin that follows plugins/, or a credential for
-        /// the provider that follows byok/. Each opens only as what you chose here.
-        #[arg(long, value_parser = ["plugins/export", "plugins/redaction", "byok/anthropic", "byok/aws", "byok/azure", "byok/chutes", "byok/google-cloud", "byok/openai"])]
-        purpose: String,
-        /// The file to encrypt: the JSON object inside plugins.export or plugins.redaction, an API
-        /// key, AWS or Google Cloud's credential document, or the Azure application that
-        /// `az ad sp create-for-rbac` prints.
-        #[arg(long)]
-        input: PathBuf,
-        /// A new file for what the policy or dashboard takes: the plugin's new value, or the
-        /// credential to register. The CLI never overwrites a file.
-        #[arg(long)]
-        output: PathBuf,
-    },
+    Encrypt(encryption_key::EncryptArgs),
     /// Verify saved evidence without network access.
     Verify(VerifyArgs),
     /// Save the archived boot and evidence that a receipt names, for checks without network access.
@@ -314,7 +294,7 @@ impl Command {
     /// Whether the command connects anywhere.
     const fn connects(&self) -> bool {
         match self {
-            Self::EncryptionKey { .. } | Self::Encrypt { .. } | Self::Verify(_) => false,
+            Self::EncryptionKey { .. } | Self::Encrypt(_) | Self::Verify(_) => false,
             Self::VerifyRelease { evidence, .. } => evidence.is_none(),
             Self::Proof(args) => args.evidence.is_none(),
             _ => true,
@@ -400,14 +380,8 @@ async fn run() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Command::EncryptionKey { output } => customer_encryption::generate(&output)?,
-        Command::Encrypt {
-            key_file,
-            organization,
-            purpose,
-            input,
-            output,
-        } => customer_encryption::encrypt(&key_file, &organization, &purpose, &input, &output)?,
+        Command::EncryptionKey { command } => encryption_key::run(command).await?,
+        Command::Encrypt(args) => encryption_key::encrypt(args).await?,
         Command::Verify(args) => run_verify(args).await?,
         Command::DownloadEvidence {
             boot,
@@ -875,6 +849,78 @@ mod tests {
     }
 
     #[test]
+    fn names_where_each_key_comes_from_and_goes() {
+        const ORGANIZATION: &str = "019a0000-0000-7000-8000-000000000001";
+        let encrypt = |key: &[&str]| {
+            let mut arguments = vec!["stogas", "encrypt", "--organization", ORGANIZATION];
+            arguments.extend_from_slice(key);
+            arguments.extend([
+                "--purpose",
+                "plugins/redaction",
+                "--input",
+                "in",
+                "--output",
+                "out",
+            ]);
+            Cli::try_parse_from(arguments).is_ok()
+        };
+        assert!(encrypt(&["--key-file", "org.key"]));
+        assert!(encrypt(&["--key", "prod"]));
+        assert!(!encrypt(&[]));
+        assert!(!encrypt(&["--key", "prod", "--key-file", "org.key"]));
+        assert!(!encrypt(&["--key", "Prod"]));
+        for (arguments, valid) in [
+            (&["create", "--output", "org.key"][..], true),
+            (
+                &["create", "--organization", ORGANIZATION, "--label", "prod"],
+                true,
+            ),
+            (
+                &[
+                    "create",
+                    "--organization",
+                    ORGANIZATION,
+                    "--label",
+                    "prod",
+                    "--output",
+                    "org.key",
+                ],
+                true,
+            ),
+            (&["create"], false),
+            (&["create", "--label", "prod"], false),
+            (
+                &["create", "--organization", ORGANIZATION, "--output", "k"],
+                false,
+            ),
+            (
+                &["import", "--organization", ORGANIZATION, "--label", "prod"],
+                true,
+            ),
+            (
+                &["export", "--organization", ORGANIZATION, "--label", "prod"],
+                false,
+            ),
+            (
+                &[
+                    "export",
+                    "--organization",
+                    ORGANIZATION,
+                    "--label",
+                    "prod",
+                    "--output",
+                    "-",
+                ],
+                true,
+            ),
+            (&["delete", "--organization", ORGANIZATION], false),
+        ] {
+            let parsed = Cli::try_parse_from(["stogas", "encryption-key"].iter().chain(arguments));
+            assert_eq!(parsed.is_ok(), valid, "{arguments:?}");
+        }
+    }
+
+    #[test]
     fn signup_still_registers_but_help_names_only_register() {
         use clap::CommandFactory as _;
         let cli = Cli::try_parse_from(["stogas", "signup"]).unwrap();
@@ -891,7 +937,10 @@ mod tests {
             (&["stogas", "probe"], true),
             (&["stogas", "serve"], true),
             (&["stogas", "verify", "evidence.json"], false),
-            (&["stogas", "encryption-key", "--output", "key"], false),
+            (
+                &["stogas", "encryption-key", "create", "--output", "key"],
+                false,
+            ),
             (&["stogas", "verify-release", "dist"], true),
             (
                 &[

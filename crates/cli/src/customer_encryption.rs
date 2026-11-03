@@ -56,7 +56,7 @@ pub struct OrganizationKey {
     root: Zeroizing<Vec<u8>>,
 }
 
-/// Reads a key as `stogas encryption-key` writes it, ignoring surrounding whitespace.
+/// Reads a key as `stogas encryption-key` saves or writes it, ignoring surrounding whitespace.
 pub fn parse_key(text: &str) -> Result<OrganizationKey> {
     let text = text.trim();
     let root = Zeroizing::new(
@@ -79,13 +79,20 @@ pub fn read_key(path: &Path) -> Result<OrganizationKey> {
     parse_key(std::str::from_utf8(&encoded).context("Invalid key file")?)
 }
 
-pub fn generate(output: &Path) -> Result<()> {
-    let mut root = Zeroizing::new([0_u8; 32]);
-    getrandom::fill(root.as_mut()).context("Cannot generate encryption key")?;
-    let encoded = Zeroizing::new(URL_SAFE_NO_PAD.encode(root.as_ref()));
-    write_new(output, encoded.as_bytes())?;
-    out!("{}", key_id(root.as_ref()))?;
-    Ok(())
+/// A new organization key from this system's random number generator.
+pub fn generate() -> Result<OrganizationKey> {
+    let mut root = Zeroizing::new(vec![0_u8; 32]);
+    getrandom::fill(&mut root).context("Cannot generate encryption key")?;
+    Ok(OrganizationKey {
+        encoded: Zeroizing::new(URL_SAFE_NO_PAD.encode(&*root)),
+        id: key_id(&root),
+        root,
+    })
+}
+
+/// Writes the key to a new file readable only by you, as `read_key` reads it.
+pub fn write_key(path: &Path, key: &OrganizationKey) -> Result<()> {
+    write_new(path, key.encoded.as_bytes())
 }
 
 /// The plugin whose settings a purpose encrypts. Each opens only under its own purpose, so that
@@ -167,13 +174,13 @@ fn seal(
 }
 
 pub fn encrypt(
-    key_file: &Path,
+    key: &OrganizationKey,
     organization: &str,
     purpose: &str,
     input: &Path,
     output: &Path,
 ) -> Result<()> {
-    let root = read_key(key_file)?.root;
+    let root = &key.root;
     // A document can be larger than the credential that it becomes: Google's key file, and a
     // file that Windows PowerShell saved in UTF-16.
     let maximum = match purpose {
@@ -188,7 +195,7 @@ pub fn encrypt(
     getrandom::fill(&mut nonce)?;
     if plugin(purpose).is_some() {
         // What replaces the plugin's settings in the policy.
-        let envelope = seal(&root, organization, purpose, &input, &salt, nonce)?;
+        let envelope = seal(root, organization, purpose, &input, &salt, nonce)?;
         let value = serde_json::json!({ "encrypted": envelope });
         return write_new(output, &serde_json::to_vec_pretty(&value)?);
     }
@@ -196,7 +203,7 @@ pub fn encrypt(
     // and for AWS and Google Cloud the target that routing reads instead of the secret.
     let registration = crate::cloud_credentials::prepare(purpose, &input)?;
     let envelope = seal(
-        &root,
+        root,
         organization,
         purpose,
         &registration.plaintext,
@@ -287,11 +294,14 @@ mod tests {
         let mut suffix = [0_u8; 16];
         getrandom::fill(&mut suffix).unwrap();
         let path = std::env::temp_dir().join(format!("stogas-key-test-{}", hex::encode(suffix)));
-        generate(&path).unwrap();
+        let key = generate().unwrap();
+        write_key(&path, &key).unwrap();
         let first = std::fs::read(&path).unwrap();
+        assert_eq!(read_key(&path).unwrap().id, key.id);
         assert_eq!(URL_SAFE_NO_PAD.decode(&first).unwrap().len(), 32);
+        assert_ne!(generate().unwrap().id, key.id);
         assert_eq!(
-            generate(&path).unwrap_err().to_string(),
+            write_key(&path, &key).unwrap_err().to_string(),
             format!(
                 "{} already exists, and the CLI never overwrites a file",
                 path.display()
@@ -302,7 +312,7 @@ mod tests {
         let missing = path.join("key");
         let refused = std::fs::File::create(&missing).unwrap_err();
         assert_eq!(
-            format!("{:#}", generate(&missing).unwrap_err()),
+            format!("{:#}", write_key(&missing, &key).unwrap_err()),
             format!("could not create {}: {refused}", missing.display())
         );
         #[cfg(unix)]
