@@ -17,7 +17,15 @@ Use the verifier transport with your language's OpenAI-compatible client or HTTP
 
 Choose a [language guide](https://stogas.ai/docs/sdk-overview) or a runnable [example](examples/). Rust source builds require Rust 1.94.1 or later.
 
-The optional CLI provides a local verified endpoint for an existing client. Install it with `cargo install stogas-cli --locked` or a native release archive, then run:
+The optional CLI provides a local verified endpoint for an existing client. Install it with a package manager, which installs a release archive and checks its SHA-256:
+
+```console
+brew install stogasai/tap/stogas                                  # macOS and Linux
+scoop bucket add stogas https://github.com/StogasAI/homebrew-tap  # Windows
+scoop install stogas/stogas
+```
+
+`cargo install stogas-cli --locked` and Nix, as `nix run github:StogasAI/stogas -- <command>`, build it from source instead, and each [release](https://github.com/StogasAI/stogas/releases) also has a native archive for every platform. Then run:
 
 ```console
 stogas serve --security tls

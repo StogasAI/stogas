@@ -66,7 +66,9 @@ def archive(manifest, platform, extension):
 
 
 def formula(manifest):
-    """Homebrew unpacks the archive into its single directory, where the CLI is."""
+    """Homebrew unpacks the archive into its single directory, where the CLI is, and reads the
+    version from the archive's name. The macOS requirement stays inside `on_macos`: Homebrew on
+    Linux refuses a formula that names one anywhere else."""
     def files(platform):
         url, sha256 = archive(manifest, platform, "tar.gz")
         return f'      url "{url}"\n      sha256 "{sha256}"\n'
@@ -75,10 +77,11 @@ def formula(manifest):
         "class Stogas < Formula\n"
         f'  desc "{DESCRIPTION}"\n'
         f'  homepage "{HOMEPAGE}"\n'
-        f'  version "{manifest["version"]}"\n'
         '  license "Apache-2.0"\n'
         "\n"
         "  on_macos do\n"
+        f"    depends_on macos: :{MACOS}\n"
+        "\n"
         "    on_arm do\n"
         f"{files('darwin-arm64')}"
         "    end\n"
@@ -95,8 +98,6 @@ def formula(manifest):
         f"{files('linux-amd64')}"
         "    end\n"
         "  end\n"
-        "\n"
-        f"  depends_on macos: :{MACOS}\n"
         "\n"
         "  def install\n"
         '    bin.install "stogas"\n'

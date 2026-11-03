@@ -31,8 +31,10 @@ jobs:
     timeout-minutes: 90
     environment: release
     permissions:
+      attestations: write
       contents: write
       id-token: write
+      packages: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
@@ -57,6 +59,7 @@ jobs:
       # Stogas does not sign a preview, made before production serves evidence: its gate
       # and GitHub's build proof stand alone, and only a pre-release can be one.
       - name: Require the Stogas signature on every file, or a preview's build proof
+        id: check
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -129,6 +132,41 @@ jobs:
       - if: steps.rubygems.outcome == 'success'
         name: Publish the exact platform gems
         run: python3 -B release/publish.py ruby "$RUNNER_TEMP/approved"
+      # Package managers that install the release's own archives follow the newest full release,
+      # or the newest preview before the first. They run even when a registry above failed, but
+      # never on files that failed the check.
+      - if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        name: Offer the CLI through Homebrew and Scoop
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: python3 -B release/publish.py tap "$RUNNER_TEMP/approved"
+      - if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        name: Offer the CLI through the Arch User Repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: python3 -B release/publish.py aur "$RUNNER_TEMP/approved"
+      - if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        name: Publish the CLI container image
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B release/publish.py container "$RUNNER_TEMP/approved"
+      # The build proof goes to the registry with the image, through Docker's login.
+      - if: ${{ !cancelled() && steps.image.outputs.digest != '' }}
+        name: Sign in to the container registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$GH_TOKEN"
+      # `gh attestation verify oci://ghcr.io/stogasai/stogas:<version> --repo StogasAI/stogas`
+      # checks the image, which holds the release's own CLI bytes.
+      - if: ${{ !cancelled() && steps.image.outputs.digest != '' }}
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-name: ghcr.io/stogasai/stogas
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
       - if: steps.first.outputs.crates == 'true' || steps.first.outputs.npm == 'true' || steps.rubygems.outcome != 'success'
         name: Name the registries that wait for the owner's one-time steps
         env:
