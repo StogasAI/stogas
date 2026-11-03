@@ -9,6 +9,7 @@ macro_rules! out {
 
 mod account;
 mod altcha;
+mod api;
 mod byok;
 mod cloud_credentials;
 mod credentials;
@@ -28,7 +29,6 @@ use clap::{
 use http::Method;
 use route::Route;
 use std::{
-    io::{IsTerminal as _, Write as _},
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -107,16 +107,7 @@ enum Command {
     /// Sign this machine out and delete its access token.
     Logout,
     /// Send a request to the dashboard API and print the response.
-    Api {
-        /// GET, POST, PUT, PATCH or DELETE.
-        #[arg(value_parser = method_parser(), ignore_case = true)]
-        method: Method,
-        /// A path under /api/, such as /api/account.
-        path: String,
-        /// A file with the JSON request body, or `-` for standard input.
-        #[arg(long)]
-        input: Option<PathBuf>,
-    },
+    Api(api::Args),
     /// Add credit with a cryptocurrency payment.
     Topup(topup::Args),
     /// Change a saved policy.
@@ -344,11 +335,7 @@ async fn run() -> Result<()> {
         Command::Register => account::register_account(&dashboard()?).await?,
         Command::Login => account::login(&dashboard()?).await?,
         Command::Logout => account::logout(&dashboard()?).await?,
-        Command::Api {
-            method,
-            path,
-            input,
-        } => run_api(method, &path, input.as_deref(), &dashboard()?).await?,
+        Command::Api(args) => api::run(args, &dashboard()?).await?,
         Command::Topup(args) => topup::run(args, &dashboard()?).await?,
         Command::Policy {
             command: PolicyCommand::Edit(args),
@@ -426,39 +413,6 @@ async fn run() -> Result<()> {
             run_proof(&args, network).await?;
         }
         Command::Serve(args) => run_serve(args, route).await?,
-    }
-    Ok(())
-}
-
-async fn run_api(
-    method: Method,
-    path: &str,
-    input: Option<&Path>,
-    network: &Network,
-) -> Result<()> {
-    let body = match input {
-        Some(input) => Some(
-            serde_json::from_slice::<serde_json::Value>(
-                &read_bounded_input(input, dashboard::MAX_BODY_BYTES, "request body").await?,
-            )
-            .context("the request body is not JSON")?,
-        ),
-        None => None,
-    };
-    let response = account::signed_in(network)
-        .await?
-        .send(method, path, body.as_ref())
-        .await?;
-    let mut stdout = std::io::stdout().lock();
-    if !stdout.is_terminal() {
-        stdout.write_all(&response)?;
-    } else if !response.is_empty() {
-        // Escaping text again keeps the response from driving the terminal.
-        let response: serde_json::Value = serde_json::from_slice(&response)
-            .context("the response is not JSON; send it to a file instead")?;
-        for line in serde_json::to_string_pretty(&response)?.lines() {
-            writeln!(stdout, "{}", dashboard::printable(line))?;
-        }
     }
     Ok(())
 }
