@@ -198,9 +198,11 @@ async fn checks_an_encrypted_credential(dashboard: &Dashboard) {
     std::fs::create_dir(&directory).unwrap();
     let [key, secret, sealed] =
         ["org.key", "secret", "credential.json"].map(|name| directory.join(name));
-    customer_encryption::generate(&key).unwrap();
+    let generated = customer_encryption::generate().unwrap();
+    customer_encryption::write_key(&key, &generated).unwrap();
     std::fs::write(&secret, format!("sk-stogas-live-{}", hex::encode(random))).unwrap();
-    customer_encryption::encrypt(&key, &organization, "byok/openai", &secret, &sealed).unwrap();
+    customer_encryption::encrypt(&generated, &organization, "byok/openai", &secret, &sealed)
+        .unwrap();
     let registration: Value = serde_json::from_slice(&std::fs::read(&sealed).unwrap()).unwrap();
 
     let policy = policy::Remote::new(dashboard, &organization, "organization", &organization);

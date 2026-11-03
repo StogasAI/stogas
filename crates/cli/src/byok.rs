@@ -5,7 +5,7 @@
 //! the deployments of the account that it connects, which become its targets.
 
 use crate::{
-    account, customer_encryption,
+    account, credentials, customer_encryption,
     dashboard::{self, Dashboard, printable},
     topup::{parse_organization, uuid},
 };
@@ -37,8 +37,9 @@ pub struct CheckArgs {
     #[arg(long, value_parser = parse_organization)]
     organization: Option<String>,
     /// The file with the key that encrypted the credentials, as `stogas encryption-key` wrote it.
-    /// Without it, the CLI asks for each key once on the terminal. A stored credential needs no
-    /// key.
+    /// Without it, the CLI uses the key that `stogas encryption-key` saved under the label that the
+    /// organization registered, or asks for each key once on the terminal. A stored credential
+    /// needs no key.
     #[arg(long)]
     key_file: Option<PathBuf>,
 }
@@ -98,18 +99,26 @@ pub trait CheckGateway: Sync {
     ) -> impl Future<Output = Result<GatewayResponse>> + Send;
 }
 
-/// Where the key comes from: the file that `--key-file` names, or the terminal, asking for the key
-/// by the label that the organization registered it under.
+/// Where the key comes from: the file that `--key-file` names, or else the key saved in this
+/// system's keychain for the organization under the label that it registered, or else the
+/// terminal, asking for the key by that label.
 pub enum KeySource {
     File(PathBuf),
-    Terminal,
+    Saved(String),
 }
 
 impl KeySource {
-    fn read(&self, label: &str) -> Result<customer_encryption::OrganizationKey> {
+    async fn read(&self, label: &str) -> Result<(customer_encryption::OrganizationKey, bool)> {
         match self {
-            Self::File(path) => customer_encryption::read_key(path),
-            Self::Terminal => prompt_key(label, io::stdin().is_terminal()),
+            Self::File(path) => Ok((customer_encryption::read_key(path)?, false)),
+            Self::Saved(organization) => {
+                if let Some(Some(text)) = credentials::saved_key(organization, label).await? {
+                    let key = customer_encryption::parse_key(&text)
+                        .with_context(|| format!("the key saved as {label} is not a valid key"))?;
+                    return Ok((key, true));
+                }
+                Ok((prompt_key(label, io::stdin().is_terminal())?, false))
+            }
         }
     }
 }
@@ -130,7 +139,7 @@ impl Keys {
     }
 
     /// The text of the key that the grant names, or an error naming the key to give instead.
-    fn for_grant(&self, grant: &CheckGrant, name: &str) -> Result<Zeroizing<String>> {
+    async fn for_grant(&self, grant: &CheckGrant, name: &str) -> Result<Zeroizing<String>> {
         let known = self
             .read
             .lock()
@@ -141,7 +150,15 @@ impl Keys {
         if let Some(encoded) = known {
             return Ok(encoded);
         }
-        let key = self.source.read(&grant.key_label)?;
+        let (key, saved) = self.source.read(&grant.key_label).await?;
+        if key.id != grant.encryption_key_id && saved {
+            bail!(
+                "the key saved as {label} is not the key that encrypted {name}; replace it with \
+                 the key that your organization registered as {label}, using `stogas \
+                 encryption-key delete` and `import`",
+                label = grant.key_label
+            );
+        }
         if key.id != grant.encryption_key_id {
             bail!(
                 "this is not the key that encrypted {name}: that is the key that your \
@@ -162,8 +179,8 @@ impl Keys {
 fn prompt_key(label: &str, terminal: bool) -> Result<customer_encryption::OrganizationKey> {
     if !terminal {
         bail!(
-            "the credential is encrypted with your key labeled {label}; pass its file with \
-             --key-file"
+            "the credential is encrypted with your key labeled {label}; save it with `stogas \
+             encryption-key import`, or pass its file with --key-file"
         );
     }
     let typed = Zeroizing::new(rpassword::prompt_password(format!(
@@ -255,7 +272,10 @@ pub async fn run(args: CheckArgs, network: &Network, gateway: TransportOptions) 
         Some(organization) => organization,
         None => account::personal_organization(&dashboard).await?,
     };
-    let keys = Keys::new(args.key_file.map_or(KeySource::Terminal, KeySource::File));
+    let keys = Keys::new(
+        args.key_file
+            .map_or_else(|| KeySource::Saved(organization.clone()), KeySource::File),
+    );
     let gateway = Verified(gateway);
     let total = args.credentials.len();
     let mut failed = 0;
@@ -318,7 +338,7 @@ pub async fn check(
         );
     }
     let grant = api.grant().await?;
-    let key = keys.for_grant(&grant, &name)?;
+    let key = keys.for_grant(&grant, &name).await?;
     let body = Zeroizing::new(serde_json::to_vec(
         &json!({ "encryption_keys": { grant.key_label.as_str(): key.as_str() } }),
     )?);
@@ -517,6 +537,13 @@ mod tests {
         }
     }
 
+    /// Keys saved for an organization that saved none, so a check that needs one asks for it.
+    fn unsaved() -> Keys {
+        Keys::new(KeySource::Saved(
+            "019a0000-0000-7000-8000-0000000000b0".into(),
+        ))
+    }
+
     fn key_file(directory: &std::path::Path, seed: u8) -> (PathBuf, String, String) {
         let encoded = URL_SAFE_NO_PAD.encode([seed; 32]);
         let path = directory.join(format!("key-{seed}"));
@@ -536,9 +563,7 @@ mod tests {
         let unused = gateway(StatusCode::OK, Value::Null);
         // The terminal never shows a control character from the server.
         assert_eq!(
-            check(&api, &unused, &Keys::new(KeySource::Terminal))
-                .await
-                .unwrap(),
+            check(&api, &unused, &unsaved()).await.unwrap(),
             "OpenAI accepted Production\u{fffd}[31m."
         );
         let refused = Fake {
@@ -546,7 +571,7 @@ mod tests {
             ..api
         };
         assert_eq!(
-            check(&refused, &unused, &Keys::new(KeySource::Terminal))
+            check(&refused, &unused, &unsaved())
                 .await
                 .unwrap_err()
                 .to_string(),
@@ -643,11 +668,64 @@ mod tests {
         assert!(unused.sent.lock().unwrap().is_empty());
     }
 
+    #[tokio::test]
+    async fn sends_the_key_saved_under_the_registered_label() {
+        let organization = "019a0000-0000-7000-8000-0000000000b1";
+        let directory = Directory::new();
+        let (_, encoded, id) = key_file(directory.path(), 7);
+        credentials::save_key(organization, "prod", Zeroizing::new(encoded.clone()))
+            .await
+            .unwrap();
+        let api = Fake {
+            credential: Some(credential("encrypted")),
+            stored_error: None,
+            key_id: id,
+            calls: Mutex::new(Vec::new()),
+        };
+        let accepted = gateway(
+            StatusCode::OK,
+            json!({ "checkedAt": "2026-11-03T12:00:00Z", "checkError": null }),
+        );
+        let keys = Keys::new(KeySource::Saved(organization.into()));
+        check(&api, &accepted, &keys).await.unwrap();
+        assert_eq!(
+            *accepted.sent.lock().unwrap(),
+            [(
+                "stogas_byok_check_v1.grant".to_owned(),
+                json!({ "encryption_keys": { "prod": encoded } })
+            )]
+        );
+
+        // A saved key that the organization no longer registers under its label is never sent.
+        let (_, _, other) = key_file(directory.path(), 8);
+        let replaced = Fake {
+            key_id: other,
+            calls: Mutex::new(Vec::new()),
+            ..api
+        };
+        let unused = gateway(StatusCode::OK, Value::Null);
+        assert_eq!(
+            check(
+                &replaced,
+                &unused,
+                &Keys::new(KeySource::Saved(organization.into()))
+            )
+            .await
+            .unwrap_err()
+            .to_string(),
+            "the key saved as prod is not the key that encrypted Production\u{fffd}[31m; replace it \
+             with the key that your organization registered as prod, using `stogas encryption-key \
+             delete` and `import`"
+        );
+        assert!(unused.sent.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn names_the_key_file_to_pass_without_a_terminal() {
         assert_eq!(
             prompt_key("prod", false).err().unwrap().to_string(),
-            "the credential is encrypted with your key labeled prod; pass its file with --key-file"
+            "the credential is encrypted with your key labeled prod; save it with `stogas \
+             encryption-key import`, or pass its file with --key-file"
         );
     }
 
@@ -659,13 +737,9 @@ mod tests {
             key_id: String::new(),
             calls: Mutex::new(Vec::new()),
         };
-        let error = check(
-            &api,
-            &gateway(StatusCode::OK, Value::Null),
-            &Keys::new(KeySource::Terminal),
-        )
-        .await
-        .unwrap_err();
+        let error = check(&api, &gateway(StatusCode::OK, Value::Null), &unsaved())
+            .await
+            .unwrap_err();
         assert!(error.is::<NotFound>());
     }
 
@@ -754,13 +828,9 @@ mod tests {
             calls: Mutex::new(Vec::new()),
         };
         assert_eq!(
-            check(
-                &stored,
-                &gateway(StatusCode::OK, Value::Null),
-                &Keys::new(KeySource::Terminal)
-            )
-            .await
-            .unwrap(),
+            check(&stored, &gateway(StatusCode::OK, Value::Null), &unsaved())
+                .await
+                .unwrap(),
             format!(
                 "Azure accepted stogas-east.\nTargets: 1 selected; 1 model without a target.\n\
                  Choose targets at {link}"

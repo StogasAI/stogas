@@ -13,7 +13,7 @@ fn ends_quietly_when_its_reader_has_stopped() {
     let (reader, writer) = std::io::pipe().unwrap();
     drop(reader);
     let output = Command::new(env!("CARGO_BIN_EXE_stogas"))
-        .args(["encryption-key", "--output"])
+        .args(["encryption-key", "create", "--output"])
         .arg(&key)
         .stdout(writer)
         .stderr(Stdio::piped())

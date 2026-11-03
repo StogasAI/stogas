@@ -44,7 +44,7 @@ stogas policy edit key <key-id>      # edit a policy in $VISUAL or $EDITOR and s
 stogas byok check <credential-id>    # check a provider credential, with your key if you encrypted it
 stogas probe --security tls          # check a fresh verified connection without an API key
 stogas verify evidence.json --json   # verify saved evidence offline
-stogas encryption-key --output org.key
+stogas encryption-key create --organization <org-id> --label prod
 stogas verify-release ./release      # verify downloaded release assets
 ```
 
