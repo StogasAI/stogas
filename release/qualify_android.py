@@ -11,10 +11,10 @@ from pathlib import Path
 
 from artifacts import unpack
 from device_farm import run as run_on_phone
-from gate import CASES, attempt
+from gate import attempt
 
 
-def qualify(source, packages, version, platform, target, requested, device, device_farm):
+def qualify(source, packages, version, platform, target, requested, device, device_farm, selected_cases):
     if bool(device) == bool(device_farm):
         raise ValueError("Android qualification requires --device with an adb serial or --device-farm with a project ARN")
     selected = set(requested or target["packages"])
@@ -35,9 +35,9 @@ def qualify(source, packages, version, platform, target, requested, device, devi
         if api < int(target["minimum"]):
             raise ValueError("Android device is below the SDK minimum")
         page_size = int(shell("getconf", "PAGE_SIZE"))
-        # Every device runs the offline and live tests. A 16 KB page-size
-        # device records them as its own case.
-        cases = ("16k",) if page_size == 16384 else CASES
+        # Every device runs the selected tests. A 16 KB page-size device
+        # records them as its own case.
+        cases = ("16k",) if page_size == 16384 else selected_cases
         runtime = json.dumps({"fingerprint": shell("getprop", "ro.build.fingerprint"), "abi": target["android_abi"], "api": api, "page_size": page_size}, sort_keys=True)
     checks = []
     with tempfile.TemporaryDirectory(prefix="stogas-android-consumer-") as temporary:
@@ -62,7 +62,7 @@ def qualify(source, packages, version, platform, target, requested, device, devi
                 for name in ("native-consumer", "libstogas_ffi.so"):
                     subprocess.run([*adb, "push", str(native / name), remote + "/" + name], check=True)
                 shell("chmod", "700", remote + "/native-consumer")
-                commands = {"offline": remote + "/native-consumer", "live": "STOGAS_LIVE=prod " + remote + "/native-consumer"}
+                commands = {case: command for case, command in (("offline", remote + "/native-consumer"), ("live", "STOGAS_LIVE=prod " + remote + "/native-consumer")) if case in selected_cases}
                 if cases == ("16k",):
                     commands = {"16k": " && ".join(commands.values())}
                 for case, command in commands.items():
@@ -72,6 +72,12 @@ def qualify(source, packages, version, platform, target, requested, device, devi
         if "android" in selected:
             application = "ai.stogas.consumer.q" + uuid.uuid4().hex
             shutil.copytree(source / "release/consumers/android", work / "app")
+            live = "live" in selected_cases
+            if not live:
+                (work / "app/src/androidTest/java/ai/stogas/consumer/LiveGatewayTest.java").unlink()
+            tests_expected = [f"ai.stogas.consumer.InstalledPackageTest/{name}" for name in ("packagedNativeLibraryRejectsInvalidConfiguration", "productionPackageRejectsStagingAuthority")]
+            if live:
+                tests_expected.append("ai.stogas.consumer.LiveGatewayTest/liveGatewayRejectsAnInvalidKeyThroughEachSecurityMode")
             repository = work / "app/repository/ai/stogas/stogas-android" / version
             repository.mkdir(parents=True)
             for suffix in (".aar", ".pom", ".module", "-sources.jar", "-javadoc.jar"):
@@ -87,16 +93,16 @@ def qualify(source, packages, version, platform, target, requested, device, devi
                 phone = run_on_phone(
                     device_farm, platform="ANDROID", os_major={"33": "13"}[target["minimum"]], architecture=target["android_abi"],
                     app=app, app_kind="ANDROID_APP", tests=tests, test_kind="INSTRUMENTATION_TEST_PACKAGE", test_type="INSTRUMENTATION",
-                    expected=[f"ai.stogas.consumer.InstalledPackageTest/{name}" for name in ("packagedNativeLibraryRejectsInvalidConfiguration", "productionPackageRejectsStagingAuthority", "liveGatewayRejectsAnInvalidKeyThroughEachSecurityMode")],
+                    expected=tests_expected,
                 )
-                cases, runtime = CASES, json.dumps(phone, sort_keys=True)
+                cases, runtime = selected_cases, json.dumps(phone, sort_keys=True)
             else:
                 try:
                     for path in (app, tests):
                         subprocess.run([*adb, "install", "-r", "-t", str(path)], check=True)
                     result = shell("am", "instrument", "-w", application + ".test/androidx.test.runner.AndroidJUnitRunner")
                     print(result, flush=True)
-                    if not re.search(r"^OK \(3 tests\)$", result, re.MULTILINE):
+                    if not re.search(rf"^OK \({len(tests_expected)} tests\)$", result, re.MULTILINE):
                         raise ValueError("Installed Android package tests did not pass")
                 finally:
                     for name in (application + ".test", application):

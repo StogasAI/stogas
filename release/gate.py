@@ -1,4 +1,8 @@
-"""Require a complete, production-only release before signing or publication."""
+"""Require a complete, production-only release before signing or publication.
+
+A preview is a pre-release published before production serves evidence: it passes every
+offline case, runs no live case and carries no Stogas signature. Every other release
+passes every case."""
 
 import json
 import re
@@ -12,6 +16,7 @@ HEX = re.compile(r"[0-9a-f]{64}\Z")
 # Offline cases test installed bytes without a network. Live cases send
 # requests through production attested TLS and E2EE and verify its evidence.
 CASES = ("offline", "live")
+PREVIEW_CASES = ("offline",)
 NPM_RUNTIMES = ("node", "node-minimum", "bun", "deno", "worker", "chromium", "firefox", "webkit")
 
 
@@ -35,22 +40,30 @@ def read_document(path):
     return document
 
 
-def required_checks(targets):
+def cases(preview):
+    return PREVIEW_CASES if preview else CASES
+
+
+def prerelease(version):
+    return "-" in version
+
+
+def required_checks(targets, preview=False):
     checks = set()
     for platform, target in targets.items():
         # Android also runs every test on a 16 KB page-size device.
-        cases = CASES + (("16k",) if target["os"] == "android" else ())
         for package in target["packages"]:
-            for case in cases:
+            for case in cases(preview) + (("16k",) if target["os"] == "android" else ()):
                 checks.add((platform, package, case))
-    for case in CASES:
+    for case in cases(preview):
         checks.add(("portable", "rust", case))
         for runtime in NPM_RUNTIMES:
             checks.add(("portable", "npm", f"{runtime}-{case}"))
     return checks
 
 
-def check_qualification(report, manifest_sha256, targets):
+def check_qualification(report, manifest_sha256, targets, version):
+    """Return whether the report qualifies a preview, which only a pre-release version may be."""
     if set(report) != {"schema", "environment", "manifest_sha256", "checks"} or report["schema"] != "stogas.sdk-qualification.v1" or report["environment"] != "prod" or report["manifest_sha256"] != manifest_sha256:
         raise ValueError("Qualification does not identify this production artifact set")
     found = set()
@@ -61,15 +74,18 @@ def check_qualification(report, manifest_sha256, targets):
         if identity in found:
             raise ValueError("Duplicate qualification result")
         found.add(identity)
-    expected = required_checks(targets)
+    preview = prerelease(version) and found <= required_checks(targets, preview=True)
+    expected = required_checks(targets, preview)
     if found != expected:
         missing = ["/".join(check) for check in sorted(expected - found)]
         extra = ["/".join(check) for check in sorted(found - expected)]
         raise ValueError(f"Qualification is incomplete: missing={missing}, extra={extra}")
+    return preview
 
 
 def check_release(directory, *, reports=True):
-    """Validate a self-contained release directory against its recorded source."""
+    """Validate a self-contained release directory against its recorded source, and return its
+    manifest and whether its qualification makes it a preview."""
     directory = Path(directory)
     manifest = read_document(directory / "release-manifest.json")
     if set(manifest) != {"schema", "environment", "version", "source", "targets", "artifacts"} or manifest["schema"] != "stogas.sdk-release.v1" or manifest["environment"] != "prod":
@@ -96,9 +112,8 @@ def check_release(directory, *, reports=True):
     if manifest["targets"] != sorted([*targets, "portable"]):
         raise ValueError("Release does not include every declared platform and portable package")
     check_artifact_families(names, targets, manifest["version"])
-    if reports:
-        check_qualification(read_document(directory / "qualification.json"), manifest_sha256, targets)
-    return manifest
+    preview = reports and check_qualification(read_document(directory / "qualification.json"), manifest_sha256, targets, manifest["version"])
+    return manifest, preview
 
 
 def check_artifact_families(names, targets, version):
@@ -125,7 +140,7 @@ def check_artifact_families(names, targets, version):
         raise ValueError("Release contains unexpected artifacts")
 
 
-def combine_reports(paths, destination, manifest_sha256, targets):
+def combine_reports(paths, destination, manifest_sha256, targets, version):
     checks = []
     for path in paths:
         report = read_document(path)
@@ -133,5 +148,6 @@ def combine_reports(paths, destination, manifest_sha256, targets):
             raise ValueError("Cannot combine qualifications from different artifacts")
         checks.extend(report["checks"])
     report = {"schema": "stogas.sdk-qualification.v1", "environment": "prod", "manifest_sha256": manifest_sha256, "checks": sorted(checks, key=lambda check: (check["platform"], check["package"], check["case"]))}
-    check_qualification(report, manifest_sha256, targets)
+    preview = check_qualification(report, manifest_sha256, targets, version)
     write_json(destination, report)
+    return preview

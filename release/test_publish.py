@@ -23,12 +23,15 @@ queue = Path(os.environ["FAKE_NPM_QUEUE"])
 command = sys.argv[1:]
 if command == ["stage", "list", "--json"]:
     print(json.dumps([json.loads(item.read_text()) for item in sorted(queue.glob("*.json"))]))
-elif command[:2] == ["stage", "publish"] and command[3:] == ["--access", "public"]:
+elif command[:2] == ["stage", "publish"] and command[3:5] == ["--access", "public"] and command[5:] in ([], ["--tag", "next"]):
     with tarfile.open(command[2]) as archive:
         manifest = json.load(archive.extractfile("package/package.json"))
+    # Like npm, refuse a pre-release without a dist-tag.
+    if "-" in manifest["version"] and not command[5:]:
+        sys.exit("npm requires a tag for a pre-release")
     stage = str(uuid.uuid4())
     shutil.copyfile(command[2], queue / f"{{stage}}.tgz")
-    item = {{"id": stage, "packageName": manifest["name"], "version": manifest["version"]}}
+    item = {{"id": stage, "packageName": manifest["name"], "version": manifest["version"], "tag": command[6] if command[5:] else "latest"}}
     (queue / f"{{stage}}.json").write_text(json.dumps(item))
 elif command[:2] == ["stage", "download"]:
     shutil.copyfile(queue / f"{{command[2]}}.tgz", Path.cwd() / f"staged-{{command[2]}}.tgz")
@@ -61,12 +64,13 @@ class NpmStageTests(unittest.TestCase):
         tools = directory / "bin"
         for path in (self.packages, self.queue, tools):
             path.mkdir()
-        for name, filename in (("@stogas/sigstore", "stogas-sigstore"), ("stogas", "stogas")):
-            manifest = json.dumps({"name": name, "version": "1.2.3"}).encode()
-            with tarfile.open(self.packages / f"{filename}-1.2.3.tgz", "w:gz") as archive:
-                entry = tarfile.TarInfo("package/package.json")
-                entry.size = len(manifest)
-                archive.addfile(entry, io.BytesIO(manifest))
+        for version in ("1.2.3", "1.2.3-alpha.1"):
+            for name, filename in publish.NPM_PACKAGES:
+                manifest = json.dumps({"name": name, "version": version}).encode()
+                with tarfile.open(self.packages / f"{filename}-{version}.tgz", "w:gz") as archive:
+                    entry = tarfile.TarInfo("package/package.json")
+                    entry.size = len(manifest)
+                    archive.addfile(entry, io.BytesIO(manifest))
         (tools / "npm").write_text(FAKE_NPM.format(python=sys.executable))
         (tools / "npm").chmod(0o755)
         path = f"{tools}{os.pathsep}{os.environ['PATH']}"
@@ -74,9 +78,9 @@ class NpmStageTests(unittest.TestCase):
         # Neither version is published yet.
         self.enterContext(mock.patch.object(publish, "download", return_value=None))
 
-    def stage(self):
+    def stage(self, version="1.2.3"):
         with contextlib.redirect_stdout(io.StringIO()) as output:
-            publish.npm(self.packages, "1.2.3", stage=True)
+            publish.npm(self.packages, version, stage=True)
         return output.getvalue()
 
     def test_stages_each_new_version_once_with_the_approved_bytes(self):
@@ -86,12 +90,26 @@ class NpmStageTests(unittest.TestCase):
         staged = [json.loads(item.read_text()) for item in self.queue.glob("*.json")]
         self.assertCountEqual([item["packageName"] for item in staged], ["@stogas/sigstore", "stogas"])
 
+    def test_stages_a_pre_release_under_next_and_leaves_latest_alone(self):
+        self.assertIn("stogas@1.2.3-alpha.1 awaits approval", self.stage("1.2.3-alpha.1"))
+        staged = [json.loads(item.read_text()) for item in self.queue.glob("*.json")]
+        self.assertEqual({(item["version"], item["tag"]) for item in staged}, {("1.2.3-alpha.1", "next")})
+
     def test_refuses_a_staged_version_with_other_bytes(self):
         self.stage()
         for archive in self.queue.glob("*.tgz"):
             archive.write_bytes(b"other")
         with self.assertRaisesRegex(ValueError, "npm staged different bytes as @stogas/sigstore@1.2.3"):
             self.stage()
+
+
+class FirstVersionTests(unittest.TestCase):
+    def test_names_each_registry_with_none_of_its_packages(self):
+        existing = {"https://crates.io/api/v1/crates/stogas-core", "https://rubygems.org/api/v1/gems/stogas.json"}
+        with mock.patch.object(publish, "download", side_effect=lambda url: b"{}" if url in existing else None), contextlib.redirect_stdout(io.StringIO()) as output:
+            publish.first_versions()
+        # One existing crate means crates.io trusts this workflow, or should.
+        self.assertEqual(output.getvalue().split(), ["crates=false", "npm=true", "ruby=false"])
 
 
 class CratesTrustTests(unittest.TestCase):

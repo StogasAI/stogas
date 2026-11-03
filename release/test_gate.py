@@ -24,12 +24,34 @@ class QualificationTests(unittest.TestCase):
         }
 
     def test_all_declared_checks_are_required(self):
-        check_qualification(self.report, "a" * 64, self.targets)
+        self.assertFalse(check_qualification(self.report, "a" * 64, self.targets, "0.1.0"))
         for index in range(len(self.report["checks"])):
             partial = copy.deepcopy(self.report)
             del partial["checks"][index]
             with self.subTest(missing=index), self.assertRaisesRegex(ValueError, "incomplete"):
-                check_qualification(partial, "a" * 64, self.targets)
+                check_qualification(partial, "a" * 64, self.targets, "0.1.0")
+
+    def preview(self):
+        report = copy.deepcopy(self.report)
+        report["checks"] = [check for check in report["checks"] if check["case"] != "live" and not check["case"].endswith("-live")]
+        return report
+
+    def test_only_a_pre_release_may_be_a_preview_of_every_offline_check(self):
+        self.assertTrue(check_qualification(self.preview(), "a" * 64, self.targets, "0.1.0-alpha.1"))
+        # A complete qualification of a pre-release is not a preview.
+        self.assertFalse(check_qualification(self.report, "a" * 64, self.targets, "0.1.0-rc.1"))
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            check_qualification(self.preview(), "a" * 64, self.targets, "0.1.0")
+        for index in range(len(self.preview()["checks"])):
+            partial = self.preview()
+            del partial["checks"][index]
+            with self.subTest(missing=index), self.assertRaisesRegex(ValueError, "incomplete"):
+                check_qualification(partial, "a" * 64, self.targets, "0.1.0-alpha.1")
+        # Some live cases without the rest are neither complete nor a preview.
+        mixed = self.preview()
+        mixed["checks"].append({"platform": "linux-amd64", "package": "native", "case": "live", "runtime": "test-runtime", "outcome": "passed"})
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            check_qualification(mixed, "a" * 64, self.targets, "0.1.0-alpha.1")
 
     def test_skip_duplicate_unreported_runtime_and_wrong_artifact_are_rejected(self):
         changes = [
@@ -45,7 +67,7 @@ class QualificationTests(unittest.TestCase):
             report = copy.deepcopy(self.report)
             change(report)
             with self.assertRaises(ValueError):
-                check_qualification(report, "a" * 64, self.targets)
+                check_qualification(report, "a" * 64, self.targets, "0.1.0")
 
 
 if __name__ == "__main__":

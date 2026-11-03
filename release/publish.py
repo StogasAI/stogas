@@ -175,11 +175,16 @@ def crates(packages, version, trust=False):
         crates_trust(os.environ["CARGO_REGISTRY_TOKEN"])
 
 
+NPM_PACKAGES = (("@stogas/sigstore", "stogas-sigstore"), ("stogas", "stogas"))
+
+
 def npm(packages, version, stage=False):
     """With `stage`, upload each archive for a maintainer to approve with two-factor
     authentication instead of publishing it. A token can create a package only this way once
-    npm stops tokens that bypass two-factor authentication from publishing."""
-    for name, filename in (("@stogas/sigstore", "stogas-sigstore"), ("stogas", "stogas")):
+    npm stops tokens that bypass two-factor authentication from publishing. npm requires a
+    pre-release to name its dist-tag, so one goes to `next` and leaves `latest` alone."""
+    tag = ["--tag", "next"] if "-" in version else []
+    for name, filename in NPM_PACKAGES:
         path = packages / f"{filename}-{version}.tgz"
         def check():
             data = download(f"https://registry.npmjs.org/{urllib.parse.quote(name, safe='')}/{version}")
@@ -192,12 +197,12 @@ def npm(packages, version, stage=False):
         if check():
             continue
         if not stage:
-            run(["npm", "publish", str(path), "--access", "public"])
+            run(["npm", "publish", str(path), "--access", "public", *tag])
             wait_for(check)
             continue
         # A rerun finds the upload that still awaits approval.
         if not (staged := npm_staged(name, version)):
-            run(["npm", "stage", "publish", str(path), "--access", "public"])
+            run(["npm", "stage", "publish", str(path), "--access", "public", *tag])
             staged = npm_staged(name, version)
         if not staged:
             raise RuntimeError(f"npm lists no staged {name}@{version}")
@@ -219,8 +224,13 @@ def pypi(packages, version):
     # Upload uses PyPI's maintained trusted-publishing action. This command is
     # the mandatory subsequent check of every wheel, including retry skips.
     expected = {path.name: path for path in packages.glob("*.whl")}
+    # Wheels carry the normalized Python version, such as 0.1.0a1 for 0.1.0-alpha.1.
+    versions = {name.split("-")[1] for name in expected}
+    if len(versions) != 1:
+        raise ValueError("Approved wheels name different versions")
+    python_version = versions.pop()
     def check():
-        data = download(f"https://pypi.org/pypi/stogas/{version}/json")
+        data = download(f"https://pypi.org/pypi/stogas/{python_version}/json")
         if data is None:
             return False
         files = {item["filename"]: item for item in json.loads(data)["urls"]}
@@ -329,9 +339,49 @@ def go(packages, version, source):
         compare()
 
 
+def preview(packages):
+    """Stogas signs with the online key that production evidence publishes, so a preview, made
+    before production serves evidence, has no Stogas signature. Require the gate's preview, every
+    file the manifest names and nothing else, and GitHub's build proof for the manifest and the
+    qualification report, which together name every artifact."""
+    from gate import check_release
+    manifest, is_preview = check_release(packages)
+    if not is_preview:
+        raise ValueError("Only a preview is published without the Stogas signature")
+    reference = f"refs/tags/v{manifest['version']}"
+    for name in ("release-manifest.json", "qualification.json"):
+        run([
+            "gh", "attestation", "verify", str(packages / name), "--repo", "StogasAI/stogas",
+            "--bundle", str(packages / "github-attestation.jsonl"),
+            "--cert-identity", f"https://github.com/StogasAI/stogas/.github/workflows/release.yml@{reference}",
+            "--cert-oidc-issuer", "https://token.actions.githubusercontent.com",
+            "--predicate-type", "https://slsa.dev/provenance/v1", "--source-ref", reference,
+            "--source-digest", manifest["source"]["commit"], "--deny-self-hosted-runners",
+        ])
+    print(f"Preview {manifest['version']}: GitHub's build proof and the gate cover every file")
+
+
+def first_versions():
+    """Print which registries have none of their packages yet, as GitHub output lines. crates.io
+    and npm trust a workflow only for an existing package, and RubyGems only after the owner adds a
+    pending publisher, so their first versions wait for the owner's first-release steps."""
+    def missing(urls):
+        return all(download(url) is None for url in urls)
+    waiting = {
+        "crates": missing(f"https://crates.io/api/v1/crates/{name}" for name in CRATES),
+        "npm": missing(f"https://registry.npmjs.org/{urllib.parse.quote(name, safe='')}" for name, _ in NPM_PACKAGES),
+        "ruby": missing(["https://rubygems.org/api/v1/gems/stogas.json"]),
+    }
+    for registry, value in waiting.items():
+        print(f"{registry}={'true' if value else 'false'}")
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["first-versions"]:
+        first_versions()
+        raise SystemExit
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("ecosystem", choices=["crates", "npm", "pypi", "ruby", "nuget", "maven", "go"])
+    parser.add_argument("ecosystem", choices=["crates", "npm", "pypi", "ruby", "nuget", "maven", "go", "preview"])
     parser.add_argument("packages", type=Path)
     parser.add_argument("--stage", action="store_true", help="npm only: leave each new version for a maintainer to approve")
     parser.add_argument("--trust", action="store_true", help="crates only: then trust publish.yml alone and revoke the one-time token")
@@ -341,6 +391,9 @@ if __name__ == "__main__":
     if args.trust and args.ecosystem != "crates":
         parser.error("only crates hand over to trusted publishing here")
     packages = args.packages.resolve()
+    if args.ecosystem == "preview":
+        preview(packages)
+        raise SystemExit
     manifest = json.loads((packages / "release-manifest.json").read_text())
     if args.ecosystem == "go":
         go(packages, manifest["version"], manifest["source"])

@@ -1,9 +1,16 @@
 name: Build SDK release proposal
 
 # Start on a release tag: `gh workflow run release.yml --ref vX.Y.Z`. The draft
-# release appears only after every package passed its tests.
+# release appears only after every package passed its tests. A preview, a
+# pre-release published before production serves evidence, runs only the
+# offline tests: `gh workflow run release.yml --ref vX.Y.Z-alpha.N -f preview=true`.
 on:
   workflow_dispatch:
+    inputs:
+      preview:
+        description: Run only the offline tests of a pre-release published before production serves evidence
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -42,8 +49,14 @@ jobs:
           fi
       - name: Check package versions and list the build targets
         id: targets
+        env:
+          PREVIEW: ${{ inputs.preview }}
         run: |
           python3 scripts/check-package-versions.py "${GITHUB_REF_NAME#v}"
+          if [ "$PREVIEW" = true ] && [[ "$GITHUB_REF_NAME" != *-* ]]; then
+            echo "::error::Only a pre-release version can be a preview"
+            exit 1
+          fi
           python3 -B - <<'PY'
           import json, os, re
           from pathlib import Path
@@ -224,6 +237,7 @@ jobs:
       NAME: ${{ matrix.name }}
       PACKAGE: ${{ matrix.package }}
       DEVICE_FARM: ${{ matrix.device-farm && vars.DEVICE_FARM_PROJECT || '' }}
+      PREVIEW: ${{ inputs.preview && 'true' || '' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
@@ -321,7 +335,7 @@ jobs:
           path: ${{ runner.temp }}/sdk-packages
       - if: '!matrix.image'
         name: Run installed-package checks with the release's own test code
-        run: python -B release/release.py qualify "$RUNNER_TEMP/sdk-packages" --platform "$PLATFORM" --out "$RUNNER_TEMP/report/$NAME.json" ${DEVICE:+--device "$DEVICE"} ${DEVICE_FARM:+--device-farm "$DEVICE_FARM"} ${PACKAGE:+--package "$PACKAGE"}
+        run: python -B release/release.py qualify "$RUNNER_TEMP/sdk-packages" --platform "$PLATFORM" --out "$RUNNER_TEMP/report/$NAME.json" ${DEVICE:+--device "$DEVICE"} ${DEVICE_FARM:+--device-farm "$DEVICE_FARM"} ${PACKAGE:+--package "$PACKAGE"} ${PREVIEW:+--preview}
       - if: matrix.image
         name: Boot the emulator and run installed-package checks
         run: |
@@ -329,7 +343,7 @@ jobs:
           "$ANDROID_HOME/emulator/emulator" -avd stogas -port 5554 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > "$RUNNER_TEMP/emulator.log" 2>&1 &
           # shellcheck disable=SC2016 # The loop runs in the emulator's shell.
           timeout 900 adb -s emulator-5554 wait-for-device shell 'until [ "$(getprop sys.boot_completed)" = 1 ]; do sleep 5; done'
-          python -B release/release.py qualify "$RUNNER_TEMP/sdk-packages" --platform "$PLATFORM" --out "$RUNNER_TEMP/report/$NAME.json" --device emulator-5554 ${PACKAGE:+--package "$PACKAGE"}
+          python -B release/release.py qualify "$RUNNER_TEMP/sdk-packages" --platform "$PLATFORM" --out "$RUNNER_TEMP/report/$NAME.json" --device emulator-5554 ${PACKAGE:+--package "$PACKAGE"} ${PREVIEW:+--preview}
           adb -s emulator-5554 emu kill
       - if: failure() && matrix.image
         run: tail -n 200 "$RUNNER_TEMP/emulator.log"
@@ -362,7 +376,8 @@ jobs:
           pattern: sdk-report-*
           path: ${{ runner.temp }}/reports
           merge-multiple: true
-      # Fails until every required check, including live transport, has passed.
+      # Fails until every required check, including live transport, has passed;
+      # a preview passes every offline check and runs no live one.
       - name: Require every platform report to pass
         run: python3 -B release/release.py reports "$RUNNER_TEMP"/reports/*.json --packages "$RUNNER_TEMP/sdk-packages"
       # One proof names every artifact, the manifest and the test report, so
@@ -376,9 +391,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ATTESTATION_PATH: ${{ steps.attest.outputs.bundle-path }}
+          PREVIEW: ${{ inputs.preview }}
         run: |
           set -euo pipefail
           cp "$ATTESTATION_PATH" "$RUNNER_TEMP/sdk-packages/github-attestation.jsonl"
+          notes="Verify downloads: https://stogas.ai/docs/reproducible-builds#verify-an-sdk-download"
+          if [ "$PREVIEW" = true ]; then
+            notes="A preview published before Stogas's production gateways serve evidence: every package passed its offline tests, but none has reached a production gateway, and Stogas does not sign previews. Verify downloads with GitHub's build proof: gh attestation verify <file> --repo $GITHUB_REPOSITORY"
+          fi
+          prerelease=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/sdk-packages/"* \
-            --draft --verify-tag --target "$GITHUB_SHA" --title "Stogas SDK $GITHUB_REF_NAME" \
-            --notes "Verify downloads: https://stogas.ai/docs/reproducible-builds#verify-an-sdk-download"
+            --draft "${prerelease[@]}" --verify-tag --target "$GITHUB_SHA" --title "Stogas SDK $GITHUB_REF_NAME" \
+            --notes "$notes"
