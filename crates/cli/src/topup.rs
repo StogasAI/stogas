@@ -513,6 +513,13 @@ fn parse_usd(value: &str) -> Result<String, String> {
 }
 
 pub fn parse_organization(value: &str) -> Result<String, String> {
+    uuid(value).ok_or_else(|| {
+        "an organization ID is the UUID in the organization's dashboard address".into()
+    })
+}
+
+/// A UUID in the lowercase form that the dashboard API names, which stays one path segment.
+pub fn uuid(value: &str) -> Option<String> {
     let uuid = value.len() == 36
         && value.bytes().enumerate().all(|(index, byte)| {
             if matches!(index, 8 | 13 | 18 | 23) {
@@ -521,11 +528,7 @@ pub fn parse_organization(value: &str) -> Result<String, String> {
                 byte.is_ascii_hexdigit()
             }
         });
-    if uuid {
-        Ok(value.to_ascii_lowercase())
-    } else {
-        Err("an organization ID is the UUID in the organization's dashboard address".into())
-    }
+    uuid.then(|| value.to_ascii_lowercase())
 }
 
 #[cfg(test)]

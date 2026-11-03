@@ -1,6 +1,6 @@
 [package]
 name = "stogas-cli"
-description = "The Stogas command line: sign-up, top-ups, a verified local endpoint, offline verification and local encryption"
+description = "The Stogas command line: sign-up, top-ups, policy editing, a verified local endpoint, offline verification and local encryption"
 readme = "../../README.md"
 homepage = "https://github.com/StogasAI/stogas"
 documentation = "https://stogas.ai/docs/cli"
@@ -37,6 +37,7 @@ serde_json.workspace = true
 sha2.workspace = true
 stogas = { path = "../sdk", version = "0.1.0-alpha.1" }
 stogas-core = { path = "../core", version = "0.1.0-alpha.1" }
+stogas-sigstore = { path = "../sigstore", version = "0.1.0-alpha.1" }
 tokio = { workspace = true, features = ["fs", "io-std", "io-util", "macros", "net", "rt-multi-thread", "time"] }
 url.workspace = true
 zeroize.workspace = true
