@@ -25,6 +25,14 @@ struct Boot {
     core: VerifiedBoot,
 }
 
+/// A stream's events, read into the response that its receipt signs: the `chat.completion`
+/// that Chat Completions chunks assemble to, or the `response` of a Responses stream's
+/// terminal event.
+#[pyclass(name = "StreamContent")]
+struct StreamContent {
+    core: Option<receipt::StreamContent>,
+}
+
 #[pymethods]
 impl EvidenceVerifier {
     /// Without `root`, trusts the compiled Stogas root. A `root` is a root document, as an
@@ -130,21 +138,47 @@ impl Boot {
         super::json_bytes(py, &self.core.summary())
     }
 
-    /// Verify a content receipt using locally computed SHA-256 hashes of the exact bodies.
+    /// Verify a final Stogas metadata object, salts included, against digests from
+    /// `request_digest` and `response_digest`. A side without a digest stays unchecked.
+    #[pyo3(signature = (document, request_digest=None, response_digest=None))]
     fn verify_receipt<'py>(
         &self,
         py: Python<'py>,
         document: &Bound<'_, PyBytes>,
-        request_sha256: &Bound<'_, PyBytes>,
-        response_sha256: &Bound<'_, PyBytes>,
+        request_digest: Option<&Bound<'_, PyBytes>>,
+        response_digest: Option<&Bound<'_, PyBytes>>,
     ) -> PyResult<Bound<'py, PyBytes>> {
         let document = document.as_bytes();
-        let request = digest(request_sha256.as_bytes(), "request digest")?;
-        let response = digest(response_sha256.as_bytes(), "response digest")?;
+        let request = request_digest
+            .map(|digest| content_digest(digest.as_bytes(), "request"))
+            .transpose()?;
+        let response = response_digest
+            .map(|digest| content_digest(digest.as_bytes(), "response"))
+            .transpose()?;
         let result = py
             .detach(|| {
-                receipt::verify_metadata(document, &self.core, request, response)
+                receipt::verify_metadata(document, &self.core, request.as_ref(), response.as_ref())
                     .map(|verified| verified.receipt)
+            })
+            .map_err(|error| receipt_error(py, &error))?;
+        super::json_bytes(py, &result)
+    }
+
+    /// Verify a complete saved stream, keepalives and its receipt included, against the
+    /// request's digest.
+    fn verify_stream<'py>(
+        &self,
+        py: Python<'py>,
+        request_digest: &Bound<'_, PyBytes>,
+        stream: &Bound<'_, PyBytes>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let request = content_digest(request_digest.as_bytes(), "request")?;
+        let stream = stream.as_bytes();
+        let result = py
+            .detach(|| {
+                let mut reader = receipt::Stream::new(request);
+                reader.push(stream)?;
+                reader.finish(&self.core)
             })
             .map_err(|error| receipt_error(py, &error))?;
         super::json_bytes(py, &result)
@@ -154,22 +188,87 @@ impl Boot {
     fn verify_response<'py>(
         &self,
         py: Python<'py>,
-        request_sha256: &Bound<'_, PyBytes>,
+        request_digest: &Bound<'_, PyBytes>,
         response_body: &Bound<'_, PyBytes>,
     ) -> PyResult<Bound<'py, PyBytes>> {
-        let request = digest(request_sha256.as_bytes(), "request digest")?;
+        let request = content_digest(request_digest.as_bytes(), "request")?;
         let response = response_body.as_bytes();
         let result = py
-            .detach(|| receipt::verify_buffered(&self.core, request, response))
+            .detach(|| receipt::verify_buffered(&self.core, &request, response))
             .map_err(|error| receipt_error(py, &error))?;
         super::json_bytes(py, &result)
     }
 }
 
-fn digest<'a>(bytes: &'a [u8], name: &str) -> PyResult<&'a [u8; 32]> {
+#[pymethods]
+impl StreamContent {
+    #[new]
+    fn new() -> Self {
+        Self {
+            core: Some(receipt::StreamContent::default()),
+        }
+    }
+
+    /// Read one complete event as it was sent, with or without its closing blank line. A block
+    /// of comments, such as a keepalive or the receipt, changes nothing. After an error every
+    /// later call fails.
+    fn push(&mut self, py: Python<'_>, event: &Bound<'_, PyBytes>) -> PyResult<()> {
+        let reader = self.core.as_mut().ok_or_else(stopped)?;
+        let event = event.as_bytes();
+        if let Err(error) = py.detach(|| reader.push(event)) {
+            self.core = None;
+            return Err(receipt_error(py, &error));
+        }
+        Ok(())
+    }
+
+    /// The 64-byte digest of the response that the complete stream carries, for
+    /// `VerifiedBoot.verify_receipt`. Every later call fails.
+    fn digest<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let reader = self.core.take().ok_or_else(stopped)?;
+        let digest = py
+            .detach(|| reader.digest())
+            .map_err(|error| receipt_error(py, &error))?;
+        Ok(PyBytes::new(py, &digest))
+    }
+}
+
+fn stopped() -> PyErr {
+    PyValueError::new_err("the stream reader has already given its digest or failed")
+}
+
+/// The digest that a receipt commits a request body to: SHA-512 of its RFC 8785 form without
+/// the top-level `encryption_keys`.
+#[pyfunction]
+fn request_digest<'py>(
+    py: Python<'py>,
+    body: &Bound<'_, PyBytes>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let body = body.as_bytes();
+    let digest = py
+        .detach(|| receipt::request_digest(body))
+        .map_err(|error| receipt_error(py, &receipt::Error::Canonical(error)))?;
+    Ok(PyBytes::new(py, &digest))
+}
+
+/// The digest that a receipt commits a buffered response body to: SHA-512 of its RFC 8785 form
+/// without the top-level `stogas` object.
+#[pyfunction]
+fn response_digest<'py>(
+    py: Python<'py>,
+    body: &Bound<'_, PyBytes>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let body = body.as_bytes();
+    let digest = py
+        .detach(|| receipt::response_digest(body))
+        .map_err(|error| receipt_error(py, &receipt::Error::Canonical(error)))?;
+    Ok(PyBytes::new(py, &digest))
+}
+
+fn content_digest(bytes: &[u8], side: &str) -> PyResult<receipt::ContentDigest> {
     bytes
         .try_into()
-        .map_err(|_| PyValueError::new_err(format!("{name} must be 32 bytes")))
+        .map_err(|_| PyValueError::new_err(format!("{side} digest must be 64 bytes")))
 }
 
 fn evidence_error(py: Python<'_>, error: &evidence::Error) -> PyErr {
@@ -180,8 +279,11 @@ fn receipt_error(py: Python<'_>, error: &receipt::Error) -> PyErr {
     let code = match error {
         receipt::Error::Invalid => "invalid_receipt",
         receipt::Error::Content => "receipt_content",
+        receipt::Error::Salt(_) => "receipt_salt",
         receipt::Error::Identity => "receipt_identity",
         receipt::Error::Signature => "receipt_signature",
+        receipt::Error::Canonical(receipt::CanonicalError::Json) => "invalid_content",
+        receipt::Error::Canonical(receipt::CanonicalError::Integer) => "inexact_integer",
     };
     coded_error(py, code, error.to_string())
 }
@@ -198,6 +300,9 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<EvidenceVerifier>()?;
     module.add_class::<EvidenceSnapshot>()?;
     module.add_class::<Boot>()?;
+    module.add_class::<StreamContent>()?;
+    module.add_function(wrap_pyfunction!(request_digest, module)?)?;
+    module.add_function(wrap_pyfunction!(response_digest, module)?)?;
     module.add(
         "VerificationError",
         module.py().get_type::<VerificationError>(),

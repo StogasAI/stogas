@@ -1,6 +1,9 @@
 import { abortableReader, readBoundedBody, TransportError } from './http.js';
 
 const MAX_BUFFERED_RESPONSE = 64 * 1024 * 1024 + 16 * 1024 + 16;
+
+// The receipt version that a request asks for in its Stogas-Metadata header.
+export const wantsReceipt = (headers) => headers.get('Stogas-Metadata') === 'v2';
 const TERMINAL_DELIMITER = new Uint8Array([10, 10]);
 
 // This only verifies the already-executed response. It never sends a request or

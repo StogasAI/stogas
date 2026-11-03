@@ -12,9 +12,12 @@ from pathlib import Path
 from stogas import (
     EvidenceSnapshot,
     EvidenceVerifier,
+    StreamContent,
     Transport,
     VerificationError,
     VerifiedBoot,
+    request_digest,
+    response_digest,
 )
 
 # Local offline trust configuration, never accepted by the managed transport.
@@ -36,6 +39,44 @@ class PackageTests(unittest.TestCase):
             verifier.refresh(b'{}')
         with self.assertRaises(VerificationError):
             verifier.verify_boot_archive(b'{}', b'{}')
+
+    def test_content_digests_hold_meaning_and_refuse_what_a_receipt_cannot(self):
+        self.assertEqual(len(request_digest(b'{"model":"m"}')), 64)
+        # Whitespace, key order and the customer's keys are not part of the request.
+        self.assertEqual(
+            request_digest(b'{ "b": 1, "a": [1.0, "x"], "encryption_keys": {"default": "k"} }'),
+            request_digest(b'{"a":[1,"x"],"b":1}'),
+        )
+        self.assertEqual(response_digest(b'{"id":"r","stogas":{"receipt":{}}}'), response_digest(b'{"id":"r"}'))
+        for body, code in (
+            (b'{"seed":9007199254740993}', "inexact_integer"),
+            (b"[]", "invalid_content"),
+            (b'{"a":1,"a":2}', "invalid_content"),
+        ):
+            with self.subTest(body=body):
+                with self.assertRaises(VerificationError) as caught:
+                    request_digest(body)
+                self.assertEqual(caught.exception.code, code)
+
+    def test_a_stream_reads_into_the_response_its_receipt_signs(self):
+        chunk = lambda text: (
+            'data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"%s"}}]}\n\n' % text
+        ).encode()
+        reader = StreamContent()
+        for event in (b": STOGAS PROCESSING\n\n", chunk("Hel"), chunk("lo"), b'data: [DONE]\n\n'):
+            reader.push(event)
+        self.assertEqual(
+            reader.digest(),
+            response_digest(b'{"object":"chat.completion","choices":[{"index":0,"message":{"content":"Hello"}}]}'),
+        )
+        with self.assertRaises(ValueError):
+            reader.digest()
+        reader = StreamContent()
+        with self.assertRaises(VerificationError) as caught:
+            reader.push(b'data: {"object":"chat.completion.chunk","created":9007199254740993}\n\n')
+        self.assertEqual(caught.exception.code, "inexact_integer")
+        with self.assertRaises(ValueError):
+            reader.push(chunk("after"))
 
     def test_offline_authority_is_explicit(self):
         for options in (

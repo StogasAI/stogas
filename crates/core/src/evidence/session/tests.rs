@@ -1,4 +1,5 @@
 use super::*;
+use crate::receipt::{Side, canonical::commitment};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::Value;
 use sha2::Digest as _;
@@ -437,23 +438,23 @@ fn learned_release_withdrawal_blocks_warm_reappraisal_but_keeps_owned_request_ev
     );
     assert!(!session.artifacts.boot_document.is_empty());
     // An evidence update must not replace the retained identity of an admitted request.
-    let request = [1; 32];
-    let response = [2; 32];
+    let (request, response) = ([1; 64], [2; 64]);
+    let salts = crate::receipt::Salts {
+        request: Some(hex::encode([3; 32])),
+        response: Some(hex::encode([4; 32])),
+    };
+    let commitments = [
+        commitment(Side::Request, &[3; 32], &request),
+        commitment(Side::Response, &[4; 32], &response),
+    ];
     let metadata = serde_json::json!({});
     let digest: [u8; 32] = sha2::Sha256::digest(b"{}").into();
-    let message = [
-        crate::receipt::SCHEMA.as_bytes(),
-        b"\0",
-        &request,
-        &response,
-        &digest,
-    ]
-    .concat();
+    let message = crate::receipt::message(&commitments[0], &commitments[1], &digest);
     let receipt = crate::receipt::Receipt {
         schema: crate::receipt::SCHEMA.into(),
         boot_sha256: hex::encode(session.boot().document_sha256()),
-        request_sha256: hex::encode(request),
-        response_sha256: hex::encode(response),
+        request_commitment: hex::encode(commitments[0]),
+        response_commitment: hex::encode(commitments[1]),
         signature: URL_SAFE_NO_PAD.encode(
             SigningKey::from_seeds(&[[42; 32]; 2])
                 .sign(&message)
@@ -461,6 +462,12 @@ fn learned_release_withdrawal_blocks_warm_reappraisal_but_keeps_owned_request_ev
         ),
     };
     receipt
-        .verify(session.boot(), &request, &response, &metadata)
+        .verify(
+            session.boot(),
+            Some(&request),
+            Some(&response),
+            &salts,
+            &metadata,
+        )
         .unwrap();
 }

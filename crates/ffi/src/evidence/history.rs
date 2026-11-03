@@ -1,8 +1,8 @@
 //! Archive appraisal shares the core's isolated historical authority.
 
-use super::{AbiError, StogasEvidence, input_slice, response_coded};
+use super::{AbiError, StogasEvidence, content_digest, input_slice, response_coded};
 use std::{ffi::c_char, sync::MutexGuard};
-use stogas_core::evidence;
+use stogas_core::{evidence, receipt::canonical::DIGEST_BYTES};
 
 unsafe fn verifier<'a>(
     handle: *const StogasEvidence,
@@ -81,8 +81,10 @@ pub unsafe extern "C" fn stogas_evidence_verify_boot_archive(
     })
 }
 
-/// Verify a content receipt using historical boot evidence and locally computed hashes.
-/// This establishes neither current authorization nor when inference occurred.
+/// Verify a content receipt using historical boot evidence and locally computed content digests.
+///
+/// Each digest is 64 bytes, or empty to leave that side unchecked. This establishes neither
+/// current authorization nor when inference occurred.
 ///
 /// # Safety
 /// Handle must be live. Every input must address its declared readable length.
@@ -95,10 +97,10 @@ pub unsafe extern "C" fn stogas_evidence_verify_receipt_archive(
     evidence_len: usize,
     receipt: *const u8,
     receipt_len: usize,
-    request_hash: *const u8,
-    request_hash_len: usize,
-    response_hash: *const u8,
-    response_hash_len: usize,
+    request_digest: *const u8,
+    request_digest_len: usize,
+    response_digest: *const u8,
+    response_digest_len: usize,
     now_unix_ms: i64,
 ) -> *mut c_char {
     response_coded(|| {
@@ -124,18 +126,31 @@ pub unsafe extern "C" fn stogas_evidence_verify_receipt_archive(
                     stogas_core::receipt::MAX_METADATA_BYTES,
                     "receipt",
                 )?,
-                input_slice(request_hash, request_hash_len, 32, "request SHA-256")?,
-                input_slice(response_hash, response_hash_len, 32, "response SHA-256")?,
+                input_slice(
+                    request_digest,
+                    request_digest_len,
+                    DIGEST_BYTES,
+                    "request digest",
+                )?,
+                input_slice(
+                    response_digest,
+                    response_digest_len,
+                    DIGEST_BYTES,
+                    "response digest",
+                )?,
             )
         };
-        let request = request
-            .try_into()
-            .map_err(|_| "request SHA-256 must be 32 bytes")?;
-        let response = response
-            .try_into()
-            .map_err(|_| "response SHA-256 must be 32 bytes")?;
-
+        let (request, response) = (
+            content_digest(request, "request")?,
+            content_digest(response, "response")?,
+        );
         let boot = verifier.verify_boot_archive(archive, evidence, now_unix_ms)?;
-        Ok(stogas_core::receipt::verify_metadata(receipt, &boot, request, response)?.receipt)
+        Ok(stogas_core::receipt::verify_metadata(
+            receipt,
+            &boot,
+            request.as_ref(),
+            response.as_ref(),
+        )?
+        .receipt)
     })
 }

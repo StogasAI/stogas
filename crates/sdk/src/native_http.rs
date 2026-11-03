@@ -11,7 +11,6 @@ use axum::{
 };
 use hyper::body::Bytes;
 use rustls::pki_types::ServerName;
-use sha2::{Digest as _, Sha256};
 use std::{future::Future, sync::Arc};
 use stogas_core::evidence::{Snapshot, VerifiedSession};
 use tokio::{
@@ -33,8 +32,10 @@ pub enum Error {
     },
     #[error("request size accounting overflow")]
     Size,
-    #[error("Stogas-Metadata must be v1")]
+    #[error("Stogas-Metadata must be v2")]
     Metadata,
+    #[error("the request cannot carry a receipt: {0}")]
+    Content(#[from] stogas_core::receipt::CanonicalError),
     #[error(transparent)]
     Receipt(#[from] receipt_http::Error),
 }
@@ -53,7 +54,7 @@ impl Error {
             Self::Pool(http2_pool::Error::Closed) => "closed",
             Self::Pool(_) => "transport_failed",
             Self::Receipt(_) => "receipt_failed",
-            Self::Size | Self::Metadata => "invalid_request",
+            Self::Size | Self::Metadata | Self::Content(_) => "invalid_request",
         }
     }
 }
@@ -129,13 +130,11 @@ impl Client {
         request: Request<Bytes>,
         deadline: Instant,
     ) -> Result<Response<Body>, Error> {
-        let mut metadata = request.headers().get_all("stogas-metadata").iter();
-        let requested = match (metadata.next(), metadata.next()) {
-            (None, None) => false,
-            (Some(value), None) if value == "v1" => true,
-            _ => return Err(Error::Metadata),
+        let digest = match receipt_http::requests_metadata(request.headers()) {
+            Some(true) => Some(stogas_core::receipt::request_digest(request.body())?),
+            Some(false) => None,
+            None => return Err(Error::Metadata),
         };
-        let digest: Option<[u8; 32]> = requested.then(|| Sha256::digest(request.body()).into());
         let retained = request.headers().iter().try_fold(
             request
                 .body()

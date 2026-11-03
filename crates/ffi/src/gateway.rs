@@ -266,17 +266,21 @@ pub unsafe extern "C" fn stogas_node_sign_boot_request(
     })
 }
 
-/// Returns the receipt object as JSON.
+/// Sign two content digests and the metadata bag, and return `{"receipt": ..., "salts": ...}`.
+///
+/// Compute the digests with `stogas_receipt_request_digest` and `stogas_receipt_response_digest`
+/// or a stream content reader. The salts belong in the caller's response only, never in a log or
+/// an export.
 ///
 /// # Safety
-/// Keys are live; digests address 32 bytes; metadata addresses its readable
-/// length; the receipt output is writable.
+/// Keys are live; the boot digest addresses 32 bytes and each content digest 64; metadata
+/// addresses its readable length; the receipt output is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stogas_node_sign_receipt(
     keys: *const StogasNodeKeys,
     boot_sha256: *const u8,
-    request_sha256: *const u8,
-    response_sha256: *const u8,
+    request_digest: *const u8,
+    response_digest: *const u8,
     metadata: *const u8,
     metadata_len: usize,
     receipt: *mut StogasBuffer,
@@ -294,8 +298,8 @@ pub unsafe extern "C" fn stogas_node_sign_receipt(
         let signed = unsafe {
             keys.as_ref().ok_or(Status::Input)?.0.sign_receipt(
                 array(boot_sha256)?,
-                array(request_sha256)?,
-                array(response_sha256)?,
+                array(request_digest)?,
+                array(response_digest)?,
                 input(metadata, metadata_len)?,
             )?
         };

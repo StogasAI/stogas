@@ -9,6 +9,7 @@ use std::{
 use stogas_core::{
     authority::{Environment, RootKey},
     evidence,
+    receipt::{ContentDigest, canonical::DIGEST_BYTES},
 };
 
 mod history;
@@ -217,7 +218,10 @@ pub unsafe extern "C" fn stogas_evidence_verify_logged_boot(
     })
 }
 
-/// Verify a complete Stogas metadata bag against exact locally computed SHA-256 hashes.
+/// Verify a complete Stogas metadata bag, salts included, against locally computed content digests.
+///
+/// Compute each digest with `stogas_receipt_request_digest`, `stogas_receipt_response_digest` or
+/// a stream content reader. Each is 64 bytes, or empty to leave that side unchecked.
 ///
 /// The boot is appraised against this snapshot at the caller's trusted clock.
 /// The single signature covers content and canonical metadata, not inference time.
@@ -233,10 +237,10 @@ pub unsafe extern "C" fn stogas_evidence_verify_receipt(
     inclusion_len: usize,
     receipt: *const u8,
     receipt_len: usize,
-    request_hash: *const u8,
-    request_hash_len: usize,
-    response_hash: *const u8,
-    response_hash_len: usize,
+    request_digest: *const u8,
+    request_digest_len: usize,
+    response_digest: *const u8,
+    response_digest_len: usize,
     now_unix_ms: i64,
 ) -> *mut c_char {
     use stogas_core::attestation::evidence::MAX_EVIDENCE_BYTES;
@@ -253,20 +257,44 @@ pub unsafe extern "C" fn stogas_evidence_verify_receipt(
                     stogas_core::receipt::MAX_METADATA_BYTES,
                     "receipt",
                 )?,
-                input_slice(request_hash, request_hash_len, 32, "request SHA-256")?,
-                input_slice(response_hash, response_hash_len, 32, "response SHA-256")?,
+                input_slice(
+                    request_digest,
+                    request_digest_len,
+                    DIGEST_BYTES,
+                    "request digest",
+                )?,
+                input_slice(
+                    response_digest,
+                    response_digest_len,
+                    DIGEST_BYTES,
+                    "response digest",
+                )?,
             )
         };
-        let request = request
-            .try_into()
-            .map_err(|_| "request SHA-256 must be 32 bytes")?;
-        let response = response
-            .try_into()
-            .map_err(|_| "response SHA-256 must be 32 bytes")?;
-
+        let (request, response) = (
+            content_digest(request, "request")?,
+            content_digest(response, "response")?,
+        );
         let boot = snapshot.verify_logged_boot(document, inclusion, now_unix_ms)?;
-        Ok(stogas_core::receipt::verify_metadata(receipt, &boot, request, response)?.receipt)
+        Ok(stogas_core::receipt::verify_metadata(
+            receipt,
+            &boot,
+            request.as_ref(),
+            response.as_ref(),
+        )?
+        .receipt)
     })
+}
+
+/// A side's 64-byte content digest, or `None` for a side the caller leaves unchecked.
+fn content_digest(bytes: &[u8], side: &str) -> Result<Option<ContentDigest>, AbiError> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    bytes
+        .try_into()
+        .map(Some)
+        .map_err(|_| format!("{side} digest must be {DIGEST_BYTES} bytes or empty").into())
 }
 
 #[cfg(test)]

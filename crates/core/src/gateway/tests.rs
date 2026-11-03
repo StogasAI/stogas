@@ -92,7 +92,7 @@ fn session_evidence_reproduces_the_independent_certificate_extension() {
 }
 
 #[test]
-fn boot_documents_commit_the_quote_and_requests_and_receipts_verify_under_the_boot_key() {
+fn boot_documents_commit_the_quote_and_boot_requests_verify_under_the_boot_key() {
     let keys = node_keys();
     let (spki, challenge) = ([3; 32], [4; 32]);
     let report_data = keys
@@ -143,22 +143,67 @@ fn boot_documents_commit_the_quote_and_requests_and_receipts_verify_under_the_bo
         |purpose| boot::verify_boot_request(&request(&signature), node, &public, 1_000, purpose);
     assert!(verify(BootRequestPurpose::Complete).is_ok());
     assert!(verify(BootRequestPurpose::Certificate).is_err());
+}
 
-    let boot: [u8; 32] = Sha256::digest(&document).into();
-    let metadata =
-        br#"{"node_id":"amber-anchor-00","receipt":{"ignored":true},"usage":{"b":1,"a":2}}"#;
-    let receipt = keys
-        .sign_receipt(&boot, &[7; 32], &[8; 32], metadata)
+#[test]
+fn receipts_commit_freshly_salted_content_and_verify_under_the_boot_key() {
+    let keys = node_keys();
+    let public = keys.signing.public_key().as_slice();
+    let boot = [6; 32];
+    let metadata = br#"{"node_id":"amber-anchor-00","receipt":{"ignored":true},"salts":{"ignored":true},"usage":{"b":1,"a":2}}"#;
+    let (request, response) = ([7; 64], [8; 64]);
+    let signed = keys
+        .sign_receipt(&boot, &request, &response, metadata)
         .unwrap();
-    assert_eq!(receipt.boot_sha256, hex::encode(boot));
+    assert_eq!(signed.receipt.boot_sha256, hex::encode(boot));
+    let salt = |salt: &Option<String>| receipt::decode_hex::<32>(salt.as_deref().unwrap()).unwrap();
+    let commitments = [
+        canonical::commitment(Side::Request, &salt(&signed.salts.request), &request),
+        canonical::commitment(Side::Response, &salt(&signed.salts.response), &response),
+    ];
+    assert_eq!(
+        signed.receipt.request_commitment,
+        hex::encode(commitments[0])
+    );
+    assert_eq!(
+        signed.receipt.response_commitment,
+        hex::encode(commitments[1])
+    );
     let digest = receipt::metadata_digest(&serde_json::from_slice(metadata).unwrap()).unwrap();
-    let signature = URL_SAFE_NO_PAD.decode(&receipt.signature).unwrap();
-    let message = |response| receipt::message(&[7; 32], response, &digest);
-    assert!(signing::verify(&public, &message(&[8; 32]), &signature).is_ok());
-    assert!(signing::verify(&public, &message(&[9; 32]), &signature).is_err());
-    assert!(keys.sign_receipt(&boot, &[7; 32], &[8; 32], b"[]").is_err());
+    let signature = URL_SAFE_NO_PAD.decode(&signed.receipt.signature).unwrap();
+    let message = |request, response| receipt::message(request, response, &digest);
     assert!(
-        keys.sign_receipt(&boot, &[7; 32], &[8; 32], br#"{"a":1,"a":2}"#)
+        signing::verify(
+            public,
+            &message(&commitments[0], &commitments[1]),
+            &signature
+        )
+        .is_ok()
+    );
+    assert!(
+        signing::verify(
+            public,
+            &message(&commitments[1], &commitments[0]),
+            &signature
+        )
+        .is_err()
+    );
+    // Each receipt has its own salts, so two receipts for the same content share no commitment.
+    let again = keys
+        .sign_receipt(&boot, &request, &response, metadata)
+        .unwrap();
+    assert_ne!(again.salts.request, signed.salts.request);
+    assert_ne!(again.salts.response, signed.salts.response);
+    assert_ne!(
+        again.receipt.request_commitment,
+        signed.receipt.request_commitment
+    );
+    assert!(
+        keys.sign_receipt(&boot, &request, &response, b"[]")
+            .is_err()
+    );
+    assert!(
+        keys.sign_receipt(&boot, &request, &response, br#"{"a":1,"a":2}"#)
             .is_err()
     );
 }
@@ -246,4 +291,79 @@ fn provisioning_opens_the_committed_control_vector_and_rejects_malformed_envelop
         .unwrap();
     let opened: serde_json::Value = serde_json::from_slice(&opened).unwrap();
     assert_eq!(opened, vector["plaintext"]);
+}
+
+/// Writes the receipt sample that the Go, Python and browser tests check, signed by the
+/// hardware session sample's boot key. ML-DSA signatures are randomized, so the sample is
+/// written once rather than compared:
+/// `cargo test -p stogas-core --features gateway -- --ignored write_content_receipt_sample`.
+#[test]
+#[ignore = "writes tests/fixtures/content-receipt-v2.json"]
+fn write_content_receipt_sample() {
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures");
+    let registration: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(format!("{fixtures}/hardware-registration-v1.json")).unwrap(),
+    )
+    .unwrap();
+    let boot: [u8; 32] =
+        Sha256::digest(crate::canonical_json(&registration["boot"]).unwrap()).into();
+    // The diagnostic boot that produced the hardware samples derived its key from these seeds.
+    let keys = NodeKeys::from_seeds(&[[42; 32]; 2], &[0; 32]);
+    assert_eq!(
+        URL_SAFE_NO_PAD.encode(keys.signing.public_key()),
+        registration["boot"]["report_data"]["signing_public_key"]
+    );
+    // Formatting, key order, an escaped character, a number's spelling and the encryption
+    // keys all leave the request's digest unchanged.
+    let request = "{\n  \"model\": \"openai-gpt-5\",\n  \"temperature\": 0.50,\n  \"messages\": [\
+                   {\"role\": \"user\", \"content\": \"Say h\\u00e9llo\"}],\n  \
+                   \"encryption_keys\": {\"vault\": \"sample-key\"}\n}\n";
+    let response = r#"{"id":"chatcmpl-sample","object":"chat.completion","created":1700000000,"model":"openai-gpt-5","choices":[{"index":0,"message":{"role":"assistant","content":"Héllo 🌍"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":3,"total_tokens":12}}"#;
+    let metadata = json!({
+        "billed_cost_usd": "0.01",
+        "cache_read_savings_usd": "0.002",
+        "cache_write_overhead_usd": null,
+        "meters": {
+            "cached_input_tokens": {"quantity": "200", "rateKey": "per_mill_tokens", "rateUsd": "0", "usd": "0"},
+            "input_tokens": {"quantity": "1000", "rateKey": "per_mill_tokens", "rateUsd": "10", "usd": "0.01"},
+            "total_tokens": {"quantity": "1200"},
+        },
+        "provider": {"detail": {"label": "<🌍>", "score": 1.5, "verified": true}, "instance": "chutes-fixture"},
+        "upstream_cost_usd": "0.01",
+    });
+    let request_digest = receipt::request_digest(request.as_bytes()).unwrap();
+    let response_digest = receipt::response_digest(response.as_bytes()).unwrap();
+    let salts: [Salt; 2] = [
+        Sha256::digest(b"sample request salt").into(),
+        Sha256::digest(b"sample response salt").into(),
+    ];
+    let signed = keys
+        .sign_salted_receipt(
+            &boot,
+            [&request_digest, &response_digest],
+            &serde_json::to_vec(&metadata).unwrap(),
+            &salts,
+        )
+        .unwrap();
+    let sample = json!({
+        "description": "A buffered response and its stogas.receipt.v2 receipt, signed by the \
+            boot key of the hardware session sample. The digests are SHA-512 of each side's RFC \
+            8785 form; check them to test another implementation. Regenerate with \
+            `cargo test -p stogas-core --features gateway -- --ignored \
+            write_content_receipt_sample`; scripts/data/evidence-fixtures.ts keeps boot_sha256 \
+            current.",
+        "request": request,
+        "response": response,
+        "request_digest": hex::encode(request_digest),
+        "response_digest": hex::encode(response_digest),
+        "metadata": metadata,
+        "salts": signed.salts,
+        "receipt": signed.receipt,
+        "public_key": URL_SAFE_NO_PAD.encode(keys.signing.public_key()),
+    });
+    std::fs::write(
+        format!("{fixtures}/content-receipt-v2.json"),
+        serde_json::to_string_pretty(&sample).unwrap() + "\n",
+    )
+    .unwrap();
 }

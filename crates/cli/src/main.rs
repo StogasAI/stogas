@@ -25,7 +25,6 @@ use clap::{
 };
 use http::Method;
 use route::Route;
-use sha2::{Digest as _, Sha256};
 use std::{
     io::{IsTerminal as _, Write as _},
     path::{Path, PathBuf},
@@ -170,7 +169,8 @@ enum Command {
         #[arg(long, default_value = ".")]
         output: PathBuf,
     },
-    /// Verify an exact-content receipt against the archived evidence of the boot it names.
+    /// Verify a receipt against the archived evidence of the boot it names, and write a proof
+    /// that shows others only the sides you choose.
     Proof(ProofArgs),
     /// Run the verified loopback proxy.
     Serve(ServeArgs),
@@ -192,18 +192,28 @@ struct VerifyArgs {
 
 #[derive(Args)]
 struct ProofArgs {
-    /// Detached final Stogas metadata JSON; --response then contains only the exact signed bytes.
+    /// The final Stogas metadata on its own, as --share writes it. --response then holds the
+    /// response JSON, with or without it, and may be left out to check only the rest.
     #[arg(long, conflicts_with = "stream")]
     proof: Option<PathBuf>,
-    /// Read a complete SSE response, including its metadata and terminal event.
+    /// Read --response as a complete SSE stream, including its metadata and terminal event.
     #[arg(long)]
     stream: bool,
-    /// Exact plaintext request body sent to the inference endpoint.
+    /// The request body sent to the inference endpoint. Without it the request stays
+    /// unchecked.
     #[arg(long)]
-    request: PathBuf,
-    /// Buffered JSON with metadata, complete SSE, or detached signed response bytes.
+    request: Option<PathBuf>,
+    /// Buffered JSON with its metadata, a complete SSE stream, or with --proof the response
+    /// JSON alone.
+    #[arg(long, required_unless_present = "proof")]
+    response: Option<PathBuf>,
+    /// After verifying, write metadata.json and each side it proves into this directory.
+    /// Anyone can check them with the command this prints.
     #[arg(long)]
-    response: PathBuf,
+    share: Option<PathBuf>,
+    /// Leave this side out of the shared proof. Its commitment then reveals nothing about it.
+    #[arg(long, value_enum, requires = "share")]
+    hide: Vec<ProofSide>,
     /// Saved evidence identified by the boot archive. Without --evidence and --boot, the
     /// command downloads both.
     #[arg(long, requires = "boot")]
@@ -213,12 +223,18 @@ struct ProofArgs {
     boot: Option<PathBuf>,
     #[arg(long, default_value = "prod", value_parser = parse_environment)]
     environment: stogas::Environment,
-    /// Emit stable JSON containing the verified content commitment.
+    /// Emit stable JSON with the commitments and which sides were checked.
     #[arg(long)]
     json: bool,
     /// Exact appraisal time in milliseconds, for tests and historical audits only.
     #[arg(long, hide = true)]
     now_unix_ms: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
+enum ProofSide {
+    Request,
+    Response,
 }
 
 #[derive(Args)]
@@ -375,10 +391,12 @@ async fn run() -> Result<()> {
         Command::Proof(args) => {
             let verifier = Verifier::stogas(args.environment)?;
             let network = network(args.environment)?;
-            print_proof_output(
-                &verify_proof_files(&args, &verifier, network).await?,
-                args.json,
-            )?;
+            let proof = verify_proof_files(&args, &verifier, network).await?;
+            let shared = match &args.share {
+                Some(directory) => Some(share_proof(&proof, &args.hide, directory).await?),
+                None => None,
+            };
+            print_proof_output(&proof.verified, shared.as_deref(), args.json)?;
         }
         Command::Serve(args) => run_serve(args, route).await?,
     }
@@ -445,14 +463,44 @@ async fn run_serve(input: ServeArgs, route: Route) -> Result<()> {
     Ok(())
 }
 
+/// A verified receipt, and the content that a shared proof can reveal, each side as its
+/// receipt signs it.
+#[derive(Debug)]
+struct VerifiedProof {
+    verified: VerifiedReceipt,
+    /// The bag as received, salts included.
+    metadata: serde_json::Value,
+    /// The request without its `encryption_keys`, which hold the customer's keys.
+    request: Option<serde_json::Value>,
+    response: Option<serde_json::Value>,
+}
+
+/// The largest request body that the gateway admits.
+const MAX_REQUEST_BYTES: usize = 128 * 1024 * 1024;
+
 async fn verify_proof_files(
     input: &ProofArgs,
     verifier: &Verifier,
     network: Network,
-) -> Result<VerifiedReceipt> {
+) -> Result<VerifiedProof> {
     let now = input.now_unix_ms.unwrap_or_else(wall_clock_ms);
-    let request = hash_file(&input.request, "request body").await?;
-    let signed = read_signed_response(input, request).await?;
+    let request = match &input.request {
+        Some(path) => {
+            let bytes = read_bounded_file(path, MAX_REQUEST_BYTES, "request body").await?;
+            let mut request = receipt::canonical::parse_object(&bytes)
+                .context("the request body is not JSON that a receipt can sign")?;
+            if let Some(object) = request.as_object_mut() {
+                object.remove("encryption_keys");
+            }
+            Some(request)
+        }
+        None => None,
+    };
+    let request_digest = request
+        .as_ref()
+        .map(receipt::canonical::digest)
+        .transpose()?;
+    let (signed, response) = read_signed_response(input, request_digest).await?;
     let (archive, evidence) = if let (Some(boot), Some(evidence)) = (&input.boot, &input.evidence) {
         (
             read_bounded_file(boot, MAX_ARCHIVE_BYTES, "boot archive").await?,
@@ -466,52 +514,168 @@ async fn verify_proof_files(
         (archive.boot, archive.evidence)
     };
     let boot = verifier.verify_boot_archive(&archive, &evidence, now)?;
-    Ok(signed.verify(&boot)?.receipt)
+    let metadata = signed.metadata().clone();
+    Ok(VerifiedProof {
+        verified: signed.verify(&boot)?.receipt,
+        metadata,
+        request,
+        response,
+    })
 }
 
-async fn read_signed_response(input: &ProofArgs, request: [u8; 32]) -> Result<receipt::Signed> {
+/// The signed response, and the response content as its receipt signs it.
+async fn read_signed_response(
+    input: &ProofArgs,
+    request: Option<receipt::ContentDigest>,
+) -> Result<(receipt::Signed, Option<serde_json::Value>)> {
     if let Some(path) = &input.proof {
         let proof = read_bounded_file(path, receipt::MAX_METADATA_BYTES, "Stogas metadata").await?;
-        let response = hash_file(&input.response, "response body").await?;
-        return Ok(receipt::Signed::detached(request, &proof, response)?);
-    }
-    if input.stream {
-        let mut response = tokio::fs::File::open(&input.response)
-            .await
-            .with_context(|| format!("could not read {}", input.response.display()))?;
-        let mut stream = receipt::Stream::new(request);
-        let mut buffer = vec![0; 64 * 1024].into_boxed_slice();
-        loop {
-            let count = response.read(&mut buffer).await?;
-            if count == 0 {
-                break;
+        let response = match &input.response {
+            Some(path) => {
+                let bytes =
+                    read_bounded_file(path, receipt::MAX_BUFFERED_BYTES, "response").await?;
+                let mut response = receipt::canonical::parse_object(&bytes)
+                    .context("the response is not JSON that a receipt can sign")?;
+                // A receipt never covers the bag that carries it.
+                if let Some(object) = response.as_object_mut() {
+                    object.remove("stogas");
+                }
+                Some(response)
             }
-            stream.push(&buffer[..count])?;
-        }
-        return Ok(stream.signed()?);
+            None => None,
+        };
+        let digest = response
+            .as_ref()
+            .map(receipt::canonical::digest)
+            .transpose()?;
+        return Ok((
+            receipt::Signed::detached(request, &proof, digest)?,
+            response,
+        ));
     }
-    let response = read_bounded_file(
-        &input.response,
-        receipt::MAX_BUFFERED_BYTES,
-        "buffered response",
-    )
-    .await?;
-    Ok(receipt::Signed::buffered(request, &response)?)
+    let path = input
+        .response
+        .as_deref()
+        .context("give --response, or --proof with the metadata on its own")?;
+    let bytes = read_bounded_file(path, receipt::MAX_BUFFERED_BYTES, "response").await?;
+    let (response, metadata) = if input.stream {
+        receipt::stream_response(&bytes)?
+    } else {
+        let mut response = receipt::canonical::parse_object(&bytes)
+            .context("the response is not JSON that a receipt can sign")?;
+        let metadata = response
+            .as_object_mut()
+            .and_then(|object| object.remove("stogas"))
+            .context("the response has no Stogas metadata")?;
+        (response, serde_json::to_vec(&metadata)?)
+    };
+    let digest = receipt::canonical::digest(&response)?;
+    Ok((
+        receipt::Signed::detached(request, &metadata, Some(digest))?,
+        Some(response),
+    ))
 }
 
-fn print_proof_output(output: &VerifiedReceipt, json: bool) -> Result<()> {
+/// Write the metadata and each side it proves, and return the command that checks them.
+async fn share_proof(
+    proof: &VerifiedProof,
+    hide: &[ProofSide],
+    directory: &Path,
+) -> Result<String> {
+    let reveal_request = proof.request.is_some() && !hide.contains(&ProofSide::Request);
+    let reveal_response = proof.response.is_some() && !hide.contains(&ProofSide::Response);
+    let mut metadata = proof.metadata.clone();
+    let object = metadata
+        .as_object_mut()
+        .context("the Stogas metadata is not an object")?;
+    if let Some(serde_json::Value::Object(salts)) = object.get_mut("salts") {
+        if !reveal_request {
+            salts.remove("request");
+        }
+        if !reveal_response {
+            salts.remove("response");
+        }
+        if salts.is_empty() {
+            object.remove("salts");
+        }
+    }
+    tokio::fs::create_dir_all(directory)
+        .await
+        .with_context(|| format!("could not create {}", directory.display()))?;
+    let write = |name: &str, bytes: Vec<u8>| {
+        let path = directory.join(name);
+        async move {
+            tokio::fs::write(&path, bytes)
+                .await
+                .with_context(|| format!("could not write {}", path.display()))?;
+            Ok::<_, anyhow::Error>(path)
+        }
+    };
+    let mut command = vec![
+        "stogas proof --proof".to_owned(),
+        shell_word(&write("metadata.json", pretty_json(&metadata)?).await?),
+    ];
+    if let (true, Some(request)) = (reveal_request, &proof.request) {
+        let path = write("request.json", pretty_json(request)?).await?;
+        command.extend(["--request".to_owned(), shell_word(&path)]);
+    }
+    if let (true, Some(response)) = (reveal_response, &proof.response) {
+        let path = write("response.json", pretty_json(response)?).await?;
+        command.extend(["--response".to_owned(), shell_word(&path)]);
+    }
+    Ok(command.join(" "))
+}
+
+fn pretty_json(value: &serde_json::Value) -> Result<Vec<u8>> {
+    let mut bytes = serde_json::to_vec_pretty(value)?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+/// A path as one word of a command to paste into this platform's shell, quoted only when it
+/// needs to be. Windows paths cannot hold a double quote, and POSIX single quotes hold anything
+/// but themselves.
+fn shell_word(path: &Path) -> String {
+    let text = path.display().to_string();
+    let plain = |byte: u8| {
+        byte.is_ascii_alphanumeric()
+            || b"-_./:+".contains(&byte)
+            || (cfg!(windows) && byte == b'\\')
+    };
+    if !text.is_empty() && text.bytes().all(plain) {
+        text
+    } else if cfg!(windows) {
+        format!("\"{text}\"")
+    } else {
+        format!("'{}'", text.replace('\'', r"'\''"))
+    }
+}
+
+fn print_proof_output(output: &VerifiedReceipt, shared: Option<&str>, json: bool) -> Result<()> {
     if json {
         out!("{}", serde_json::to_string(&output)?)?;
-    } else {
-        out!("Verified response")?;
-        out!("  node: {}", output.node_id)?;
-        out!("  request SHA-256: {}", output.request_sha256)?;
-        out!("  response SHA-256: {}", output.response_sha256)?;
+        return Ok(());
+    }
+    let side = |verified: bool, name: &str| {
+        if verified {
+            format!("  {name}: matches the receipt")
+        } else {
+            format!("  {name}: not checked; the receipt holds only its commitment")
+        }
+    };
+    out!("Verified receipt from node {}", output.node_id)?;
+    out!("{}", side(output.request_verified, "request"))?;
+    out!("{}", side(output.response_verified, "response"))?;
+    out!("  metadata: matches the receipt")?;
+    if let Some(command) = shared {
+        out!("Shared proof written. Anyone can check it with:")?;
+        out!("  {command}")?;
     }
     Ok(())
 }
 
 async fn hash_file(path: &Path, label: &str) -> Result<[u8; 32]> {
+    use sha2::{Digest as _, Sha256};
     let mut file = tokio::fs::File::open(path)
         .await
         .with_context(|| format!("could not read {}", path.display()))?;
@@ -729,6 +893,23 @@ mod tests {
             .is_err()
         );
         assert!(Cli::try_parse_from(base).is_ok());
+        // Either side may stay unchecked, but something must carry the receipt.
+        assert!(Cli::try_parse_from(["stogas", "proof", "--response", "response"]).is_ok());
+        assert!(Cli::try_parse_from(["stogas", "proof", "--proof", "metadata.json"]).is_ok());
+        assert!(Cli::try_parse_from(["stogas", "proof", "--request", "request.json"]).is_err());
+        // Hiding a side means something only in a shared proof.
+        let share = [
+            "--share", "proof", "--hide", "request", "--hide", "response",
+        ];
+        assert!(Cli::try_parse_from(base.into_iter().chain(share)).is_ok());
+        assert!(Cli::try_parse_from(base.into_iter().chain(share.into_iter().skip(2))).is_err());
+        assert!(
+            Cli::try_parse_from(
+                base.into_iter()
+                    .chain(["--share", "proof", "--hide", "metadata"])
+            )
+            .is_err()
+        );
         for missing in 0..evidence.len() / 2 {
             let mut incomplete = evidence.to_vec();
             incomplete.drain(missing * 2..missing * 2 + 2);

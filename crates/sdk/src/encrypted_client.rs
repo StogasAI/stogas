@@ -12,7 +12,6 @@ use axum::{
     http::{Request, Response},
 };
 use futures_util::{StreamExt as _, stream};
-use sha2::{Digest as _, Sha256};
 use std::{
     num::NonZeroUsize,
     sync::{Arc, Mutex},
@@ -38,8 +37,10 @@ pub enum Error {
     Deadline,
     #[error("encrypted transport close deadline expired")]
     CloseDeadline,
-    #[error("Stogas-Metadata must be v1; request was not sent")]
+    #[error("Stogas-Metadata must be v2; request was not sent")]
     Metadata,
+    #[error("the request cannot carry a receipt: {0}; request was not sent")]
+    Content(#[from] stogas_core::receipt::CanonicalError),
     #[error(transparent)]
     Setup(#[from] encrypted_setup::Error),
     #[error(transparent)]
@@ -64,6 +65,7 @@ impl Error {
             Self::Closed => "closed",
             Self::Deadline => "setup_deadline",
             Self::Metadata
+            | Self::Content(_)
             | Self::Http(encrypted_http::Error::Request | encrypted_http::Error::NotSentDeadline) => {
                 "invalid_request"
             }
@@ -237,13 +239,11 @@ impl Client {
         request: Request<Bytes>,
         deadline: Instant,
     ) -> Result<Response<Body>, Error> {
-        let mut metadata = request.headers().get_all("stogas-metadata").iter();
-        let requested = match (metadata.next(), metadata.next()) {
-            (None, None) => false,
-            (Some(value), None) if value == "v1" => true,
-            _ => return Err(Error::Metadata),
+        let digest = match receipt_http::requests_metadata(request.headers()) {
+            Some(true) => Some(stogas_core::receipt::request_digest(request.body())?),
+            Some(false) => None,
+            None => return Err(Error::Metadata),
         };
-        let digest: Option<[u8; 32]> = requested.then(|| Sha256::digest(request.body()).into());
         let selected = self.acquire(deadline).await?;
         let (lease, response, context) = self.exchange(request.clone(), deadline, selected).await?;
         if response
@@ -521,7 +521,7 @@ impl Client {
 
 async fn own(
     (lease, mut response, context): (Lease, Response<Body>, Arc<RequestContext>),
-    digest: Option<[u8; 32]>,
+    digest: Option<stogas_core::receipt::ContentDigest>,
     deadline: Instant,
 ) -> Result<Response<Body>, Error> {
     response.extensions_mut().insert(Arc::clone(&context));

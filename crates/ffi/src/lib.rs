@@ -15,6 +15,8 @@ use std::{
 
 mod evidence;
 pub use evidence::*;
+mod receipt;
+pub use receipt::*;
 #[cfg(feature = "gateway")]
 mod gateway;
 #[cfg(feature = "gateway")]

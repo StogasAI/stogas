@@ -14,6 +14,52 @@ pub fn from_slice(input: &[u8]) -> Result<Value, serde_json::Error> {
     Ok(value)
 }
 
+/// Parses like [`from_slice`], with up to `depth` nested arrays and objects where `serde_json`
+/// alone stops at 127.
+///
+/// # Errors
+///
+/// Returns an error for invalid JSON, trailing data, a duplicate object key or deeper nesting.
+pub fn from_slice_nested(input: &[u8], depth: usize) -> Result<Value, serde_json::Error> {
+    if nesting(input) > depth {
+        return Err(de::Error::custom("JSON nests too deeply"));
+    }
+    let mut deserializer = serde_json::Deserializer::from_slice(input);
+    // The nesting was counted the way the parser will meet it: brackets outside strings.
+    deserializer.disable_recursion_limit();
+    let value = StrictValue.deserialize(&mut deserializer)?;
+    deserializer.end()?;
+    Ok(value)
+}
+
+/// The deepest nesting of arrays and objects. Brackets in strings do not count, and a string
+/// that never ends hides the rest, as it does from the parser.
+fn nesting(input: &[u8]) -> usize {
+    let (mut depth, mut deepest) = (0_usize, 0);
+    let (mut string, mut escaped) = (false, false);
+    for &byte in input {
+        if string {
+            match (escaped, byte) {
+                (true, _) => escaped = false,
+                (false, b'\\') => escaped = true,
+                (false, b'"') => string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match byte {
+            b'"' => string = true,
+            b'[' | b'{' => {
+                depth += 1;
+                deepest = deepest.max(depth);
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    deepest
+}
+
 struct StrictValue;
 
 impl<'de> DeserializeSeed<'de> for StrictValue {

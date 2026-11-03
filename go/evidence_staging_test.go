@@ -3,10 +3,10 @@
 package stogas
 
 import (
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -104,31 +104,53 @@ func TestOfflineReceiptUsesLoggedHardwareKeyAndExactContentHashes(t *testing.T) 
 	}
 	defer snapshot.Close()
 	boot, inclusion := fixtureBoot(t, fixture.Certificate)
-	vectorBytes, err := os.ReadFile("../tests/fixtures/content-receipt-v1.json")
+	vectorBytes, err := os.ReadFile("../tests/fixtures/content-receipt-v2.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var vector struct {
-		Request  string            `json:"request"`
-		Response string            `json:"response"`
-		Metadata map[string]any    `json:"metadata"`
-		Receipt  map[string]string `json:"hardware_receipt"`
+		Request        string            `json:"request"`
+		Response       string            `json:"response"`
+		RequestDigest  string            `json:"request_digest"`
+		ResponseDigest string            `json:"response_digest"`
+		Metadata       map[string]any    `json:"metadata"`
+		Salts          map[string]string `json:"salts"`
+		Receipt        map[string]string `json:"receipt"`
 	}
 	if err := json.Unmarshal(vectorBytes, &vector); err != nil {
 		t.Fatal(err)
 	}
-	request := sha256.Sum256([]byte(vector.Request))
-	response := sha256.Sum256([]byte(vector.Response))
+	request, err := RequestDigest([]byte(vector.Request))
+	if err != nil || hex.EncodeToString(request[:]) != vector.RequestDigest {
+		t.Fatalf("request digest: %x %v", request, err)
+	}
+	response, err := ResponseDigest([]byte(vector.Response))
+	if err != nil || hex.EncodeToString(response[:]) != vector.ResponseDigest {
+		t.Fatalf("response digest: %x %v", response, err)
+	}
 	receipt := vector.Receipt
 	vector.Metadata["receipt"] = receipt
+	vector.Metadata["salts"] = vector.Salts
 	encoded, err := json.Marshal(vector.Metadata)
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.UnixMilli(fixture.Now)
-	verified, err := snapshot.VerifyReceiptAt(boot, inclusion, encoded, request, response, now)
-	if err != nil || verified.BootSHA256 != receipt["boot_sha256"] || verified.RequestSHA256 != receipt["request_sha256"] || verified.ResponseSHA256 != receipt["response_sha256"] || verified.NodeID == "" {
+	verified, err := snapshot.VerifyReceiptAt(boot, inclusion, encoded, &request, &response, now)
+	if err != nil || verified.BootSHA256 != receipt["boot_sha256"] || verified.RequestCommitment != receipt["request_commitment"] ||
+		verified.ResponseCommitment != receipt["response_commitment"] || !verified.RequestVerified || !verified.ResponseVerified || verified.NodeID == "" {
 		t.Fatalf("valid content receipt rejected: %+v %v", verified, err)
+	}
+	// A side without a digest stays unchecked, so a proof can leave it hidden.
+	delete(vector.Metadata, "salts")
+	vector.Metadata["salts"] = map[string]string{"response": vector.Salts["response"]}
+	responseOnly, _ := json.Marshal(vector.Metadata)
+	vector.Metadata["salts"] = vector.Salts
+	if partial, err := snapshot.VerifyReceiptAt(boot, inclusion, responseOnly, nil, &response, now); err != nil || partial.RequestVerified || !partial.ResponseVerified {
+		t.Fatalf("one-sided receipt: %+v %v", partial, err)
+	}
+	if _, err := snapshot.VerifyReceiptAt(boot, inclusion, responseOnly, &request, &response, now); err == nil {
+		t.Fatal("checked a request without its salt")
 	}
 	summary, err := snapshot.Summary()
 	if err != nil {
@@ -160,27 +182,27 @@ func TestOfflineReceiptUsesLoggedHardwareKeyAndExactContentHashes(t *testing.T) 
 	if identity, err := owner.VerifyBootArchive(archive, fixture.Evidence); err != nil || identity.NodeID != verified.NodeID {
 		t.Fatalf("archive boot verification: %+v %v", identity, err)
 	}
-	if historical, err := owner.VerifyReceiptArchive(archive, fixture.Evidence, encoded, request, response); err != nil || historical != verified {
+	if historical, err := owner.VerifyReceiptArchive(archive, fixture.Evidence, encoded, &request, &response); err != nil || historical != verified {
 		t.Fatalf("archive receipt verification: %+v %v", historical, err)
 	}
-	if _, err := owner.VerifyReceiptArchive(archive, fixture.Evidence, encoded, response, response); err == nil {
+	if _, err := owner.VerifyReceiptArchive(archive, fixture.Evidence, encoded, &response, &response); err == nil {
 		t.Fatal("archive accepted substituted content")
 	}
 	for _, change := range []struct {
 		name               string
 		receipt, inclusion []byte
-		request            [32]byte
+		request            *ContentDigest
 		now                time.Time
 		code               string
 	}{
-		{"content", encoded, inclusion, response, now, "invalid_receipt"},
-		{"unknown field", append([]byte(`{"durability":true,`), encoded[1:]...), inclusion, request, now, "invalid_receipt"},
-		{"duplicate field", append([]byte(`{"receipt":{},`), encoded[1:]...), inclusion, request, now, "invalid_receipt"},
-		{"missing inclusion", encoded, nil, request, now, ""},
-		{"expired collateral", encoded, inclusion, request, now.AddDate(30, 0, 0), "expired_collateral"},
+		{"content", encoded, inclusion, &response, now, "invalid_receipt"},
+		{"unknown field", append([]byte(`{"durability":true,`), encoded[1:]...), inclusion, &request, now, "invalid_receipt"},
+		{"duplicate field", append([]byte(`{"receipt":{},`), encoded[1:]...), inclusion, &request, now, "invalid_receipt"},
+		{"missing inclusion", encoded, nil, &request, now, ""},
+		{"expired collateral", encoded, inclusion, &request, now.AddDate(30, 0, 0), "expired_collateral"},
 	} {
 		t.Run(change.name, func(t *testing.T) {
-			_, err := snapshot.VerifyReceiptAt(boot, change.inclusion, change.receipt, change.request, response, change.now)
+			_, err := snapshot.VerifyReceiptAt(boot, change.inclusion, change.receipt, change.request, &response, change.now)
 			var failure *VerificationError
 			if !errors.As(err, &failure) || (change.code != "" && failure.Code != change.code) {
 				t.Fatalf("failure lost its reason: %v", err)
@@ -191,13 +213,13 @@ func TestOfflineReceiptUsesLoggedHardwareKeyAndExactContentHashes(t *testing.T) 
 		original := receipt[field]
 		receipt[field] = "invalid"
 		changed, _ := json.Marshal(vector.Metadata)
-		if _, err := snapshot.VerifyReceiptAt(boot, inclusion, changed, request, response, now); err == nil {
+		if _, err := snapshot.VerifyReceiptAt(boot, inclusion, changed, &request, &response, now); err == nil {
 			t.Fatalf("accepted changed %s", field)
 		}
 		receipt[field] = original
 	}
 	_ = snapshot.Close()
-	if _, err := snapshot.VerifyReceiptAt(boot, inclusion, encoded, request, response, now); !errors.Is(err, ErrClosed) {
+	if _, err := snapshot.VerifyReceiptAt(boot, inclusion, encoded, &request, &response, now); !errors.Is(err, ErrClosed) {
 		t.Fatalf("closed snapshot: %v", err)
 	}
 	_ = owner.Close()
@@ -207,7 +229,7 @@ func TestOfflineReceiptUsesLoggedHardwareKeyAndExactContentHashes(t *testing.T) 
 	if _, err := owner.VerifyBootArchive(archive, fixture.Evidence); !errors.Is(err, ErrClosed) {
 		t.Fatalf("closed boot verifier: %v", err)
 	}
-	if _, err := owner.VerifyReceiptArchive(archive, fixture.Evidence, encoded, request, response); !errors.Is(err, ErrClosed) {
+	if _, err := owner.VerifyReceiptArchive(archive, fixture.Evidence, encoded, &request, &response); !errors.Is(err, ErrClosed) {
 		t.Fatalf("closed receipt verifier: %v", err)
 	}
 }

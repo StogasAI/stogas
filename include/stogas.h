@@ -26,16 +26,34 @@ void stogas_evidence_free(StogasEvidence *handle);
 char *stogas_evidence_refresh(const StogasEvidence *handle, const uint8_t *evidence, size_t evidence_len, int64_t now_unix_ms, StogasEvidenceSnapshot **output);
 void stogas_evidence_snapshot_free(StogasEvidenceSnapshot *handle);
 char *stogas_evidence_verify_logged_boot(const StogasEvidenceSnapshot *handle, const uint8_t *document, size_t document_len, const uint8_t *inclusion, size_t inclusion_len, int64_t now_unix_ms);
-/* Request/response hashes are exactly 32 binary bytes computed from the signed content.
+/* Each content digest is 64 bytes from the receipt content functions below, or empty
+ * (length 0) to leave that side unchecked: a receipt then proves only the rest.
  * This appraises the logged boot at now_unix_ms; it does not establish inference time.
- * The receipt input is the complete final stogas metadata JSON, including its receipt. */
-char *stogas_evidence_verify_receipt(const StogasEvidenceSnapshot *handle, const uint8_t *document, size_t document_len, const uint8_t *inclusion, size_t inclusion_len, const uint8_t *receipt, size_t receipt_len, const uint8_t *request_hash, size_t request_hash_len, const uint8_t *response_hash, size_t response_hash_len, int64_t now_unix_ms);
+ * The receipt input is the complete final stogas metadata JSON, including its receipt and the
+ * salt of each side checked. */
+char *stogas_evidence_verify_receipt(const StogasEvidenceSnapshot *handle, const uint8_t *document, size_t document_len, const uint8_t *inclusion, size_t inclusion_len, const uint8_t *receipt, size_t receipt_len, const uint8_t *request_digest, size_t request_digest_len, const uint8_t *response_digest, size_t response_digest_len, int64_t now_unix_ms);
 
 /* Historical appraisal authenticates the archive at its log-inclusion time.
  * These operations never install current permission or alter learned revocations. */
 char *stogas_evidence_verify_archive(const StogasEvidence *handle, const uint8_t *evidence, size_t evidence_len, int64_t now_unix_ms);
 char *stogas_evidence_verify_boot_archive(const StogasEvidence *handle, const uint8_t *archive, size_t archive_len, const uint8_t *evidence, size_t evidence_len, int64_t now_unix_ms);
-char *stogas_evidence_verify_receipt_archive(const StogasEvidence *handle, const uint8_t *archive, size_t archive_len, const uint8_t *evidence, size_t evidence_len, const uint8_t *receipt, size_t receipt_len, const uint8_t *request_hash, size_t request_hash_len, const uint8_t *response_hash, size_t response_hash_len, int64_t now_unix_ms);
+char *stogas_evidence_verify_receipt_archive(const StogasEvidence *handle, const uint8_t *archive, size_t archive_len, const uint8_t *evidence, size_t evidence_len, const uint8_t *receipt, size_t receipt_len, const uint8_t *request_digest, size_t request_digest_len, const uint8_t *response_digest, size_t response_digest_len, int64_t now_unix_ms);
+
+/* Receipt content: the 64-byte SHA-512 of each side's RFC 8785 form, which a receipt commits
+ * to. A request leaves out its top-level encryption_keys; a buffered response leaves out its
+ * top-level stogas object. A stream reader takes each complete event as sent, and digests the
+ * response the stream carries; a block of comments, such as a keepalive or the receipt, changes
+ * nothing. Status: 0 success, 1 not one JSON
+ * object or event that a receipt can commit to, 3 an integer beyond -9007199254740991 to
+ * 9007199254740991, 255 panic (discard the reader). A reader rejects every call after a
+ * failure or its digest; free it exactly once. */
+typedef struct StogasStreamContent StogasStreamContent;
+uint32_t stogas_receipt_request_digest(const uint8_t *body, size_t body_len, uint8_t digest[64]);
+uint32_t stogas_receipt_response_digest(const uint8_t *body, size_t body_len, uint8_t digest[64]);
+StogasStreamContent *stogas_stream_content_new(void);
+uint32_t stogas_stream_content_push(StogasStreamContent *content, const uint8_t *event, size_t event_len);
+uint32_t stogas_stream_content_digest(StogasStreamContent *content, uint8_t digest[64]);
+void stogas_stream_content_free(StogasStreamContent *content);
 
 #define STOGAS_ABI_VERSION 1
 uint32_t stogas_abi_version(void);

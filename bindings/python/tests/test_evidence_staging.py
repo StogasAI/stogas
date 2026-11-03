@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import unittest
 
-from stogas import EvidenceVerifier, VerificationError
+from stogas import EvidenceVerifier, VerificationError, request_digest, response_digest
 
 
 @unittest.skipUnless(os.environ.get("STOGAS_TEST_STAGING") == "1", "requires staging wheel")
@@ -41,18 +41,36 @@ class StagingEvidenceTests(unittest.TestCase):
         self.assertEqual(json.loads(verified.summary())["boot_sha256"], hashlib.sha256(boot_bytes).hexdigest())
         # Historical handles retain the same receipt verification boundary.
         with self.assertRaises(VerificationError):
-            verified.verify_receipt(b'{}', bytes(32), bytes(32))
+            verified.verify_receipt(b'{}', bytes(64), bytes(64))
         vector = json.loads(
-            (Path(__file__).resolve().parents[3] / "tests/fixtures/content-receipt-v1.json").read_bytes()
+            (Path(__file__).resolve().parents[3] / "tests/fixtures/content-receipt-v2.json").read_bytes()
         )
-        metadata = {**vector["metadata"], "receipt": vector["hardware_receipt"]}
-        request = hashlib.sha256(vector["request"].encode()).digest()
-        response = hashlib.sha256(vector["response"].encode()).digest()
+        metadata = {**vector["metadata"], "receipt": vector["receipt"], "salts": vector["salts"]}
+        request = request_digest(vector["request"].encode())
+        response = response_digest(vector["response"].encode())
+        self.assertEqual((request.hex(), response.hex()), (vector["request_digest"], vector["response_digest"]))
         receipt = json.loads(verified.verify_receipt(json.dumps(metadata).encode(), request, response))
         self.assertEqual(receipt["boot_sha256"], hashlib.sha256(boot_bytes).hexdigest())
-        metadata["provider"]["instance"] = "substituted"
-        with self.assertRaises(VerificationError):
+        self.assertEqual((receipt["request_verified"], receipt["response_verified"]), (True, True))
+        # One side proves itself without the other side's content or salt.
+        response_only = {**metadata, "salts": {"response": vector["salts"]["response"]}}
+        receipt = json.loads(verified.verify_receipt(json.dumps(response_only).encode(), None, response))
+        self.assertEqual((receipt["request_verified"], receipt["response_verified"]), (False, True))
+        with self.assertRaises(VerificationError) as caught:
+            verified.verify_receipt(json.dumps(response_only).encode(), request, response)
+        self.assertEqual(caught.exception.code, "receipt_salt")
+        # A buffered response carries its bag; the verified bag keeps the receipt but not the salts.
+        body = {**json.loads(vector["response"]), "stogas": metadata}
+        result = json.loads(verified.verify_response(request, json.dumps(body, indent=2).encode()))
+        self.assertEqual(result["metadata"]["receipt"], vector["receipt"])
+        self.assertNotIn("salts", result["metadata"])
+        with self.assertRaises(VerificationError) as caught:
+            verified.verify_response(request_digest(b'{"model":"other"}'), json.dumps(body).encode())
+        self.assertEqual(caught.exception.code, "receipt_content")
+        metadata["provider"] = {**metadata["provider"], "instance": "substituted"}
+        with self.assertRaises(VerificationError) as caught:
             verified.verify_receipt(json.dumps(metadata).encode(), request, response)
+        self.assertEqual(caught.exception.code, "receipt_signature")
 
     def test_snapshot_survives_rejected_refresh_and_verifier_destruction(self):
         fixture = json.loads(

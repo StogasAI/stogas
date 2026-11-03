@@ -79,8 +79,8 @@ test('browser boot history remains offline and separate from current evidence', 
 	);
 	expect(result).toEqual({
 		digest: JSON.parse(
-			await readFile(resolve(ROOT, 'tests/fixtures/content-receipt-v1.json'), 'utf8')
-		).hardware_receipt.boot_sha256,
+			await readFile(resolve(ROOT, 'tests/fixtures/content-receipt-v2.json'), 'utf8')
+		).receipt.boot_sha256,
 		rejected: true
 	});
 	expect(requests).toEqual([]);

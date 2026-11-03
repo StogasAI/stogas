@@ -1,5 +1,7 @@
 package stogas
 
+import "errors"
+
 // VerificationError preserves the core's fixed reason without parsing human-readable messages.
 type VerificationError struct {
 	Code    string
@@ -48,10 +50,33 @@ type BootIdentity struct {
 	IntegratedTimeUnixMS *int64 `json:"integrated_time_unix_ms"`
 }
 
-// VerifiedReceipt confirms exact content under a hardware-bound boot key.
+// VerifiedReceipt confirms the metadata, and each side whose digest was given, under a
+// hardware-bound boot key. A side left unchecked is signed only as its commitment.
 type VerifiedReceipt struct {
-	NodeID         string `json:"node_id"`
-	BootSHA256     string `json:"boot_sha256"`
-	RequestSHA256  string `json:"request_sha256"`
-	ResponseSHA256 string `json:"response_sha256"`
+	NodeID             string `json:"node_id"`
+	BootSHA256         string `json:"boot_sha256"`
+	RequestCommitment  string `json:"request_commitment"`
+	ResponseCommitment string `json:"response_commitment"`
+	RequestVerified    bool   `json:"request_verified"`
+	ResponseVerified   bool   `json:"response_verified"`
+}
+
+// ContentDigest is the SHA-512 of a request or response in its RFC 8785 form, which a
+// receipt commits to under a salt that only the caller receives.
+type ContentDigest [64]byte
+
+var (
+	// ErrReceiptContent reports content that is not one JSON object without duplicate keys,
+	// or a stream event that does not belong to a response.
+	ErrReceiptContent = errors.New("content cannot carry a receipt")
+	// ErrInexactInteger reports an integer beyond -9007199254740991 to 9007199254740991,
+	// which RFC 8785 cannot write exactly.
+	ErrInexactInteger = errors.New("content has an integer beyond -9007199254740991 to 9007199254740991")
+)
+
+func digestBytes(digest *ContentDigest) []byte {
+	if digest == nil {
+		return nil
+	}
+	return digest[:]
 }
