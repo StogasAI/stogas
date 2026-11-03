@@ -40,7 +40,7 @@ def offline(cli, version, fixtures, work):
     plaintext = work / "plugins.json"
     plaintext.write_text('{"plugins":[]}')
     envelope = work / "plugins.sealed"
-    run(cli, "encrypt", "--key-file", str(key), "--organization", "org_release", "--purpose", "plugins", "--input", str(plaintext), "--output", str(envelope))
+    run(cli, "encrypt", "--key-file", str(key), "--organization", "0b4f1e2a-3c5d-4e6f-8a7b-9c0d1e2f3a4b", "--purpose", "plugins", "--input", str(plaintext), "--output", str(envelope))
     if json.loads(envelope.read_text())["keyId"] != key_id:
         raise SystemExit("The encrypted envelope names a different key")
     (work / "empty").mkdir()

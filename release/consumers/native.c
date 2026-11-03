@@ -16,6 +16,46 @@ typedef int Socket;
 #define close_socket close
 #endif
 
+// A caller-owned offline root, the hardware session fixture's, which the managed transport
+// never accepts. release/test_consumers.py keeps it equal to the fixture's.
+static const char OFFLINE_ROOT[] =
+    "{\"environment\":\"prod\",\"root\":{"
+    "\"key_id\":\"stogas-fixture-root-20260920\","
+    "\"rekor_public_key\":\"MCowBQYDK2VwAyEAaefJGJavXbTdsx1qhqIWQxIKLTxT2fKFbRhfP5QKRF0=\","
+    "\"public_key\":\""
+    "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"
+    "RoibgrDmkPyIwShmBS6j6gQrH3mIvKWuCA=="
+    "\"}}";
+
 static void require(int passed, const char *message) {
     if (!passed) { fprintf(stderr, "%s\n", message); exit(1); }
 }
@@ -44,9 +84,19 @@ static void offline(void) {
     require(result && strstr(result, "\"ok\":false") && !evidence, "Production package accepted staging evidence");
     stogas_string_free(result);
 
-    // The compiled production authority loads; rejected evidence creates no owner.
+    // The compiled production authority loads once its root names a Rekor key. Until then it
+    // fails closed for that reason alone and creates no owner; the live case, which every full
+    // release passes, needs it to load.
     result = configure("{\"environment\":\"prod\"}", &evidence);
-    require(result && strstr(result, "\"ok\":true") && evidence, "Production evidence authority unavailable");
+    require(result && (strstr(result, "\"ok\":true") ? evidence != NULL
+        : evidence == NULL && strstr(result, "rekor_public_key") != NULL),
+        "Production evidence authority failed for another reason");
+    stogas_string_free(result);
+    stogas_evidence_free(evidence);
+
+    // Rejected evidence creates no owner.
+    result = configure(OFFLINE_ROOT, &evidence);
+    require(result && strstr(result, "\"ok\":true") && evidence, "The offline root was refused");
     stogas_string_free(result);
     StogasEvidenceSnapshot *snapshot = NULL;
     static const uint8_t malformed[] = "{\"body\":";

@@ -10,7 +10,8 @@ from pathlib import Path
 from artifacts import unpack
 from gate import attempt
 
-PLAYWRIGHT = "mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e"
+# The image carries the browsers of exactly one Playwright version, the one package-lock.json locks.
+PLAYWRIGHT = "mcr.microsoft.com/playwright:v1.64.1-noble@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f"
 RUST = "rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97"
 BUN = "oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895"
 DENO = "denoland/deno:2.9.6@sha256:2014dc167ece617ef7e7ba40631ac2234c59e75ce693e7cc2dc2602b3c87859d"
@@ -81,6 +82,8 @@ export default defineConfig({testDir:'.',testMatch:['verifier.spec.ts','live.spe
             paths = {name: f"{name}/{name}-{version}" for name in crates}
             manifest = '[package]\nname="stogas-release-consumer"\nversion="0.0.0"\nedition="2024"\n[dependencies]\n'
             manifest += '\n'.join(f'{name}={{path="{path}"}}' for name, path in paths.items())
+            # The consumer reads its offline root from the shipped lock's serde_json.
+            manifest += '\nserde_json="1"'
             manifest += '\n[patch.crates-io]\n' + '\n'.join(f'{name}={{path="{path}"}}' for name, path in paths.items()) + '\n'
             (work / "Cargo.toml").write_text(manifest)
             shutil.copyfile(work / paths["stogas"] / "Cargo.lock", work / "Cargo.lock")
