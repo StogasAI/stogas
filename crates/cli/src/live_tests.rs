@@ -18,9 +18,17 @@ use stogas::network::Network;
 async fn signs_up_tops_up_and_signs_out() {
     let origin = std::env::var("STOGAS_CLI_TEST_ORIGIN").unwrap();
     let guest = Dashboard::new(&origin, None, Network::direct()).unwrap();
-    let password = account::register(&guest).await.unwrap();
-    let token = account::create_token(&guest, &password).await.unwrap();
+    let account = account::register(&guest, "live-test").await.unwrap();
+    assert_eq!(account.password.len(), 64);
+    let token = account.token.token;
     assert!(token.starts_with("pat_stogas_v1_"));
+    // A registration's token lasts a week.
+    assert!(
+        account
+            .token
+            .expires_in
+            .is_some_and(|left| left <= 7 * 86_400)
+    );
     let dashboard = Dashboard::new(&origin, Some(token.clone()), Network::direct()).unwrap();
     let base = "/api/funding";
 

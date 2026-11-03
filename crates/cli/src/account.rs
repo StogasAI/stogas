@@ -3,24 +3,22 @@
 use crate::{
     altcha,
     credentials::{self, VARIABLE},
-    dashboard::{ApiError, Dashboard, ORIGIN},
+    dashboard::{Dashboard, ORIGIN},
+    sign_in::{self, Machine, Token},
     topup::uuid,
 };
 use anyhow::{Context as _, Result, bail};
+use chrono::{DateTime, Utc};
 use http::Method;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     env,
-    io::{self, BufRead as _, IsTerminal as _},
+    io::{self, BufRead as _},
+    time::SystemTime,
 };
 use stogas::network::Network;
 use zeroize::Zeroizing;
-
-const PASSWORD_LENGTH: usize = 64;
-const CODE_ATTEMPTS: usize = 3;
-// "Stogas CLI on " and the host name fit the 100-character token name limit.
-const HOST_LENGTH: usize = 86;
 
 /// The dashboard client with this machine's access token.
 pub async fn signed_in(network: &Network) -> Result<Dashboard> {
@@ -56,24 +54,43 @@ pub async fn personal_organization(dashboard: &Dashboard) -> Result<String> {
 pub async fn register_account(network: &Network) -> Result<()> {
     refuse_environment_token()?;
     let dashboard = Dashboard::new(ORIGIN, None, network.clone())?;
-    let password = register(&dashboard).await?;
-    // The password comes first, so a failed sign-in below cannot lose the account.
+    let previous = credentials::stored(ORIGIN).await?;
+    let account = register(&dashboard, &Machine::this().name).await?;
+    // The password comes first, so a failed save below cannot lose the account.
     eprintln!("Account created. Save this password now; it cannot be recovered:");
     // Unlike other output, a password that nobody read is an error, so this keeps no I/O error
     // that would let the command end quietly.
-    out!("{}", password.as_str())
+    out!("{}", account.password.as_str())
         .map_err(|error| anyhow::anyhow!("could not print the password: {error}"))?;
-    save(create_token(&dashboard, &password).await?, network).await
+    save(account.token, previous, network).await?;
+    eprintln!("Run `stogas login` to choose how long this machine stays signed in.");
+    Ok(())
 }
 
-pub async fn login(network: &Network) -> Result<()> {
+/// Signs in through a browser on this computer, or with a code for any device when `code` is
+/// set, the route goes through Tor, or no browser can open here.
+pub async fn login(network: &Network, code: bool, tor: bool) -> Result<()> {
     refuse_environment_token()?;
-    let password = read_password()?;
-    if password.chars().count() != PASSWORD_LENGTH {
-        bail!("the password has {PASSWORD_LENGTH} characters");
-    }
     let dashboard = Dashboard::new(ORIGIN, None, network.clone())?;
-    save(create_token(&dashboard, &password).await?, network).await
+    let previous = credentials::stored(ORIGIN).await?;
+    let replaces = previous.as_deref().map(String::as_str);
+    let machine = Machine::this();
+    // A browser outside Tor would show the dashboard where this computer is.
+    let browser = !code && !tor && sign_in::browser_available();
+    let signed_in = if browser {
+        sign_in::in_browser(&dashboard, &machine, replaces).await?
+    } else {
+        None
+    };
+    let token = if let Some(token) = signed_in {
+        token
+    } else {
+        if browser {
+            eprintln!("No browser opened, so sign in with a code instead.");
+        }
+        sign_in::with_code(&dashboard, &machine, replaces).await?
+    };
+    save(token, previous, network).await
 }
 
 pub async fn logout(network: &Network) -> Result<()> {
@@ -99,110 +116,94 @@ fn refuse_environment_token() -> Result<()> {
     Ok(())
 }
 
-/// Creates an account and returns its password.
-pub async fn register(dashboard: &Dashboard) -> Result<Zeroizing<String>> {
+/// A new account's password and the access token that the dashboard made for this machine.
+pub struct Registration {
+    pub password: Zeroizing<String>,
+    pub token: Token,
+}
+
+/// Creates an account and an access token for this machine. The token expires after a week; a
+/// later `stogas login` makes the one that the person chooses in the browser.
+pub async fn register(dashboard: &Dashboard, machine_name: &str) -> Result<Registration> {
     #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
     struct Account {
         token: String,
+        access_token: Created,
+    }
+    #[derive(Deserialize)]
+    struct Created {
+        token: String,
+        record: Record,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Record {
+        expires_at: Option<String>,
     }
     let altcha = proof_of_work(dashboard).await?;
     let account: Account = dashboard
-        .post("/api/auth/register", &json!({ "altcha": altcha }))
+        .post(
+            "/api/auth/register",
+            &json!({ "altcha": altcha, "accessToken": { "machineName": machine_name } }),
+        )
         .await?;
-    Ok(Zeroizing::new(account.token))
+    let expires_in = account
+        .access_token
+        .record
+        .expires_at
+        .as_deref()
+        .map(seconds_until)
+        .transpose()?;
+    Ok(Registration {
+        password: Zeroizing::new(account.token),
+        token: Token {
+            token: Zeroizing::new(account.access_token.token),
+            expires_in,
+        },
+    })
+}
+
+/// Seconds from now until an RFC 3339 time, or zero when it has passed.
+fn seconds_until(time: &str) -> Result<u64> {
+    let time = DateTime::parse_from_rfc3339(time)
+        .context("the dashboard sent an unexpected expiry date")?;
+    let left = time.signed_duration_since(DateTime::<Utc>::from(SystemTime::now()));
+    Ok(u64::try_from(left.num_seconds()).unwrap_or_default())
 }
 
 /// Solves a challenge, whose work the dashboard raises on its own for busy senders.
-async fn proof_of_work(dashboard: &Dashboard) -> Result<String> {
+pub async fn proof_of_work(dashboard: &Dashboard) -> Result<String> {
     let challenge: Value = dashboard.get("/api/auth/challenge").await?;
     tokio::task::spawn_blocking(move || altcha::solve(&challenge)).await?
 }
 
-/// Signs in with the password, and with an authenticator code when the account has one.
-pub async fn create_token(dashboard: &Dashboard, password: &str) -> Result<Zeroizing<String>> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum SignIn {
-        Token {
-            token: String,
-        },
-        Code {
-            #[serde(rename = "challengeToken")]
-            challenge_token: String,
-        },
+/// How long a token works, in whole days as the dashboard offers them, or hours under a day.
+fn lifetime(seconds: u64) -> String {
+    let count =
+        |value: u64, unit: &str| format!("{value} {unit}{}", if value == 1 { "" } else { "s" });
+    match (seconds + 43_200) / 86_400 {
+        0 => count(seconds.div_ceil(3_600).max(1), "hour"),
+        days => count(days, "day"),
     }
-    let settings = token_settings(&gethostname::gethostname().to_string_lossy());
-    let sign_in = dashboard
-        .post(
-            "/api/auth/access-token",
-            &json!({
-                "altcha": proof_of_work(dashboard).await?,
-                "password": password,
-                "settings": settings,
-            }),
-        )
-        .await?;
-    let challenge_token = match sign_in {
-        SignIn::Token { token } => return Ok(Zeroizing::new(token)),
-        SignIn::Code { challenge_token } => challenge_token,
-    };
-    for attempt in 1..=CODE_ATTEMPTS {
-        let code: String = read_line("Authenticator code: ")?
-            .split_whitespace()
-            .collect();
-        if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
-            eprintln!("An authenticator code has 6 digits.");
-            continue;
-        }
-        let created = dashboard
-            .post(
-                "/api/auth/access-token/2fa",
-                &json!({ "challengeToken": challenge_token, "code": code, "settings": settings }),
-            )
-            .await;
-        match created {
-            Ok(SignIn::Token { token }) => return Ok(Zeroizing::new(token)),
-            Ok(SignIn::Code { .. }) => bail!("the dashboard asked for another code"),
-            Err(error)
-                if attempt < CODE_ATTEMPTS
-                    && error.downcast_ref::<ApiError>().is_some_and(|error| {
-                        error.code.as_deref() == Some("TWO_FACTOR_INVALID")
-                    }) =>
-            {
-                eprintln!("That code did not work. Enter the current one.");
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    bail!("no valid authenticator code after {CODE_ATTEMPTS} tries")
 }
 
-/// A token for this machine that can use every organization of the account until deleted.
-fn token_settings(hostname: &str) -> Value {
-    let host: String = hostname
-        .chars()
-        .filter(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '-' | '.' | '_')
-        })
-        .take(HOST_LENGTH)
-        .collect();
-    json!({
-        "name": if host.is_empty() { "Stogas CLI".to_owned() } else { format!("Stogas CLI on {host}") },
-        "access": "write",
-        "organizationIds": null,
-        "expiresAt": null,
-    })
-}
-
-/// Saves the new token, then deletes the one it replaces so that old tokens do not pile up.
-async fn save(token: Zeroizing<String>, network: &Network) -> Result<()> {
-    let previous = credentials::stored(ORIGIN).await?;
-    if credentials::store(ORIGIN, token.clone()).await? {
-        eprintln!("Signed in.");
+/// Saves the new token, then deletes the one it replaces so that old tokens do not pile up. When
+/// the same account approved the new one, the dashboard already deleted it.
+async fn save(token: Token, previous: Option<Zeroizing<String>>, network: &Network) -> Result<()> {
+    let lasts = token.expires_in.map(lifetime);
+    if credentials::store(ORIGIN, token.token.clone()).await? {
+        match &lasts {
+            Some(lasts) => eprintln!("Signed in for {lasts}."),
+            None => eprintln!("Signed in."),
+        }
     } else {
         eprintln!("This system has no keychain. Save this access token and set it as {VARIABLE}:");
-        out!("{}", token.as_str())
+        out!("{}", token.token.as_str())
             .map_err(|error| anyhow::anyhow!("could not print the access token: {error}"))?;
+        if let Some(lasts) = &lasts {
+            eprintln!("It works for {lasts}.");
+        }
     }
     if let Some(previous) = previous
         && let Err(error) = revoke(ORIGIN, previous, network).await
@@ -221,18 +222,6 @@ pub async fn revoke(origin: &str, token: Zeroizing<String>, network: &Network) -
         .map(drop)
 }
 
-/// Reads the password from the terminal without echo, or else as one line of standard input.
-fn read_password() -> Result<Zeroizing<String>> {
-    let line = Zeroizing::new(if io::stdin().is_terminal() {
-        rpassword::prompt_password("Password: ")?
-    } else {
-        let mut line = String::new();
-        io::stdin().lock().read_line(&mut line)?;
-        line
-    });
-    Ok(Zeroizing::new(line.trim().to_owned()))
-}
-
 /// Shows the prompt on standard error and reads one trimmed line; the end of input is an error.
 pub fn read_line(prompt: &str) -> Result<String> {
     eprint!("{prompt}");
@@ -248,16 +237,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn names_the_token_after_the_machine_within_the_name_limit() {
-        assert_eq!(
-            token_settings("build-01.example")["name"],
-            "Stogas CLI on build-01.example"
-        );
-        assert_eq!(token_settings("\u{1b}]0;")["name"], "Stogas CLI on 0");
-        assert_eq!(token_settings("")["name"], "Stogas CLI");
-        let long = token_settings(&"a".repeat(300));
-        assert_eq!(long["name"].as_str().unwrap().len(), 100);
-        assert_eq!(long["access"], "write");
-        assert!(long["organizationIds"].is_null() && long["expiresAt"].is_null());
+    fn says_how_long_a_token_works_as_the_dashboard_counts() {
+        assert_eq!(lifetime(7 * 86_400), "7 days");
+        // A token made a moment ago has a little less than its full lifetime left.
+        assert_eq!(lifetime(90 * 86_400 - 5), "90 days");
+        assert_eq!(lifetime(86_400), "1 day");
+        assert_eq!(lifetime(5 * 3_600), "5 hours");
+        assert_eq!(lifetime(59), "1 hour");
+        assert_eq!(lifetime(0), "1 hour");
+    }
+
+    #[test]
+    fn counts_the_time_left_until_an_expiry() {
+        let later = DateTime::<Utc>::from(SystemTime::now()) + chrono::TimeDelta::days(7);
+        let left = seconds_until(&later.to_rfc3339()).unwrap();
+        assert!((7 * 86_400 - 5..=7 * 86_400).contains(&left), "{left}");
+        assert_eq!(seconds_until("2020-01-01T00:00:00.000Z").unwrap(), 0);
+        assert!(seconds_until("next week").is_err());
     }
 }

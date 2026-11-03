@@ -19,6 +19,7 @@ mod evidence_archive;
 mod policy;
 mod route;
 mod sdk_release;
+mod sign_in;
 mod topup;
 
 use anyhow::{Context, Result, bail};
@@ -102,8 +103,13 @@ enum Command {
     // `signup` was its first name; old instructions keep working.
     #[command(alias = "signup")]
     Register,
-    /// Sign this machine in with your account password.
-    Login,
+    /// Sign this machine in: approve it in your browser, or with a code on any device.
+    Login {
+        /// Print a code to approve on any device instead of opening a browser here, as login
+        /// does anyway over SSH, through Tor, or without a display.
+        #[arg(long)]
+        device_code: bool,
+    },
     /// Sign this machine out and delete its access token.
     Logout,
     /// Send a request to the dashboard API and print the response.
@@ -340,7 +346,9 @@ async fn run() -> Result<()> {
     let dashboard = || network(Environment::Production);
     match command {
         Command::Register => account::register_account(&dashboard()?).await?,
-        Command::Login => account::login(&dashboard()?).await?,
+        Command::Login { device_code } => {
+            account::login(&dashboard()?, device_code, route.onion).await?;
+        }
         Command::Logout => account::logout(&dashboard()?).await?,
         Command::Api(args) => api::run(args, &dashboard()?).await?,
         Command::Topup(args) => topup::run(args, &dashboard()?).await?,
