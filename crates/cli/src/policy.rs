@@ -465,7 +465,7 @@ struct Rebased {
 }
 
 // Sections and their settings merge separately. A setting's value, such as a sort list, the named
-// request limits or an encrypted envelope, changes as one unit, and so does each rule. The
+// request limits or an encrypted plugin, changes as one unit, and so does each rule. The
 // dashboard's editor merges the same way, in `apps/web/src/lib/policy-rebase.ts`.
 const SETTING_DEPTH: usize = 2;
 
@@ -504,20 +504,12 @@ struct Report {
     newer: Vec<String>,
 }
 
-/// Whether the versions of the value at `path` change as one unit, not key by key. Encrypted
-/// plugins replace every plaintext plugin, so the two forms never mix.
+/// Whether the versions of the value at `path` change as one unit, not key by key.
 fn is_unit(path: &[String], versions: &[Option<&Value>]) -> bool {
     path.len() >= SETTING_DEPTH
         || versions
             .iter()
             .any(|value| value.is_some_and(|value| !value.is_object()))
-        || (path.len() == 1
-            && path[0] == "plugins"
-            && versions.iter().any(|value| {
-                value
-                    .and_then(Value::as_object)
-                    .is_some_and(|fields| fields.contains_key("encrypted"))
-            }))
 }
 
 fn fields(value: Option<&Value>) -> Map<String, Value> {
@@ -674,8 +666,9 @@ pub mod tests {
             mixed
         };
         let night = json!({ "when": "a", "mode": "default" });
-        let plaintext = json!({ "textExtraction": true });
-        let encrypted = json!({ "encrypted": envelope("a") });
+        let readable = json!({ "redaction": { "emails": true } });
+        let changed = json!({ "redaction": { "emails": true, "phones": true } });
+        let encrypted = json!({ "redaction": { "encrypted": envelope("a") } });
         let timeouts = json!({ "timeouts": { "totalSeconds": 60 } });
         let cases = [
             // Changes to different settings and rules combine.
@@ -734,48 +727,50 @@ pub mod tests {
             // The fields of an encrypted envelope or a rule never mix.
             (
                 json!({
-                    "plugins": { "encrypted": envelope("a") },
+                    "plugins": { "redaction": { "encrypted": envelope("a") } },
                     "rules": { "night": { "when": "a", "routing": { "retries": 1 } } }
                 }),
                 json!({
-                    "plugins": { "encrypted": mixed("b", "blob") },
+                    "plugins": { "redaction": { "encrypted": mixed("b", "blob") } },
                     "rules": { "night": { "when": "b", "routing": { "retries": 1 } } }
                 }),
                 json!({
-                    "plugins": { "encrypted": mixed("c", "salt") },
+                    "plugins": { "redaction": { "encrypted": mixed("c", "salt") } },
                     "rules": { "night": { "when": "a", "routing": { "retries": 2 } } }
                 }),
                 json!({
-                    "plugins": { "encrypted": mixed("c", "salt") },
+                    "plugins": { "redaction": { "encrypted": mixed("c", "salt") } },
                     "rules": { "night": { "when": "a", "routing": { "retries": 2 } } }
                 }),
-                &["plugins", "rules.night"],
+                &["plugins.redaction", "rules.night"],
                 &[],
             ),
-            // Nor do encrypted and plaintext plugins.
+            // Each plugin merges on its own, encrypted or not.
             (
-                json!({ "plugins": plaintext }),
+                json!({ "plugins": readable }),
                 json!({ "plugins": encrypted }),
-                json!({ "plugins": { "textExtraction": false } }),
-                json!({ "plugins": { "textExtraction": false } }),
-                &["plugins"],
+                json!({ "plugins": { "redaction": { "emails": true }, "textExtraction": true } }),
+                json!({
+                    "plugins": { "redaction": { "encrypted": envelope("a") }, "textExtraction": true }
+                }),
+                &[],
+                &["plugins.redaction"],
+            ),
+            (
+                json!({ "plugins": readable }),
+                json!({ "plugins": encrypted }),
+                json!({ "plugins": changed }),
+                json!({ "plugins": changed }),
+                &["plugins.redaction"],
                 &[],
             ),
             (
-                json!({ "plugins": plaintext }),
-                json!({ "plugins": { "textExtraction": true, "redaction": { "emails": true } } }),
+                json!({ "plugins": readable }),
+                json!({ "plugins": changed }),
                 json!({ "plugins": encrypted }),
                 json!({ "plugins": encrypted }),
-                &["plugins"],
+                &["plugins.redaction"],
                 &[],
-            ),
-            (
-                json!({ "plugins": plaintext }),
-                json!({ "plugins": encrypted }),
-                json!({ "plugins": plaintext }),
-                json!({ "plugins": encrypted }),
-                &[],
-                &["plugins"],
             ),
             // Only the settings that the newer version alone changed are its own.
             (
