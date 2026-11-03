@@ -183,6 +183,8 @@ def crates(packages, version, trust=False):
 
 
 NPM_PACKAGES = (("@stogas/sigstore", "stogas-sigstore"), ("stogas", "stogas"))
+# npm lists this version for a new package from when its first version is staged until approval.
+NPM_STAGE_PLACEHOLDER = "0.0.0-stage"
 
 
 def npm(packages, version, stage=False):
@@ -594,9 +596,14 @@ def first_versions():
     pending publisher, so their first versions wait for the owner's first-release steps."""
     def missing(urls):
         return all(download(url) is None for url in urls)
+    def unpublished(name):
+        # Staging a new package's first version reserves its name with a placeholder version,
+        # 0.0.0-stage, which publishes nothing; the package waits until the owner approves.
+        document = download(f"https://registry.npmjs.org/{urllib.parse.quote(name, safe='')}")
+        return document is None or not set(json.loads(document).get("versions", {})) - {NPM_STAGE_PLACEHOLDER}
     waiting = {
         "crates": missing(f"https://crates.io/api/v1/crates/{name}" for name in CRATES),
-        "npm": missing(f"https://registry.npmjs.org/{urllib.parse.quote(name, safe='')}" for name, _ in NPM_PACKAGES),
+        "npm": all(unpublished(name) for name, _ in NPM_PACKAGES),
         "ruby": missing(["https://rubygems.org/api/v1/gems/stogas.json"]),
     }
     for registry, value in waiting.items():

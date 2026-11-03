@@ -145,6 +145,17 @@ class FirstVersionTests(unittest.TestCase):
         # One existing crate means crates.io trusts this workflow, or should.
         self.assertEqual(output.getvalue().split(), ["crates=false", "npm=true", "ruby=false"])
 
+    def test_npm_waits_while_its_versions_are_only_staged(self):
+        # As npm served both packages on November 3, 2026, between staging and approval.
+        staged = json.dumps({"name": "stogas", "dist-tags": {"latest": "0.0.0-stage"}, "versions": {"0.0.0-stage": {}}}).encode()
+        approved = json.dumps({"versions": {"0.0.0-stage": {}, "0.1.0-alpha.1": {}}}).encode()
+        for documents, waiting in (({"stogas": staged, "%40stogas%2Fsigstore": staged}, "npm=true"), ({"stogas": approved, "%40stogas%2Fsigstore": staged}, "npm=false")):
+            def download(url):
+                return documents.get(url.removeprefix("https://registry.npmjs.org/"))
+            with mock.patch.object(publish, "download", side_effect=download), contextlib.redirect_stdout(io.StringIO()) as output:
+                publish.first_versions()
+            self.assertIn(waiting, output.getvalue().split())
+
 
 class CratesTrustTests(unittest.TestCase):
 
