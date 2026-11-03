@@ -65,7 +65,7 @@ pub struct AzureTargets {
     pub selected: u64,
     /// The selected targets that do not serve now, such as a deleted deployment.
     pub unavailable: u64,
-    /// The models that have a deployment in the account but no selected target.
+    /// The models that have a target that can serve but none selected.
     pub unselected: u64,
 }
 
@@ -378,8 +378,9 @@ fn outcome(
     };
     if targets.selected == 0 && targets.unselected == 0 {
         return Ok(format!(
-            "{accepted}\nIts account has no deployments of models in the catalog, so no request \
-             can use it. Deploy one in Microsoft Foundry, then check the credential again."
+            "{accepted}\nIts account has no deployment that can serve a model in the catalog, so \
+             no request can use it. Deploy one in Microsoft Foundry, then check the credential \
+             again."
         ));
     }
     let unavailable = match targets.unavailable {
@@ -709,8 +710,9 @@ mod tests {
             ),
             (
                 json!({ "selected": 0, "unavailable": 0, "unselected": 0 }),
-                "Its account has no deployments of models in the catalog, so no request can use \
-                 it. Deploy one in Microsoft Foundry, then check the credential again."
+                "Its account has no deployment that can serve a model in the catalog, so no \
+                 request can use it. Deploy one in Microsoft Foundry, then check the credential \
+                 again."
                     .to_owned(),
             ),
         ] {
