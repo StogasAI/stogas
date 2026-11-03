@@ -144,19 +144,26 @@ enum Command {
     },
     /// Generate an organization encryption key locally; print only its public identifier.
     EncryptionKey {
+        /// A new file for the key, readable only by you. The CLI never overwrites a file.
         #[arg(long)]
         output: PathBuf,
     },
     /// Encrypt plugin JSON or a provider credential locally.
     Encrypt {
+        /// The file with your organization key, as `stogas encryption-key` wrote it.
         #[arg(long)]
         key_file: PathBuf,
+        /// The organization whose policy registers the key. Only its requests can use the result.
         #[arg(long, value_parser = topup::parse_organization)]
         organization: String,
+        /// What you encrypt: plugin settings, or a credential for the provider that follows byok/.
         #[arg(long, value_parser = ["plugins", "byok/anthropic", "byok/aws", "byok/azure", "byok/chutes", "byok/google-cloud", "byok/openai"])]
         purpose: String,
+        /// The file to encrypt: plugin JSON, an API key, AWS or Google Cloud's credential
+        /// document, or the Azure application that `az ad sp create-for-rbac` prints.
         #[arg(long)]
         input: PathBuf,
+        /// A new file for what the dashboard takes. The CLI never overwrites a file.
         #[arg(long)]
         output: PathBuf,
     },
