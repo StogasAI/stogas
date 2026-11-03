@@ -393,7 +393,7 @@ async fn run() -> Result<()> {
             let network = network(args.environment)?;
             let proof = verify_proof_files(&args, &verifier, network).await?;
             let shared = match &args.share {
-                Some(directory) => Some(share_proof(&proof, &args.hide, directory).await?),
+                Some(directory) => Some(share_proof(&proof, &args, directory).await?),
                 None => None,
             };
             print_proof_output(&proof.verified, shared.as_deref(), args.json)?;
@@ -576,12 +576,10 @@ async fn read_signed_response(
     ))
 }
 
-/// Write the metadata and each side it proves, and return the command that checks them.
-async fn share_proof(
-    proof: &VerifiedProof,
-    hide: &[ProofSide],
-    directory: &Path,
-) -> Result<String> {
+/// Write the metadata and each side it proves into `directory`, and return the command that
+/// checks them.
+async fn share_proof(proof: &VerifiedProof, args: &ProofArgs, directory: &Path) -> Result<String> {
+    let hide = &args.hide;
     let reveal_request = proof.request.is_some() && !hide.contains(&ProofSide::Request);
     let reveal_response = proof.response.is_some() && !hide.contains(&ProofSide::Response);
     let mut metadata = proof.metadata.clone();
@@ -611,10 +609,21 @@ async fn share_proof(
             Ok::<_, anyhow::Error>(path)
         }
     };
-    let mut command = vec![
-        "stogas proof --proof".to_owned(),
+    let mut command = vec!["stogas proof".to_owned()];
+    // The recipient's CLI checks production evidence unless the command names another.
+    if args.environment != stogas::Environment::Production {
+        let name = serde_json::to_value(args.environment)?;
+        command.extend([
+            "--environment".to_owned(),
+            name.as_str()
+                .context("the environment has no name")?
+                .to_owned(),
+        ]);
+    }
+    command.extend([
+        "--proof".to_owned(),
         shell_word(&write("metadata.json", pretty_json(&metadata)?).await?),
-    ];
+    ]);
     if let (true, Some(request)) = (reveal_request, &proof.request) {
         let path = write("request.json", pretty_json(request)?).await?;
         command.extend(["--request".to_owned(), shell_word(&path)]);
