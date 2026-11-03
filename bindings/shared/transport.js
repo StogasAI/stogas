@@ -8,7 +8,17 @@ const PATHS = new Set([
 	'/v1/policies/validate',
 	'/v1/policies/simulate'
 ]);
-const OPTIONS = new Set(['environment', 'baseURL', 'maxConnections', 'fetch', 'onMetadata']);
+const OPTIONS = new Set([
+	'environment',
+	'baseURL',
+	'maxConnections',
+	'fetch',
+	'onMetadata',
+	'proxied'
+]);
+// Through a proxy, such as Tor, each request crosses several relays and may wait for a new circuit,
+// so every time limit is four times as long, as the Rust SDK's are through a proxy.
+const PROXIED_PATIENCE = 4;
 
 function baseURL(value) {
 	let url;
@@ -29,13 +39,13 @@ function baseURL(value) {
 }
 
 // The same Fetch adapter runs in browsers, Node and Workers. All cryptographic
-// state and trust choices come from the compiled Wasm core.
-// Patience multiplies every time limit for a binding whose requests take a slow route.
+// state and trust choices come from the compiled Wasm core. `proxied` is the default of the option
+// of that name, such as true on a page served from an onion address.
 export function createTransportClass({
 	EvidenceVerifier,
 	EncryptedSetup,
 	transport_configuration,
-	patience = 1
+	proxied: proxiedByDefault = false
 }) {
 	return class StogasTransport {
 		#baseURL;
@@ -75,6 +85,9 @@ export function createTransportClass({
 				(options.onMetadata !== undefined && typeof options.onMetadata !== 'function')
 			)
 				throw new TypeError('fetch and onMetadata must be functions');
+			const proxied = options.proxied ?? proxiedByDefault;
+			if (typeof proxied !== 'boolean') throw new TypeError('proxied must be a boolean');
+			const patience = proxied ? PROXIED_PATIENCE : 1;
 			const config = transport_configuration(options.environment ?? 'prod');
 			this.#baseURL = baseURL(options.baseURL ?? `${config.e2ee_origin}/v1`);
 			this.#origins = config.evidence_origins;

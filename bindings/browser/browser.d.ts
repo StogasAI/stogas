@@ -7,6 +7,12 @@ export interface StogasTransportOptions {
 	maxConnections?: number;
 	/** Carries every request, evidence included. One that uses a proxy, such as Tor, sends them all through it. */
 	fetch?: typeof globalThis.fetch;
+	/**
+	 * Requests go through a proxy, such as Tor, where each crosses several relays, so every time
+	 * limit is four times as long, as the Rust SDK's are through a proxy. Default: true on a page
+	 * served from an onion address, otherwise false.
+	 */
+	proxied?: boolean;
 	/** Delivered only after the requested terminal content receipt verifies. */
 	onMetadata?: (metadata: unknown) => void;
 }
