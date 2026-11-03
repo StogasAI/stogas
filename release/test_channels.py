@@ -72,7 +72,12 @@ class ManifestTests(unittest.TestCase):
             name = f"stogas-v{VERSION}-{platform}.tar.gz"
             self.assertIn(f'url "https://github.com/StogasAI/stogas/releases/download/v{VERSION}/{name}"', formula)
             self.assertIn(f'sha256 "{hashlib.sha256(platform.encode()).hexdigest()}"', formula)
-        self.assertIn(f'version "{VERSION}"', formula)
+        # Homebrew reads the version from the archive names, and its audit refuses a repeat.
+        self.assertNotIn("version", formula.split("def install")[0])
+        # Homebrew on Linux refuses a macOS requirement outside on_macos.
+        macos = formula[formula.index("  on_macos do\n"):formula.index("  on_linux do\n")]
+        self.assertEqual(formula.count("depends_on"), 1)
+        self.assertIn(f"    depends_on macos: :{channels.MACOS}\n", macos)
         self.assertLessEqual(len(channels.DESCRIPTION), 80)
         self.assertFalse(channels.DESCRIPTION.endswith("."))
         self.assertNotRegex(channels.DESCRIPTION, r"^(A|An|The|Stogas)\b")

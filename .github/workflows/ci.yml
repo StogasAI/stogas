@@ -119,6 +119,23 @@ jobs:
       - name: Test the gateway feature set
         run: cargo test --locked --tests --package stogas-core --package stogas-ffi --no-default-features --features staging,stogas-ffi/gateway
 
+  nix:
+    name: Nix flake
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      # The flake builds the CLI from this source with the Rust that flake.lock's nixpkgs has,
+      # which must be at least the workspace's rust-version.
+      - name: Build and run the CLI with Nix
+        run: |
+          docker run --rm --volume "$PWD:/src:ro" nixos/nix@sha256:f159a58f390677f41e8e900a74b6e2f9c7f27b364122ae6acf7a652ce6c551c0 sh -euc '
+            nix --extra-experimental-features "nix-command flakes" build --print-build-logs --out-link /tmp/stogas path:/src
+            /tmp/stogas/bin/stogas --version
+          '
+
   protocol:
     name: Protocol model and constant-time checks
     runs-on: ubuntu-24.04
