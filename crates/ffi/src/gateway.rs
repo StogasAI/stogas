@@ -10,9 +10,12 @@ use stogas_core::{
     authority::Environment,
     evidence::boot::BootRequestPurpose,
     gateway::{self, Error, NodeKeys, TlsKey},
+    log_batch,
     signing::{SIGNATURE_BYTES, mldsa},
 };
 use zeroize::Zeroize as _;
+
+const MAX_LOG_BATCH_LEAVES: usize = log_batch::MAX_LEAVES as usize;
 
 mod channel;
 pub use channel::*;
@@ -306,6 +309,75 @@ pub unsafe extern "C" fn stogas_node_sign_receipt(
         let bytes = serde_json::to_vec(&signed).map_err(|_| Status::Input)?;
         // SAFETY: the output is writable.
         unsafe { receipt.write(StogasBuffer::owned(bytes)) };
+        Ok(())
+    })
+}
+
+/// Seal one batch of request log rows from their leaves, which `stogas_log_row_leaf` computes,
+/// and return the signed batch as JSON. Times are Unix milliseconds.
+///
+/// # Safety
+/// Keys are live; the boot digest addresses 32 bytes; the node ID addresses its readable length;
+/// leaves address `count` contiguous 64-byte hashes; the batch output is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stogas_node_sign_log_batch(
+    keys: *const StogasNodeKeys,
+    boot_sha256: *const u8,
+    node_id: *const u8,
+    node_id_len: usize,
+    sequence: u32,
+    opened_at_ms: i64,
+    sealed_at_ms: i64,
+    leaves: *const u8,
+    count: usize,
+    batch: *mut StogasBuffer,
+) -> u32 {
+    status(|| {
+        if batch.is_null() || leaves.is_null() || count == 0 || count > MAX_LOG_BATCH_LEAVES {
+            return Err(Status::Input);
+        }
+        // SAFETY: the output is writable.
+        unsafe { batch.write(StogasBuffer::EMPTY) };
+        // SAFETY: the caller supplies a readable node ID and `count` contiguous 64-byte hashes.
+        let (node_id, leaves) = unsafe {
+            (
+                input(node_id, node_id_len)?,
+                slice::from_raw_parts(leaves.cast::<[u8; 64]>(), count),
+            )
+        };
+        let node_id = std::str::from_utf8(node_id).map_err(|_| Status::Input)?;
+        // SAFETY: the caller supplies live keys and a readable digest.
+        let signed = unsafe {
+            keys.as_ref().ok_or(Status::Input)?.0.sign_log_batch(
+                array(boot_sha256)?,
+                node_id,
+                sequence,
+                [opened_at_ms, sealed_at_ms],
+                leaves,
+            )?
+        };
+        let bytes = serde_json::to_vec(&signed).map_err(|_| Status::Input)?;
+        // SAFETY: the output is writable.
+        unsafe { batch.write(StogasBuffer::owned(bytes)) };
+        Ok(())
+    })
+}
+
+/// The leaf of one request log row, which must be a JSON object that RFC 8785 writes exactly.
+///
+/// # Safety
+/// The row addresses its readable length; the leaf addresses 64 writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stogas_log_row_leaf(row: *const u8, row_len: usize, leaf: *mut u8) -> u32 {
+    status(|| {
+        if leaf.is_null() {
+            return Err(Status::Input);
+        }
+        // SAFETY: the caller supplies a readable row.
+        let hash =
+            log_batch::row_leaf(unsafe { input(row, row_len)? }).map_err(|_| Status::Input)?;
+        // SAFETY: the output addresses 64 writable bytes.
+        unsafe { leaf.copy_from_nonoverlapping(hash.as_ptr(), hash.len()) };
         Ok(())
     })
 }

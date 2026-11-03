@@ -33,7 +33,8 @@ use std::{
 use stogas::{Environment, SecurityMode, network::Network};
 use stogas_core::{
     MAX_INPUT_BYTES,
-    evidence::{MAX_ARCHIVE_BYTES, Verifier},
+    evidence::{MAX_ARCHIVE_BYTES, Verifier, boot::VerifiedBoot},
+    log_batch,
     receipt::{self, VerifiedReceipt},
 };
 use tokio::io::AsyncReadExt as _;
@@ -169,8 +170,8 @@ enum Command {
         #[arg(long, default_value = ".")]
         output: PathBuf,
     },
-    /// Verify a receipt against the archived evidence of the boot it names, and write a proof
-    /// that shows others only the sides you choose.
+    /// Verify a receipt or a request log row against the archived evidence of the boot that
+    /// signed it, and write a receipt proof that shows others only the sides you choose.
     Proof(ProofArgs),
     /// Run the verified loopback proxy.
     Serve(ServeArgs),
@@ -192,8 +193,9 @@ struct VerifyArgs {
 
 #[derive(Args)]
 struct ProofArgs {
-    /// The final Stogas metadata on its own, as --share writes it. --response then holds the
-    /// response JSON, with or without it, and may be left out to check only the rest.
+    /// The final Stogas metadata on its own, as --share writes it, or a request log row's proof
+    /// from the dashboard. With metadata, --response holds the response JSON, with or without
+    /// it, and may be left out to check only the rest. A log row's proof stands alone.
     #[arg(long, conflicts_with = "stream")]
     proof: Option<PathBuf>,
     /// Read --response as a complete SSE stream, including its metadata and terminal event.
@@ -389,14 +391,8 @@ async fn run() -> Result<()> {
             }
         }
         Command::Proof(args) => {
-            let verifier = Verifier::stogas(args.environment)?;
             let network = network(args.environment)?;
-            let proof = verify_proof_files(&args, &verifier, network).await?;
-            let shared = match &args.share {
-                Some(directory) => Some(share_proof(&proof, &args, directory).await?),
-                None => None,
-            };
-            print_proof_output(&proof.verified, shared.as_deref(), args.json)?;
+            run_proof(&args, network).await?;
         }
         Command::Serve(args) => run_serve(args, route).await?,
     }
@@ -434,6 +430,20 @@ async fn run_api(
         }
     }
     Ok(())
+}
+
+async fn run_proof(args: &ProofArgs, network: Network) -> Result<()> {
+    let verifier = Verifier::stogas(args.environment)?;
+    if let Some(proof) = read_log_proof(args).await? {
+        let row = verify_log_proof(args, &proof, &verifier, network).await?;
+        return print_log_row_output(&row, args.json);
+    }
+    let proof = verify_proof_files(args, &verifier, network).await?;
+    let shared = match &args.share {
+        Some(directory) => Some(share_proof(&proof, args, directory).await?),
+        None => None,
+    };
+    print_proof_output(&proof.verified, shared.as_deref(), args.json)
 }
 
 async fn run_verify(input: VerifyArgs) -> Result<()> {
@@ -483,7 +493,6 @@ async fn verify_proof_files(
     verifier: &Verifier,
     network: Network,
 ) -> Result<VerifiedProof> {
-    let now = input.now_unix_ms.unwrap_or_else(wall_clock_ms);
     let request = match &input.request {
         Some(path) => {
             let bytes = read_bounded_file(path, MAX_REQUEST_BYTES, "request body").await?;
@@ -501,19 +510,7 @@ async fn verify_proof_files(
         .map(receipt::canonical::digest)
         .transpose()?;
     let (signed, response) = read_signed_response(input, request_digest).await?;
-    let (archive, evidence) = if let (Some(boot), Some(evidence)) = (&input.boot, &input.evidence) {
-        (
-            read_bounded_file(boot, MAX_ARCHIVE_BYTES, "boot archive").await?,
-            read_bounded_file(evidence, MAX_INPUT_BYTES, "evidence").await?,
-        )
-    } else {
-        let boot = signed
-            .boot_sha256()
-            .context("the response has no Stogas receipt")?;
-        let archive = evidence_archive::download(input.environment, network, boot).await?;
-        (archive.boot, archive.evidence)
-    };
-    let boot = verifier.verify_boot_archive(&archive, &evidence, now)?;
+    let boot = verified_boot(input, signed.boot_sha256(), verifier, network).await?;
     let metadata = signed.metadata().clone();
     Ok(VerifiedProof {
         verified: signed.verify(&boot)?.receipt,
@@ -521,6 +518,94 @@ async fn verify_proof_files(
         request,
         response,
     })
+}
+
+/// The boot that signed a receipt or log batch, from the saved files or else downloaded by the
+/// hash that the receipt or batch names, and appraised against the environment's evidence.
+async fn verified_boot(
+    input: &ProofArgs,
+    boot_sha256: Option<&str>,
+    verifier: &Verifier,
+    network: Network,
+) -> Result<VerifiedBoot> {
+    let (archive, evidence) = if let (Some(boot), Some(evidence)) = (&input.boot, &input.evidence) {
+        (
+            read_bounded_file(boot, MAX_ARCHIVE_BYTES, "boot archive").await?,
+            read_bounded_file(evidence, MAX_INPUT_BYTES, "evidence").await?,
+        )
+    } else {
+        let boot = boot_sha256.context("the response has no Stogas receipt")?;
+        let archive = evidence_archive::download(input.environment, network, boot).await?;
+        (archive.boot, archive.evidence)
+    };
+    let now = input.now_unix_ms.unwrap_or_else(wall_clock_ms);
+    Ok(verifier.verify_boot_archive(&archive, &evidence, now)?)
+}
+
+/// The request log row's proof that --proof names, when it names one rather than a receipt's
+/// metadata.
+async fn read_log_proof(input: &ProofArgs) -> Result<Option<log_batch::Proof>> {
+    let Some(path) = &input.proof else {
+        return Ok(None);
+    };
+    let bytes = read_bounded_file(path, log_batch::MAX_PROOF_BYTES, "proof").await?;
+    if !serde_json::from_slice(&bytes).is_ok_and(|value| log_batch::Proof::is_proof(&value)) {
+        return Ok(None);
+    }
+    if input.request.is_some() || input.response.is_some() || input.share.is_some() {
+        bail!("a log row's proof stands alone: leave out --request, --response and --share");
+    }
+    Ok(Some(
+        log_batch::Proof::parse(&bytes).context("the log row's proof is malformed")?,
+    ))
+}
+
+async fn verify_log_proof(
+    input: &ProofArgs,
+    proof: &log_batch::Proof,
+    verifier: &Verifier,
+    network: Network,
+) -> Result<log_batch::VerifiedRow> {
+    // A row that does not reach its batch's root fails before any evidence is read.
+    proof.verify_inclusion()?;
+    let boot = verified_boot(input, Some(&proof.batch.boot_sha256), verifier, network).await?;
+    Ok(proof.verify(&boot)?)
+}
+
+fn print_log_row_output(row: &log_batch::VerifiedRow, json: bool) -> Result<()> {
+    use dashboard::printable;
+    if json {
+        out!("{}", serde_json::to_string(row)?)?;
+        return Ok(());
+    }
+    match &row.request_id {
+        Some(id) => out!(
+            "Verified request {} in the log of node {}",
+            printable(id),
+            row.node_id
+        )?,
+        None => out!("Verified a request log row of node {}", row.node_id)?,
+    }
+    out!(
+        "  row: exactly as the gateway signed it, index {} of {} in batch {}",
+        row.index,
+        row.leaf_count,
+        row.sequence
+    )?;
+    out!(
+        "  batch: boot {}, open from {} to {}",
+        row.boot_sha256,
+        row.opened_at,
+        row.sealed_at
+    )?;
+    if let Some(commitments) = &row.receipt_commitments {
+        out!(
+            "  receipt: request_commitment {}, response_commitment {}",
+            printable(&commitments.request),
+            printable(&commitments.response)
+        )?;
+    }
+    Ok(())
 }
 
 /// The signed response, and the response content as its receipt signs it.
