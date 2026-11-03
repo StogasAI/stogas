@@ -168,7 +168,7 @@ impl ResponseCompletion {
 #[wasm_bindgen(js_name = ResponseReceipt)]
 pub struct ResponseReceipt {
     appraisal: Arc<VerifiedSession>,
-    request: [u8; 32],
+    request: stogas_core::receipt::ContentDigest,
     stream: Option<stogas_core::receipt::Stream>,
     finished: bool,
 }

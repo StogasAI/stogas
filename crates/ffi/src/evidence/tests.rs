@@ -235,7 +235,7 @@ fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
                 ptr::null(),
                 0,
                 ptr::null(),
-                33,
+                stogas_core::receipt::canonical::DIGEST_BYTES + 1,
                 ptr::null(),
                 0,
                 later
@@ -298,8 +298,17 @@ fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
                 "invalid_operation"
             );
         }
-        // Oversized lengths and short hashes fail before dereferencing their contents.
-        for (receipt_len, hash_len) in [(stogas_core::receipt::MAX_BYTES + 1, 32), (0, 33)] {
+        // Oversized lengths and digests of another size fail before their contents are read.
+        let short = [0; 32];
+        for (receipt_len, digest, digest_len) in [
+            (stogas_core::receipt::MAX_METADATA_BYTES + 1, ptr::null(), 0),
+            (
+                0,
+                ptr::null(),
+                stogas_core::receipt::canonical::DIGEST_BYTES + 1,
+            ),
+            (0, short.as_ptr(), short.len()),
+        ] {
             assert_eq!(
                 take_json(stogas_evidence_verify_receipt(
                     snapshot,
@@ -309,8 +318,8 @@ fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
                     evidence.boot_inclusion.len(),
                     ptr::null(),
                     receipt_len,
-                    ptr::null(),
-                    hash_len,
+                    digest,
+                    digest_len,
                     ptr::null(),
                     0,
                     now

@@ -147,12 +147,14 @@ func (k *NodeKeys) SignBootRequest(purpose BootRequestPurpose, nodeID string, is
 	return signature, nil
 }
 
-// SignReceipt returns the receipt JSON for exact content hashes and the metadata
-// object, whose top-level receipt member is excluded.
-func (k *NodeKeys) SignReceipt(bootSHA256, requestSHA256, responseSHA256 [32]byte, metadata []byte) ([]byte, error) {
+// SignReceipt signs content digests from RequestDigest, ResponseDigest or a StreamContent
+// under fresh salts, and the metadata object without its receipt and salts members. It
+// returns {"receipt": ..., "salts": ...}. The salts belong in the caller's response only,
+// never in a log or an export.
+func (k *NodeKeys) SignReceipt(bootSHA256 [32]byte, request, response ContentDigest, metadata []byte) ([]byte, error) {
 	var buffer C.StogasBuffer
 	err := k.call(func(handle *C.StogasNodeKeys) C.uint32_t {
-		return C.stogas_node_sign_receipt(handle, bytePointer(bootSHA256[:]), bytePointer(requestSHA256[:]), bytePointer(responseSHA256[:]),
+		return C.stogas_node_sign_receipt(handle, bytePointer(bootSHA256[:]), bytePointer(request[:]), bytePointer(response[:]),
 			bytePointer(metadata), C.size_t(len(metadata)), &buffer)
 	})
 	if err != nil {

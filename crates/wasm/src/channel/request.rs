@@ -12,7 +12,6 @@ use std::{
 };
 
 use js_sys::{Function, Promise, Uint8Array, futures::future_to_promise};
-use sha2::{Digest as _, Sha256};
 use stogas_core::{
     channel::{ClientRequest, Error, Kind, ResponseDecoder},
     evidence::{Snapshot, VerifiedSession},
@@ -35,7 +34,9 @@ pub struct EncryptedRequest {
 struct RequestIo {
     request: Option<ClientRequest<HostCipher>>,
     decoder: Option<ResponseDecoder<HostCipher>>,
-    request_hasher: Option<Sha256>,
+    /// The sealed request body, kept only when a receipt was requested: its digest needs the
+    /// whole body.
+    request_body: Option<Zeroizing<Vec<u8>>>,
     request_finished: bool,
 }
 
@@ -138,7 +139,7 @@ impl EncryptedRequest {
                 io: RefCell::new(Some(RequestIo {
                     request: Some(request),
                     decoder: None,
-                    request_hasher: receipt.then(Sha256::new),
+                    request_body: receipt.then(|| Zeroizing::new(Vec::new())),
                     request_finished: false,
                 })),
                 closed: Cell::new(false),
@@ -178,28 +179,35 @@ impl EncryptedRequest {
         }
     }
 
-    /// Verify terminal content under this request's original appraised boot key.
-    /// Current catalog changes do not change the request's signing identity.
+    /// Verify a final metadata bag, salts included, under this request's original appraised
+    /// boot key. Each digest is 64 bytes, or empty to leave that side unchecked. Current
+    /// catalog changes do not change the request's signing identity.
     ///
     /// # Errors
     /// Rejects malformed receipts, changed content and signatures from another boot.
     pub fn verify_receipt(
         &self,
         receipt: &[u8],
-        request_sha256: &[u8],
-        response_sha256: &[u8],
+        request_digest: &[u8],
+        response_digest: &[u8],
     ) -> Result<JsValue, JsError> {
-        let request = request_sha256
-            .try_into()
-            .map_err(|_| JsError::new("request digest must be 32 bytes"))?;
-        let response = response_sha256
-            .try_into()
-            .map_err(|_| JsError::new("response digest must be 32 bytes"))?;
+        let digest = |bytes: &[u8], side: &str| {
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            <[u8; 64]>::try_from(bytes)
+                .map(Some)
+                .map_err(|_| JsError::new(&format!("{side} digest must be 64 bytes or empty")))
+        };
+        let (request, response) = (
+            digest(request_digest, "request")?,
+            digest(response_digest, "response")?,
+        );
         let verified = stogas_core::receipt::verify_metadata(
             receipt,
             self.appraisal.boot(),
-            request,
-            response,
+            request.as_ref(),
+            response.as_ref(),
         )?
         .receipt;
         crate::to_js_value(&verified)
@@ -221,9 +229,9 @@ impl EncryptedRequest {
                 .run(request.seal_async(kind, &content))
                 .await?;
             if kind == Kind::Data
-                && let Some(hasher) = &mut io.request_hasher
+                && let Some(body) = &mut io.request_body
             {
-                hasher.update(&content);
+                body.extend_from_slice(&content);
             }
             if kind == Kind::Finished {
                 io.request_finished = true;
@@ -236,7 +244,8 @@ impl EncryptedRequest {
     /// Own the original boot appraisal beyond transport completion, without retaining keys.
     ///
     /// # Errors
-    /// Requires all request content to have been sealed before taking its exact digest.
+    /// Requires all request content to have been sealed before taking its digest, and a body
+    /// that a receipt can commit to.
     pub fn response_receipt(&self) -> Result<ResponseReceipt, JsValue> {
         self.state.check_open()?;
         let io = self.state.io.borrow();
@@ -244,14 +253,16 @@ impl EncryptedRequest {
             .as_ref()
             .filter(|io| io.request_finished)
             .ok_or_else(|| js_sys::Error::new("request content is incomplete"))?;
+        let body = io
+            .request_body
+            .as_ref()
+            .ok_or_else(|| js_sys::Error::new("receipt was not requested"))?;
+        let request = stogas_core::receipt::request_digest(body).map_err(|error| {
+            js_sys::Error::new(&format!("the request cannot carry a receipt: {error}"))
+        })?;
         Ok(ResponseReceipt {
             appraisal: Arc::clone(&self.appraisal),
-            request: io
-                .request_hasher
-                .clone()
-                .ok_or_else(|| js_sys::Error::new("receipt was not requested"))?
-                .finalize()
-                .into(),
+            request,
             stream: None,
             finished: false,
         })

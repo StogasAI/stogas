@@ -25,7 +25,6 @@ hex.workspace = true
 serde-wasm-bindgen = "0.6.5"
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 stogas-sigstore = { path = "../sigstore" }
 stogas-core = { path = "../core" }
 wasm-bindgen = "0.2.129"
@@ -34,6 +33,7 @@ zeroize.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "=0.3.79"
+sha2.workspace = true
 hpke = { version = "=0.14.1", default-features = false, features = ["alloc", "getrandom", "aes", "x25519", "mlkem"] }
 
 [lints]

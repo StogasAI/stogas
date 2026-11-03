@@ -10,7 +10,7 @@ fn state() -> Rc<RequestState> {
         io: RefCell::new(Some(RequestIo {
             request: None,
             decoder: None,
-            request_hasher: None,
+            request_body: None,
             request_finished: false,
         })),
         closed: Cell::new(false),

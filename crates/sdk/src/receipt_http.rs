@@ -1,7 +1,7 @@
 //! Verify optional content receipts while retaining the request's original attestation.
 use axum::{
     body::{Body, Bytes, to_bytes},
-    http::{Response, header::CONTENT_TYPE},
+    http::{HeaderMap, Response, header::CONTENT_TYPE},
 };
 use futures_util::{StreamExt as _, stream};
 use std::{collections::VecDeque, sync::Arc};
@@ -9,6 +9,19 @@ use stogas_core::{evidence::VerifiedSession, receipt};
 use tokio::time::{Instant, timeout_at};
 
 const MAX_RESPONSE_BYTES: usize = stogas_core::receipt::MAX_BUFFERED_BYTES;
+
+/// The `Stogas-Metadata` value that asks for this receipt format.
+pub(crate) const METADATA_VERSION: &str = "v2";
+
+/// Whether a request asks for metadata, or `None` for any other header value.
+pub(crate) fn requests_metadata(headers: &HeaderMap) -> Option<bool> {
+    let mut values = headers.get_all("stogas-metadata").iter();
+    match (values.next(), values.next()) {
+        (None, None) => Some(false),
+        (Some(value), None) if value == METADATA_VERSION => Some(true),
+        _ => None,
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -24,7 +37,7 @@ pub enum Error {
 pub(crate) async fn verify(
     response: Response<Body>,
     peer: Arc<VerifiedSession>,
-    request: [u8; 32],
+    request: receipt::ContentDigest,
     deadline: Instant,
 ) -> Result<Response<Body>, Error> {
     if !response.status().is_success() {

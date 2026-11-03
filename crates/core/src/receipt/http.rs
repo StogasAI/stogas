@@ -1,8 +1,6 @@
 //! Shared byte framing for response metadata. It does not authenticate a signing key.
+use super::events::StreamContent;
 use crate::Error;
-use sha2::{Digest as _, Sha256};
-const BUFFERED_STOGAS_FIELD: &[u8] = b",\"stogas\":";
-const BUFFERED_ONLY_STOGAS_FIELD: &[u8] = b"{\"stogas\":";
 const MAX_PROOF_BYTES: usize = super::MAX_METADATA_BYTES;
 const SSE_RECEIPT_PREFIX: &[u8] = b": stogas ";
 const SSE_CHAT_TERMINAL_PREFIX: &[u8] = b"data: [DONE]";
@@ -10,13 +8,17 @@ const SSE_RESPONSES_TERMINAL_PREFIX: &[u8] = b"event: response.completed\n";
 const SSE_RESPONSES_INCOMPLETE_TERMINAL_PREFIX: &[u8] = b"event: response.incomplete\n";
 const SSE_EVENT_END: &[u8] = b"\n\n";
 const SSE_KEEPALIVE: &[u8] = b": STOGAS PROCESSING\n\n";
-/// Exact-byte SSE receipt filter used by managed transports.
+/// SSE receipt filter used by managed transports.
 ///
-/// The filter forwards ordinary events immediately, removes the receipt from the response hash,
-/// and withholds the terminal event delimiter until the signature has verified. It accepts only
-/// the two terminal forms emitted by the `OpenAI` Chat Completions and Responses endpoints.
+/// The filter forwards ordinary events immediately, reads each complete event into the response
+/// that the receipt signs, and withholds the terminal event delimiter until the signature has
+/// verified. It accepts only the two terminal forms emitted by the `OpenAI` Chat Completions and
+/// Responses endpoints.
 pub struct SseBody {
-    response_hasher: Sha256,
+    /// The response the events carry, which a transport without receipts does not read.
+    content: Option<StreamContent>,
+    /// The released bytes of the event still arriving, read once it is complete.
+    frame: Vec<u8>,
     /// Received bytes, of which those before `taken` are already released or held.
     buffer: Vec<u8>,
     taken: usize,
@@ -52,7 +54,8 @@ impl SseBody {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            response_hasher: Sha256::new(),
+            content: Some(StreamContent::default()),
+            frame: Vec::new(),
             buffer: Vec::new(),
             taken: 0,
             searched: 0,
@@ -67,6 +70,7 @@ impl SseBody {
 
     pub fn transport() -> Self {
         Self {
+            content: None,
             receipt_required: false,
             ..Self::new()
         }
@@ -115,7 +119,7 @@ impl SseBody {
         loop {
             let action = match self.state {
                 SseState::Boundary => self.push_boundary(&mut output)?,
-                SseState::Regular => self.push_regular(&mut output),
+                SseState::Regular => self.push_regular(&mut output)?,
                 SseState::Keepalive => self.push_keepalive(&mut output),
                 SseState::Receipt => self.push_receipt()?,
                 SseState::ChatTerminal => self.push_chat_terminal(&mut output)?,
@@ -135,14 +139,19 @@ impl SseBody {
         Ok(output)
     }
 
-    /// Extract the authenticated-content input; the caller must verify before releasing
-    /// the final delimiter. Transport EOF is mandatory before calling this method.
-    pub fn finish(self) -> Result<(Vec<u8>, [u8; 32]), Error> {
+    /// Extract the stream's bag and the response it carries; the caller must verify before
+    /// releasing the final delimiter. Transport EOF is mandatory before calling this method.
+    pub fn finish(self) -> Result<(Vec<u8>, serde_json::Value), Error> {
         self.require_complete()?;
         let proof = self
             .proof_bytes
             .ok_or_else(|| stream_error("stream has no receipt"))?;
-        Ok((proof, self.response_hasher.finalize().into()))
+        let response = self
+            .content
+            .ok_or_else(|| stream_error("stream has no receipt"))?
+            .finish()
+            .map_err(|_| stream_error("stream events do not carry a response"))?;
+        Ok((proof, response))
     }
 
     pub fn require_complete(&self) -> Result<(), Error> {
@@ -198,19 +207,20 @@ impl SseBody {
         Ok(PushAction::Continue)
     }
 
-    fn push_regular(&mut self, output: &mut Vec<Vec<u8>>) -> PushAction {
+    fn push_regular(&mut self, output: &mut Vec<Vec<u8>>) -> Result<PushAction, Error> {
         if let Some(end) = self.find_event_end() {
             let bytes = self.take_buffer_prefix(end + SSE_EVENT_END.len());
-            self.hash_and_forward(bytes, output);
+            self.read_and_forward(bytes, output);
+            self.finish_event()?;
             self.state = SseState::Boundary;
-            return PushAction::Continue;
+            return Ok(PushAction::Continue);
         }
         let safe = self.safe_incomplete_length();
         if safe > 0 {
             let bytes = self.take_buffer_prefix(safe);
-            self.hash_and_forward(bytes, output);
+            self.read_and_forward(bytes, output);
         }
-        PushAction::Stop
+        Ok(PushAction::Stop)
     }
 
     fn push_keepalive(&mut self, output: &mut Vec<Vec<u8>>) -> PushAction {
@@ -271,20 +281,36 @@ impl SseBody {
         let safe = self.safe_incomplete_length();
         if safe > 0 {
             let bytes = self.take_buffer_prefix(safe);
-            self.hash_and_forward(bytes, output);
+            self.read_and_forward(bytes, output);
         }
         Ok(PushAction::Stop)
     }
 
+    /// The terminal frame is released without its closing blank line, which the caller adds
+    /// once the receipt has verified.
     fn finish_terminal_frame(
         &mut self,
         frame: &[u8],
         output: &mut Vec<Vec<u8>>,
     ) -> Result<(), Error> {
-        self.response_hasher.update(frame);
+        if self.content.is_some() {
+            self.frame.extend_from_slice(frame);
+            self.finish_event()?;
+        }
         output.push(frame[..frame.len() - SSE_EVENT_END.len()].to_vec());
         self.state = SseState::AfterTerminal;
         self.push_after_terminal().map(|_| ())
+    }
+
+    /// Read the event whose bytes have all been released.
+    fn finish_event(&mut self) -> Result<(), Error> {
+        if let Some(content) = &mut self.content {
+            content
+                .push(&self.frame)
+                .map_err(|_| stream_error("stream event does not belong to a response"))?;
+            self.frame.clear();
+        }
+        Ok(())
     }
 
     fn push_after_terminal(&self) -> Result<PushAction, Error> {
@@ -323,8 +349,10 @@ impl SseBody {
         bytes
     }
 
-    fn hash_and_forward(&mut self, bytes: Vec<u8>, output: &mut Vec<Vec<u8>>) {
-        self.response_hasher.update(&bytes);
+    fn read_and_forward(&mut self, bytes: Vec<u8>, output: &mut Vec<Vec<u8>>) {
+        if self.content.is_some() {
+            self.frame.extend_from_slice(&bytes);
+        }
         output.push(bytes);
     }
 }
@@ -381,60 +409,4 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 fn stream_error(message: &str) -> Error {
     Error::ResponseProof(message.to_owned())
-}
-
-pub fn split_buffered_response(
-    response_body: &[u8],
-    max_body_bytes: usize,
-) -> Result<(Vec<u8>, Vec<u8>), Error> {
-    if response_body.len() > max_body_bytes + MAX_PROOF_BYTES + 16 {
-        return Err(Error::ResponseProof(format!(
-            "buffered response exceeds {} bytes",
-            max_body_bytes + MAX_PROOF_BYTES + 16
-        )));
-    }
-    if response_body.first() != Some(&b'{') || response_body.last() != Some(&b'}') {
-        return Err(Error::ResponseProof(
-            "buffered response must be compact JSON with a final stogas object".into(),
-        ));
-    }
-    let (field_start, proof_start, empty_response) = response_body
-        .windows(BUFFERED_STOGAS_FIELD.len())
-        .rposition(|part| part == BUFFERED_STOGAS_FIELD)
-        .map(|position| (position, position + BUFFERED_STOGAS_FIELD.len(), false))
-        .or_else(|| {
-            response_body
-                .starts_with(BUFFERED_ONLY_STOGAS_FIELD)
-                .then_some((0, BUFFERED_ONLY_STOGAS_FIELD.len(), true))
-        })
-        .ok_or_else(|| {
-            Error::ResponseProof("buffered response has no final stogas object".into())
-        })?;
-    let proof_bytes = &response_body[proof_start..response_body.len() - 1];
-    if proof_bytes.is_empty() || proof_bytes.len() > MAX_PROOF_BYTES {
-        return Err(Error::ResponseProof(
-            "buffered response stogas object has an invalid size".into(),
-        ));
-    }
-    let value = crate::strict_json::from_slice(proof_bytes)
-        .map_err(|error| Error::ResponseProof(format!("invalid stogas object: {error}")))?;
-    if !value.is_object() {
-        return Err(Error::ResponseProof(
-            "buffered response stogas field must be an object".into(),
-        ));
-    }
-    let unsigned_response = if empty_response {
-        b"{}".to_vec()
-    } else {
-        let mut value = Vec::with_capacity(field_start + 1);
-        value.extend_from_slice(&response_body[..field_start]);
-        value.push(b'}');
-        value
-    };
-    if unsigned_response.len() > max_body_bytes {
-        return Err(Error::ResponseProof(format!(
-            "response body must not exceed {max_body_bytes} bytes in one-shot verification"
-        )));
-    }
-    Ok((proof_bytes.to_vec(), unsigned_response))
 }

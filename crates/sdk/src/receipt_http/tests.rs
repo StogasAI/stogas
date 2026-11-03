@@ -5,6 +5,10 @@ use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use std::time::Duration;
+use stogas_core::receipt::{
+    ContentDigest,
+    canonical::{self, Side},
+};
 use stogas_core::signing::SigningKey;
 use stogas_core::{authority::Environment, evidence};
 
@@ -37,25 +41,38 @@ fn peer() -> Arc<VerifiedSession> {
             .unwrap(),
     )
 }
-fn metadata(peer: &VerifiedSession, request: [u8; 32], response: &[u8]) -> Vec<u8> {
-    let response: [u8; 32] = Sha256::digest(response).into();
+const SALTS: [canonical::Salt; 2] = [[0x11; 32], [0x22; 32]];
+
+/// The bag that the hardware sample's boot key signs for this content, with no other metadata.
+fn metadata(peer: &VerifiedSession, request: &ContentDigest, response: &ContentDigest) -> Vec<u8> {
     let key = SigningKey::from_seeds(&[[42; 32]; 2]);
+    let commitments = [
+        canonical::commitment(Side::Request, &SALTS[0], request),
+        canonical::commitment(Side::Response, &SALTS[1], response),
+    ];
     let digest: [u8; 32] = Sha256::digest(b"{}").into();
     let message = [
         receipt::SCHEMA.as_bytes(),
         b"\0",
-        &request,
-        &response,
+        &commitments[0],
+        &commitments[1],
         &digest,
     ]
     .concat();
-    serde_json::to_vec(&json!({"receipt": {
-        "schema": receipt::SCHEMA,
-        "boot_sha256": hex::encode(peer.boot().document_sha256()),
-        "request_sha256": hex::encode(request), "response_sha256": hex::encode(response),
-        "signature": URL_SAFE_NO_PAD.encode(key.sign(&message).unwrap())
-    }}))
+    serde_json::to_vec(&json!({
+        "receipt": {
+            "schema": receipt::SCHEMA,
+            "boot_sha256": hex::encode(peer.boot().document_sha256()),
+            "request_commitment": hex::encode(commitments[0]),
+            "response_commitment": hex::encode(commitments[1]),
+            "signature": URL_SAFE_NO_PAD.encode(key.sign(&message).unwrap()),
+        },
+        "salts": {"request": hex::encode(SALTS[0]), "response": hex::encode(SALTS[1])},
+    }))
     .unwrap()
+}
+fn request() -> ContentDigest {
+    receipt::request_digest(br#"{"model":"openai/gpt-5.5"}"#).unwrap()
 }
 fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(5)
@@ -64,9 +81,9 @@ fn deadline() -> Instant {
 #[tokio::test]
 async fn buffered_receipts_use_original_hardware_identity_before_returning_success() {
     let peer = peer();
-    let request = Sha256::digest(b"request").into();
+    let request = request();
     let content = br#"{"choices":[]}"#;
-    let receipt = metadata(&peer, request, content);
+    let receipt = metadata(&peer, &request, &receipt::response_digest(content).unwrap());
     let wire = [
         &content[..content.len() - 1],
         b",\"stogas\":",
@@ -90,7 +107,7 @@ async fn buffered_receipts_use_original_hardware_identity_before_returning_succe
         verify(
             Response::new(Body::from(wire)),
             Arc::clone(&peer),
-            [0; 32],
+            [0; 64],
             deadline()
         )
         .await,
@@ -117,18 +134,19 @@ async fn buffered_receipts_use_original_hardware_identity_before_returning_succe
 #[tokio::test]
 async fn terminal_delimiter_requires_eof_and_valid_receipt_without_repeating_the_request() {
     let peer = peer();
-    let request = Sha256::digest(b"request").into();
-    let content = b"data: {}\n\ndata: [DONE]\n\n";
-    let receipt = metadata(&peer, request, content);
+    let request = request();
+    let completion = json!({"object": "chat.completion", "choices": []});
+    let receipt = metadata(&peer, &request, &canonical::digest(&completion).unwrap());
     let wire = [
-        b"data: {}\n\n: stogas ",
+        br#"data: {"object":"chat.completion.chunk","choices":[]}"#.as_slice(),
+        b"\n\n: stogas ",
         receipt.as_slice(),
         b"\n\ndata: [DONE]\n\n",
     ]
     .concat();
     for (body, digest, valid) in [
         (wire.clone(), request, true),
-        (wire.clone(), [0; 32], false),
+        (wire.clone(), [0; 64], false),
         (wire[..wire.len() - 1].to_vec(), request, false),
         ([wire.as_slice(), b"injected"].concat(), request, false),
     ] {
@@ -162,7 +180,7 @@ async fn blocked_body_deadline_and_cancellation_release_retained_attestation() {
             .header(CONTENT_TYPE, "text/event-stream")
             .body(Body::from_stream(source))
             .unwrap();
-        let mut response = verify(response, Arc::clone(&peer), [0; 32], deadline())
+        let mut response = verify(response, Arc::clone(&peer), [0; 64], deadline())
             .await
             .unwrap();
         assert_eq!(Arc::strong_count(&peer), baseline + 1);

@@ -10,7 +10,7 @@ use crate::{
     authority::Environment,
     evidence::boot::{self, BootRecord, BootReportData, BootRequestPurpose},
     kem::{PrivateKey, XWing},
-    receipt::{self, Receipt},
+    receipt::{self, ContentDigest, Receipt, Salt, Salts, Side, SignedReceipt, canonical},
     secret_release,
     signing::{self, SIGNATURE_BYTES, SigningKey, mldsa},
 };
@@ -128,17 +128,30 @@ impl NodeKeys {
             .sign(&boot::request_message(purpose, node_id, issued_at_ms))?)
     }
 
-    /// Sign exact content hashes and the metadata bag, excluding any `receipt` member.
+    /// Sign the request and response under fresh salts, and the metadata bag without its
+    /// `receipt` and `salts` members. The salts are returned once and kept nowhere.
     ///
     /// # Errors
-    /// Rejects malformed or oversized metadata and signing failures.
+    /// Rejects malformed or oversized metadata, and randomness or signing failures.
     pub fn sign_receipt(
         &self,
         boot_sha256: &[u8; 32],
-        request: &[u8; 32],
-        response: &[u8; 32],
+        request: &ContentDigest,
+        response: &ContentDigest,
         metadata: &[u8],
-    ) -> Result<Receipt, Error> {
+    ) -> Result<SignedReceipt, Error> {
+        let mut salts = [[0; canonical::SALT_BYTES]; 2];
+        getrandom::fill(salts.as_flattened_mut()).map_err(|_| signing::Error::Randomness)?;
+        self.sign_salted_receipt(boot_sha256, [request, response], metadata, &salts)
+    }
+
+    fn sign_salted_receipt(
+        &self,
+        boot_sha256: &[u8; 32],
+        [request, response]: [&ContentDigest; 2],
+        metadata: &[u8],
+        [request_salt, response_salt]: &[Salt; 2],
+    ) -> Result<SignedReceipt, Error> {
         if metadata.len() > receipt::MAX_METADATA_BYTES {
             return Err(Error::Input("receipt metadata size"));
         }
@@ -146,15 +159,25 @@ impl NodeKeys {
             .map_err(|_| Error::Input("receipt metadata"))?;
         let digest =
             receipt::metadata_digest(&metadata).map_err(|_| Error::Input("receipt metadata"))?;
-        let signature = self
-            .signing
-            .sign(&receipt::message(request, response, &digest))?;
-        Ok(Receipt {
-            schema: receipt::SCHEMA.into(),
-            boot_sha256: hex::encode(boot_sha256),
-            request_sha256: hex::encode(request),
-            response_sha256: hex::encode(response),
-            signature: URL_SAFE_NO_PAD.encode(signature),
+        let request_commitment = canonical::commitment(Side::Request, request_salt, request);
+        let response_commitment = canonical::commitment(Side::Response, response_salt, response);
+        let signature = self.signing.sign(&receipt::message(
+            &request_commitment,
+            &response_commitment,
+            &digest,
+        ))?;
+        Ok(SignedReceipt {
+            receipt: Receipt {
+                schema: receipt::SCHEMA.into(),
+                boot_sha256: hex::encode(boot_sha256),
+                request_commitment: hex::encode(request_commitment),
+                response_commitment: hex::encode(response_commitment),
+                signature: URL_SAFE_NO_PAD.encode(signature),
+            },
+            salts: Salts {
+                request: Some(hex::encode(request_salt)),
+                response: Some(hex::encode(response_salt)),
+            },
         })
     }
 

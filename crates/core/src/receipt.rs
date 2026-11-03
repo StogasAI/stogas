@@ -1,13 +1,26 @@
-//! One signature over exact content hashes and the canonical Stogas metadata bag.
+//! One signature over salted content commitments and the canonical Stogas metadata bag.
+//!
+//! The gateway signs `stogas.receipt.v2`, a zero byte, the request commitment, the response
+//! commitment and the SHA-256 of the RFC 8785 metadata bag without `receipt` and `salts`. Each
+//! commitment hides its side's content digest under a salt that only the client receives (see
+//! [`canonical`]), so a receipt proves either side without revealing the other.
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 
 use crate::evidence::boot::VerifiedBoot;
 
+pub mod canonical;
+mod chat;
+mod events;
 pub(crate) mod http;
 
-pub const SCHEMA: &str = "stogas.receipt.v1";
+pub use canonical::{
+    CanonicalError, Commitment, ContentDigest, Salt, Side, request_digest, response_digest,
+};
+pub use events::StreamContent;
+
+pub const SCHEMA: &str = "stogas.receipt.v2";
 pub const MAX_BYTES: usize = 5 * 1024;
 pub const MAX_METADATA_BYTES: usize = 16 * 1024;
 pub const MAX_BUFFERED_BYTES: usize = 64 * 1024 * 1024 + MAX_METADATA_BYTES + 16;
@@ -18,10 +31,14 @@ pub enum Error {
     Invalid,
     #[error("receipt does not match the request or response")]
     Content,
+    #[error("the metadata has no {0} salt, so the {0} cannot be checked")]
+    Salt(Side),
     #[error("receipt does not identify the verified boot")]
     Identity,
     #[error("receipt signature failed")]
     Signature,
+    #[error(transparent)]
+    Canonical(#[from] CanonicalError),
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -29,19 +46,43 @@ pub enum Error {
 pub struct Receipt {
     pub schema: String,
     pub boot_sha256: String,
-    pub request_sha256: String,
-    pub response_sha256: String,
+    pub request_commitment: String,
+    pub response_commitment: String,
     pub signature: String,
 }
 
-/// This confirms content and metadata under an appraised boot key; it does not
-/// renew the boot's authorization or establish when inference ran.
+/// The salts that the receipt commits each side under, as lowercase hex.
+///
+/// The gateway returns both and keeps neither. To prove one side, share the bag with only that
+/// side's salt: the other side's commitment then reveals nothing, not even whether a guess is
+/// right.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Salts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<String>,
+}
+
+/// A receipt and the salts it was signed with, as the gateway returns them.
+#[derive(Debug, Serialize)]
+pub struct SignedReceipt {
+    pub receipt: Receipt,
+    pub salts: Salts,
+}
+
+/// This confirms metadata, and each side whose content was checked, under an appraised boot
+/// key. It does not renew the boot's authorization or establish when inference ran.
 #[derive(Debug, Serialize)]
 pub struct VerifiedReceipt {
     pub node_id: String,
     pub boot_sha256: String,
-    pub request_sha256: String,
-    pub response_sha256: String,
+    pub request_commitment: String,
+    pub response_commitment: String,
+    /// Whether the request was checked against its commitment, rather than left hidden.
+    pub request_verified: bool,
+    pub response_verified: bool,
 }
 
 impl Receipt {
@@ -55,30 +96,34 @@ impl Receipt {
             .map_err(|_| Error::Invalid)
     }
 
-    /// Verify using the retained request appraisal or an independently verified
-    /// historical boot. The caller supplies exact-body hashes computed locally.
+    /// Verify using the retained request appraisal or an independently verified historical
+    /// boot. Each side given checks the caller's own digest of that side's content; a side left
+    /// out stays hidden and is signed only as its commitment.
     ///
     /// # Errors
-    /// Rejects altered content, boot references, schema, keys or signatures.
+    /// Rejects altered content, boot references, schema, keys or signatures, and a checked
+    /// side whose salt is missing.
     pub fn verify(
         &self,
         boot: &VerifiedBoot,
-        request: &[u8; 32],
-        response: &[u8; 32],
+        request: Option<&ContentDigest>,
+        response: Option<&ContentDigest>,
+        salts: &Salts,
         metadata: &serde_json::Value,
     ) -> Result<VerifiedReceipt, Error> {
         self.verify_key(
             &boot.record().report_data.signing_public_key,
             boot.document_sha256(),
-            request,
-            response,
+            [(request, &salts.request), (response, &salts.response)],
             &metadata_digest(metadata)?,
         )?;
         Ok(VerifiedReceipt {
             node_id: boot.hardware().node_id().to_owned(),
             boot_sha256: self.boot_sha256.clone(),
-            request_sha256: self.request_sha256.clone(),
-            response_sha256: self.response_sha256.clone(),
+            request_commitment: self.request_commitment.clone(),
+            response_commitment: self.response_commitment.clone(),
+            request_verified: request.is_some(),
+            response_verified: response.is_some(),
         })
     }
 
@@ -86,8 +131,7 @@ impl Receipt {
         &self,
         public_key: &str,
         boot: &[u8; 32],
-        request: &[u8; 32],
-        response: &[u8; 32],
+        sides: [(Option<&ContentDigest>, &Option<String>); 2],
         metadata: &[u8; 32],
     ) -> Result<(), Error> {
         if self.schema != SCHEMA {
@@ -96,62 +140,102 @@ impl Receipt {
         if self.boot_sha256 != hex::encode(boot) {
             return Err(Error::Identity);
         }
-        if self.request_sha256 != hex::encode(request)
-            || self.response_sha256 != hex::encode(response)
+        let commitments = [
+            decode_hex::<32>(&self.request_commitment)?,
+            decode_hex::<32>(&self.response_commitment)?,
+        ];
+        for ((side, (digest, salt)), signed) in [Side::Request, Side::Response]
+            .into_iter()
+            .zip(sides)
+            .zip(&commitments)
         {
-            return Err(Error::Content);
+            if let Some(digest) = digest {
+                let salt = decode_hex::<32>(salt.as_deref().ok_or(Error::Salt(side))?)?;
+                if canonical::commitment(side, &salt, digest) != *signed {
+                    return Err(Error::Content);
+                }
+            }
         }
         let key = decode(public_key)?;
         if key.len() != crate::signing::PUBLIC_KEY_BYTES {
             return Err(Error::Identity);
         }
         let signature = decode(&self.signature)?;
-        crate::signing::verify(&key, &message(request, response, metadata), &signature)
-            .map_err(|_| Error::Signature)
+        crate::signing::verify(
+            &key,
+            &message(&commitments[0], &commitments[1], metadata),
+            &signature,
+        )
+        .map_err(|_| Error::Signature)
     }
 }
 
-pub(crate) fn message(request: &[u8; 32], response: &[u8; 32], metadata: &[u8; 32]) -> Vec<u8> {
+pub(crate) fn message(request: &Commitment, response: &Commitment, metadata: &[u8; 32]) -> Vec<u8> {
     [SCHEMA.as_bytes(), b"\0", request, response, metadata].concat()
 }
 
-/// The complete metadata bag is authenticated, excluding the receipt itself.
+/// The complete metadata bag is authenticated, excluding the receipt and its salts.
 #[derive(Debug, Serialize)]
 pub struct VerifiedMetadata {
+    /// The bag as received, including the receipt but not the salts.
     pub metadata: serde_json::Value,
     pub receipt: VerifiedReceipt,
 }
 
-/// Exact content hashes and the final metadata bag, read before the signing boot
-/// is appraised. Nothing here is authenticated until `verify` succeeds.
+/// Content digests and the final metadata bag, read before the signing boot is appraised.
+/// Nothing here is authenticated until `verify` succeeds.
 pub struct Signed {
     metadata: serde_json::Value,
-    request: [u8; 32],
-    response: [u8; 32],
+    request: Option<ContentDigest>,
+    response: Option<ContentDigest>,
 }
 
 impl Signed {
-    /// Split a buffered response without reserializing the provider response being hashed.
+    /// Read a buffered response whose body carries its `stogas` bag.
     ///
     /// # Errors
     /// Rejects malformed or oversized responses and metadata.
-    pub fn buffered(request: [u8; 32], body: &[u8]) -> Result<Self, Error> {
-        use sha2::{Digest as _, Sha256};
-        let (metadata, content) =
-            http::split_buffered_response(body, 64 * 1024 * 1024).map_err(|_| Error::Invalid)?;
-        Self::detached(request, &metadata, Sha256::digest(content).into())
+    pub fn buffered(request: Option<ContentDigest>, body: &[u8]) -> Result<Self, Error> {
+        if body.len() > MAX_BUFFERED_BYTES {
+            return Err(Error::Invalid);
+        }
+        let mut value = canonical::parse_object(body)?;
+        let metadata = value
+            .as_object_mut()
+            .and_then(|object| object.remove("stogas"))
+            .filter(serde_json::Value::is_object)
+            .ok_or(Error::Invalid)?;
+        let response = canonical::digest(&value)?;
+        Self::new(request, metadata, Some(response))
     }
 
-    /// Pair a detached final `stogas` bag with locally computed content hashes.
+    /// Pair a detached final `stogas` bag with content digests computed locally. A side
+    /// without a digest stays hidden.
     ///
     /// # Errors
     /// Rejects malformed or oversized metadata.
-    pub fn detached(request: [u8; 32], metadata: &[u8], response: [u8; 32]) -> Result<Self, Error> {
+    pub fn detached(
+        request: Option<ContentDigest>,
+        metadata: &[u8],
+        response: Option<ContentDigest>,
+    ) -> Result<Self, Error> {
         if metadata.len() > MAX_METADATA_BYTES {
             return Err(Error::Invalid);
         }
+        let metadata = crate::strict_json::from_slice(metadata).map_err(|_| Error::Invalid)?;
+        Self::new(request, metadata, response)
+    }
+
+    fn new(
+        request: Option<ContentDigest>,
+        metadata: serde_json::Value,
+        response: Option<ContentDigest>,
+    ) -> Result<Self, Error> {
+        if !metadata.is_object() {
+            return Err(Error::Invalid);
+        }
         Ok(Self {
-            metadata: crate::strict_json::from_slice(metadata).map_err(|_| Error::Invalid)?,
+            metadata,
             request,
             response,
         })
@@ -164,34 +248,49 @@ impl Signed {
         self.metadata.pointer("/receipt/boot_sha256")?.as_str()
     }
 
+    /// The bag as received, salts included, for writing a proof that reveals chosen sides.
+    #[must_use]
+    pub const fn metadata(&self) -> &serde_json::Value {
+        &self.metadata
+    }
+
     /// # Errors
     /// Rejects malformed receipts, changed content and incorrect signatures.
     pub fn verify(self, boot: &VerifiedBoot) -> Result<VerifiedMetadata, Error> {
-        let receipt = self.metadata.get("receipt").ok_or(Error::Invalid)?;
+        let mut metadata = self.metadata;
+        let object = metadata.as_object_mut().ok_or(Error::Invalid)?;
+        let salts: Salts = match object.remove("salts") {
+            Some(salts) => serde_json::from_value(salts).map_err(|_| Error::Invalid)?,
+            None => Salts::default(),
+        };
+        let receipt = object.get("receipt").ok_or(Error::Invalid)?;
         let receipt = Receipt::parse(&serde_json::to_vec(receipt).map_err(|_| Error::Invalid)?)?;
-        let receipt = receipt.verify(boot, &self.request, &self.response, &self.metadata)?;
-        Ok(VerifiedMetadata {
-            metadata: self.metadata,
-            receipt,
-        })
+        let receipt = receipt.verify(
+            boot,
+            self.request.as_ref(),
+            self.response.as_ref(),
+            &salts,
+            &metadata,
+        )?;
+        Ok(VerifiedMetadata { metadata, receipt })
     }
 }
 
-/// Verify the appended receipt without reserializing the provider response being hashed.
+/// Verify a buffered response and its appended bag against the request's digest.
 ///
 /// # Errors
 /// Rejects malformed/oversized responses and incorrect signatures or content.
 pub fn verify_buffered(
     boot: &VerifiedBoot,
-    request: &[u8; 32],
+    request: &ContentDigest,
     body: &[u8],
 ) -> Result<VerifiedMetadata, Error> {
-    Signed::buffered(*request, body)?.verify(boot)
+    Signed::buffered(Some(*request), body)?.verify(boot)
 }
 
-/// Streaming exact-content verification. The terminal delimiter is withheld until `finish`.
+/// Streaming verification. The terminal delimiter is withheld until `finish`.
 pub struct Stream {
-    request: [u8; 32],
+    request: ContentDigest,
     body: http::SseBody,
 }
 
@@ -217,14 +316,15 @@ impl StreamCompletion {
 }
 impl Stream {
     #[must_use]
-    pub fn new(request: [u8; 32]) -> Self {
+    pub fn new(request: ContentDigest) -> Self {
         Self {
             request,
             body: http::SseBody::new(),
         }
     }
     /// # Errors
-    /// Rejects malformed, repeated, misplaced or oversized stream metadata.
+    /// Rejects malformed, repeated, misplaced or oversized stream metadata, and events that
+    /// do not assemble to a response.
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
         self.body.push(bytes).map_err(|_| Error::Invalid)
     }
@@ -241,27 +341,45 @@ impl Stream {
     /// Rejects incomplete streams and malformed metadata.
     pub fn signed(self) -> Result<Signed, Error> {
         let (metadata, response) = self.body.finish().map_err(|_| Error::Invalid)?;
-        Signed::detached(self.request, &metadata, response)
+        Signed::detached(
+            Some(self.request),
+            &metadata,
+            Some(canonical::digest(&response)?),
+        )
     }
 }
 
-/// Verify a detached final `stogas` bag and locally computed content hashes.
+/// The response that a complete saved stream carries, as its receipt signs it, and the stream's
+/// `stogas` bag. Write the response out to share it as a proof.
+///
+/// # Errors
+/// Rejects incomplete or malformed streams.
+pub fn stream_response(sse: &[u8]) -> Result<(serde_json::Value, Vec<u8>), Error> {
+    let mut body = http::SseBody::new();
+    body.push(sse).map_err(|_| Error::Invalid)?;
+    let (metadata, response) = body.finish().map_err(|_| Error::Invalid)?;
+    Ok((response, metadata))
+}
+
+/// Verify a detached final `stogas` bag against content digests computed locally. A side
+/// without a digest stays hidden.
 ///
 /// # Errors
 /// Rejects malformed metadata, changed content and invalid signatures.
 pub fn verify_metadata(
     bytes: &[u8],
     boot: &VerifiedBoot,
-    request: &[u8; 32],
-    response: &[u8; 32],
+    request: Option<&ContentDigest>,
+    response: Option<&ContentDigest>,
 ) -> Result<VerifiedMetadata, Error> {
-    Signed::detached(*request, bytes, *response)?.verify(boot)
+    Signed::detached(request.copied(), bytes, response.copied())?.verify(boot)
 }
 
 pub(crate) fn metadata_digest(metadata: &serde_json::Value) -> Result<[u8; 32], Error> {
     use sha2::{Digest as _, Sha256};
     let mut object = metadata.as_object().ok_or(Error::Invalid)?.clone();
     object.remove("receipt");
+    object.remove("salts");
     let canonical = serde_json_canonicalizer::to_vec(&object).map_err(|_| Error::Invalid)?;
     if canonical.len() > MAX_METADATA_BYTES {
         return Err(Error::Invalid);
@@ -277,278 +395,15 @@ fn decode(value: &str) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
+/// Lowercase hex of exactly `N` bytes.
+pub(crate) fn decode_hex<const N: usize>(value: &str) -> Result<[u8; N], Error> {
+    if value.len() != 2 * N || value.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return Err(Error::Invalid);
+    }
+    let mut bytes = [0; N];
+    hex::decode_to_slice(value, &mut bytes).map_err(|_| Error::Invalid)?;
+    Ok(bytes)
+}
+
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use sha2::{Digest as _, Sha256};
-
-    #[test]
-    fn unsigned_sse_cannot_release_completion_before_transport_finishes() {
-        for terminal in [
-            b"data: [DONE]\n\n".as_slice(),
-            b"event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
-            b"event: response.incomplete\ndata: {\"type\":\"response.incomplete\"}\n\n",
-        ] {
-            let wire = [
-                b": STOGAS PROCESSING\n\ndata: hello\n\n".as_slice(),
-                terminal,
-            ]
-            .concat();
-            for split in 0..=wire.len() {
-                let mut guard = StreamCompletion::default();
-                let output = [
-                    guard.push(&wire[..split]).unwrap().concat(),
-                    guard.push(&wire[split..]).unwrap().concat(),
-                ]
-                .concat();
-                assert_eq!(output, wire[..wire.len() - 2]);
-                guard.finish().unwrap();
-            }
-            for end in 0..wire.len() {
-                let mut guard = StreamCompletion::default();
-                guard.push(&wire[..end]).unwrap();
-                assert!(guard.finish().is_err());
-            }
-            let mut guard = StreamCompletion::default();
-            guard.push(&wire).unwrap();
-            assert!(guard.push(b"extra").is_err());
-            assert!(guard.finish().is_err());
-        }
-    }
-
-    #[test]
-    fn released_events_do_not_keep_the_whole_read_allocated() {
-        // Each event that a server packs into one read is released on its own. Had each kept
-        // the read's buffer, one megabyte of tiny events would hold gigabytes.
-        let wire = [
-            b"data: a\n\n".repeat(10_000).as_slice(),
-            b"data: [DONE]\n\n",
-        ]
-        .concat();
-        let mut guard = StreamCompletion::default();
-        let events = guard.push(&wire).unwrap();
-        assert_eq!(events.concat(), wire[..wire.len() - 2]);
-        assert!(events.iter().map(Vec::capacity).sum::<usize>() <= 2 * wire.len());
-        guard.finish().unwrap();
-    }
-
-    #[test]
-    fn go_receipt_vector_binds_content_metadata_and_the_resolved_boot_key() {
-        let vector: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/content-receipt-v1.json"
-        ))
-        .unwrap();
-        let receipt = Receipt::parse(&serde_json::to_vec(&vector["receipt"]).unwrap()).unwrap();
-        let key = vector["public_key"].as_str().unwrap();
-        let metadata = metadata_digest(&vector["metadata"]).unwrap();
-        let boot: [u8; 32] = hex::decode(&receipt.boot_sha256)
-            .unwrap()
-            .try_into()
-            .unwrap();
-        let request: [u8; 32] =
-            Sha256::digest(vector["request"].as_str().unwrap().as_bytes()).into();
-        let response: [u8; 32] =
-            Sha256::digest(vector["response"].as_str().unwrap().as_bytes()).into();
-        receipt
-            .verify_key(key, &boot, &request, &response, &metadata)
-            .unwrap();
-        let mut bag = vector["metadata"].clone();
-        bag["receipt"] = vector["receipt"].clone();
-        assert_eq!(metadata_digest(&bag).unwrap(), metadata);
-        bag["provider"]["instance"] = serde_json::json!("substituted");
-        assert!(
-            receipt
-                .verify_key(
-                    key,
-                    &boot,
-                    &request,
-                    &response,
-                    &metadata_digest(&bag).unwrap()
-                )
-                .is_err()
-        );
-        assert!(matches!(
-            receipt.verify_key(key, &[0; 32], &request, &response, &metadata),
-            Err(Error::Identity)
-        ));
-        assert!(matches!(
-            receipt.verify_key(key, &boot, &response, &request, &metadata),
-            Err(Error::Content)
-        ));
-        assert!(
-            receipt
-                .verify_key(
-                    &URL_SAFE_NO_PAD.encode([4; 32]),
-                    &boot,
-                    &request,
-                    &response,
-                    &metadata
-                )
-                .is_err()
-        );
-        for field in [
-            "schema",
-            "boot_sha256",
-            "request_sha256",
-            "response_sha256",
-            "signature",
-        ] {
-            let mut changed = vector["receipt"].clone();
-            changed[field] = serde_json::json!("invalid");
-            let receipt = Receipt::parse(&serde_json::to_vec(&changed).unwrap()).unwrap();
-            assert!(
-                receipt
-                    .verify_key(key, &boot, &request, &response, &metadata)
-                    .is_err(),
-                "{field}"
-            );
-        }
-        let raw = serde_json::to_string(&vector["receipt"]).unwrap();
-        assert!(Receipt::parse(raw.replace('{', "{\"schema\":\"other\",").as_bytes()).is_err());
-        assert!(Receipt::parse(raw.replace('{', "{\"durability\":true,").as_bytes()).is_err());
-        assert!(Receipt::parse(&[b' '; MAX_BYTES + 1]).is_err());
-    }
-}
-
-#[cfg(all(test, feature = "staging"))]
-mod http_tests {
-    use super::*;
-    use crate::signing::SigningKey;
-    use serde_json::{Value, json};
-    use sha2::{Digest as _, Sha256};
-
-    fn peer() -> crate::evidence::VerifiedSession {
-        let fixture: Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/hardware-session-v1.json"
-        ))
-        .unwrap();
-        let mut verifier = crate::evidence::Verifier::new(
-            crate::authority::Environment::Staging,
-            serde_json::from_value(fixture["root"].clone()).unwrap(),
-        )
-        .unwrap();
-        let now = fixture["verified_at_ms"].as_i64().unwrap();
-        let snapshot = verifier
-            .refresh(&serde_json::to_vec(&fixture["evidence"]).unwrap(), now)
-            .unwrap();
-        snapshot
-            .verify_native_certificate(
-                &URL_SAFE_NO_PAD
-                    .decode(fixture["certificate"].as_str().unwrap())
-                    .unwrap(),
-                hex::decode(fixture["challenge"].as_str().unwrap())
-                    .unwrap()
-                    .try_into()
-                    .unwrap(),
-                now,
-            )
-            .unwrap()
-    }
-    fn metadata(boot: &VerifiedBoot, request: [u8; 32], response: &[u8]) -> Value {
-        let response: [u8; 32] = Sha256::digest(response).into();
-        let digest = metadata_digest(&json!({"billed_cost_usd":"0.01"})).unwrap();
-        let message = [SCHEMA.as_bytes(), b"\0", &request, &response, &digest].concat();
-        // Public deterministic key used only by the isolated diagnostic fixture.
-        let key = SigningKey::from_seeds(&[[42; 32]; 2]);
-        assert_eq!(
-            URL_SAFE_NO_PAD.encode(key.public_key()),
-            boot.record().report_data.signing_public_key
-        );
-        json!({"receipt": {
-            "schema":SCHEMA, "boot_sha256":hex::encode(boot.document_sha256()),
-            "request_sha256":hex::encode(request), "response_sha256":hex::encode(response),
-            "signature":URL_SAFE_NO_PAD.encode(key.sign(&message).unwrap())
-        }, "billed_cost_usd":"0.01"})
-    }
-    #[test]
-    fn buffered_metadata_verifies_content_and_metadata_under_the_original_hardware_key() {
-        let peer = peer();
-        let request = Sha256::digest(b"request").into();
-        let content = br#"{"choices":[],"usage":{"output_tokens":2}}"#;
-        let mut bag = metadata(peer.boot(), request, content);
-        let encode = |bag: &Value| {
-            [
-                &content[..content.len() - 1],
-                b",\"stogas\":",
-                &serde_json::to_vec(bag).unwrap(),
-                b"}",
-            ]
-            .concat()
-        };
-        let result = verify_buffered(peer.boot(), &request, &encode(&bag)).unwrap();
-        assert_eq!(result.receipt.node_id, peer.boot().hardware().node_id());
-        bag["billed_cost_usd"] = json!("0.02");
-        assert!(verify_buffered(peer.boot(), &request, &encode(&bag)).is_err());
-        bag["billed_cost_usd"] = json!("0.01");
-        let changed = String::from_utf8(encode(&bag))
-            .unwrap()
-            .replace("output_tokens\":2", "output_tokens\":3");
-        assert!(verify_buffered(peer.boot(), &request, changed.as_bytes()).is_err());
-        bag["receipt"]["boot_sha256"] = json!("00".repeat(32));
-        assert!(verify_buffered(peer.boot(), &request, &encode(&bag)).is_err());
-        assert!(verify_buffered(peer.boot(), &request, b"{}").is_err());
-    }
-    #[test]
-    fn sse_receipts_cover_terminal_content_and_exclude_only_complete_keepalives() {
-        let peer = peer();
-        let request = Sha256::digest(b"request").into();
-        let event = b"data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n";
-        let keepalive = b": STOGAS PROCESSING\n\n";
-        for terminal in [
-            b"data: [DONE]\n\n".as_slice(),
-            b"event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
-            b"event: response.incomplete\ndata: {\"type\":\"response.incomplete\"}\n\n",
-        ] {
-            let bag = metadata(peer.boot(), request, &[event.as_slice(), terminal].concat());
-            let comment = [
-                b": stogas ".as_slice(),
-                &serde_json::to_vec(&bag).unwrap(),
-                b"\n\n",
-            ]
-            .concat();
-            let wire = [keepalive.as_slice(), event, keepalive, &comment, terminal].concat();
-            let response = Sha256::digest([event.as_slice(), terminal].concat());
-            let metadata_bytes = serde_json::to_vec(&bag).unwrap();
-            for split in 0..=wire.len() {
-                let mut stream = Stream::new(request);
-                let mut returned = stream.push(&wire[..split]).unwrap().concat();
-                returned.extend(stream.push(&wire[split..]).unwrap().concat());
-                assert_eq!(returned, wire[..wire.len() - 2]);
-                // Every split must produce the same signed bytes. Repeating signature
-                // verification for each byte boundary adds no cryptographic coverage.
-                let (actual_metadata, actual_response) = stream.body.finish().unwrap();
-                assert_eq!(actual_metadata, metadata_bytes);
-                assert_eq!(actual_response.as_slice(), &response[..]);
-            }
-            let mut stream = Stream::new(request);
-            stream.push(&wire).unwrap();
-            stream.finish(peer.boot()).unwrap();
-            for injected in [
-                b": STOGAS PROCESSING\ndata: injected\n\n".as_slice(),
-                b": unrelated\ndata: injected\n\n",
-            ] {
-                let mut stream = Stream::new(request);
-                stream
-                    .push(&[injected, event, &comment, terminal].concat())
-                    .unwrap();
-                assert!(stream.finish(peer.boot()).is_err());
-            }
-            for length in 0..wire.len() {
-                let mut stream = Stream::new(request);
-                if stream.push(&wire[..length]).is_ok() {
-                    assert!(stream.finish(peer.boot()).is_err());
-                }
-            }
-            for bad in [
-                [&wire[..], b"trailing"].concat(),
-                [event.as_slice(), &comment, &comment, terminal].concat(),
-                [event.as_slice(), &comment, event, terminal].concat(),
-            ] {
-                let mut stream = Stream::new(request);
-                assert!(stream.push(&bad).is_err());
-                assert!(stream.push(terminal).is_err());
-                assert!(stream.finish(peer.boot()).is_err());
-            }
-        }
-    }
-}
+mod tests;

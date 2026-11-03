@@ -5,6 +5,7 @@ import {
 	sendSessionRequest
 } from './channel-http.js';
 import { SETUP_TIMEOUT_MS, deadlineSignal, waitWithSignal } from './evidence-client.js';
+import { wantsReceipt } from './receipt-response.js';
 
 // The gateway's refusal is a fixed error object of about 100 bytes.
 const MAX_REFUSAL_BYTES = 1024;
@@ -84,10 +85,7 @@ export class SessionTransport {
 	async #acquire(request) {
 		let selected;
 		try {
-			selected = await this.#select(
-				request.signal,
-				request.headers.get('Stogas-Metadata') === 'v1'
-			);
+			selected = await this.#select(request.signal, wantsReceipt(request.headers));
 		} catch (error) {
 			throw new TransportError('Encrypted setup failed', 'not_sent', error);
 		}

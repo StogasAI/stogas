@@ -3,15 +3,21 @@
 from ._stogas import (
     EvidenceSnapshot,
     EvidenceVerifier,
+    StreamContent,
     Transport,
     VerificationError,
     VerifiedBoot,
+    request_digest,
+    response_digest,
 )
 
 __all__ = [
     "EvidenceSnapshot",
     "EvidenceVerifier",
+    "StreamContent",
     "Transport",
     "VerificationError",
     "VerifiedBoot",
+    "request_digest",
+    "response_digest",
 ]

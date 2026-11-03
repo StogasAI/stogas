@@ -1,5 +1,5 @@
 import { abortableReader, TransportError, notifyRequestProgress } from './http.js';
-import { verifyReceiptResponse } from './receipt-response.js';
+import { verifyReceiptResponse, wantsReceipt } from './receipt-response.js';
 
 // HTTP owns delivery; the Rust core owns verification, record keys and counters.
 export const SESSION_CONTENT_TYPE = 'application/vnd.stogas.session';
@@ -186,7 +186,7 @@ export async function sendSessionRequest({
 		notifyRequestProgress(onProgress, 'encrypting');
 		const body = await encodeRequest(exchange, request, signal);
 		signal?.throwIfAborted();
-		if (request.headers.get('Stogas-Metadata') === 'v1') receipt = exchange.response_receipt();
+		if (wantsReceipt(request.headers)) receipt = exchange.response_receipt();
 		// Create before decoding: a Wasm push callback cannot re-enter its exchange.
 		completion = exchange.response_completion();
 		notifyRequestProgress(onProgress, 'sending');

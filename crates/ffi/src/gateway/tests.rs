@@ -109,8 +109,8 @@ fn boot_requests_and_receipts_sign_under_the_logged_boot_key() {
         let status = stogas_node_sign_receipt(
             boot.keys,
             boot.sha256.as_ptr(),
-            [5; 32].as_ptr(),
-            [6; 32].as_ptr(),
+            [5; 64].as_ptr(),
+            [6; 64].as_ptr(),
             metadata.as_ptr(),
             metadata.len(),
             &raw mut receipt,
@@ -126,8 +126,11 @@ fn boot_requests_and_receipts_sign_under_the_logged_boot_key() {
     .concat();
     let public = boot.public("signing_public_key");
     assert!(signing::verify(&public, &message, &signature).is_ok());
-    let receipt: serde_json::Value = serde_json::from_slice(&take(receipt)).unwrap();
-    assert_eq!(receipt["boot_sha256"], hex::encode(boot.sha256));
+    let signed: serde_json::Value = serde_json::from_slice(&take(receipt)).unwrap();
+    assert_eq!(signed["receipt"]["boot_sha256"], hex::encode(boot.sha256));
+    for side in ["request", "response"] {
+        assert_eq!(signed["salts"][side].as_str().unwrap().len(), 64, "{side}");
+    }
 }
 
 #[test]

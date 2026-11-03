@@ -12,11 +12,11 @@ void stogas_evidence_free(StogasEvidence *handle);
 char *stogas_evidence_refresh(const StogasEvidence *handle, const uint8_t *evidence, size_t evidence_len, int64_t now_unix_ms, StogasEvidenceSnapshot **output);
 void stogas_evidence_snapshot_free(StogasEvidenceSnapshot *handle);
 char *stogas_evidence_verify_logged_boot(const StogasEvidenceSnapshot *handle, const uint8_t *document, size_t document_len, const uint8_t *inclusion, size_t inclusion_len, int64_t now_unix_ms);
-char *stogas_evidence_verify_receipt(const StogasEvidenceSnapshot *handle, const uint8_t *document, size_t document_len, const uint8_t *inclusion, size_t inclusion_len, const uint8_t *receipt, size_t receipt_len, const uint8_t *request_hash, size_t request_hash_len, const uint8_t *response_hash, size_t response_hash_len, int64_t now_unix_ms);
+char *stogas_evidence_verify_receipt(const StogasEvidenceSnapshot *handle, const uint8_t *document, size_t document_len, const uint8_t *inclusion, size_t inclusion_len, const uint8_t *receipt, size_t receipt_len, const uint8_t *request_digest, size_t request_digest_len, const uint8_t *response_digest, size_t response_digest_len, int64_t now_unix_ms);
 
 char *stogas_evidence_verify_archive(const StogasEvidence *handle, const uint8_t *evidence, size_t evidence_len, int64_t now_unix_ms);
 char *stogas_evidence_verify_boot_archive(const StogasEvidence *handle, const uint8_t *archive, size_t archive_len, const uint8_t *evidence, size_t evidence_len, int64_t now_unix_ms);
-char *stogas_evidence_verify_receipt_archive(const StogasEvidence *handle, const uint8_t *archive, size_t archive_len, const uint8_t *evidence, size_t evidence_len, const uint8_t *receipt, size_t receipt_len, const uint8_t *request_hash, size_t request_hash_len, const uint8_t *response_hash, size_t response_hash_len, int64_t now_unix_ms);
+char *stogas_evidence_verify_receipt_archive(const StogasEvidence *handle, const uint8_t *archive, size_t archive_len, const uint8_t *evidence, size_t evidence_len, const uint8_t *receipt, size_t receipt_len, const uint8_t *request_digest, size_t request_digest_len, const uint8_t *response_digest, size_t response_digest_len, int64_t now_unix_ms);
 */
 import "C"
 
@@ -137,20 +137,23 @@ func (e *Evidence) VerifyBootArchive(archive, evidence []byte) (BootIdentity, er
 	return identity, err
 }
 
-// VerifyReceiptArchive verifies exact content using the archived boot at its log time.
-// This does not establish when inference occurred or grant current serving permission.
-func (e *Evidence) VerifyReceiptArchive(archive, evidence, receipt []byte, requestHash, responseHash [32]byte) (VerifiedReceipt, error) {
+// VerifyReceiptArchive verifies a receipt using the archived boot at its log time. A nil
+// digest leaves that side unchecked. This does not establish when inference occurred or
+// grant current serving permission.
+func (e *Evidence) VerifyReceiptArchive(archive, evidence, receipt []byte, request, response *ContentDigest) (VerifiedReceipt, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	var verified VerifiedReceipt
 	if e.handle == nil {
 		return verified, ErrClosed
 	}
-	response := C.stogas_evidence_verify_receipt_archive(e.handle,
+	result := C.stogas_evidence_verify_receipt_archive(e.handle,
 		bytePointer(archive), C.size_t(len(archive)), bytePointer(evidence), C.size_t(len(evidence)),
-		bytePointer(receipt), C.size_t(len(receipt)), bytePointer(requestHash[:]), 32, bytePointer(responseHash[:]), 32,
+		bytePointer(receipt), C.size_t(len(receipt)),
+		bytePointer(digestBytes(request)), C.size_t(len(digestBytes(request))),
+		bytePointer(digestBytes(response)), C.size_t(len(digestBytes(response))),
 		C.int64_t(time.Now().UnixMilli()))
-	err := decodeResponse(response, &verified)
+	err := decodeResponse(result, &verified)
 	return verified, err
 }
 
@@ -187,26 +190,29 @@ func (s *EvidenceSnapshot) loggedBootAt(document, inclusion []byte, now int64) (
 	return identity, err
 }
 
-// VerifyReceipt authenticates the complete final stogas JSON bag against locally computed
-// hashes and the logged boot. Its single signature covers content and canonical metadata.
-func (s *EvidenceSnapshot) VerifyReceipt(document, inclusion, receipt []byte, requestHash, responseHash [32]byte) (VerifiedReceipt, error) {
-	return s.VerifyReceiptAt(document, inclusion, receipt, requestHash, responseHash, time.Now())
+// VerifyReceipt authenticates the complete final stogas bag, salts included, against content
+// digests from RequestDigest, ResponseDigest or a StreamContent, and the logged boot. A nil
+// digest leaves that side unchecked, so a receipt shared with one salt proves only that side.
+func (s *EvidenceSnapshot) VerifyReceipt(document, inclusion, receipt []byte, request, response *ContentDigest) (VerifiedReceipt, error) {
+	return s.VerifyReceiptAt(document, inclusion, receipt, request, response, time.Now())
 }
 
 // VerifyReceiptAt appraises the boot at a caller-owned clock. It does not establish
 // when inference occurred; never substitute a timestamp supplied by the peer.
-func (s *EvidenceSnapshot) VerifyReceiptAt(document, inclusion, receipt []byte, requestHash, responseHash [32]byte, now time.Time) (VerifiedReceipt, error) {
+func (s *EvidenceSnapshot) VerifyReceiptAt(document, inclusion, receipt []byte, request, response *ContentDigest, now time.Time) (VerifiedReceipt, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var verified VerifiedReceipt
 	if s.handle == nil {
 		return verified, ErrClosed
 	}
-	response := C.stogas_evidence_verify_receipt(s.handle,
+	result := C.stogas_evidence_verify_receipt(s.handle,
 		bytePointer(document), C.size_t(len(document)), bytePointer(inclusion), C.size_t(len(inclusion)),
-		bytePointer(receipt), C.size_t(len(receipt)), bytePointer(requestHash[:]), 32, bytePointer(responseHash[:]), 32,
+		bytePointer(receipt), C.size_t(len(receipt)),
+		bytePointer(digestBytes(request)), C.size_t(len(digestBytes(request))),
+		bytePointer(digestBytes(response)), C.size_t(len(digestBytes(response))),
 		C.int64_t(now.UnixMilli()))
-	err := decodeResponse(response, &verified)
+	err := decodeResponse(result, &verified)
 	return verified, err
 }
 
