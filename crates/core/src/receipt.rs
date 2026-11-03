@@ -1,7 +1,7 @@
 //! One signature over salted content commitments and the canonical Stogas metadata bag.
 //!
 //! The gateway signs `stogas.receipt.v2`, a zero byte, the request commitment, the response
-//! commitment and the SHA-256 of the RFC 8785 metadata bag without `receipt` and `salts`. Each
+//! commitment and the SHA-512 of the RFC 8785 metadata bag without `receipt` and `salts`. Each
 //! commitment hides its side's content digest under a salt that only the client receives (see
 //! [`canonical`]), so a receipt proves either side without revealing the other.
 
@@ -132,7 +132,7 @@ impl Receipt {
         public_key: &str,
         boot: &[u8; 32],
         sides: [(Option<&ContentDigest>, &Option<String>); 2],
-        metadata: &[u8; 32],
+        metadata: &[u8; 64],
     ) -> Result<(), Error> {
         if self.schema != SCHEMA {
             return Err(Error::Invalid);
@@ -170,7 +170,7 @@ impl Receipt {
     }
 }
 
-pub(crate) fn message(request: &Commitment, response: &Commitment, metadata: &[u8; 32]) -> Vec<u8> {
+pub(crate) fn message(request: &Commitment, response: &Commitment, metadata: &[u8; 64]) -> Vec<u8> {
     [SCHEMA.as_bytes(), b"\0", request, response, metadata].concat()
 }
 
@@ -375,8 +375,10 @@ pub fn verify_metadata(
     Signed::detached(request.copied(), bytes, response.copied())?.verify(boot)
 }
 
-pub(crate) fn metadata_digest(metadata: &serde_json::Value) -> Result<[u8; 32], Error> {
-    use sha2::{Digest as _, Sha256};
+/// SHA-512 of the RFC 8785 bag without its receipt and salts. Part of the bag, such as the policy
+/// hashes, comes from what customers wrote, so its hash resists collisions at ML-DSA-65's level.
+pub(crate) fn metadata_digest(metadata: &serde_json::Value) -> Result<[u8; 64], Error> {
+    use sha2::{Digest as _, Sha512};
     let mut object = metadata.as_object().ok_or(Error::Invalid)?.clone();
     object.remove("receipt");
     object.remove("salts");
@@ -384,7 +386,7 @@ pub(crate) fn metadata_digest(metadata: &serde_json::Value) -> Result<[u8; 32], 
     if canonical.len() > MAX_METADATA_BYTES {
         return Err(Error::Invalid);
     }
-    Ok(Sha256::digest(canonical).into())
+    Ok(Sha512::digest(canonical).into())
 }
 
 fn decode(value: &str) -> Result<Vec<u8>, Error> {

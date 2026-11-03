@@ -58,7 +58,7 @@ struct Sample {
     request: ContentDigest,
     response: ContentDigest,
     salts: Salts,
-    metadata: [u8; 32],
+    metadata: [u8; 64],
     vector: Value,
 }
 
@@ -159,7 +159,7 @@ fn the_receipt_sample_proves_each_side_under_its_own_salt() {
 fn the_receipt_sample_binds_its_metadata_boot_and_key() {
     let sample = sample();
     let (request, response) = (Some(&sample.request), Some(&sample.response));
-    let check = |receipt: &Receipt, key: &str, boot: &[u8; 32], metadata: &[u8; 32]| {
+    let check = |receipt: &Receipt, key: &str, boot: &[u8; 32], metadata: &[u8; 64]| {
         receipt.verify_key(
             key,
             boot,
