@@ -36,7 +36,7 @@ Use the printed URL as your client's base URL and keep it private. The transport
 Other commands:
 
 ```console
-stogas signup                        # create an account and save its access token in the keychain
+stogas register                      # create an account and save its access token in the keychain
 stogas topup 20 BTC                  # add credit with a cryptocurrency payment
 stogas api GET /api/account          # send a dashboard API request with the saved access token
 stogas probe --security tls          # check a fresh verified connection without an API key
