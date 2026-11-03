@@ -134,6 +134,39 @@ impl Dashboard {
         extra: HeaderMap,
         body: Option<&Value>,
     ) -> Result<Reply> {
+        let body = body
+            .map(|body| anyhow::Ok(("application/json", serde_json::to_vec(body)?)))
+            .transpose()?;
+        self.request(method, path, extra, body).await
+    }
+
+    /// Posts `fields` as an HTML form, as OAuth's endpoints take them (RFC 6749), and returns the
+    /// response whatever its status.
+    pub async fn post_form(&self, path: &str, fields: &[(&str, &str)]) -> Result<Reply> {
+        let body = url::form_urlencoded::Serializer::new(String::new())
+            .extend_pairs(fields)
+            .finish();
+        self.request(
+            Method::POST,
+            path,
+            HeaderMap::new(),
+            Some(("application/x-www-form-urlencoded", body.into_bytes())),
+        )
+        .await
+    }
+
+    /// The dashboard's origin, which serves its pages too.
+    pub const fn origin(&self) -> &Url {
+        &self.origin
+    }
+
+    async fn request(
+        &self,
+        method: Method,
+        path: &str,
+        extra: HeaderMap,
+        body: Option<(&'static str, Vec<u8>)>,
+    ) -> Result<Reply> {
         let url = self.url(path)?;
         let mut headers = HeaderMap::new();
         headers.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
@@ -158,12 +191,9 @@ impl Dashboard {
             headers.insert(header::AUTHORIZATION, value);
         }
         let body = match body {
-            Some(body) => {
-                headers.insert(
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_static("application/json"),
-                );
-                https::full(serde_json::to_vec(body)?)
+            Some((content_type, body)) => {
+                headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+                https::full(body)
             }
             None => https::empty(),
         };
