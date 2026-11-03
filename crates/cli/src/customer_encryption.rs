@@ -88,6 +88,14 @@ pub fn generate(output: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The plugin whose settings a purpose encrypts. Each opens only under its own purpose, so that
+/// its ciphertext cannot be moved to another plugin.
+fn plugin(purpose: &str) -> Option<&str> {
+    purpose
+        .strip_prefix("plugins/")
+        .filter(|name| matches!(*name, "export" | "redaction"))
+}
+
 fn seal(
     root: &[u8],
     organization: &str,
@@ -96,8 +104,9 @@ fn seal(
     salt: &[u8; 32],
     nonce: [u8; 12],
 ) -> Result<serde_json::Value> {
+    let plugin = plugin(purpose);
     let maximum = match purpose {
-        "plugins" => 262_144,
+        _ if plugin.is_some() => 262_144,
         "byok/openai" | "byok/anthropic" | "byok/chutes" | "byok/aws" | "byok/azure"
         | "byok/google-cloud" => 4096,
         _ => bail!("Unsupported encryption purpose"),
@@ -110,11 +119,23 @@ fn seal(
     {
         bail!("Invalid encryption input or size");
     }
-    if purpose == "plugins" {
+    if let Some(plugin) = plugin {
         let value: serde_json::Value = serde_json::from_slice(plaintext)
-            .map_err(|_| anyhow::anyhow!("Plugins must contain JSON"))?;
-        if !value.is_object() {
-            bail!("Plugins must contain a JSON object");
+            .map_err(|_| anyhow::anyhow!("Plugin settings must contain JSON"))?;
+        let Some(settings) = value.as_object() else {
+            bail!("Plugin settings must contain a JSON object");
+        };
+        if settings.contains_key("encrypted") {
+            bail!("The file is already encrypted");
+        }
+        // A plugins section would open as settings that the plugin does not have.
+        if ["export", "redaction", "textExtraction"]
+            .iter()
+            .any(|name| settings.contains_key(*name))
+        {
+            bail!(
+                "Put only the settings inside plugins.{plugin} in the file, without the plugins section around them"
+            );
         }
     } else if plaintext.iter().any(|b| !(0x21..=0x7e).contains(b)) {
         bail!("Provider credentials must contain printable ASCII without whitespace");
@@ -156,7 +177,7 @@ pub fn encrypt(
     // A document can be larger than the credential that it becomes: Google's key file, and a
     // file that Windows PowerShell saved in UTF-16.
     let maximum = match purpose {
-        "plugins" => 262_144,
+        _ if plugin(purpose).is_some() => 262_144,
         "byok/aws" | "byok/azure" | "byok/google-cloud" => 16_384,
         _ => 4096,
     };
@@ -165,9 +186,11 @@ pub fn encrypt(
     let mut nonce = [0_u8; 12];
     getrandom::fill(&mut salt)?;
     getrandom::fill(&mut nonce)?;
-    if purpose == "plugins" {
+    if plugin(purpose).is_some() {
+        // What replaces the plugin's settings in the policy.
         let envelope = seal(&root, organization, purpose, &input, &salt, nonce)?;
-        return write_new(output, &serde_json::to_vec_pretty(&envelope)?);
+        let value = serde_json::json!({ "encrypted": envelope });
+        return write_new(output, &serde_json::to_vec_pretty(&value)?);
     }
     // A credential prints what the dashboard registers: the envelope, a preview except for Azure,
     // and for AWS and Google Cloud the target that routing reads instead of the secret.
@@ -214,17 +237,33 @@ mod tests {
             .unwrap();
         let plaintext = vector["plaintext"].as_str().unwrap().as_bytes();
         let organization = vector["organizationId"].as_str().unwrap();
+        let purpose = vector["purpose"].as_str().unwrap();
+        assert_eq!(purpose, "plugins/redaction");
         assert_eq!(
-            &seal(&root, organization, "plugins", plaintext, &salt, nonce).unwrap(),
+            &seal(&root, organization, purpose, plaintext, &salt, nonce).unwrap(),
             expected
         );
-        assert_ne!(
-            seal(&root, "other-org", "plugins", plaintext, &salt, nonce).unwrap()["blob"],
-            expected["blob"]
-        );
+        // Another organization or plugin gets other ciphertext.
+        for (organization, purpose) in [("other-org", purpose), (organization, "plugins/export")] {
+            assert_ne!(
+                seal(&root, organization, purpose, plaintext, &salt, nonce).unwrap()["blob"],
+                expected["blob"]
+            );
+        }
         for (purpose, body) in [
             ("unknown", b"secret".as_slice()),
-            ("plugins", b"[]"),
+            ("plugins", br#"{"redaction":{}}"#),
+            ("plugins/textExtraction", b"{}"),
+            ("plugins/redaction", b"[]"),
+            (
+                "plugins/redaction",
+                br#"{"redaction":{"email_address":true}}"#,
+            ),
+            (
+                "plugins/export",
+                br#"{"textExtraction":true,"export":{"destinations":[]}}"#,
+            ),
+            ("plugins/export", br#"{"encrypted":{"version":1}}"#),
             ("byok/openai", b"secret\n"),
             ("byok/openai", b""),
         ] {
