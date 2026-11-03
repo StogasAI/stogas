@@ -3,9 +3,11 @@
 
 import argparse
 import base64
+import contextlib
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import struct
 import subprocess
@@ -22,6 +24,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 from artifacts import digest, source_digest, unpack
+import channels
 
 
 def run(arguments, stderr=subprocess.STDOUT, **kwargs):
@@ -339,6 +342,213 @@ def go(packages, version, source):
         compare()
 
 
+# GitHub publishes its host keys at https://api.github.com/meta, and the AUR lists its keys'
+# fingerprints on https://aur.archlinux.org; this one's is SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4.
+GITHUB_HOST_KEY = "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+AUR_HOST_KEY = "aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN"
+TAP = "git@github.com:StogasAI/homebrew-tap.git"
+AUR = "ssh://aur@aur.archlinux.org/stogas-bin.git"
+RELEASE_AUTHOR = {"GIT_AUTHOR_NAME": "Stogas Release", "GIT_COMMITTER_NAME": "Stogas Release", "GIT_AUTHOR_EMAIL": "release@stogas.ai", "GIT_COMMITTER_EMAIL": "release@stogas.ai"}
+
+
+def releases():
+    """Every GitHub release of the SDK, drafts included; channels.offered leaves those out."""
+    pages = json.loads(run(["gh", "api", "--paginate", "--slurp", "repos/StogasAI/stogas/releases?per_page=100"], stderr=subprocess.DEVNULL))
+    return [release for page in pages for release in page]
+
+
+def offered_now(version, channel):
+    """Package managers follow the newest full release, or the newest preview before the first, so
+    a rerun for an older release leaves them alone."""
+    newest = channels.offered(releases())
+    if newest != version:
+        print(f"{channel}: keeps offering {newest} rather than {version}")
+        return False
+    return True
+
+
+@contextlib.contextmanager
+def checkout(remote, branch, key_variable, host_key):
+    """`branch` of `remote`, or a new branch when the repository has none, such as a new AUR
+    package's. Git pushes with the SSH key in `key_variable` and trusts only `host_key`; without
+    the variable, it uses the ambient credentials, for a manual run."""
+    with tempfile.TemporaryDirectory(prefix="stogas-channel-") as temporary:
+        work = Path(temporary)
+        environment = {**os.environ, **RELEASE_AUTHOR}
+        if os.environ.get(key_variable):
+            key = work / "key"
+            key.write_text(os.environ[key_variable].strip() + "\n")
+            key.chmod(0o600)
+            known = work / "known_hosts"
+            known.write_text(host_key + "\n")
+            environment["GIT_SSH_COMMAND"] = shlex.join([
+                "ssh", "-F", "/dev/null", "-i", str(key), "-o", "IdentitiesOnly=yes",
+                "-o", f"UserKnownHostsFile={known}", "-o", "StrictHostKeyChecking=yes",
+                "-o", "HostKeyAlgorithms=ssh-ed25519",
+            ])
+        repo = work / "repo"
+        run(["git", "clone", "--quiet", "--no-checkout", remote, str(repo)], env=environment)
+        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], cwd=repo, stdout=subprocess.DEVNULL).returncode == 0:
+            run(["git", "checkout", "--quiet", "-B", branch, f"refs/remotes/origin/{branch}"], cwd=repo)
+        else:
+            run(["git", "symbolic-ref", "HEAD", f"refs/heads/{branch}"], cwd=repo)
+        yield repo, environment
+
+
+def commit_files(repo, environment, branch, files, message):
+    """Commit `files` unless the branch already holds them, push, and read them back from the
+    remote. Returns whether anything changed."""
+    def held(reference):
+        found = {}
+        for path in files:
+            result = subprocess.run(["git", "show", f"{reference}:{path}"], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            found[path] = result.stdout.decode() if result.returncode == 0 else None
+        return found
+    if held("HEAD") == files:
+        return False
+    for path, content in files.items():
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text(content)
+    run(["git", "add", "--", *files], cwd=repo)
+    run(["git", "commit", "--quiet", "-m", message], cwd=repo, env=environment)
+    run(["git", "push", "--quiet", "origin", f"HEAD:refs/heads/{branch}"], cwd=repo, env=environment)
+    run(["git", "fetch", "--quiet", "origin", f"+refs/heads/{branch}:refs/remotes/published"], cwd=repo, env=environment)
+    if held("refs/remotes/published") != files:
+        raise ValueError(f"{branch} of the channel repository differs from what was pushed")
+    return True
+
+
+def tap(packages, version, remote=TAP):
+    """The Homebrew formula and the Scoop manifest, in StogasAI/homebrew-tap, which this workflow
+    reaches with that repository's deploy key."""
+    if not os.environ.get("TAP_DEPLOY_KEY") and remote == TAP:
+        print("::warning::TAP_DEPLOY_KEY is not set, so Homebrew and Scoop wait for the tap's deploy key")
+        return
+    if not offered_now(version, "Homebrew and Scoop"):
+        return
+    manifest = json.loads((packages / "release-manifest.json").read_text())
+    files = {"Formula/stogas.rb": channels.formula(manifest), "bucket/stogas.json": channels.scoop(manifest)}
+    with checkout(remote, "main", "TAP_DEPLOY_KEY", GITHUB_HOST_KEY) as (repo, environment):
+        changed = commit_files(repo, environment, "main", files, f"Install stogas {version}")
+    print(f"Homebrew and Scoop: {'now offer' if changed else 'already offer'} {version}")
+
+
+def aur(packages, version, remote=AUR):
+    """The stogas-bin package in the Arch User Repository, which the owner's account maintains."""
+    if not os.environ.get("AUR_SSH_KEY") and remote == AUR:
+        print("::warning::AUR_SSH_KEY is not set, so the AUR package waits for the owner's account")
+        return
+    if not offered_now(version, "AUR"):
+        return
+    manifest = json.loads((packages / "release-manifest.json").read_text())
+    with checkout(remote, "master", "AUR_SSH_KEY", AUR_HOST_KEY) as (repo, environment):
+        current = (repo / ".SRCINFO").read_text() if (repo / ".SRCINFO").is_file() else None
+        release = channels.pkgrel(current, manifest)
+        files = {"PKGBUILD": channels.pkgbuild(manifest, release), ".SRCINFO": channels.srcinfo(manifest, release)}
+        changed = commit_files(repo, environment, "master", files, f"Install stogas {version}")
+    print(f"AUR: stogas-bin {'now offers' if changed else 'already offers'} {version}")
+
+
+class Registry:
+    """The OCI distribution API of one repository, with a bearer token for `scope`."""
+    def __init__(self, image, scope, password=None):
+        host, self.name = image.split("/", 1)
+        self.base = f"https://{host}/v2/{self.name}"
+        query = urllib.parse.urlencode({"service": host, "scope": f"repository:{self.name}:{scope}"})
+        headers = {"User-Agent": "stogas-sdk-release/1 (https://github.com/StogasAI/stogas)"}
+        if password is not None:
+            user = os.environ.get("GITHUB_ACTOR", "x-access-token")
+            headers["Authorization"] = "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
+        request = urllib.request.Request(f"https://{host}/token?{query}", headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                self.token = json.loads(response.read())["token"]
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise PermissionError(f"The registry refused a token (HTTP {error.code})") from None
+
+    def request(self, method, path, data=None, headers=None, missing_ok=False):
+        url = path if path.startswith("https://") else self.base + path
+        request = urllib.request.Request(url, data=data, method=method, headers={
+            "Authorization": f"Bearer {self.token}",
+            "User-Agent": "stogas-sdk-release/1 (https://github.com/StogasAI/stogas)",
+            **(headers or {}),
+        })
+        try:
+            with urllib.request.urlopen(request, timeout=300) as response:
+                return response.status, dict(response.headers), response.read()
+        except urllib.error.HTTPError as error:
+            error.close()
+            if missing_ok and error.code == 404:
+                return 404, dict(error.headers), b""
+            raise RuntimeError(f"Registry {method} failed (HTTP {error.code})") from None
+
+    def put_blob(self, blob_digest, data):
+        if self.request("HEAD", f"/blobs/{blob_digest}", missing_ok=True)[0] == 200:
+            return
+        _, headers, _ = self.request("POST", "/blobs/uploads/", data=b"")
+        location = urllib.parse.urljoin(self.base, headers["Location"])
+        separator = "&" if "?" in location else "?"
+        self.request("PUT", f"{location}{separator}digest={urllib.parse.quote(blob_digest)}", data=data, headers={"Content-Type": "application/octet-stream"})
+
+    def put_manifest(self, reference, data, media_type):
+        self.request("PUT", f"/manifests/{reference}", data=data, headers={"Content-Type": media_type})
+
+    def manifest(self, reference, media_type):
+        status, _, data = self.request("GET", f"/manifests/{reference}", headers={"Accept": media_type}, missing_ok=True)
+        return data if status == 200 else None
+
+
+def container(packages, version, image=channels.IMAGE, output=None):
+    """A multi-platform image of the static musl CLI in GitHub's container registry, tagged with the
+    version, and `latest` while it is the newest full release. Writes `digest=` for its build proof."""
+    manifest = json.loads((packages / "release-manifest.json").read_text())
+    binaries = {}
+    with tempfile.TemporaryDirectory(prefix="stogas-image-") as temporary:
+        for architecture in ("amd64", "arm64"):
+            name = f"stogas-v{version}-linux-musl-{architecture}"
+            unpack(packages / f"{name}.tar.gz", Path(temporary) / architecture)
+            binaries[architecture] = (Path(temporary) / architecture / name / "stogas").read_bytes()
+        license_text = (Path(temporary) / "amd64" / f"stogas-v{version}-linux-musl-amd64" / "LICENSE").read_bytes()
+    built = channels.image(manifest, binaries, license_text)
+    index_digest = "sha256:" + hashlib.sha256(built["index"]).hexdigest()
+    registry = Registry(image, "pull,push", os.environ["GH_TOKEN"])
+    tags = [version]
+    if not channels.preview(version) and channels.offered(releases()) == version:
+        tags.append("latest")
+    for tag in tags:
+        existing = registry.manifest(tag, channels.OCI_INDEX)
+        if existing is not None and existing != built["index"] and tag == version:
+            raise ValueError(f"{image}:{tag} already names a different image")
+    for blob_digest, data in built["blobs"].items():
+        registry.put_blob(blob_digest, data)
+    for manifest_digest, data in built["manifests"].items():
+        registry.put_manifest(manifest_digest, data, channels.OCI_MANIFEST)
+    for tag in tags:
+        registry.put_manifest(tag, built["index"], channels.OCI_INDEX)
+    # Read back what the registry serves under each tag, and every manifest the index names.
+    for tag in tags:
+        if registry.manifest(tag, channels.OCI_INDEX) != built["index"]:
+            raise ValueError(f"{image}:{tag} differs from the built image")
+    for manifest_digest, data in built["manifests"].items():
+        if registry.manifest(manifest_digest, channels.OCI_MANIFEST) != data:
+            raise ValueError(f"{image}@{manifest_digest} differs from the built image")
+    for blob_digest in built["blobs"]:
+        if registry.request("HEAD", f"/blobs/{blob_digest}", missing_ok=True)[0] != 200:
+            raise ValueError(f"{image} lacks the blob {blob_digest}")
+    if output:
+        with open(output, "a") as lines:
+            lines.write(f"digest={index_digest}\n")
+    # GitHub creates a new package as private, and only its settings page makes it public.
+    try:
+        public = Registry(image, "pull").manifest(version, channels.OCI_INDEX) == built["index"]
+    except (PermissionError, RuntimeError):
+        public = False
+    if not public:
+        print(f"::warning::{image} is private; make it public in the package's settings on GitHub")
+    print(f"Container: {image}:{version} is {index_digest} ({', '.join(tags)})")
+
+
 def preview(packages):
     """Stogas signs with the online key that production evidence publishes, so a preview, made
     before production serves evidence, has no Stogas signature. Require the gate's preview, every
@@ -381,15 +591,18 @@ if __name__ == "__main__":
         first_versions()
         raise SystemExit
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("ecosystem", choices=["crates", "npm", "pypi", "ruby", "nuget", "maven", "go", "preview"])
+    parser.add_argument("ecosystem", choices=["crates", "npm", "pypi", "ruby", "nuget", "maven", "go", "preview", "tap", "aur", "container"])
     parser.add_argument("packages", type=Path)
     parser.add_argument("--stage", action="store_true", help="npm only: leave each new version for a maintainer to approve")
     parser.add_argument("--trust", action="store_true", help="crates only: then trust publish.yml alone and revoke the one-time token")
+    parser.add_argument("--remote", help="tap and aur only: another Git remote, such as an HTTPS one for a manual run")
     args = parser.parse_args()
     if args.stage and args.ecosystem != "npm":
         parser.error("only npm stages packages")
     if args.trust and args.ecosystem != "crates":
         parser.error("only crates hand over to trusted publishing here")
+    if args.remote and args.ecosystem not in ("tap", "aur"):
+        parser.error("only tap and aur take another remote")
     packages = args.packages.resolve()
     if args.ecosystem == "preview":
         preview(packages)
@@ -401,6 +614,12 @@ if __name__ == "__main__":
         npm(packages, manifest["version"], args.stage)
     elif args.ecosystem == "crates":
         crates(packages, manifest["version"], args.trust)
+    elif args.ecosystem in ("tap", "aur"):
+        globals()[args.ecosystem](packages, manifest["version"], *([args.remote] if args.remote else []))
+        raise SystemExit
+    elif args.ecosystem == "container":
+        container(packages, manifest["version"], output=os.environ.get("GITHUB_OUTPUT"))
+        raise SystemExit
     else:
         globals()[args.ecosystem](packages, manifest["version"])
     if not args.stage:
