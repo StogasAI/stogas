@@ -278,7 +278,7 @@ fn evidence_error(py: Python<'_>, error: &evidence::Error) -> PyErr {
 fn receipt_error(py: Python<'_>, error: &receipt::Error) -> PyErr {
     let code = match error {
         receipt::Error::Invalid => "invalid_receipt",
-        receipt::Error::Content => "receipt_content",
+        receipt::Error::Content(_) => "receipt_content",
         receipt::Error::Salt(_) => "receipt_salt",
         receipt::Error::Identity => "receipt_identity",
         receipt::Error::Signature => "receipt_signature",

@@ -29,8 +29,8 @@ pub const MAX_BUFFERED_BYTES: usize = 64 * 1024 * 1024 + MAX_METADATA_BYTES + 16
 pub enum Error {
     #[error("invalid content receipt")]
     Invalid,
-    #[error("receipt does not match the request or response")]
-    Content,
+    #[error("the {0} does not match the receipt")]
+    Content(Side),
     #[error("the metadata has no {0} salt, so the {0} cannot be checked")]
     Salt(Side),
     #[error("receipt does not identify the verified boot")]
@@ -152,7 +152,7 @@ impl Receipt {
             if let Some(digest) = digest {
                 let salt = decode_hex::<32>(salt.as_deref().ok_or(Error::Salt(side))?)?;
                 if canonical::commitment(side, &salt, digest) != *signed {
-                    return Err(Error::Content);
+                    return Err(Error::Content(side));
                 }
             }
         }
