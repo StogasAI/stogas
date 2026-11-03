@@ -18,6 +18,7 @@ mod dashboard;
 mod encryption_key;
 mod evidence_archive;
 mod policy;
+mod policy_check;
 mod route;
 mod sdk_release;
 mod sign_in;
@@ -154,7 +155,10 @@ enum Command {
         #[command(subcommand)]
         command: encryption_key::Command,
     },
-    /// Encrypt a plugin's settings or a provider credential locally.
+    /// Encrypt a plugin's settings or a provider credential on this machine.
+    ///
+    /// A plugin's settings are encrypted only after the gateway checks them, which needs you
+    /// signed in. Only the gateway sees them, over a verified connection.
     Encrypt(encryption_key::EncryptArgs),
     /// Verify saved evidence without network access.
     Verify(VerifyArgs),
@@ -292,9 +296,10 @@ async fn main() -> Result<()> {
 
 impl Command {
     /// Whether the command connects anywhere.
-    const fn connects(&self) -> bool {
+    fn connects(&self) -> bool {
         match self {
-            Self::EncryptionKey { .. } | Self::Encrypt(_) | Self::Verify(_) => false,
+            Self::Encrypt(args) => args.checks(),
+            Self::EncryptionKey { .. } | Self::Verify(_) => false,
             Self::VerifyRelease { evidence, .. } => evidence.is_none(),
             Self::Proof(args) => args.evidence.is_none(),
             _ => true,
@@ -381,7 +386,9 @@ async fn run() -> Result<()> {
             }
         }
         Command::EncryptionKey { command } => encryption_key::run(command).await?,
-        Command::Encrypt(args) => encryption_key::encrypt(args).await?,
+        Command::Encrypt(args) => {
+            encryption_key::encrypt(args, &dashboard()?, route.gateway()).await?;
+        }
         Command::Verify(args) => run_verify(args).await?,
         Command::DownloadEvidence {
             boot,
@@ -939,6 +946,41 @@ mod tests {
             (&["stogas", "verify", "evidence.json"], false),
             (
                 &["stogas", "encryption-key", "create", "--output", "key"],
+                false,
+            ),
+            // Only the gateway can check a plugin's settings before they are sealed.
+            (
+                &[
+                    "stogas",
+                    "encrypt",
+                    "--key-file",
+                    "key",
+                    "--organization",
+                    "019a0000-0000-7000-8000-0000000000d1",
+                    "--purpose",
+                    "plugins/redaction",
+                    "--input",
+                    "settings.json",
+                    "--output",
+                    "sealed.json",
+                ],
+                true,
+            ),
+            (
+                &[
+                    "stogas",
+                    "encrypt",
+                    "--key-file",
+                    "key",
+                    "--organization",
+                    "019a0000-0000-7000-8000-0000000000d1",
+                    "--purpose",
+                    "byok/openai",
+                    "--input",
+                    "secret",
+                    "--output",
+                    "sealed.json",
+                ],
                 false,
             ),
             (&["stogas", "verify-release", "dist"], true),

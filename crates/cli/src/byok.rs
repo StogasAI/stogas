@@ -6,7 +6,7 @@
 
 use crate::{
     account, credentials, customer_encryption,
-    dashboard::{self, Dashboard, printable},
+    dashboard::{self, Dashboard, gateway_refusal, printable},
     topup::{parse_organization, uuid},
 };
 use anyhow::{Context as _, Result, bail};
@@ -344,11 +344,7 @@ pub async fn check(
     )?);
     let response = gateway.check(&grant.grant, body.to_vec()).await?;
     if response.status != StatusCode::OK {
-        let message = serde_json::from_slice::<Refusal>(&response.body).map_or_else(
-            |_| format!("the gateway answered {}", response.status),
-            |refusal| printable(&refusal.error.message),
-        );
-        bail!("{message}");
+        bail!("{}", gateway_refusal(response.status, &response.body));
     }
     let checked: Checked = serde_json::from_slice(&response.body)
         .context("the gateway sent an unexpected response")?;
@@ -367,17 +363,6 @@ pub async fn check(
 struct Checked {
     check_error: Option<String>,
     azure_targets: Option<AzureTargets>,
-}
-
-/// A request that the gateway refused, and why.
-#[derive(Deserialize)]
-struct Refusal {
-    error: RefusalDetail,
-}
-
-#[derive(Deserialize)]
-struct RefusalDetail {
-    message: String,
 }
 
 /// What to print when the provider accepted the credential, or the error that says why it did not.
