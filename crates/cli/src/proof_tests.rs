@@ -268,7 +268,14 @@ async fn a_shared_proof_reveals_only_the_sides_it_keeps() {
             !hide.contains(&ProofSide::Response),
         );
         let directory = files.path(&format!("shared-{case}"));
-        let command = share_proof(&proof, &hide, &directory).await.unwrap();
+        let mut input = Files::args(&directory, None);
+        input.hide.clone_from(&hide);
+        let command = share_proof(&proof, &input, &directory).await.unwrap();
+        // The command checks the evidence of the environment that verified the proof.
+        assert!(
+            command.starts_with("stogas proof --environment staging --proof "),
+            "{command}"
+        );
         let metadata: Value =
             serde_json::from_slice(&std::fs::read(directory.join("metadata.json")).unwrap())
                 .unwrap();
@@ -296,6 +303,12 @@ async fn a_shared_proof_reveals_only_the_sides_it_keeps() {
             assert!(error.contains("no request salt"), "{error}");
         }
     }
+    // Production is the default, so its command names no environment.
+    let directory = files.path("shared-production");
+    let mut input = Files::args(&directory, None);
+    input.environment = stogas::Environment::Production;
+    let command = share_proof(&proof, &input, &directory).await.unwrap();
+    assert!(command.starts_with("stogas proof --proof "), "{command}");
     let request = std::fs::read_to_string(files.path("shared-0/request.json")).unwrap();
     assert!(
         !request.contains("encryption_keys") && !request.contains("secret-root"),
