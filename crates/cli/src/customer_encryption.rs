@@ -48,6 +48,37 @@ fn key_id(root: &[u8]) -> String {
     hex::encode(hash.finalize())
 }
 
+/// An organization key: the unpadded base64url text that its file holds, and its public identifier,
+/// which the organization policy registers under a label.
+pub struct OrganizationKey {
+    pub encoded: Zeroizing<String>,
+    pub id: String,
+    root: Zeroizing<Vec<u8>>,
+}
+
+/// Reads a key as `stogas encryption-key` writes it, ignoring surrounding whitespace.
+pub fn parse_key(text: &str) -> Result<OrganizationKey> {
+    let text = text.trim();
+    let root = Zeroizing::new(
+        URL_SAFE_NO_PAD
+            .decode(text)
+            .context("Invalid key encoding")?,
+    );
+    if root.len() != 32 || URL_SAFE_NO_PAD.encode(root.as_slice()) != text {
+        bail!("Use a generated 32-byte organization key");
+    }
+    Ok(OrganizationKey {
+        encoded: Zeroizing::new(text.to_owned()),
+        id: key_id(&root),
+        root,
+    })
+}
+
+pub fn read_key(path: &Path) -> Result<OrganizationKey> {
+    let encoded = read_private(path, 128)?;
+    parse_key(std::str::from_utf8(&encoded).context("Invalid key file")?)
+}
+
 pub fn generate(output: &Path) -> Result<()> {
     let mut root = Zeroizing::new([0_u8; 32]);
     getrandom::fill(root.as_mut()).context("Cannot generate encryption key")?;
@@ -120,18 +151,7 @@ pub fn encrypt(
     input: &Path,
     output: &Path,
 ) -> Result<()> {
-    let encoded = read_private(key_file, 128)?;
-    let text = std::str::from_utf8(&encoded)
-        .context("Invalid key file")?
-        .trim();
-    let root = Zeroizing::new(
-        URL_SAFE_NO_PAD
-            .decode(text)
-            .context("Invalid key encoding")?,
-    );
-    if root.len() != 32 || URL_SAFE_NO_PAD.encode(root.as_slice()) != text {
-        bail!("Use a generated 32-byte organization key");
-    }
+    let root = read_key(key_file)?.root;
     // Google's key file is larger than the credential document it becomes.
     let maximum = match purpose {
         "plugins" => 262_144,

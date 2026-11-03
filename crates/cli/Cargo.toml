@@ -1,6 +1,6 @@
 [package]
 name = "stogas-cli"
-description = "The Stogas command line: sign-up, top-ups, policy editing, a verified local endpoint, offline verification and local encryption"
+description = "The Stogas command line: sign-up, top-ups, policy editing, credential checks, a verified local endpoint, offline verification and local encryption"
 readme = "../../README.md"
 homepage = "https://github.com/StogasAI/stogas"
 documentation = "https://stogas.ai/docs/cli"

@@ -73,7 +73,7 @@ pub async fn run(args: EditArgs, network: &Network) -> Result<()> {
     let dashboard = account::signed_in(network).await?;
     let organization = match organization {
         Some(organization) => organization,
-        None => personal_organization(&dashboard).await?,
+        None => account::personal_organization(&dashboard).await?,
     };
     let id = id.unwrap_or_else(|| organization.clone());
     let api = Remote::new(&dashboard, &organization, &scope, &id);
@@ -115,29 +115,6 @@ pub async fn run(args: EditArgs, network: &Network) -> Result<()> {
         Err(failure) => return Err(failure.error),
     }
     Ok(())
-}
-
-/// Your personal organization, which the organization list names first.
-pub async fn personal_organization(dashboard: &Dashboard) -> Result<String> {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Organization {
-        organization_id: String,
-        organization_type: String,
-    }
-    #[derive(Deserialize)]
-    struct Page {
-        items: Vec<Organization>,
-    }
-    let page: Page = dashboard.get("/api/organizations?limit=1").await?;
-    page.items
-        .into_iter()
-        .find(|organization| organization.organization_type == "personal")
-        .and_then(|organization| uuid(&organization.organization_id))
-        .context(
-            "your access token does not cover your personal organization; name an organization \
-             with --organization",
-        )
 }
 
 /// A policy as saved: its document, or null without one, and the revision that a change names.

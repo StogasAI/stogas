@@ -40,13 +40,14 @@ stogas register                      # create an account and save its access tok
 stogas topup 20 BTC                  # add credit with a cryptocurrency payment
 stogas api GET /api/account          # send a dashboard API request with the saved access token
 stogas policy edit key <key-id>      # edit a policy in $VISUAL or $EDITOR and save it on close
+stogas byok check <credential-id>    # check a provider credential, with your key if you encrypted it
 stogas probe --security tls          # check a fresh verified connection without an API key
 stogas verify evidence.json --json   # verify saved evidence offline
 stogas encryption-key --output org.key
 stogas verify-release ./release      # verify downloaded release assets
 ```
 
-Streamed content can arrive before final verification. Treat a response as complete only after verified completion. See the [CLI guide](https://stogas.ai/docs/cli) for sign-in, top-ups, policy editing, customer encryption and proofs.
+Streamed content can arrive before final verification. Treat a response as complete only after verified completion. See the [CLI guide](https://stogas.ai/docs/cli) for sign-in, top-ups, policy editing, credential checks, customer encryption and proofs.
 
 ## Previews
 
