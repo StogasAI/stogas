@@ -98,7 +98,8 @@ fn seal(
 ) -> Result<serde_json::Value> {
     let maximum = match purpose {
         "plugins" => 262_144,
-        "byok/openai" | "byok/anthropic" | "byok/chutes" | "byok/aws" | "byok/google-cloud" => 4096,
+        "byok/openai" | "byok/anthropic" | "byok/chutes" | "byok/aws" | "byok/azure"
+        | "byok/google-cloud" => 4096,
         _ => bail!("Unsupported encryption purpose"),
     };
     if root.len() != 32
@@ -152,10 +153,11 @@ pub fn encrypt(
     output: &Path,
 ) -> Result<()> {
     let root = read_key(key_file)?.root;
-    // Google's key file is larger than the credential document it becomes.
+    // A document can be larger than the credential that it becomes: Google's key file, and a
+    // file that Windows PowerShell saved in UTF-16.
     let maximum = match purpose {
         "plugins" => 262_144,
-        "byok/aws" | "byok/google-cloud" => 16_384,
+        "byok/aws" | "byok/azure" | "byok/google-cloud" => 16_384,
         _ => 4096,
     };
     let input = read_private(input, maximum)?;
@@ -167,8 +169,8 @@ pub fn encrypt(
         let envelope = seal(&root, organization, purpose, &input, &salt, nonce)?;
         return write_new(output, &serde_json::to_vec_pretty(&envelope)?);
     }
-    // A credential prints what the dashboard registers: the envelope, a preview and, for AWS
-    // and Google Cloud, the target that routing reads instead of the secret.
+    // A credential prints what the dashboard registers: the envelope, a preview except for Azure,
+    // and for AWS and Google Cloud the target that routing reads instead of the secret.
     let registration = crate::cloud_credentials::prepare(purpose, &input)?;
     let envelope = seal(
         &root,
@@ -178,8 +180,10 @@ pub fn encrypt(
         &salt,
         nonce,
     )?;
-    let mut document =
-        serde_json::json!({ "encryptedSecret": envelope, "preview": registration.preview });
+    let mut document = serde_json::json!({ "encryptedSecret": envelope });
+    if let Some(preview) = registration.preview {
+        document["preview"] = preview.into();
+    }
     if let Some(target) = registration.target {
         document["target"] = target;
     }
