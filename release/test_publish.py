@@ -113,6 +113,30 @@ class NpmStageTests(unittest.TestCase):
             self.stage()
 
 
+class ReadbackTests(unittest.TestCase):
+    def test_reads_back_until_the_deadline_then_names_it(self):
+        clock = [0.0]
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        with mock.patch.object(publish.time, "monotonic", side_effect=lambda: clock[0]), mock.patch.object(publish.time, "sleep", side_effect=sleep):
+            with self.assertRaisesRegex(RuntimeError, "within 60 minutes$"):
+                publish.wait_for(lambda: False, minutes=60)
+        self.assertGreaterEqual(clock[0], 3600)
+        self.assertLess(clock[0], 3610)
+
+    def test_nuget_waits_an_hour_for_its_index(self):
+        # nuget.org served the first version more than 5 minutes after accepting it.
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-nuget-test-")))
+        (directory / "Stogas.1.2.3.nupkg").write_bytes(b"package")
+        commands, waits = [], []
+        with mock.patch.dict(os.environ, {"NUGET_API_KEY": "short-lived"}), mock.patch.object(publish, "download", return_value=None), mock.patch.object(publish, "run", side_effect=lambda arguments, **_: commands.append(arguments[:3])), mock.patch.object(publish, "wait_for", side_effect=lambda check, minutes=5: waits.append(minutes)):
+            publish.nuget(directory, "1.2.3")
+        self.assertEqual(commands, [["dotnet", "nuget", "push"]])
+        self.assertEqual(waits, [60])
+
+
 class FirstVersionTests(unittest.TestCase):
     def test_names_each_registry_with_none_of_its_packages(self):
         existing = {"https://crates.io/api/v1/crates/stogas-core", "https://rubygems.org/api/v1/gems/stogas.json"}
