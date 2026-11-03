@@ -40,6 +40,7 @@ impl PythonTransport {
             base_url,
             proxy,
             onion,
+            no_proxy: None,
         };
         let inner = py
             .detach(move || ManagedTransport::start(&options))

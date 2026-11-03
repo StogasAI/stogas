@@ -6,7 +6,8 @@ public struct TransportOptions: Encodable, Sendable {
     public var security: String
     public var maxConnections: UInt32
     public var baseURL: String?
-    /// A `socks5h://host:port` proxy, such as Tor's, for every connection to Stogas.
+    /// A `socks5h://` or `http://` proxy, such as Tor's `socks5h://127.0.0.1:9050`, for every
+    /// connection to Stogas.
     public var proxy: String?
     /// Reach the environment at the onion address that its verified evidence names, through `proxy`.
     public var onion: Bool

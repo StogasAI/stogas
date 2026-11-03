@@ -3644,6 +3644,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "percent-encoding",
  "rand 0.9.5",
  "rcgen",
  "reqwest 0.12.28",
