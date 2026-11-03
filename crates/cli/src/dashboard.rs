@@ -23,6 +23,27 @@ pub struct Dashboard {
     token: Option<Zeroizing<String>>,
 }
 
+/// A dashboard response, whatever its status.
+pub struct Reply {
+    pub status: StatusCode,
+    pub headers: HeaderMap,
+    pub body: Vec<u8>,
+}
+
+/// Headers that only the CLI sets: the token, the JSON body's framing and the connection's own.
+const PROTECTED_HEADERS: [header::HeaderName; 10] = [
+    header::AUTHORIZATION,
+    header::COOKIE,
+    header::HOST,
+    header::CONTENT_TYPE,
+    header::CONTENT_LENGTH,
+    header::TRANSFER_ENCODING,
+    header::CONNECTION,
+    header::UPGRADE,
+    header::TE,
+    header::PROXY_AUTHORIZATION,
+];
+
 /// A refused request, with the code and the request fields the API names.
 #[derive(Debug)]
 pub struct ApiError {
@@ -97,6 +118,22 @@ impl Dashboard {
     /// Sends `body` as JSON and returns the response body. A status outside 2xx becomes an
     /// [`ApiError`].
     pub async fn send(&self, method: Method, path: &str, body: Option<&Value>) -> Result<Vec<u8>> {
+        let reply = self.exchange(method, path, HeaderMap::new(), body).await?;
+        if reply.status.is_success() {
+            return Ok(reply.body);
+        }
+        Err(api_error(reply.status, &reply.body).into())
+    }
+
+    /// Sends `body` as JSON with `extra` headers, which cannot replace the token, and returns the
+    /// response whatever its status.
+    pub async fn exchange(
+        &self,
+        method: Method,
+        path: &str,
+        extra: HeaderMap,
+        body: Option<&Value>,
+    ) -> Result<Reply> {
         let url = self.url(path)?;
         let mut headers = HeaderMap::new();
         headers.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
@@ -104,6 +141,15 @@ impl Dashboard {
             header::USER_AGENT,
             HeaderValue::from_static(concat!("stogas-cli/", env!("CARGO_PKG_VERSION"))),
         );
+        for name in extra.keys() {
+            if PROTECTED_HEADERS.contains(name) {
+                bail!("the CLI sets the {name} header itself");
+            }
+            headers.remove(name);
+        }
+        for (name, value) in &extra {
+            headers.append(name, value.clone());
+        }
         if let Some(token) = &self.token {
             let mut value =
                 HeaderValue::from_str(&Zeroizing::new(format!("Bearer {}", token.as_str())))
@@ -128,6 +174,7 @@ impl Dashboard {
                 .await
                 .context("could not reach the Stogas dashboard")?;
             let status = response.status();
+            let headers = response.headers().clone();
             let body = response
                 .decoded(MAX_BODY_BYTES)
                 .await
@@ -137,16 +184,15 @@ impl Dashboard {
                     }
                     error => anyhow::Error::new(error).context("the dashboard response failed"),
                 })?;
-            anyhow::Ok((status, body))
+            anyhow::Ok(Reply {
+                status,
+                headers,
+                body,
+            })
         };
-        let (status, body) =
-            tokio::time::timeout(self.client.network().patient(REQUEST_BUDGET), exchange)
-                .await
-                .context("the Stogas dashboard did not answer in time")??;
-        if status.is_success() {
-            return Ok(body);
-        }
-        Err(api_error(status, &body).into())
+        tokio::time::timeout(self.client.network().patient(REQUEST_BUDGET), exchange)
+            .await
+            .context("the Stogas dashboard did not answer in time")?
     }
 
     /// Only paths under `/api/` on the dashboard origin receive the token.
@@ -162,7 +208,7 @@ impl Dashboard {
     }
 }
 
-fn api_error(status: StatusCode, body: &[u8]) -> ApiError {
+pub fn api_error(status: StatusCode, body: &[u8]) -> ApiError {
     #[derive(Deserialize)]
     struct Body {
         message: String,
@@ -227,6 +273,31 @@ mod tests {
             "\\\\example.com/api/account",
         ] {
             assert!(dashboard.url(path).is_err(), "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn keeps_the_headers_that_carry_the_token_and_the_body() {
+        let dashboard = Dashboard::new(ORIGIN, None, Network::direct()).unwrap();
+        for name in [
+            header::AUTHORIZATION,
+            header::COOKIE,
+            header::HOST,
+            header::CONTENT_TYPE,
+            header::CONTENT_LENGTH,
+        ] {
+            let mut extra = HeaderMap::new();
+            extra.insert(name.clone(), HeaderValue::from_static("x"));
+            // The check comes before any connection.
+            let error = dashboard
+                .exchange(Method::GET, "/api/account", extra, None)
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(
+                error.to_string(),
+                format!("the CLI sets the {name} header itself")
+            );
         }
     }
 
