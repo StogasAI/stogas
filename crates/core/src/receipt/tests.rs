@@ -129,7 +129,7 @@ fn the_receipt_sample_proves_each_side_under_its_own_salt() {
     // Each commitment binds its side, its salt and its content.
     assert!(matches!(
         sample.check(response, request, &sample.salts),
-        Err(Error::Content)
+        Err(Error::Content(Side::Request))
     ));
     let swapped = Salts {
         request: sample.salts.response.clone(),
@@ -137,13 +137,13 @@ fn the_receipt_sample_proves_each_side_under_its_own_salt() {
     };
     assert!(matches!(
         sample.check(request, response, &swapped),
-        Err(Error::Content)
+        Err(Error::Content(Side::Request))
     ));
     let mut changed = sample.request;
     changed[63] ^= 1;
     assert!(matches!(
         sample.check(Some(&changed), None, &sample.salts),
-        Err(Error::Content)
+        Err(Error::Content(Side::Request))
     ));
     let uppercase = Salts {
         request: sample.salts.request.as_deref().map(str::to_uppercase),
@@ -318,11 +318,11 @@ mod hardware {
         let changed = compact.replace("output_tokens\":2", "output_tokens\":3");
         assert!(matches!(
             verify_buffered(peer.boot(), &request, &encode(&changed, &bag)),
-            Err(Error::Content)
+            Err(Error::Content(Side::Response))
         ));
         assert!(matches!(
             verify_buffered(peer.boot(), &[0; 64], &encode(compact, &bag)),
-            Err(Error::Content)
+            Err(Error::Content(Side::Request))
         ));
         bag["billed_cost_usd"] = json!("0.02");
         assert!(matches!(
@@ -442,7 +442,10 @@ mod hardware {
         let other = wire(&chat_events(&["Hello their"]), &bag, terminal);
         let mut stream = Stream::new(request);
         stream.push(&other).unwrap();
-        assert!(matches!(stream.finish(peer.boot()), Err(Error::Content)));
+        assert!(matches!(
+            stream.finish(peer.boot()),
+            Err(Error::Content(Side::Response))
+        ));
     }
 
     #[test]
