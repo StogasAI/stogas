@@ -23,16 +23,21 @@ queue = Path(os.environ["FAKE_NPM_QUEUE"])
 command = sys.argv[1:]
 if command == ["stage", "list", "--json"]:
     print(json.dumps([json.loads(item.read_text()) for item in sorted(queue.glob("*.json"))]))
-elif command[:2] == ["stage", "publish"] and command[3:5] == ["--access", "public"] and command[5:] in ([], ["--tag", "next"]):
+elif command[:2] == ["stage", "publish"] and command[3:5] == ["--access", "public"] and command[5:] in (["--provenance=false"], ["--tag", "next", "--provenance=false"]):
     with tarfile.open(command[2]) as archive:
         manifest = json.load(archive.extractfile("package/package.json"))
     # Like npm, refuse a pre-release without a dist-tag.
-    if "-" in manifest["version"] and not command[5:]:
+    if "-" in manifest["version"] and command[5] != "--tag":
         sys.exit("npm requires a tag for a pre-release")
     stage = str(uuid.uuid4())
     shutil.copyfile(command[2], queue / f"{{stage}}.tgz")
-    item = {{"id": stage, "packageName": manifest["name"], "version": manifest["version"], "tag": command[6] if command[5:] else "latest"}}
+    item = {{"id": stage, "packageName": manifest["name"], "version": manifest["version"], "tag": command[6] if command[5] == "--tag" else "latest"}}
     (queue / f"{{stage}}.json").write_text(json.dumps(item))
+elif command[:2] == ["stage", "publish"]:
+    # npm outside CI cannot generate the provenance that package.json's publishConfig asks for.
+    print("npm error code EUSAGE")
+    print("npm error Automatic provenance generation not supported for provider: null")
+    sys.exit(1)
 elif command[:2] == ["stage", "download"]:
     shutil.copyfile(queue / f"{{command[2]}}.tgz", Path.cwd() / f"staged-{{command[2]}}.tgz")
 else:
@@ -66,7 +71,7 @@ class NpmStageTests(unittest.TestCase):
             path.mkdir()
         for version in ("1.2.3", "1.2.3-alpha.1"):
             for name, filename in publish.NPM_PACKAGES:
-                manifest = json.dumps({"name": name, "version": version}).encode()
+                manifest = json.dumps({"name": name, "version": version, "publishConfig": {"access": "public", "provenance": True}}).encode()
                 with tarfile.open(self.packages / f"{filename}-{version}.tgz", "w:gz") as archive:
                     entry = tarfile.TarInfo("package/package.json")
                     entry.size = len(manifest)
@@ -94,6 +99,11 @@ class NpmStageTests(unittest.TestCase):
         self.assertIn("stogas@1.2.3-alpha.1 awaits approval", self.stage("1.2.3-alpha.1"))
         staged = [json.loads(item.read_text()) for item in self.queue.glob("*.json")]
         self.assertEqual({(item["version"], item["tag"]) for item in staged}, {("1.2.3-alpha.1", "next")})
+
+    def test_a_failure_names_only_npms_error_code(self):
+        # Without --provenance=false, npm on a maintainer's machine refuses package.json's request.
+        with self.assertRaisesRegex(RuntimeError, r"^npm failed \(exit 1, npm error code EUSAGE\); registry publication stopped$"):
+            publish.run(["npm", "stage", "publish", str(self.packages / "stogas-1.2.3.tgz"), "--access", "public"])
 
     def test_refuses_a_staged_version_with_other_bytes(self):
         self.stage()

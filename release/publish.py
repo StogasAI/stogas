@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import struct
@@ -30,9 +31,12 @@ import channels
 def run(arguments, stderr=subprocess.STDOUT, **kwargs):
     # Registry clients may include response bodies in errors. Keep their output
     # private; tokens are supplied through the client's documented environment.
+    # npm's error code names the cause without any of the response.
     result = subprocess.run(arguments, stdout=subprocess.PIPE, stderr=stderr, **kwargs)
     if result.returncode:
-        raise RuntimeError(f"{Path(arguments[0]).name} failed (exit {result.returncode}); registry publication stopped")
+        codes = re.findall(rb"^npm error code ([A-Z0-9_]+)$", result.stdout or b"", re.M)
+        cause = f", npm error code {codes[0].decode()}" if codes else ""
+        raise RuntimeError(f"{Path(arguments[0]).name} failed (exit {result.returncode}{cause}); registry publication stopped")
     return result.stdout
 
 
@@ -205,7 +209,9 @@ def npm(packages, version, stage=False):
             continue
         # A rerun finds the upload that still awaits approval.
         if not (staged := npm_staged(name, version)):
-            run(["npm", "stage", "publish", str(path), "--access", "public", *tag])
+            # package.json asks for provenance, which npm generates only in CI; a maintainer's
+            # machine stages without it, and publish.yml's later versions carry it.
+            run(["npm", "stage", "publish", str(path), "--access", "public", *tag, "--provenance=false"])
             staged = npm_staged(name, version)
         if not staged:
             raise RuntimeError(f"npm lists no staged {name}@{version}")
