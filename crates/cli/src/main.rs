@@ -9,6 +9,7 @@ macro_rules! out {
 
 mod account;
 mod altcha;
+mod byok;
 mod cloud_credentials;
 mod credentials;
 mod customer_encryption;
@@ -123,6 +124,11 @@ enum Command {
         #[command(subcommand)]
         command: PolicyCommand,
     },
+    /// Check a provider credential.
+    Byok {
+        #[command(subcommand)]
+        command: ByokCommand,
+    },
     /// Verify downloaded SDK release artifacts, build provenance and the Stogas signature.
     /// Sigstore's keys come from current production evidence, or from saved evidence.
     VerifyRelease {
@@ -181,6 +187,13 @@ enum Command {
     Proof(ProofArgs),
     /// Run the verified loopback proxy.
     Serve(ServeArgs),
+}
+
+#[derive(Subcommand)]
+enum ByokCommand {
+    /// Check a credential with its provider, as Check on the dashboard does. The gateway, which
+    /// alone can open a customer-encrypted credential, checks it with the key that you give.
+    Check(byok::CheckArgs),
 }
 
 #[derive(Subcommand)]
@@ -340,6 +353,9 @@ async fn run() -> Result<()> {
         Command::Policy {
             command: PolicyCommand::Edit(args),
         } => policy::run(args, &dashboard()?).await?,
+        Command::Byok {
+            command: ByokCommand::Check(args),
+        } => byok::run(args, &dashboard()?, route.gateway()).await?,
         Command::VerifyRelease {
             directory,
             evidence,

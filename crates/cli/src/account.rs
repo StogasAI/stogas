@@ -4,6 +4,7 @@ use crate::{
     altcha,
     credentials::{self, VARIABLE},
     dashboard::{ApiError, Dashboard, ORIGIN},
+    topup::uuid,
 };
 use anyhow::{Context as _, Result, bail};
 use http::Method;
@@ -27,6 +28,29 @@ pub async fn signed_in(network: &Network) -> Result<Dashboard> {
         .await?
         .with_context(|| format!("not signed in; run `stogas login`, or set {VARIABLE}"))?;
     Dashboard::new(ORIGIN, Some(token), network.clone())
+}
+
+/// Your personal organization, which the organization list names first.
+pub async fn personal_organization(dashboard: &Dashboard) -> Result<String> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Organization {
+        organization_id: String,
+        organization_type: String,
+    }
+    #[derive(Deserialize)]
+    struct Page {
+        items: Vec<Organization>,
+    }
+    let page: Page = dashboard.get("/api/organizations?limit=1").await?;
+    page.items
+        .into_iter()
+        .find(|organization| organization.organization_type == "personal")
+        .and_then(|organization| uuid(&organization.organization_id))
+        .context(
+            "your access token does not cover your personal organization; name an organization \
+             with --organization",
+        )
 }
 
 pub async fn register_account(network: &Network) -> Result<()> {

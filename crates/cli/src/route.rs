@@ -3,7 +3,7 @@
 
 use anyhow::{Context as _, Result, bail};
 use std::time::Duration;
-use stogas::{Environment, network::Network};
+use stogas::{Environment, SecurityMode, TransportOptions, network::Network};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::TcpStream,
@@ -62,6 +62,19 @@ impl Route {
             self.onion,
             self.no_proxy.as_deref().unwrap_or_default(),
         )?)
+    }
+
+    /// One verified connection to a production gateway, for a command that sends it something.
+    pub fn gateway(&self) -> TransportOptions {
+        TransportOptions {
+            environment: Environment::Production,
+            security: SecurityMode::Tls,
+            base_url: None,
+            max_connections: 1,
+            proxy: self.proxy.clone(),
+            onion: self.onion,
+            no_proxy: self.no_proxy.clone(),
+        }
     }
 }
 

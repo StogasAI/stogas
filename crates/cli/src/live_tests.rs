@@ -71,6 +71,8 @@ async fn signs_up_tops_up_and_signs_out() {
         .unwrap();
     // The payment made the organization active, so its policy can change.
     edits_the_organization_policy(&dashboard).await;
+    #[cfg(feature = "staging")]
+    checks_an_encrypted_credential(&dashboard).await;
 
     account::revoke(&origin, token, &Network::direct())
         .await
@@ -108,7 +110,7 @@ impl PolicyApi for Overtaken<'_> {
 /// `stogas policy edit organization` on the personal organization: a save, a save that someone
 /// else's overtook, and a policy that the dashboard refuses until it is fixed.
 async fn edits_the_organization_policy(dashboard: &Dashboard) {
-    let organization = policy::personal_organization(dashboard).await.unwrap();
+    let organization = account::personal_organization(dashboard).await.unwrap();
     let remote = || policy::Remote::new(dashboard, &organization, "organization", &organization);
     let initial = remote().read().await.unwrap().revision;
 
@@ -167,4 +169,89 @@ async fn edits_the_organization_policy(dashboard: &Dashboard) {
             revision: first + 3
         }
     );
+}
+
+/// `stogas byok check` on a customer-encrypted credential whose key the provider refuses, over each
+/// kind of verified connection: the staging gateway opens the credential with the organization key,
+/// asks the provider, and saves the refusal, which the dashboard then lists.
+#[cfg(feature = "staging")]
+async fn checks_an_encrypted_credential(dashboard: &Dashboard) {
+    use crate::{
+        byok::{self, KeySource, Verified},
+        customer_encryption,
+    };
+    use stogas::{Environment, SecurityMode, TransportOptions};
+
+    const REFUSED: &str = "OpenAI did not accept this API key or configuration";
+    let organization = account::personal_organization(dashboard).await.unwrap();
+    let mut random = [0_u8; 16];
+    getrandom::fill(&mut random).unwrap();
+    let directory = std::env::temp_dir().join(format!("stogas-live-byok-{}", hex::encode(random)));
+    std::fs::create_dir(&directory).unwrap();
+    let [key, secret, sealed] =
+        ["org.key", "secret", "credential.json"].map(|name| directory.join(name));
+    customer_encryption::generate(&key).unwrap();
+    std::fs::write(&secret, format!("sk-stogas-live-{}", hex::encode(random))).unwrap();
+    customer_encryption::encrypt(&key, &organization, "byok/openai", &secret, &sealed).unwrap();
+    let registration: Value = serde_json::from_slice(&std::fs::read(&sealed).unwrap()).unwrap();
+
+    let policy = policy::Remote::new(dashboard, &organization, "organization", &organization);
+    let revision = policy.read().await.unwrap().revision;
+    let key_id = customer_encryption::read_key(&key).unwrap().id;
+    policy
+        .save(
+            &json!({ "encryption": { "keys": { "live": key_id } } }),
+            revision,
+        )
+        .await
+        .unwrap();
+    let created: Value = dashboard
+        .post(
+            &format!("/api/{organization}/byok"),
+            &json!({
+                "kind": "encrypted",
+                "provider": "openai",
+                "name": "Live credential check",
+                "encryptedSecret": registration["encryptedSecret"],
+                "preview": registration["preview"],
+            }),
+        )
+        .await
+        .unwrap();
+    let credential = created["id"].as_str().unwrap().to_owned();
+    let api = byok::Remote::new(dashboard, &organization, &credential);
+    for security in [SecurityMode::Tls, SecurityMode::E2ee] {
+        let gateway = Verified(TransportOptions {
+            environment: Environment::Staging,
+            security,
+            base_url: None,
+            max_connections: 1,
+            proxy: None,
+            onion: false,
+            no_proxy: None,
+        });
+        let refused = byok::check(&api, &gateway, &KeySource::File(key.clone()))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.to_string(), REFUSED);
+    }
+    let listed: Value = dashboard
+        .get(&format!(
+            "/api/{organization}/byok?limit=1&filter=id:{credential}"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(listed["items"][0]["checkError"], REFUSED);
+
+    dashboard
+        .send(
+            Method::DELETE,
+            &format!("/api/{organization}/byok/{credential}"),
+            None,
+        )
+        .await
+        .unwrap();
+    let revision = policy.read().await.unwrap().revision;
+    policy.save(&Value::Null, revision).await.unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
 }

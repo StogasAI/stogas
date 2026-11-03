@@ -15,6 +15,7 @@ pub mod encrypted_client;
 pub mod encrypted_http;
 pub mod encrypted_setup;
 pub mod evidence_client;
+pub mod gateway_request;
 pub mod http2_pool;
 pub mod https;
 pub mod native_http;

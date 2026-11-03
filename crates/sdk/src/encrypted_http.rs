@@ -175,6 +175,7 @@ fn request_metadata(request: &Request<Bytes>) -> Result<Vec<u8>, Error> {
                     | "/v1/responses"
                     | "/v1/policies/validate"
                     | "/v1/policies/simulate"
+                    | "/v1/byok/check"
             ))
             || (request.method() == "DELETE" && path == "/v1/session" && request.body().is_empty()))
     {
