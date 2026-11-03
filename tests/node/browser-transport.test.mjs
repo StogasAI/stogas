@@ -48,9 +48,12 @@ test('options are explicit and confidential fetch never falls through to ordinar
 		{ maxConnections: 1.5 },
 		{ maxConnections: Infinity },
 		{ bundleRefreshIntervalSeconds: 300 },
-		{ security: 'both' }
+		{ security: 'both' },
+		{ proxied: 'yes' },
+		{ proxied: 1 }
 	])
-		assert.throws(() => new Transport(options), /Unsupported|positive safe integer/);
+		assert.throws(() => new Transport(options), /Unsupported|positive safe integer|boolean/);
+	for (const proxied of [true, false, undefined]) new Transport({ proxied }).close();
 	for (const baseURL of [
 		'http://e2ee.example/v1',
 		'https://user@e2ee.example/v1',
@@ -94,6 +97,33 @@ test('options are explicit and confidential fetch never falls through to ordinar
 		transport.fetch('https://e2ee.example/v1/chat/completions', { method: 'POST' }),
 		(error) => error.submission === 'not_sent'
 	);
+});
+
+// Through a proxy, such as Tor, every time limit is four times as long: here the hedge before the
+// replica starts.
+test('a proxied transport waits four times as long', { timeout: 15_000 }, async () => {
+	for (const [proxied, hedge] of [
+		[false, 1_000],
+		[true, 4_000]
+	]) {
+		const fixture = binding();
+		const started = performance.now();
+		let replica;
+		const transport = new fixture.Transport({
+			proxied,
+			fetch: (url, { signal }) => {
+				if (url.includes('r2'))
+					return new Promise((_, reject) =>
+						signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+					);
+				replica = performance.now() - started;
+				return Promise.resolve(new Response('{}'));
+			}
+		});
+		await transport.refreshEvidence();
+		assert.ok(replica >= hedge - 2 && replica < hedge + 250, `replica at ${replica} ms`);
+		await transport.close();
+	}
 });
 
 test('explicit refresh shares acquisition, exposes frozen evidence, and isolates failed observers', async () => {
