@@ -110,49 +110,110 @@ async fn ready(mut stream: TcpStream) {
     assert_eq!(&ready, b"ready");
 }
 
+/// The proxy that a network takes: its URL without the login, and the login.
+fn proxy_of(network: &Network) -> (String, Option<(String, String)>) {
+    let Route::Proxied { proxy, .. } = &*network.0 else {
+        panic!("a proxy route");
+    };
+    (
+        proxy.to_string(),
+        proxy
+            .login
+            .as_ref()
+            .map(|login| (login.username.clone(), login.password.clone())),
+    )
+}
+
 #[test]
-fn takes_only_a_socks5h_url_with_a_host_and_a_port() {
+fn takes_a_socks5h_or_http_url_with_a_host_a_port_and_a_login() {
     let direct = Network::new(Environment::Production, None, false).unwrap();
     assert_eq!(format!("{direct:?}"), "Network::Direct");
     let proxied = Network::new(Environment::Production, Some(PROXY), false).unwrap();
     assert_eq!(
         format!("{proxied:?}"),
-        "Network::Socks { proxy: 127.0.0.1:9050, onion: None }"
+        "Network::Proxy { proxy: socks5h://127.0.0.1:9050, onion: None }"
     );
-    for proxy in ["socks5h://127.0.0.1:9050/", "SOCKS5H://localhost:9050"] {
-        Network::new(Environment::Production, Some(proxy), false).unwrap();
+    let login = |user: &str, password: &str| Some((user.to_owned(), password.to_owned()));
+    for (proxy, route, expected) in [
+        (
+            "socks5h://127.0.0.1:9050/",
+            "socks5h://127.0.0.1:9050",
+            None,
+        ),
+        ("SOCKS5H://localhost:9050", "socks5h://localhost:9050", None),
+        ("socks5h://[::1]:9050", "socks5h://[::1]:9050", None),
+        (
+            "socks5h://run-1:secret@127.0.0.1:9150",
+            "socks5h://127.0.0.1:9150",
+            login("run-1", "secret"),
+        ),
+        ("http://127.0.0.1:8118", "http://127.0.0.1:8118", None),
+        // An HTTP URL without a port names port 80, as curl and Go read it.
+        ("http://proxy.example", "http://proxy.example:80", None),
+        ("http://proxy.example:80/", "http://proxy.example:80", None),
+        (
+            "http://me%40corp:p%3Ass%20word@proxy.example:3128",
+            "http://proxy.example:3128",
+            login("me@corp", "p:ss word"),
+        ),
+        // A username alone suits an HTTP proxy, whose Basic login allows an empty password.
+        (
+            "http://me@proxy.example:3128",
+            "http://proxy.example:3128",
+            login("me", ""),
+        ),
+    ] {
+        let network = Network::new(Environment::Production, Some(proxy), false).unwrap();
+        assert_eq!(proxy_of(&network), (route.to_owned(), expected), "{proxy}");
+        // The route shows no login.
+        assert_eq!(
+            format!("{network:?}"),
+            format!("Network::Proxy {{ proxy: {route}, onion: None }}")
+        );
     }
-    let ipv6 = Network::new(Environment::Production, Some("socks5h://[::1]:9050"), false).unwrap();
-    let Route::Socks { host, port, .. } = &*ipv6.0 else {
-        panic!("a proxy route");
-    };
-    assert_eq!((host.as_str(), *port), ("::1", 9050));
+    let long = "a".repeat(256);
     for (proxy, message) in [
         ("socks5://127.0.0.1:9050", "use socks5h://"),
-        ("http://127.0.0.1:8118", "must be a SOCKS5 proxy URL"),
-        ("localhost:9050", "must be a SOCKS5 proxy URL"),
+        (
+            "https://proxy.example:443",
+            "must be a socks5h:// or http:// URL",
+        ),
+        (
+            "socks4a://127.0.0.1:9050",
+            "must be a socks5h:// or http:// URL",
+        ),
+        ("localhost:9050", "must be a socks5h:// or http:// URL"),
         ("127.0.0.1:9050", "invalid proxy URL"),
         ("socks5h://127.0.0.1", "needs a host and a port"),
         ("socks5h://:9050", "invalid proxy URL"),
         (
-            "socks5h://user:secret@127.0.0.1:9050",
-            "takes only a host and a port",
+            "socks5h://user@127.0.0.1:9050",
+            "a username and a password of 1 to 255 bytes each",
         ),
         (
-            "socks5h://user@127.0.0.1:9050",
-            "takes only a host and a port",
+            "socks5h://:secret@127.0.0.1:9050",
+            "a username and a password of 1 to 255 bytes each",
         ),
+        (
+            &format!("socks5h://{long}:secret@127.0.0.1:9050"),
+            "a username and a password of 1 to 255 bytes each",
+        ),
+        (
+            "http://us%3Aer:secret@proxy.example:3128",
+            "username cannot contain a colon",
+        ),
+        ("socks5h://%FF:secret@127.0.0.1:9050", "must be UTF-8"),
         (
             "socks5h://127.0.0.1:9050/tor",
-            "takes only a host and a port",
+            "takes only a login, a host and a port",
         ),
         (
             "socks5h://127.0.0.1:9050?isolate=1",
-            "takes only a host and a port",
+            "takes only a login, a host and a port",
         ),
         (
-            "socks5h://127.0.0.1:9050#tor",
-            "takes only a host and a port",
+            "http://user:secret@127.0.0.1:9050#tor",
+            "takes only a login, a host and a port",
         ),
     ] {
         let refusal = refusal_of(Environment::Production, Some(proxy), false);
@@ -184,7 +245,7 @@ fn services(api: &str) -> OnionServices {
 #[test]
 fn the_onion_address_serves_every_host_of_its_environment_once_evidence_names_it() {
     let network = Network::new(Environment::Staging, Some(PROXY), true).unwrap();
-    let Route::Socks {
+    let Route::Proxied {
         onion: Some(onion), ..
     } = &*network.0
     else {
@@ -200,25 +261,25 @@ fn the_onion_address_serves_every_host_of_its_environment_once_evidence_names_it
     );
     assert_eq!(
         format!("{network:?}"),
-        "Network::Socks { proxy: 127.0.0.1:9050, onion: Some(Unknown) }"
+        "Network::Proxy { proxy: socks5h://127.0.0.1:9050, onion: Some(Unknown) }"
     );
     // Clones share the route, so the evidence client teaches every connection.
     network.clone().learn(Some(&services("first")));
     assert_eq!(
         format!("{network:?}"),
-        "Network::Socks { proxy: 127.0.0.1:9050, onion: Some(Named(\"first.onion\")) }"
+        "Network::Proxy { proxy: socks5h://127.0.0.1:9050, onion: Some(Named(\"first.onion\")) }"
     );
     network.learn(None);
     assert_eq!(
         format!("{network:?}"),
-        "Network::Socks { proxy: 127.0.0.1:9050, onion: Some(Unpublished) }"
+        "Network::Proxy { proxy: socks5h://127.0.0.1:9050, onion: Some(Unpublished) }"
     );
     // Without onion there is nothing to learn.
     let plain = Network::new(Environment::Staging, Some(PROXY), false).unwrap();
     plain.learn(Some(&services("first")));
     assert_eq!(
         format!("{plain:?}"),
-        "Network::Socks { proxy: 127.0.0.1:9050, onion: None }"
+        "Network::Proxy { proxy: socks5h://127.0.0.1:9050, onion: None }"
     );
 }
 
@@ -426,16 +487,12 @@ async fn the_onion_address_replaces_only_its_environment_s_hosts() {
             Ok(host.to_owned())
         );
     }
-    // Evidence that names no address leaves only the exit, which the API and E2EE refuse.
-    assert_eq!(
-        proxied_target(true, &[Some(&first), None], "evidence.stogas.ai").await,
-        Ok("evidence.stogas.ai".to_owned())
-    );
-    for host in ["api.stogas.ai", "e2ee.stogas.ai"] {
-        let refusal = proxied_target(true, &[Some(&first), None], host)
-            .await
-            .unwrap_err();
-        assert!(refusal.contains("names no onion address"), "{refusal}");
+    // Evidence that names no address leaves the exit, as for a site without one.
+    for host in ["evidence.stogas.ai", "api.stogas.ai", "e2ee.stogas.ai"] {
+        assert_eq!(
+            proxied_target(true, &[Some(&first), None], host).await,
+            Ok(host.to_owned())
+        );
     }
     // Without onion, the proxy reaches the same hosts by name.
     assert_eq!(
@@ -474,12 +531,14 @@ async fn other_proxies_fail_clearly() {
         (
             [5, 2],
             vec![],
-            "the proxy requires a login, which Stogas doesn't send",
+            "the proxy requires a login; give it in the URL, as \
+             socks5h://username:password@host:port",
         ),
         (
             [5, 0xFF],
             vec![],
-            "the proxy requires a login, which Stogas doesn't send",
+            "the proxy requires a login; give it in the URL, as \
+             socks5h://username:password@host:port",
         ),
         // An HTTP proxy answers in text.
         (*b"HT", vec![], "the proxy does not speak SOCKS5"),
@@ -555,4 +614,296 @@ async fn a_silent_proxy_times_out() {
         "connecting to api.stogas.ai through the proxy timed out"
     );
     assert_eq!(started.elapsed(), PROXIED_CONNECT);
+}
+
+/// A SOCKS5 proxy for one connection that requires a login. It answers the login with `status`
+/// and, when that accepts it, the request with success and then "ready". The task returns the
+/// username and password that the client sent.
+async fn requiring_login(status: u8) -> (SocketAddr, JoinHandle<(String, String)>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut greeting = [0; 3];
+        socket.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(greeting, [5, 1, 2], "the client offers only its login");
+        socket.write_all(&[5, 2]).await.unwrap();
+        assert_eq!(socket.read_u8().await.unwrap(), 1, "RFC 1929's version");
+        let mut login = Vec::new();
+        for _ in 0..2 {
+            let mut part = vec![0; usize::from(socket.read_u8().await.unwrap())];
+            socket.read_exact(&mut part).await.unwrap();
+            login.push(String::from_utf8(part).unwrap());
+        }
+        socket.write_all(&[1, status]).await.unwrap();
+        if status == 0 {
+            let mut request = vec![0; 5];
+            socket.read_exact(&mut request).await.unwrap();
+            let mut rest = vec![0; usize::from(request[4]) + 2];
+            socket.read_exact(&mut rest).await.unwrap();
+            socket
+                .write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0])
+                .await
+                .unwrap();
+            socket.write_all(b"ready").await.unwrap();
+            let _ = socket.read(&mut [0; 1]).await;
+        }
+        let password = login.pop().unwrap();
+        (login.pop().unwrap(), password)
+    });
+    (address, task)
+}
+
+#[tokio::test]
+async fn a_socks5_login_goes_to_the_proxy() {
+    let (address, proxy) = requiring_login(0).await;
+    let url = format!("socks5h://run-1:p%40ss@{address}");
+    let network = Network::new(Environment::Production, Some(&url), false).unwrap();
+    ready(network.connect("api.stogas.ai", 443).await.unwrap()).await;
+    assert_eq!(
+        proxy.await.unwrap(),
+        ("run-1".to_owned(), "p@ss".to_owned())
+    );
+    let (address, proxy) = requiring_login(1).await;
+    let url = format!("socks5h://run-1:wrong@{address}");
+    let network = Network::new(Environment::Production, Some(&url), false).unwrap();
+    let error = network.connect("api.stogas.ai", 443).await.unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    assert_eq!(error.to_string(), "the proxy rejected its login");
+    proxy.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_proxy_without_logins_refuses_one() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("socks5h://run-1:secret@{}", listener.local_addr().unwrap());
+    let _proxy = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut greeting = [0; 3];
+        socket.read_exact(&mut greeting).await.unwrap();
+        socket.write_all(&[5, 0xFF]).await.unwrap();
+        let _ = socket.read(&mut [0; 1]).await;
+    });
+    let network = Network::new(Environment::Production, Some(&url), false).unwrap();
+    let error = network.connect("api.stogas.ai", 443).await.unwrap_err();
+    assert_eq!(error.to_string(), "the proxy accepts no login");
+}
+
+/// An HTTP proxy for one connection. It answers the CONNECT request with `response`, then sends
+/// "ready" when `opens` says the response opened a tunnel. The task returns the request head.
+async fn http_answering(response: &'static [u8], opens: bool) -> (String, JoinHandle<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(socket.read_u8().await.unwrap());
+        }
+        socket.write_all(response).await.unwrap();
+        if opens {
+            socket.write_all(b"ready").await.unwrap();
+        }
+        let _ = socket.read(&mut [0; 1]).await;
+        String::from_utf8(head).unwrap()
+    });
+    (url, task)
+}
+
+#[tokio::test]
+async fn an_http_proxy_tunnels_to_the_host_by_name() {
+    let (url, proxy) = http_answering(
+        b"HTTP/1.1 200 Connection established\r\nVia: 1.1 proxy\r\n\r\n",
+        true,
+    )
+    .await;
+    let network = Network::new(Environment::Production, Some(&url), false).unwrap();
+    let stream = network.connect("api.stogas.ai", 443).await.unwrap();
+    assert!(stream.nodelay().unwrap());
+    // The tunnel starts right after the response head.
+    ready(stream).await;
+    assert_eq!(
+        proxy.await.unwrap(),
+        "CONNECT api.stogas.ai:443 HTTP/1.1\r\nHost: api.stogas.ai:443\r\n\r\n"
+    );
+    // A login goes in Proxy-Authorization, and an IPv6 literal in brackets.
+    let (url, proxy) = http_answering(b"HTTP/1.0 200 OK\r\n\r\n", true).await;
+    let url = url.replacen("http://", "http://me:p%40ss@", 1);
+    let network = Network::new(Environment::Production, Some(&url), false).unwrap();
+    ready(network.connect("[2001:db8::1]", 8443).await.unwrap()).await;
+    assert_eq!(
+        proxy.await.unwrap(),
+        format!(
+            "CONNECT [2001:db8::1]:8443 HTTP/1.1\r\nHost: [2001:db8::1]:8443\r\n\
+             Proxy-Authorization: Basic {}\r\n\r\n",
+            BASE64.encode("me:p@ss")
+        )
+    );
+}
+
+#[tokio::test]
+async fn http_proxy_refusals_explain_themselves() {
+    const LOGIN: &[u8] = b"HTTP/1.1 407 Proxy Authentication Required\r\n\
+                           Proxy-Authenticate: Basic realm=\"corp\"\r\n\r\n";
+    for (response, login, kind, message) in [
+        (
+            LOGIN,
+            false,
+            io::ErrorKind::PermissionDenied,
+            "the proxy requires a login; give it in the URL, as \
+             http://username:password@host:port",
+        ),
+        (
+            LOGIN,
+            true,
+            io::ErrorKind::PermissionDenied,
+            "the proxy rejected its login",
+        ),
+        (
+            &b"HTTP/1.1 403 Forbidden\r\n\r\n"[..],
+            false,
+            io::ErrorKind::ConnectionRefused,
+            "the proxy could not connect to api.stogas.ai: HTTP status 403",
+        ),
+        // Tor's SOCKS port answers an HTTP request so.
+        (
+            &b"HTTP/1.0 501 Tor is not an HTTP Proxy\r\nContent-Type: text/html\r\n\r\n"[..],
+            false,
+            io::ErrorKind::ConnectionRefused,
+            "the proxy could not connect to api.stogas.ai: HTTP status 501",
+        ),
+        (
+            &b"\x05\xff\r\n\r\n"[..],
+            false,
+            io::ErrorKind::InvalidData,
+            "the proxy does not speak HTTP",
+        ),
+        (
+            &b"HTTP/1.1 2000 OK\r\n\r\n"[..],
+            false,
+            io::ErrorKind::InvalidData,
+            "the proxy does not speak HTTP",
+        ),
+    ] {
+        let (url, _proxy) = http_answering(response, false).await;
+        let url = if login {
+            url.replacen("http://", "http://me:secret@", 1)
+        } else {
+            url
+        };
+        let network = Network::new(Environment::Production, Some(&url), false).unwrap();
+        let error = network.connect("api.stogas.ai", 443).await.unwrap_err();
+        assert_eq!((error.kind(), error.to_string().as_str()), (kind, message));
+    }
+}
+
+#[tokio::test]
+async fn an_endless_http_response_head_is_refused() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let _proxy = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(socket.read_u8().await.unwrap());
+        }
+        let _ = socket.write_all(&vec![b'a'; MAX_PROXY_RESPONSE + 1]).await;
+        let _ = socket.read(&mut [0; 1]).await;
+    });
+    let network = Network::new(Environment::Production, Some(&url), false).unwrap();
+    let error = network.connect("api.stogas.ai", 443).await.unwrap_err();
+    assert_eq!(error.to_string(), "the proxy's response is too long");
+}
+
+#[tokio::test]
+async fn an_http_proxy_never_sees_a_host_that_could_end_its_request_line() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let network = Network::new(Environment::Production, Some(&url), false).unwrap();
+    for host in [
+        "api.stogas.ai\r\nX-Injected: 1",
+        "api stogas",
+        "api.stogas.ai/v1",
+        "",
+    ] {
+        let error = network.connect(host, 443).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{host:?}");
+    }
+    let accepted = tokio::time::timeout(Duration::from_millis(50), listener.accept()).await;
+    assert!(accepted.is_err(), "the proxy saw no connection");
+}
+
+#[test]
+fn no_proxy_names_hosts_and_their_subdomains() {
+    let bypass = bypass_list(
+        " localhost, .Example.COM ,*.stogas.ai, api.test:443, evidence.test., [::1], , 10.0.0.0/8",
+    );
+    assert_eq!(
+        bypass,
+        [
+            "localhost",
+            "example.com",
+            "stogas.ai",
+            "api.test",
+            "evidence.test",
+            "[::1]",
+            "10.0.0.0/8"
+        ]
+    );
+    for (host, expected) in [
+        ("localhost", true),
+        ("LOCALHOST.", true),
+        ("example.com", true),
+        ("www.example.com", true),
+        ("notexample.com", false),
+        ("stogas.ai", true),
+        ("api.stogas.ai", true),
+        ("stogas.ai.example", false),
+        ("api.test", true),
+        ("v1.api.test", true),
+        ("test", false),
+        ("evidence.test", true),
+    ] {
+        assert_eq!(bypassed(&bypass, host), expected, "{host}");
+    }
+    assert!(bypassed(&bypass_list("*"), "any.example"));
+    assert!(!bypassed(&bypass_list(""), "localhost"));
+    assert!(!bypassed(&bypass_list(" , ,"), "localhost"));
+}
+
+#[tokio::test]
+async fn bypassed_hosts_connect_directly_but_onion_hosts_never_do() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (url, proxy) = answering([5, 0], vec![5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+    let network = Network::bypassing(
+        Environment::Production,
+        Some(&url),
+        false,
+        "127.0.0.1, localhost",
+    )
+    .unwrap();
+    assert_eq!(
+        format!("{network:?}"),
+        format!(
+            "Network::Proxy {{ proxy: {url}, onion: None, bypass: [\"127.0.0.1\", \"localhost\"] }}"
+        )
+    );
+    let stream = network.connect("127.0.0.1", address.port()).await.unwrap();
+    assert_eq!(stream.peer_addr().unwrap(), address);
+    assert!(stream.nodelay().unwrap());
+    // Other hosts take the proxy.
+    ready(network.connect("api.stogas.ai", 443).await.unwrap()).await;
+    assert_eq!(
+        parse_request(&proxy.await.unwrap()),
+        ("api.stogas.ai".to_owned(), 443)
+    );
+    // Only the proxy reaches the onion address, so a host that goes there ignores the list.
+    let (url, proxy) = answering([5, 0], vec![5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+    let network = Network::bypassing(Environment::Production, Some(&url), true, "*").unwrap();
+    network.learn(Some(&services("first")));
+    ready(network.connect("api.stogas.ai", 443).await.unwrap()).await;
+    assert_eq!(parse_request(&proxy.await.unwrap()).0, "first.onion");
+    let stream = network.connect("127.0.0.1", address.port()).await.unwrap();
+    assert_eq!(stream.peer_addr().unwrap(), address);
 }

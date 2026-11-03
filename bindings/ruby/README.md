@@ -20,4 +20,4 @@ The package wraps the Rust verifier and includes its native library. It performs
 
 Bypass proxies for the returned loopback URL. With Ruby Net::HTTP, set `ignore_eof = false` so truncated responses cannot look complete. Choose retries in the OpenAI client; interrupted inference may already have executed.
 
-`proxy:` sends every connection to Stogas through a SOCKS5 proxy, such as Tor's `socks5h://127.0.0.1:9050`. `onion: true` also reaches the environment at the onion address that its signed evidence names, through that proxy.
+`proxy:` sends every connection to Stogas through a SOCKS5 or HTTP proxy, such as Tor's `socks5h://127.0.0.1:9050` or `http://proxy.example:3128`. A `username:password@` in the URL logs in, and Tor gives each login its own circuits. `onion: true` also reaches the environment at the onion address that its signed evidence names, through that proxy. While the evidence names none, connections leave Tor through the proxy's exit.

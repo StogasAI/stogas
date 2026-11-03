@@ -87,6 +87,7 @@ pub unsafe extern "C" fn stogas_transport_start(
             base_url: configuration.base_url,
             proxy: configuration.proxy,
             onion: configuration.onion,
+            no_proxy: None,
         };
         let transport = ManagedTransport::start(&options)?;
         let base_url = transport.base_url().to_owned();

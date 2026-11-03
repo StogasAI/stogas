@@ -24,8 +24,10 @@ import (
 var ErrTransportClosed = errors.New("stogas transport is closed")
 
 // TransportOptions controls one in-process managed Stogas connection. Proxy is a
-// socks5h://host:port proxy, such as Tor's, for every connection; Onion reaches the
-// environment at the onion address that its verified evidence names, through Proxy.
+// socks5h:// or http:// proxy for every connection, such as Tor's socks5h://127.0.0.1:9050,
+// with an optional username:password@; Onion reaches the environment at the onion address
+// that its verified evidence names, through Proxy, and leaves through the proxy's exit while
+// the evidence names none.
 type TransportOptions struct {
 	Environment    string `json:"environment,omitempty"`
 	Security       string `json:"security,omitempty"`

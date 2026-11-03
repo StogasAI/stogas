@@ -90,11 +90,17 @@ pub struct TransportOptions {
     pub max_connections: usize,
     /// Optional HTTPS origin; compiled evidence authorities remain fixed.
     pub base_url: Option<String>,
-    /// A `socks5h://host:port` proxy, such as Tor's, for every connection.
+    /// A `socks5h://` or `http://` proxy for every connection, such as Tor's
+    /// `socks5h://127.0.0.1:9050`. A login in the URL, as `socks5h://username:password@host:port`,
+    /// gives Tor's connections their own circuits.
     pub proxy: Option<String>,
     /// Reach the environment's API, E2EE and evidence hosts at the onion address that its
-    /// verified evidence names, through `proxy`. The first evidence comes through the proxy's exit.
+    /// verified evidence names, through `proxy`. The first evidence comes through the proxy's
+    /// exit, and so does everything while the evidence names no address.
     pub onion: bool,
+    /// Hosts that connect directly instead of through `proxy`, as `NO_PROXY` lists them: names
+    /// that also cover their subdomains, or `*` for every host.
+    pub no_proxy: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -117,6 +123,7 @@ impl Default for TransportOptions {
             base_url: None,
             proxy: None,
             onion: false,
+            no_proxy: None,
         }
     }
 }
@@ -138,7 +145,12 @@ impl TransportOptions {
     /// # Errors
     /// Rejects an invalid proxy, or `onion` without a proxy.
     pub fn network(&self) -> Result<network::Network, TransportError> {
-        network::Network::new(self.environment, self.proxy.as_deref(), self.onion)
+        network::Network::bypassing(
+            self.environment,
+            self.proxy.as_deref(),
+            self.onion,
+            self.no_proxy.as_deref().unwrap_or_default(),
+        )
     }
 }
 

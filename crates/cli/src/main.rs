@@ -14,6 +14,7 @@ mod credentials;
 mod customer_encryption;
 mod dashboard;
 mod evidence_archive;
+mod route;
 mod sdk_release;
 mod topup;
 
@@ -23,6 +24,7 @@ use clap::{
     builder::{BoolishValueParser, PossibleValuesParser, TypedValueParser},
 };
 use http::Method;
+use route::Route;
 use sha2::{Digest as _, Sha256};
 use std::{
     io::{IsTerminal as _, Write as _},
@@ -40,10 +42,28 @@ use tokio::io::AsyncReadExt as _;
 #[derive(Parser)]
 #[command(name = "stogas", version, about)]
 struct Cli {
-    /// A SOCKS5 proxy for every connection, such as Tor's `socks5h://127.0.0.1:9050`.
+    /// Connect through Tor: the tor service on port 9050, or else Tor Browser on 9150, or the
+    /// port or address given, as --tor=9150. Each run gets its own Tor circuits, and reaches
+    /// Stogas at the onion address that its verified evidence names.
+    #[arg(
+        long,
+        global = true,
+        env = "STOGAS_TOR",
+        value_name = "PORT",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "on",
+        value_parser = route::parse_tor
+    )]
+    tor: Option<route::Tor>,
+    /// A proxy for every connection: SOCKS5 as `socks5h://host:port`, or HTTP as
+    /// `http://host:port`, with an optional `username:password@`. Without --tor or --proxy, the
+    /// CLI takes `https_proxy`, `HTTPS_PROXY`, `all_proxy` or `ALL_PROXY`, except for the hosts
+    /// that `no_proxy` or `NO_PROXY` names.
     #[arg(long, global = true, env = "STOGAS_PROXY", value_name = "URL")]
     proxy: Option<String>,
-    /// Reach the environment at the onion address that its verified evidence names, through --proxy.
+    /// Reach the environment at the onion address that its verified evidence names, through the
+    /// proxy. --tor turns this on.
     #[arg(long, global = true, env = "STOGAS_ONION", value_parser = BoolishValueParser::new())]
     onion: bool,
     #[command(subcommand)]
@@ -238,13 +258,41 @@ async fn main() -> Result<()> {
     }
 }
 
+impl Command {
+    /// Whether the command connects anywhere.
+    const fn connects(&self) -> bool {
+        match self {
+            Self::EncryptionKey { .. } | Self::Encrypt { .. } | Self::Verify(_) => false,
+            Self::VerifyRelease { evidence, .. } => evidence.is_none(),
+            Self::Proof(args) => args.evidence.is_none(),
+            _ => true,
+        }
+    }
+}
+
+/// The route of a command that connects, and a direct one for the others, which never look for
+/// Tor or a proxy.
+async fn choose_route(
+    command: &Command,
+    tor: Option<&route::Tor>,
+    proxy: Option<&str>,
+    onion: bool,
+) -> Result<Route> {
+    if !command.connects() {
+        return Ok(Route::default());
+    }
+    route::resolve(tor, proxy, onion, |name| std::env::var(name).ok()).await
+}
+
 async fn run() -> Result<()> {
     let Cli {
+        tor,
         proxy,
         onion,
         command,
     } = Cli::parse();
-    let network = |environment| Network::new(environment, proxy.as_deref(), onion);
+    let route = choose_route(&command, tor.as_ref(), proxy.as_deref(), onion).await?;
+    let network = |environment| route.network(environment);
     // The dashboard serves production accounts.
     let dashboard = || network(Environment::Production);
     match command {
@@ -284,8 +332,9 @@ async fn run() -> Result<()> {
                     security,
                     base_url: upstream,
                     max_connections: 1,
-                    proxy: proxy.clone(),
-                    onion,
+                    proxy: route.proxy.clone(),
+                    onion: route.onion,
+                    no_proxy: route.no_proxy.clone(),
                 },
                 timeout,
             )
@@ -329,7 +378,7 @@ async fn run() -> Result<()> {
                 args.json,
             )?;
         }
-        Command::Serve(args) => run_serve(args, proxy.clone(), onion).await?,
+        Command::Serve(args) => run_serve(args, route).await?,
     }
     Ok(())
 }
@@ -375,15 +424,16 @@ async fn run_verify(input: VerifyArgs) -> Result<()> {
     print_output(&output, input.json, now)
 }
 
-async fn run_serve(input: ServeArgs, proxy: Option<String>, onion: bool) -> Result<()> {
+async fn run_serve(input: ServeArgs, route: Route) -> Result<()> {
     stogas::serve(stogas::ServeOptions {
         transport: stogas::TransportOptions {
             environment: input.environment,
             security: input.security,
             max_connections: input.max_connections,
             base_url: input.upstream,
-            proxy,
-            onion,
+            proxy: route.proxy,
+            onion: route.onion,
+            no_proxy: route.no_proxy,
         },
         listen: input.listen,
         browser_origin: input.browser_origin,
@@ -536,6 +586,55 @@ fn wall_clock_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tor_is_a_flag_with_an_optional_port() {
+        // STOGAS_TOR from the test's environment would change every case.
+        if std::env::var_os("STOGAS_TOR").is_some() {
+            return;
+        }
+        for (arguments, expected) in [
+            (&["stogas", "signup"][..], None),
+            (&["stogas", "--tor", "signup"], Some(route::Tor::Find)),
+            (&["stogas", "login", "--tor"], Some(route::Tor::Find)),
+            (
+                &["stogas", "--tor=9150", "login"],
+                Some(route::Tor::At("127.0.0.1".into(), 9150)),
+            ),
+            (&["stogas", "--tor=off", "logout"], Some(route::Tor::Off)),
+        ] {
+            let cli = Cli::try_parse_from(arguments).unwrap();
+            assert_eq!(cli.tor, expected, "{arguments:?}");
+        }
+        // The port needs an equals sign, so a subcommand never becomes one.
+        assert!(Cli::try_parse_from(["stogas", "--tor", "9150", "signup"]).is_err());
+        assert!(Cli::try_parse_from(["stogas", "--tor=tor", "signup"]).is_err());
+    }
+
+    #[test]
+    fn offline_commands_never_choose_a_route() {
+        for (arguments, connects) in [
+            (&["stogas", "signup"][..], true),
+            (&["stogas", "probe"], true),
+            (&["stogas", "serve"], true),
+            (&["stogas", "verify", "evidence.json"], false),
+            (&["stogas", "encryption-key", "--output", "key"], false),
+            (&["stogas", "verify-release", "dist"], true),
+            (
+                &[
+                    "stogas",
+                    "verify-release",
+                    "dist",
+                    "--evidence",
+                    "latest.json",
+                ],
+                false,
+            ),
+        ] {
+            let cli = Cli::try_parse_from(arguments).unwrap();
+            assert_eq!(cli.command.connects(), connects, "{arguments:?}");
+        }
+    }
 
     #[test]
     fn serve_uses_explicit_environment_and_transport_profile() {
