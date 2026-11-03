@@ -156,7 +156,7 @@ def rebuild(release, output):
     Xcode runs only on Apple hardware, so the Apple compiler outputs come from
     the release. Packaging repacks each Apple archive with the pinned packer,
     which reproduces the released bytes."""
-    manifest = check_release(release, reports=False)
+    manifest, _ = check_release(release, reports=False)
     if output.exists():
         raise ValueError("Rebuild output must be a new directory")
     apple = sorted(name for name, target in TARGETS.items() if target["os"] in {"macos", "ios"})
@@ -230,6 +230,7 @@ if __name__ == "__main__":
     qualify_parser.add_argument("--package", action="append", default=[], help="Qualify a subset; release approval still requires every declared package")
     qualify_parser.add_argument("--device", help="Explicit Android adb serial or iOS destination UDID")
     qualify_parser.add_argument("--device-farm", help="AWS Device Farm project ARN for tests on a real phone")
+    qualify_parser.add_argument("--preview", action="store_true", help="Run only the offline cases, for a pre-release published before production serves evidence")
     gate_parser = commands.add_parser("gate", help="Require complete packages and their qualification")
     gate_parser.add_argument("directory", type=Path)
     gate_parser.add_argument("--packages-only", action="store_true", help="Validate a draft's complete artifacts before post-build qualification")
@@ -248,18 +249,19 @@ if __name__ == "__main__":
         rebuild(args.release.resolve(), args.out.resolve())
         print("The rebuild reproduces every release artifact")
     elif args.command == "gate":
-        check_release(args.directory.resolve(), reports=not args.packages_only)
-        print("Complete production release gate passed")
+        _, preview = check_release(args.directory.resolve(), reports=not args.packages_only)
+        print("Preview release gate passed: every offline case, no live case" if preview else "Complete production release gate passed")
     elif args.command == "reports":
         packages = args.packages.resolve()
-        manifest = check_release(packages, reports=False)
+        manifest, _ = check_release(packages, reports=False)
         with release_source(packages, manifest) as source:
             targets = json.loads((source / "release/targets.json").read_text())["targets"]
-        combine_reports(args.paths, packages / "qualification.json", digest(packages / "release-manifest.json"), targets)
+        if combine_reports(args.paths, packages / "qualification.json", digest(packages / "release-manifest.json"), targets, manifest["version"]):
+            print("Qualified a preview: every offline case passed, and no live case ran")
     elif args.command == "qualify":
         packages = args.packages.resolve()
         with release_source(packages, read_document(packages / "release-manifest.json")) as source:
-            subprocess.run([sys.executable, "-B", str(source / "release/qualify.py"), str(packages), "--platform", args.platform, "--out", str(args.out.resolve()), *[part for package in args.package for part in ("--package", package)], *(["--device", args.device] if args.device else []), *(["--device-farm", args.device_farm] if args.device_farm else [])], check=True)
+            subprocess.run([sys.executable, "-B", str(source / "release/qualify.py"), str(packages), "--platform", args.platform, "--out", str(args.out.resolve()), *[part for package in args.package for part in ("--package", package)], *(["--device", args.device] if args.device else []), *(["--device-farm", args.device_farm] if args.device_farm else []), *(["--preview"] if args.preview else [])], check=True)
     else:
         recorded = args.build.resolve() / "source/release/release.py"
         if recorded.resolve() != Path(__file__).resolve():

@@ -10,10 +10,10 @@ import tempfile
 from pathlib import Path
 
 from artifacts import unpack, wheel
-from gate import CASES, attempt
+from gate import attempt
 
 
-def qualify(source, packages, version, platform, target, requested):
+def qualify(source, packages, version, platform, target, requested, cases):
     windows = target["os"] == "windows"
     if sys.platform != ("win32" if windows else "darwin"):
         raise ValueError("Desktop qualification must run on the requested operating system")
@@ -33,7 +33,7 @@ def qualify(source, packages, version, platform, target, requested):
         # production gateways.
         def qualify_cases(package, executable, version_arguments, arguments, directory=work, environment=None):
             runtime = subprocess.check_output([str(executable), *version_arguments], env=env, text=True, stderr=subprocess.STDOUT).strip()
-            for case in CASES:
+            for case in cases:
                 outcome = attempt(f"{package}/{case}", lambda: run(arguments, directory, {**(environment or env), **({"STOGAS_LIVE": "prod"} if case == "live" else {})}))
                 checks.append({"platform": platform, "package": package, "case": case, "runtime": host.platform() + "; " + runtime, "outcome": outcome})
         shutil.copytree(source / "tests/fixtures", work / "tests/fixtures")

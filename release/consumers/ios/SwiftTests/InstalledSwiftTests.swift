@@ -3,7 +3,8 @@ import Stogas
 import XCTest
 
 final class InstalledSwiftTests: XCTestCase {
-    // Device Farm cannot set environment variables, so the live part always uses production.
+    // Device Farm cannot set environment variables, so the live part always uses production. A
+    // preview, published before production serves evidence, is built without it.
     func testSwiftPackage() async throws {
         for options in [TransportOptions(environment: "staging"), .init(security: "unsupported"), .init(maxConnections: 0)] {
             XCTAssertThrowsError(try Transport(options: options)) { error in
@@ -13,6 +14,7 @@ final class InstalledSwiftTests: XCTestCase {
                 XCTAssertFalse(code.isEmpty)
             }
         }
+        #if !STOGAS_OFFLINE_ONLY
         let configuration = URLSessionConfiguration.ephemeral
         configuration.connectionProxyDictionary = [:]
         let session = URLSession(configuration: configuration)
@@ -37,5 +39,6 @@ final class InstalledSwiftTests: XCTestCase {
                 XCTAssertEqual(error as? VerificationError, .closed)
             }
         }
+        #endif
     }
 }

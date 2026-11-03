@@ -30,6 +30,8 @@ targets:
       - sdk: CoreFoundation.framework
     settings:
       HEADER_SEARCH_PATHS: $(SRCROOT)/Native
+      # A preview sets STOGAS_TEST_CONDITIONS=STOGAS_OFFLINE_ONLY to leave out the live part.
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) $(STOGAS_TEST_CONDITIONS)
       SWIFT_OBJC_BRIDGING_HEADER: NativeTests/Bridge.h
       OTHER_LDFLAGS:
         - $(inherited)
@@ -41,6 +43,8 @@ targets:
     dependencies:
       - target: Host
       - package: Stogas
+    settings:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) $(STOGAS_TEST_CONDITIONS)
 schemes:
   StogasConsumer:
     build:

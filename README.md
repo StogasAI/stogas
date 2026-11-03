@@ -39,6 +39,21 @@ stogas verify-release ./release      # verify downloaded release assets
 
 Streamed content can arrive before final verification. Treat a response as complete only after verified completion. See the [CLI guide](https://stogas.ai/docs/cli) for sign-in, top-ups, customer encryption and proofs.
 
+## Previews
+
+Until Stogas's production gateways serve evidence, each release is a preview, such as `0.1.0-alpha.1`. Every package passed its offline tests on every platform, but a preview cannot connect until production starts, and Stogas does not sign previews. Package managers skip pre-releases unless asked:
+
+```console
+pip install --pre stogas
+npm install stogas@next
+cargo install stogas-cli --version 0.1.0-alpha.1 --locked
+gem install stogas --pre
+dotnet add package Stogas --prerelease
+go get github.com/StogasAI/stogas/go@v0.1.0-alpha.1
+```
+
+Maven uses `ai.stogas:stogas:0.1.0-alpha.1`. Check a preview's downloads with GitHub's build proof: `gh attestation verify <file> --repo StogasAI/stogas`.
+
 ## Contributing
 
 ```console

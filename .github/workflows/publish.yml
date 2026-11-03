@@ -54,18 +54,21 @@ jobs:
           gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/approved"
       # Stogas signs a release only after rebuilding it, so a draft made public without
       # that check publishes nothing. The CLI comes from the tagged source, not the release.
-      - name: Require the Stogas signature on every file
-        run: |
-          cargo build --locked --package stogas-cli
-          target/debug/stogas verify-release "$RUNNER_TEMP/approved"
-      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18
-        id: crates
-      - name: Publish the exact crate archives in dependency order
+      # Stogas does not sign a preview, made before production serves evidence: its gate
+      # and GitHub's build proof stand alone, and only a pre-release can be one.
+      - name: Require the Stogas signature on every file, or a preview's build proof
         env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.crates.outputs.token }}
-        run: python3 -B release/publish.py crates "$RUNNER_TEMP/approved"
-      - name: Publish the exact npm archives with trusted publishing and provenance
-        run: python3 -B release/publish.py npm "$RUNNER_TEMP/approved"
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -e "$RUNNER_TEMP/approved/stogas-signature.json" ]; then
+            cargo build --locked --package stogas-cli
+            target/debug/stogas verify-release "$RUNNER_TEMP/approved"
+          else
+            python3 -B release/publish.py preview "$RUNNER_TEMP/approved"
+          fi
+      # The registries that need no first-release step from the owner go first, so one
+      # that still waits for it holds up nothing else.
       - name: Stage approved wheels
         run: |
           mkdir "$RUNNER_TEMP/wheels"
@@ -98,10 +101,43 @@ jobs:
         env:
           NUGET_API_KEY: ${{ steps.nuget.outputs.NUGET_API_KEY }}
         run: python3 -B release/publish.py nuget "$RUNNER_TEMP/approved"
-      - uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a
-      - name: Publish the exact platform gems
-        run: python3 -B release/publish.py ruby "$RUNNER_TEMP/approved"
       - name: Publish the approved Go module as a module tag
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 -B release/publish.py go "$RUNNER_TEMP/approved"
+      # crates.io and npm trust this workflow only for packages that exist, and RubyGems
+      # only once the owner added a pending publisher, so their first versions wait for
+      # the owner's one-time steps; run this workflow again afterwards.
+      - name: Find the registries that still wait for a first version
+        id: first
+        run: python3 -B release/publish.py first-versions >> "$GITHUB_OUTPUT"
+      - if: steps.first.outputs.crates == 'false'
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18
+        id: crates
+      - if: steps.first.outputs.crates == 'false'
+        name: Publish the exact crate archives in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates.outputs.token }}
+        run: python3 -B release/publish.py crates "$RUNNER_TEMP/approved"
+      - if: steps.first.outputs.npm == 'false'
+        name: Publish the exact npm archives with trusted publishing and provenance
+        run: python3 -B release/publish.py npm "$RUNNER_TEMP/approved"
+      # A pending publisher for a new gem lasts only 12 hours, so a missing one skips RubyGems.
+      - uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a
+        id: rubygems
+        continue-on-error: ${{ steps.first.outputs.ruby == 'true' }}
+      - if: steps.rubygems.outcome == 'success'
+        name: Publish the exact platform gems
+        run: python3 -B release/publish.py ruby "$RUNNER_TEMP/approved"
+      - if: steps.first.outputs.crates == 'true' || steps.first.outputs.npm == 'true' || steps.rubygems.outcome != 'success'
+        name: Name the registries that wait for the owner's one-time steps
+        env:
+          CRATES: ${{ steps.first.outputs.crates }}
+          NPM: ${{ steps.first.outputs.npm }}
+          RUBYGEMS: ${{ steps.rubygems.outcome }}
+        run: |
+          waiting=()
+          if [ "$CRATES" = true ]; then waiting+=(crates.io); fi
+          if [ "$NPM" = true ]; then waiting+=(npm); fi
+          if [ "$RUBYGEMS" != success ]; then waiting+=(RubyGems); fi
+          echo "::warning::${waiting[*]} still wait for the owner's one-time steps; run this workflow again afterwards"

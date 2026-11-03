@@ -72,6 +72,13 @@ pub async fn verify_directory(
     let manifest_bytes = read(directory, MANIFEST).await?;
     let attestation = read(directory, ATTESTATION).await?;
     let qualification = read(directory, QUALIFICATION).await?;
+    if let Some(version) = unsigned_preview(directory, &manifest_bytes) {
+        bail!(
+            "SDK {version} is a preview, published before Stogas's production gateways served \
+             evidence, so Stogas did not sign it. Check its GitHub build proof instead: \
+             gh attestation verify <file> --repo StogasAI/stogas --bundle {ATTESTATION}"
+        );
+    }
     let signature = read(directory, SIGNATURE).await?;
     // An incomplete release fails before any request.
     let sigstore = sigstore(evidence, network).await?;
@@ -94,6 +101,16 @@ pub async fn verify_directory(
         out!("  {name}")?;
     }
     Ok(())
+}
+
+/// The version of a pre-release whose directory has no Stogas signature: only a preview, which this
+/// command cannot verify without one, is published that way.
+fn unsigned_preview(directory: &Path, manifest: &[u8]) -> Option<String> {
+    if directory.join(SIGNATURE).exists() {
+        return None;
+    }
+    let manifest: sdk_release::Manifest = serde_json::from_slice(manifest).ok()?;
+    manifest.version.contains('-').then_some(manifest.version)
 }
 
 /// Check every file other than the release metadata against the manifest.
@@ -145,7 +162,34 @@ mod tests {
     use sha2::{Digest as _, Sha256};
     use stogas_core::sdk_release::{METADATA, Manifest};
 
-    use super::verify_artifacts;
+    use super::{unsigned_preview, verify_artifacts};
+
+    #[test]
+    fn names_an_unsigned_preview_but_no_unsigned_release() {
+        let directory =
+            std::env::temp_dir().join(format!("stogas-sdk-preview-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let manifest = |version: &str| {
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "stogas.sdk-release.v1", "environment": "prod", "version": version,
+                "source": {"commit": "c".repeat(40), "sha256": "d".repeat(64), "dirty": false, "epoch": 1},
+                "targets": ["linux-amd64"], "artifacts": [],
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            unsigned_preview(&directory, &manifest("0.1.0-alpha.1")).as_deref(),
+            Some("0.1.0-alpha.1")
+        );
+        assert_eq!(unsigned_preview(&directory, &manifest("0.1.0")), None);
+        assert_eq!(unsigned_preview(&directory, b"{"), None);
+        std::fs::write(directory.join(super::SIGNATURE), b"{}").unwrap();
+        assert_eq!(
+            unsigned_preview(&directory, &manifest("0.1.0-alpha.1")),
+            None
+        );
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
 
     #[tokio::test]
     async fn checks_each_downloaded_artifact_and_rejects_other_files() {

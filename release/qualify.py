@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 from artifacts import unpack, verify_inventory, verify_source, wheel, write_json
-from gate import CASES, METADATA, attempt, read_document
+from gate import METADATA, attempt, cases, prerelease, read_document
 from package_bindings import MAVEN, DOTNET, RUBY
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,9 +35,12 @@ PYTHON_IMAGES = {
 }
 
 
-def qualify(packages, platform, output, requested=(), device=None, device_farm=None):
+def qualify(packages, platform, output, requested=(), device=None, device_farm=None, preview=False):
     manifest = read_document(packages / "release-manifest.json")
     version = manifest["version"]
+    if preview and not prerelease(version):
+        raise ValueError("Only a pre-release version can be a preview")
+    selected_cases = cases(preview)
 
     def verify_inputs():
         manifest_sha256 = verify_inventory(packages, manifest, METADATA & {path.name for path in packages.iterdir()})
@@ -53,18 +56,18 @@ def qualify(packages, platform, output, requested=(), device=None, device_farm=N
     target = targets.get(platform)
     if platform == "portable":
         from qualify_portable import qualify as runner
-        checks = runner(ROOT, packages, version, requested)
+        checks = runner(ROOT, packages, version, requested, selected_cases)
     elif target["os"] in {"windows", "macos"}:
         from qualify_desktop import qualify as runner
-        checks = runner(ROOT, packages, version, platform, target, requested)
+        checks = runner(ROOT, packages, version, platform, target, requested, selected_cases)
     elif target["os"] == "android":
         from qualify_android import qualify as runner
-        checks = runner(ROOT, packages, version, platform, target, requested, device, device_farm)
+        checks = runner(ROOT, packages, version, platform, target, requested, device, device_farm, selected_cases)
     elif target["os"] == "ios":
         from qualify_ios import qualify as runner
-        checks = runner(ROOT, packages, version, platform, target, requested, device, device_farm)
+        checks = runner(ROOT, packages, version, platform, target, requested, device, device_farm, selected_cases)
     else:
-        checks = qualify_linux(ROOT, packages, version, platform, target, requested)
+        checks = qualify_linux(ROOT, packages, version, platform, target, requested, selected_cases)
     if verify_inputs() != manifest_sha256:
         raise ValueError("Packages changed during qualification")
     failed = [f"{check['package']}/{check['case']}" for check in checks if check["outcome"] != "passed"]
@@ -73,7 +76,7 @@ def qualify(packages, platform, output, requested=(), device=None, device_farm=N
     write_json(output, {"schema": "stogas.sdk-qualification.v1", "environment": "prod", "manifest_sha256": manifest_sha256, "checks": checks})
 
 
-def qualify_linux(source, packages, version, platform, target, requested):
+def qualify_linux(source, packages, version, platform, target, requested, selected_cases):
     selected = set(requested or target["packages"])
     if not selected <= set(target["packages"]):
         raise ValueError("Requested package is not supported on this platform")
@@ -118,37 +121,41 @@ def qualify_linux(source, packages, version, platform, target, requested):
         relative_native = "/work/" + native.relative_to(work).as_posix()
         if "native" in selected:
             run(python_image, ["cc", "-Wall", "-Wextra", "-Werror", "native.c", "-L.", "-lstogas_ffi", "-o", "native-consumer"], directory=relative_native, case="offline")
-            for case in CASES:
+            for case in selected_cases:
                 qualify_case("native", python_image, ["./native-consumer"], case, directory=relative_native, environment=["LD_LIBRARY_PATH=."])
         if "cli" in selected:
             shutil.copyfile(source / "release/consumers/cli.py", work / "cli.py")
-            for case in CASES:
+            for case in selected_cases:
                 qualify_case("cli", python_image, ["/opt/python/cp310-cp310/bin/python", "-I", "/work/cli.py", relative_native + "/stogas", version, "/work/tests/fixtures"], case)
         if "python" in selected:
             python = "/opt/python/cp310-cp310/bin/python"
             name = wheel([path.name for path in packages.iterdir()], target)
             run(python_image, [python, "-m", "pip", "install", "--no-index", "--target", "/work/python", "/work/packages/" + name], case="offline")
-            for case in CASES:
+            for case in selected_cases:
                 qualify_case("python", python_image, [python, "-m", "unittest", "discover", "-s", "bindings/python/tests", "-p", "test_package.py", "-v"], case, environment=["PYTHONPATH=/work/python"])
         if "java" in selected:
             run(maven_image, ["mvn", "-B", "-ntp", "org.apache.maven.plugins:maven-install-plugin:3.1.4:install-file", f"-Dfile=/work/packages/stogas-{version}.jar", f"-DpomFile=/work/packages/stogas-{version}.pom"])
             test = ["mvn", "-B", "-ntp", "-f", "java/pom.xml", f"-Dstogas.version={version}", "test"]
-            # The live run also downloads the test plugins that the offline run uses.
-            qualify_case("java", maven_image, test, "live")
+            # The live run also downloads the test plugins that the offline run uses; a preview
+            # downloads them with a run that has a network but no live tests.
+            if "live" in selected_cases:
+                qualify_case("java", maven_image, test, "live")
+            else:
+                attempt("java/plugins", lambda: run(maven_image, test))
             qualify_case("java", maven_image, ["mvn", "-o", *test[1:]], "offline")
         if "dotnet" in selected:
             run(dotnet_image, ["dotnet", "restore", "dotnet/Consumer.csproj", "--configfile", "dotnet/NuGet.Config"])
-            for case in CASES:
+            for case in selected_cases:
                 qualify_case("dotnet", dotnet_image, ["dotnet", "run", "--no-restore", "--project", "dotnet/Consumer.csproj"], case)
         if "ruby" in selected:
             gem = f"stogas-{version.replace('-', '.')}-{target['ruby']}.gem"
             run(ruby_image, ["gem", "install", "--no-document", "/work/packages/" + gem])
             run(ruby_image, ["gem", "install", "--no-document", "minitest", "--version", "6.0.6"])
-            for case in CASES:
+            for case in selected_cases:
                 qualify_case("ruby", ruby_image, ["ruby", "ruby/transport_test.rb"], case)
         if "swift" in selected:
             unpack(packages / f"stogas-swift-v{version}.tar.gz", work / "swift")
-            for case in CASES:
+            for case in selected_cases:
                 qualify_case("swift", SWIFT, ["swift", "test", "--package-path", "swift/Stogas", "-j", "4"], case)
         if "go" in selected:
             unpack(packages / f"stogas-go-v{version}.tar.gz", work / "go-package")
@@ -161,7 +168,7 @@ def qualify_linux(source, packages, version, platform, target, requested):
                 (work / "Dockerfile").write_text(f"FROM {GO_MUSL} AS go\nFROM {python_image}\nCOPY --from=go /usr/local/go /usr/local/go\nENV PATH=/usr/local/go/bin:$PATH\n")
                 subprocess.run(["docker", "build", "--platform", "linux/" + target["arch"], "--iidfile", str(identity), str(work)], check=True)
                 go_image = identity.read_text().strip()
-            for case in CASES:
+            for case in selected_cases:
                 qualify_case("go", go_image, ["go", "test", "-count=1", *(["-tags", "musl"] if musl else []), "./..."], case, directory="/work/go-package/go", environment=["CGO_ENABLED=1", "GOWORK=off"])
     return checks
 
@@ -174,5 +181,6 @@ if __name__ == "__main__":
     parser.add_argument("--package", action="append", default=[])
     parser.add_argument("--device")
     parser.add_argument("--device-farm")
+    parser.add_argument("--preview", action="store_true")
     args = parser.parse_args()
-    qualify(args.packages.resolve(), args.platform, args.out.resolve(), args.package, args.device, args.device_farm)
+    qualify(args.packages.resolve(), args.platform, args.out.resolve(), args.package, args.device, args.device_farm, args.preview)

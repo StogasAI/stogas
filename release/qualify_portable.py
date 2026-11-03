@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 from artifacts import unpack
-from gate import CASES, attempt
+from gate import attempt
 
 PLAYWRIGHT = "mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e"
 RUST = "rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97"
@@ -17,7 +17,7 @@ DENO = "denoland/deno:2.9.6@sha256:2014dc167ece617ef7e7ba40631ac2234c59e75ce693e
 NODE_MINIMUM = "node:20.20.2-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0"
 
 
-def qualify(source, packages, version, requested=()):
+def qualify(source, packages, version, requested, cases):
     selected = set(requested or ("npm", "rust"))
     if not selected <= {"npm", "rust"}:
         raise ValueError("Portable qualification supports npm and Rust")
@@ -61,7 +61,7 @@ export default defineConfig({testDir:'.',testMatch:['verifier.spec.ts','live.spe
             # profile. Production packages test real offline GitHub evidence and
             # independent signing vectors here.
             browsers = ["npx", "--no-install", "playwright", "test", "--config", "tests/browser/release.config.mjs", "--grep", "ML-DSA publisher|standalone lightweight|real GitHub release|invalid Rekor|live gateway"]
-            for case in CASES:
+            for case in cases:
                 for runtime, image, arguments in (
                     ("node", PLAYWRIGHT, ["node", "--test", *tests]),
                     ("node-minimum", NODE_MINIMUM, ["node", "--test", *tests]),
@@ -88,6 +88,6 @@ export default defineConfig({testDir:'.',testMatch:['verifier.spec.ts','live.spe
             # Cargo retains the shipped lock's dependency versions, adding the
             # consumer and local overrides for the three unpublished archives.
             run(RUST, ["cargo", "build", "--release"])
-            for case in CASES:
+            for case in cases:
                 record("rust", case, RUST, attempt(f"rust/{case}", lambda: run(RUST, ["cargo", "run", "--release", "--locked", "--offline"], case)))
     return checks
