@@ -277,6 +277,20 @@ class PublisherTests(unittest.TestCase):
         self.assertIn("AUR_SSH_KEY is not set", output.getvalue())
         self.assertIn("TAP_DEPLOY_KEY is not set", output.getvalue())
 
+    def test_aur_waits_while_its_account_lacks_the_key(self):
+        # An ssh that the AUR refuses, as it refuses a key that no account has added.
+        bin_directory = self.work / "bin"
+        bin_directory.mkdir()
+        (bin_directory / "ssh").write_text("#!/bin/sh\necho 'aur@aur.archlinux.org: Permission denied (publickey).' >&2\nexit 255\n")
+        (bin_directory / "ssh").chmod(0o755)
+        environment = {"AUR_SSH_KEY": "not a key", "PATH": f"{bin_directory}{os.pathsep}{os.environ['PATH']}"}
+        with mock.patch.dict(os.environ, environment), self.quiet() as output:
+            publish.aur(self.packages, VERSION)
+        self.assertIn("The AUR refused AUR_SSH_KEY", output.getvalue())
+        # Any other failure to reach a remote stops the step.
+        with self.quiet(), self.assertRaisesRegex(RuntimeError, "git clone failed"):
+            publish.aur(self.packages, VERSION, str(self.work / "missing.git"))
+
     def test_container_pushes_reads_back_and_keeps_versions_immutable(self):
         registry = FakeRegistry(public=False)
         outputs = self.work / "outputs"

@@ -387,7 +387,11 @@ def checkout(remote, branch, key_variable, host_key):
                 "-o", "HostKeyAlgorithms=ssh-ed25519",
             ])
         repo = work / "repo"
-        run(["git", "clone", "--quiet", "--no-checkout", remote, str(repo)], env=environment)
+        clone = subprocess.run(["git", "clone", "--quiet", "--no-checkout", remote, str(repo)], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        if clone.returncode:
+            if "Permission denied (publickey)" in clone.stderr:
+                raise PermissionError(f"The remote refused the key in {key_variable}")
+            raise RuntimeError(f"git clone failed (exit {clone.returncode}); nothing was published")
         if subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], cwd=repo, stdout=subprocess.DEVNULL).returncode == 0:
             run(["git", "checkout", "--quiet", "-B", branch, f"refs/remotes/origin/{branch}"], cwd=repo)
         else:
@@ -441,11 +445,16 @@ def aur(packages, version, remote=AUR):
     if not offered_now(version, "AUR"):
         return
     manifest = json.loads((packages / "release-manifest.json").read_text())
-    with checkout(remote, "master", "AUR_SSH_KEY", AUR_HOST_KEY) as (repo, environment):
-        current = (repo / ".SRCINFO").read_text() if (repo / ".SRCINFO").is_file() else None
-        release = channels.pkgrel(current, manifest)
-        files = {"PKGBUILD": channels.pkgbuild(manifest, release), ".SRCINFO": channels.srcinfo(manifest, release)}
-        changed = commit_files(repo, environment, "master", files, f"Install stogas {version}")
+    try:
+        with checkout(remote, "master", "AUR_SSH_KEY", AUR_HOST_KEY) as (repo, environment):
+            current = (repo / ".SRCINFO").read_text() if (repo / ".SRCINFO").is_file() else None
+            release = channels.pkgrel(current, manifest)
+            files = {"PKGBUILD": channels.pkgbuild(manifest, release), ".SRCINFO": channels.srcinfo(manifest, release)}
+            changed = commit_files(repo, environment, "master", files, f"Install stogas {version}")
+    except PermissionError:
+        # The AUR knows a key only once its account adds it.
+        print("::warning::The AUR refused AUR_SSH_KEY, so the AUR package waits for its public key on the owner's account")
+        return
     print(f"AUR: stogas-bin {'now offers' if changed else 'already offers'} {version}")
 
 
