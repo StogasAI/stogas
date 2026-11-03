@@ -14,6 +14,7 @@ mod credentials;
 mod customer_encryption;
 mod dashboard;
 mod evidence_archive;
+mod policy;
 mod route;
 mod sdk_release;
 mod topup;
@@ -117,6 +118,11 @@ enum Command {
     },
     /// Add credit with a cryptocurrency payment.
     Topup(topup::Args),
+    /// Change a saved policy.
+    Policy {
+        #[command(subcommand)]
+        command: PolicyCommand,
+    },
     /// Verify downloaded SDK release artifacts, build provenance and the Stogas signature.
     /// Sigstore's keys come from current production evidence, or from saved evidence.
     VerifyRelease {
@@ -175,6 +181,12 @@ enum Command {
     Proof(ProofArgs),
     /// Run the verified loopback proxy.
     Serve(ServeArgs),
+}
+
+#[derive(Subcommand)]
+enum PolicyCommand {
+    /// Open a policy in $VISUAL or $EDITOR, and save it when you close the file.
+    Edit(policy::EditArgs),
 }
 
 #[derive(Args)]
@@ -325,6 +337,9 @@ async fn run() -> Result<()> {
             input,
         } => run_api(method, &path, input.as_deref(), &dashboard()?).await?,
         Command::Topup(args) => topup::run(args, &dashboard()?).await?,
+        Command::Policy {
+            command: PolicyCommand::Edit(args),
+        } => policy::run(args, &dashboard()?).await?,
         Command::VerifyRelease {
             directory,
             evidence,
