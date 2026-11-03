@@ -325,6 +325,11 @@ jobs:
         run: |
           cargo build --locked --package stogas-ffi
           python scripts/stage-native-bindings.py --platform "$PLATFORM" --native-dir target/debug
+      # A release runs these on every platform's packages; one platform here catches a change
+      # that would break them before a release does.
+      - if: matrix.platform == 'linux-amd64'
+        name: Release consumer tests, offline
+        run: scripts/release-consumers.sh
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
         with:
           distribution: temurin

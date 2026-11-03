@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 use stogas::{Environment, SecurityMode, Transport, TransportOptions, Verifier};
+use stogas_core::authority::RootKey;
 
 // Without STOGAS_LIVE, test the installed production crates offline. With
 // STOGAS_LIVE=prod, send requests through the production gateways.
@@ -24,7 +25,18 @@ fn offline() {
         })
         .is_err()
     );
-    let mut verifier = Verifier::stogas(Environment::Production).unwrap();
+    // The compiled production authority loads once its root names a Rekor key. Until then it
+    // fails closed for that reason alone; the live case, which every full release passes, needs
+    // it to load.
+    if let Err(error) = Verifier::stogas(Environment::Production) {
+        assert!(error.to_string().contains("rekor_public_key"), "{error}");
+    }
+    // Rejected evidence leaves no snapshot, under a caller-owned offline root that the managed
+    // transport never accepts.
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../tests/fixtures/hardware-session-v1.json")).unwrap();
+    let root: RootKey = serde_json::from_value(fixture["root"].clone()).unwrap();
+    let mut verifier = Verifier::new(Environment::Production, root).unwrap();
     assert!(verifier.refresh(b"{}", 1_791_331_200_000).is_err());
     assert!(verifier.current().is_none());
     println!(
