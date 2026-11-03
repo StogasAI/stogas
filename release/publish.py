@@ -63,13 +63,13 @@ def exact_remote(path, url):
     return True
 
 
-def wait_for(check):
-    for attempt in range(30):
-        if check():
-            return
-        if attempt != 29:
-            time.sleep(10)
-    raise RuntimeError("Published package did not become available for verified readback")
+def wait_for(check, minutes=5):
+    """Reads a publication back until it matches, for at most `minutes`."""
+    deadline = time.monotonic() + minutes * 60
+    while not check():
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Published package did not become available for verified readback within {minutes} minutes")
+        time.sleep(10)
 
 
 def crate_metadata(path):
@@ -287,7 +287,9 @@ def nuget(packages, version):
         return True
     if not check():
         run(["dotnet", "nuget", "push", str(path), "--api-key", os.environ["NUGET_API_KEY"], "--source", "https://api.nuget.org/v3/index.json"])
-    wait_for(check)
+    # nuget.org validates and indexes a version before serving it, usually within 15 minutes;
+    # its support takes over after an hour. The first version took longer than 5.
+    wait_for(check, minutes=60)
 
 
 def maven(packages, version):

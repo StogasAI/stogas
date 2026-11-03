@@ -28,7 +28,7 @@ jobs:
   publish:
     name: Publish to the package registries
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 150
     environment: release
     permissions:
       attestations: write
@@ -70,25 +70,32 @@ jobs:
           else
             python3 -B release/publish.py preview "$RUNNER_TEMP/approved"
           fi
-      # The registries that need no first-release step from the owner go first, so one
-      # that still waits for it holds up nothing else.
-      - name: Stage approved wheels
+      # Each registry publishes once the release passed its check, even when another failed,
+      # so a failed or waiting registry holds up no other; the job still fails, and the next
+      # run skips what is already published. Those that need no first-release step from the
+      # owner go first.
+      - if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        name: Stage approved wheels
         run: |
           mkdir "$RUNNER_TEMP/wheels"
           cp "$RUNNER_TEMP/approved/"*.whl "$RUNNER_TEMP/wheels/"
-      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086
+      - if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086
         with:
           packages-dir: ${{ runner.temp }}/wheels
           skip-existing: true
-      - name: Verify all PyPI wheel bytes
+      - if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        name: Verify all PyPI wheel bytes
         run: python3 -B release/publish.py pypi "$RUNNER_TEMP/approved"
-      - name: Install the pinned Maven Central publisher
+      - if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        name: Install the pinned Maven Central publisher
         run: |
           curl --fail --location --silent --show-error https://github.com/jreleaser/jreleaser/releases/download/v1.26.0/jreleaser-1.26.0.zip --output "$RUNNER_TEMP/jreleaser.zip"
           printf '%s  %s\n' c821df22b1715a841024ba17c4b5233375c868e6c9dcc81612c38329c8dec628 "$RUNNER_TEMP/jreleaser.zip" | sha256sum --check
           unzip -q "$RUNNER_TEMP/jreleaser.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/jreleaser-1.26.0/bin" >> "$GITHUB_PATH"
-      - name: Publish the exact Java and Android packages
+      - if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        name: Publish the exact Java and Android packages
         env:
           JRELEASER_MAVENCENTRAL_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           JRELEASER_MAVENCENTRAL_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
@@ -96,40 +103,45 @@ jobs:
           JRELEASER_GPG_SECRET_KEY: ${{ secrets.MAVEN_GPG_SECRET_KEY }}
           JRELEASER_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
         run: python3 -B release/publish.py maven "$RUNNER_TEMP/approved"
-      - uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841
+      - if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841
         id: nuget
         with:
           user: ${{ vars.NUGET_USER }}
-      - name: Publish and verify NuGet package contents and repository signature
+      - if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        name: Publish and verify NuGet package contents and repository signature
         env:
           NUGET_API_KEY: ${{ steps.nuget.outputs.NUGET_API_KEY }}
         run: python3 -B release/publish.py nuget "$RUNNER_TEMP/approved"
-      - name: Publish the approved Go module as a module tag
+      - if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        name: Publish the approved Go module as a module tag
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 -B release/publish.py go "$RUNNER_TEMP/approved"
       # crates.io and npm trust this workflow only for packages that exist, and RubyGems
       # only once the owner added a pending publisher, so their first versions wait for
       # the owner's one-time steps; run this workflow again afterwards.
-      - name: Find the registries that still wait for a first version
+      - if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        name: Find the registries that still wait for a first version
         id: first
         run: python3 -B release/publish.py first-versions >> "$GITHUB_OUTPUT"
-      - if: steps.first.outputs.crates == 'false'
+      - if: ${{ !cancelled() && steps.first.outputs.crates == 'false' }}
         uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18
         id: crates
-      - if: steps.first.outputs.crates == 'false'
+      - if: ${{ !cancelled() && steps.crates.outcome == 'success' }}
         name: Publish the exact crate archives in dependency order
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates.outputs.token }}
         run: python3 -B release/publish.py crates "$RUNNER_TEMP/approved"
-      - if: steps.first.outputs.npm == 'false'
+      - if: ${{ !cancelled() && steps.first.outputs.npm == 'false' }}
         name: Publish the exact npm archives with trusted publishing and provenance
         run: python3 -B release/publish.py npm "$RUNNER_TEMP/approved"
       # A pending publisher for a new gem lasts only 12 hours, so a missing one skips RubyGems.
-      - uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a
+      - if: ${{ !cancelled() && steps.first.outcome == 'success' }}
+        uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a
         id: rubygems
         continue-on-error: ${{ steps.first.outputs.ruby == 'true' }}
-      - if: steps.rubygems.outcome == 'success'
+      - if: ${{ !cancelled() && steps.rubygems.outcome == 'success' }}
         name: Publish the exact platform gems
         run: python3 -B release/publish.py ruby "$RUNNER_TEMP/approved"
       # Package managers that install the release's own archives follow the newest full release,
@@ -167,7 +179,9 @@ jobs:
           subject-name: ghcr.io/stogasai/stogas
           subject-digest: ${{ steps.image.outputs.digest }}
           push-to-registry: true
-      - if: steps.first.outputs.crates == 'true' || steps.first.outputs.npm == 'true' || steps.rubygems.outcome != 'success'
+          # GitHub's artifact inventory would need artifact-metadata: write; the proof needs none.
+          create-storage-record: false
+      - if: ${{ !cancelled() && steps.first.outcome == 'success' && (steps.first.outputs.crates == 'true' || steps.first.outputs.npm == 'true' || steps.rubygems.outcome != 'success') }}
         name: Name the registries that wait for the owner's one-time steps
         env:
           CRATES: ${{ steps.first.outputs.crates }}
