@@ -177,7 +177,7 @@ async fn edits_the_organization_policy(dashboard: &Dashboard) {
 #[cfg(feature = "staging")]
 async fn checks_an_encrypted_credential(dashboard: &Dashboard) {
     use crate::{
-        byok::{self, KeySource, Verified},
+        byok::{self, KeySource, Keys, Verified},
         customer_encryption,
     };
     use stogas::{Environment, SecurityMode, TransportOptions};
@@ -230,7 +230,7 @@ async fn checks_an_encrypted_credential(dashboard: &Dashboard) {
             onion: false,
             no_proxy: None,
         });
-        let refused = byok::check(&api, &gateway, &KeySource::File(key.clone()))
+        let refused = byok::check(&api, &gateway, &Keys::new(KeySource::File(key.clone())))
             .await
             .unwrap_err();
         assert_eq!(refused.to_string(), REFUSED);

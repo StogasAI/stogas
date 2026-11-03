@@ -153,7 +153,7 @@ enum Command {
         key_file: PathBuf,
         #[arg(long, value_parser = topup::parse_organization)]
         organization: String,
-        #[arg(long, value_parser = ["plugins", "byok/anthropic", "byok/aws", "byok/chutes", "byok/google-cloud", "byok/openai"])]
+        #[arg(long, value_parser = ["plugins", "byok/anthropic", "byok/aws", "byok/azure", "byok/chutes", "byok/google-cloud", "byok/openai"])]
         purpose: String,
         #[arg(long)]
         input: PathBuf,

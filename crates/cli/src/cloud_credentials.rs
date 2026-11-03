@@ -1,5 +1,7 @@
-//! Checks an AWS or Google Cloud credential document with the rules gateways use, before it is
-//! encrypted, and derives the public target that lets routing choose it without decrypting it.
+//! Checks an AWS, Azure or Google Cloud credential document with the rules gateways use, before it
+//! is encrypted, and derives the public target that lets routing choose an AWS or Google Cloud
+//! credential without decrypting it. An Azure credential needs no target: gateways discover the
+//! account's deployments with it.
 
 use anyhow::{Result, bail};
 use aws_lc_rs::signature::RsaKeyPair;
@@ -8,36 +10,60 @@ use serde_json::{Map, Value, json};
 use zeroize::Zeroizing;
 
 const AWS_SCHEMA: &str = "stogas.aws-byok.v1";
+const AZURE_SCHEMA: &str = "stogas.azure-byok.v6";
 const GOOGLE_SCHEMA: &str = "stogas.google-cloud-byok.v1";
 
 pub struct Registration {
     pub plaintext: Zeroizing<Vec<u8>>,
-    pub preview: String,
+    /// What the dashboard shows of the secret. An Azure credential shows the name of the account
+    /// that it connects instead, which the dashboard asks for.
+    pub preview: Option<String>,
     pub target: Option<Value>,
 }
 
 /// Prepares a provider credential for `byok/{provider}`. AWS and Google Cloud take a credential
-/// document, and Google Cloud also takes the key file it downloads; other providers take the
-/// key exactly as given.
+/// document, and Google Cloud also takes the key file it downloads. Azure takes the application's
+/// tenant ID, client ID and client secret, or what `az ad sp create-for-rbac` prints. Other
+/// providers take the key exactly as given.
 pub fn prepare(purpose: &str, input: &[u8]) -> Result<Registration> {
     match purpose {
         "byok/aws" => aws(&object(input)?),
+        "byok/azure" => azure(&object(input)?),
         "byok/google-cloud" => google(&object(input)?),
         _ => {
             let shown =
                 String::from_utf8_lossy(&input[input.len().saturating_sub(4)..]).into_owned();
             Ok(Registration {
                 plaintext: Zeroizing::new(input.to_vec()),
-                preview: format!("•••• {shown}"),
+                preview: Some(format!("•••• {shown}")),
                 target: None,
             })
         }
     }
 }
 
+/// Reads a JSON object as UTF-8, or as UTF-16 after its byte order mark, which Windows
+/// PowerShell 5.1 writes when it saves a command's output with `>`.
 fn object(input: &[u8]) -> Result<Map<String, Value>> {
-    match serde_json::from_slice(input) {
-        Ok(Value::Object(map)) => Ok(map),
+    let decoded = match input {
+        [0xff, 0xfe, rest @ ..] | [0xfe, 0xff, rest @ ..] if rest.len() % 2 == 0 => {
+            let units = rest.chunks_exact(2).map(|pair| {
+                if input[0] == 0xff {
+                    u16::from_le_bytes([pair[0], pair[1]])
+                } else {
+                    u16::from_be_bytes([pair[0], pair[1]])
+                }
+            });
+            char::decode_utf16(units)
+                .collect::<Result<String, _>>()
+                .ok()
+                .map(|text| Zeroizing::new(text.into_bytes()))
+        }
+        [0xef, 0xbb, 0xbf, rest @ ..] => Some(Zeroizing::new(rest.to_vec())),
+        _ => Some(Zeroizing::new(input.to_vec())),
+    };
+    match decoded.map(|bytes| serde_json::from_slice(&bytes)) {
+        Some(Ok(Value::Object(map))) => Ok(map),
         _ => bail!("The credential must be a JSON object"),
     }
 }
@@ -175,8 +201,59 @@ fn aws(map: &Map<String, Value>) -> Result<Registration> {
     }
     Ok(Registration {
         plaintext: Zeroizing::new(serde_json::to_vec(&document)?),
-        preview: last4(shown),
+        preview: Some(last4(shown)),
         target: Some(json!({ "hosting": hosting, "region": region })),
+    })
+}
+
+/// A Microsoft Entra ID in lowercase, as gateways compare it, if it is one.
+fn entra_id(value: &str) -> Option<String> {
+    let id = value.trim().to_ascii_lowercase();
+    let valid = id.split('-').map(str::len).eq([8, 4, 4, 4, 12])
+        && chars(&id, |c| {
+            c == '-' || c.is_ascii_digit() || ('a'..='f').contains(&c)
+        })
+        && (b'1'..=b'8').contains(&id.as_bytes()[14])
+        && matches!(id.as_bytes()[19], b'8' | b'9' | b'a' | b'b');
+    valid.then_some(id)
+}
+
+// The application that gateways sign in to Microsoft Entra ID as. The Azure CLI prints it as
+// `tenant`, `appId` and `password`, and the dashboard asks for it as tenant ID, client ID and
+// client secret.
+fn azure(map: &Map<String, Value>) -> Result<Registration> {
+    let [tenant, client, secret] = if map.contains_key("appId") {
+        only(map, &["appId", "displayName", "password", "tenant"])?;
+        field(map, "displayName")?;
+        ["tenant", "appId", "password"]
+    } else {
+        only(map, &["schema", "tenantId", "clientId", "clientSecret"])?;
+        if field(map, "schema")?.is_some_and(|schema| schema != AZURE_SCHEMA) {
+            bail!("schema must be {AZURE_SCHEMA}");
+        }
+        ["tenantId", "clientId", "clientSecret"]
+    };
+    let Some(tenant_id) = entra_id(required(map, tenant)?) else {
+        bail!("{tenant} must be the ID of your Microsoft Entra tenant");
+    };
+    let Some(client_id) = entra_id(required(map, client)?) else {
+        bail!("{client} must be the application (client) ID");
+    };
+    let client_secret = required(map, secret)?;
+    if !printable(client_secret) {
+        bail!("{secret} must be the client secret, in printable ASCII without spaces");
+    }
+    // The keys in the order that Control writes them, so the same application encrypts alike.
+    let document = json!({
+        "clientId": client_id,
+        "clientSecret": client_secret,
+        "schema": AZURE_SCHEMA,
+        "tenantId": tenant_id,
+    });
+    Ok(Registration {
+        plaintext: Zeroizing::new(serde_json::to_vec(&document)?),
+        preview: None,
+        target: None,
     })
 }
 
@@ -281,7 +358,7 @@ fn google(map: &Map<String, Value>) -> Result<Registration> {
     };
     Ok(Registration {
         plaintext: Zeroizing::new(serde_json::to_vec(&document)?),
-        preview: last4(key_id),
+        preview: Some(last4(key_id)),
         target: Some(json!({ "hosting": hosting })),
     })
 }
@@ -302,7 +379,7 @@ mod tests {
     fn aws_documents_become_compact_with_their_target() {
         let registration = prepare("byok/aws", IAM.as_bytes()).unwrap();
         assert!(!registration.plaintext.iter().any(u8::is_ascii_whitespace));
-        assert_eq!(registration.preview, "•••• MPLE");
+        assert_eq!(registration.preview.as_deref(), Some("•••• MPLE"));
         assert_eq!(
             registration.target.unwrap(),
             json!({"hosting": ["anthropic", "aws"], "region": "us-east-1"})
@@ -355,5 +432,99 @@ mod tests {
         let mut bad = key_file;
         bad["client_email"] = "person@example.com".into();
         assert!(prepare("byok/google-cloud", bad.to_string().as_bytes()).is_err());
+    }
+
+    #[test]
+    fn azure_applications_become_the_document_that_gateways_read() {
+        let expected = br#"{"clientId":"5a9d1c2e-7b3f-4e8a-9c1d-2e3f4a5b6c7d","clientSecret":"Q~abc.DEF_123-xyz","schema":"stogas.azure-byok.v6","tenantId":"0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0"}"#;
+        // What the dashboard asks for, with IDs as Azure may show them, and the document itself.
+        let fields = json!({
+            "tenantId": " 0F1E2D3C-4B5A-4968-8776-A5B4C3D2E1F0 ",
+            "clientId": "5A9D1C2E-7B3F-4E8A-9C1D-2E3F4A5B6C7D",
+            "clientSecret": "Q~abc.DEF_123-xyz",
+        });
+        let mut document = fields.clone();
+        document["schema"] = AZURE_SCHEMA.into();
+        // What `az ad sp create-for-rbac` prints.
+        let az = json!({
+            "appId": "5a9d1c2e-7b3f-4e8a-9c1d-2e3f4a5b6c7d",
+            "displayName": "stogas-gateway",
+            "password": "Q~abc.DEF_123-xyz",
+            "tenant": "0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0",
+        });
+        let pretty = serde_json::to_string_pretty(&az).unwrap();
+        // Windows PowerShell 5.1 saves output with `>` in UTF-16 after a byte order mark.
+        let mut utf16 = vec![0xff, 0xfe];
+        utf16.extend(pretty.encode_utf16().flat_map(u16::to_le_bytes));
+        let mut big_endian = vec![0xfe, 0xff];
+        big_endian.extend(pretty.encode_utf16().flat_map(u16::to_be_bytes));
+        let mut utf8 = vec![0xef, 0xbb, 0xbf];
+        utf8.extend(pretty.as_bytes());
+        for input in [
+            fields.to_string().into_bytes(),
+            document.to_string().into_bytes(),
+            pretty.clone().into_bytes(),
+            utf16,
+            big_endian,
+            utf8,
+        ] {
+            let registration = prepare("byok/azure", &input).unwrap();
+            assert_eq!(registration.plaintext.as_slice(), expected.as_slice());
+            assert_eq!(registration.preview, None);
+            assert_eq!(registration.target, None);
+        }
+        let error = |input: Value| {
+            prepare("byok/azure", input.to_string().as_bytes())
+                .err()
+                .unwrap()
+                .to_string()
+        };
+        let with = |base: &Value, name: &str, value: Value| {
+            let mut changed = base.clone();
+            changed[name] = value;
+            changed
+        };
+        assert_eq!(
+            error(with(&az, "tenant", "contoso.onmicrosoft.com".into())),
+            "tenant must be the ID of your Microsoft Entra tenant"
+        );
+        assert_eq!(
+            error(with(
+                &fields,
+                "clientId",
+                "00000000-0000-0000-0000-000000000000".into()
+            )),
+            "clientId must be the application (client) ID"
+        );
+        assert_eq!(
+            error(with(&az, "password", "two words".into())),
+            "password must be the client secret, in printable ASCII without spaces"
+        );
+        assert_eq!(
+            error(with(&fields, "clientSecret", "x".repeat(4097).into())),
+            "clientSecret must be the client secret, in printable ASCII without spaces"
+        );
+        assert_eq!(
+            error(with(&az, "clientSecret", "x".into())),
+            "clientSecret is not a credential field"
+        );
+        assert_eq!(
+            error(with(&document, "schema", "stogas.azure-byok.v5".into())),
+            "schema must be stogas.azure-byok.v6"
+        );
+        assert_eq!(
+            error(with(&az, "displayName", 7.into())),
+            "displayName must be a string"
+        );
+        assert_eq!(
+            error(json!({ "tenantId": fields["tenantId"], "clientId": fields["clientId"] })),
+            "clientSecret is required"
+        );
+        for broken in [b"\xff\xfe\x00".as_slice(), b"\xff\xfe\x00\xd8", b"[]"] {
+            assert_eq!(
+                prepare("byok/azure", broken).err().unwrap().to_string(),
+                "The credential must be a JSON object"
+            );
+        }
     }
 }

@@ -1,14 +1,15 @@
 //! `stogas byok check`: checks a credential with its provider, as Check on the dashboard does.
 //! Stogas checks a stored credential itself. Only a gateway can open a customer-encrypted one, so
 //! the CLI sends the gateway your key over a verified connection, with a grant from the dashboard
-//! that lets it check this one credential for you.
+//! that lets it check this one credential for you. Checking an Azure credential also discovers
+//! the deployments of the account that it connects, which become its targets.
 
 use crate::{
     account, customer_encryption,
-    dashboard::{Dashboard, printable},
+    dashboard::{self, Dashboard, printable},
     topup::{parse_organization, uuid},
 };
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Context as _, Result, bail};
 use http::{Method, StatusCode};
 use serde::Deserialize;
 use serde_json::json;
@@ -16,25 +17,28 @@ use std::{
     future::Future,
     io::{self, IsTerminal as _},
     path::PathBuf,
+    sync::{Mutex, PoisonError},
     time::Duration,
 };
 use stogas::{TransportOptions, gateway_request::GatewayResponse, network::Network};
 use zeroize::Zeroizing;
 
 pub const CHECK_PATH: &str = "/v1/byok/check";
-// Evidence, a new verified connection, and the provider's answer, which takes up to 8 seconds.
-const CHECK_BUDGET: Duration = Duration::from_secs(30);
+// Evidence, a new verified connection, and the check: a provider's answer within 8 seconds, or
+// an Azure sign-in and discovery within 25.
+const CHECK_BUDGET: Duration = Duration::from_secs(45);
 
 #[derive(clap::Args)]
 pub struct CheckArgs {
-    /// The credential's ID, which Copy ID in its menu on the dashboard copies.
-    #[arg(value_parser = parse_id)]
-    credential: String,
-    /// The organization that holds the credential. Without it, your personal organization.
+    /// The credentials' IDs, which Copy ID in a credential's menu on the dashboard copies.
+    #[arg(required = true, value_parser = parse_id)]
+    credentials: Vec<String>,
+    /// The organization that holds the credentials. Without it, your personal organization.
     #[arg(long, value_parser = parse_organization)]
     organization: Option<String>,
-    /// The file with the key that encrypted the credential, as `stogas encryption-key` wrote it.
-    /// Without it, the CLI asks for the key on the terminal. A stored credential needs no key.
+    /// The file with the key that encrypted the credentials, as `stogas encryption-key` wrote it.
+    /// Without it, the CLI asks for each key once on the terminal. A stored credential needs no
+    /// key.
     #[arg(long)]
     key_file: Option<PathBuf>,
 }
@@ -51,6 +55,18 @@ pub struct Credential {
     pub kind: String,
     pub provider: String,
     pub check_error: Option<String>,
+    pub azure_targets: Option<AzureTargets>,
+}
+
+/// An Azure credential's targets as the dashboard counts them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct AzureTargets {
+    /// The selected targets, one per model at most.
+    pub selected: u64,
+    /// The selected targets that do not serve now, such as a deleted deployment.
+    pub unavailable: u64,
+    /// The models that have a deployment in the account but no selected target.
+    pub unselected: u64,
 }
 
 /// What the dashboard grants for one check by a gateway.
@@ -68,6 +84,9 @@ pub trait CheckApi: Sync {
     fn find(&self) -> impl Future<Output = Result<Option<Credential>>> + Send;
     fn check_stored(&self) -> impl Future<Output = Result<Credential>> + Send;
     fn grant(&self) -> impl Future<Output = Result<CheckGrant>> + Send;
+    /// The dashboard page that shows the credential, where members choose an Azure credential's
+    /// targets.
+    fn page(&self) -> String;
 }
 
 /// The gateway's check of a customer-encrypted credential.
@@ -95,6 +114,50 @@ impl KeySource {
     }
 }
 
+/// The keys for the checks of one command, each read once, so checking the accounts that one
+/// encrypted Azure application connects asks for its key once.
+pub struct Keys {
+    source: KeySource,
+    read: Mutex<Vec<customer_encryption::OrganizationKey>>,
+}
+
+impl Keys {
+    pub const fn new(source: KeySource) -> Self {
+        Self {
+            source,
+            read: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The text of the key that the grant names, or an error naming the key to give instead.
+    fn for_grant(&self, grant: &CheckGrant, name: &str) -> Result<Zeroizing<String>> {
+        let known = self
+            .read
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|key| key.id == grant.encryption_key_id)
+            .map(|key| key.encoded.clone());
+        if let Some(encoded) = known {
+            return Ok(encoded);
+        }
+        let key = self.source.read(&grant.key_label)?;
+        if key.id != grant.encryption_key_id {
+            bail!(
+                "this is not the key that encrypted {name}: that is the key that your \
+                 organization registered as {}",
+                grant.key_label
+            );
+        }
+        let encoded = key.encoded.clone();
+        self.read
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(key);
+        Ok(encoded)
+    }
+}
+
 /// Asks for the key without echoing it. A script has no one to ask, so it names the key file.
 fn prompt_key(label: &str, terminal: bool) -> Result<customer_encryption::OrganizationKey> {
     if !terminal {
@@ -112,14 +175,16 @@ fn prompt_key(label: &str, terminal: bool) -> Result<customer_encryption::Organi
 /// The dashboard's requests for one credential.
 pub struct Remote<'a> {
     dashboard: &'a Dashboard,
+    organization: &'a str,
     base: String,
     id: &'a str,
 }
 
 impl<'a> Remote<'a> {
-    pub fn new(dashboard: &'a Dashboard, organization: &str, id: &'a str) -> Self {
+    pub fn new(dashboard: &'a Dashboard, organization: &'a str, id: &'a str) -> Self {
         Self {
             dashboard,
+            organization,
             base: format!("/api/{organization}/byok"),
             id,
         }
@@ -162,6 +227,15 @@ impl CheckApi for Remote<'_> {
             .await?;
         serde_json::from_slice(&body).context("the dashboard sent an unexpected response")
     }
+
+    fn page(&self) -> String {
+        format!(
+            "{}/{}/byok?credential={}",
+            dashboard::ORIGIN,
+            self.organization,
+            self.id
+        )
+    }
 }
 
 /// A new verified connection to the gateway for each check.
@@ -181,17 +255,30 @@ pub async fn run(args: CheckArgs, network: &Network, gateway: TransportOptions) 
         Some(organization) => organization,
         None => account::personal_organization(&dashboard).await?,
     };
-    let api = Remote::new(&dashboard, &organization, &args.credential);
-    let keys = args.key_file.map_or(KeySource::Terminal, KeySource::File);
-    let message = check(&api, &Verified(gateway), &keys)
-        .await
-        .map_err(|error| {
-            if named || !error.is::<NotFound>() {
-                return error;
+    let keys = Keys::new(args.key_file.map_or(KeySource::Terminal, KeySource::File));
+    let gateway = Verified(gateway);
+    let total = args.credentials.len();
+    let mut failed = 0;
+    for id in &args.credentials {
+        let api = Remote::new(&dashboard, &organization, id);
+        let error = match check(&api, &gateway, &keys).await {
+            Ok(message) => {
+                out!("{message}")?;
+                continue;
             }
-            error.context("name the credential's organization with --organization")
-        })?;
-    out!("{message}")?;
+            Err(error) if named || !error.is::<NotFound>() => error,
+            Err(error) => error.context("name the credentials' organization with --organization"),
+        };
+        if total == 1 {
+            return Err(error);
+        }
+        // One failed check leaves the others to run, and each failure names its credential.
+        failed += 1;
+        eprintln!("{id}: {error:#}");
+    }
+    if failed > 0 {
+        bail!("{failed} of {total} checks failed");
+    }
     Ok(())
 }
 
@@ -212,29 +299,28 @@ impl std::error::Error for NotFound {}
 pub async fn check(
     api: &impl CheckApi,
     gateway: &impl CheckGateway,
-    keys: &KeySource,
+    keys: &Keys,
 ) -> Result<String> {
     let credential = api.find().await?.ok_or(NotFound)?;
     let provider = provider_name(&credential.provider);
     let name = printable(&credential.name);
     if credential.kind != "encrypted" {
-        if matches!(keys, KeySource::File(_)) {
+        if matches!(keys.source, KeySource::File(_)) {
             bail!("Stogas stores {name}, so its check needs no key; run it without --key-file");
         }
         let checked = api.check_stored().await?;
-        return outcome(provider, &name, checked.check_error);
-    }
-    let grant = api.grant().await?;
-    let key = keys.read(&grant.key_label)?;
-    if key.id != grant.encryption_key_id {
-        bail!(
-            "this is not the key that encrypted {name}: that is the key that your organization \
-             registered as {}",
-            grant.key_label
+        return outcome(
+            provider,
+            &name,
+            checked.check_error,
+            checked.azure_targets,
+            &api.page(),
         );
     }
+    let grant = api.grant().await?;
+    let key = keys.for_grant(&grant, &name)?;
     let body = Zeroizing::new(serde_json::to_vec(
-        &json!({ "encryption_keys": { grant.key_label.as_str(): key.encoded.as_str() } }),
+        &json!({ "encryption_keys": { grant.key_label.as_str(): key.as_str() } }),
     )?);
     let response = gateway.check(&grant.grant, body.to_vec()).await?;
     if response.status != StatusCode::OK {
@@ -246,7 +332,13 @@ pub async fn check(
     }
     let checked: Checked = serde_json::from_slice(&response.body)
         .context("the gateway sent an unexpected response")?;
-    outcome(provider, &name, checked.check_error)
+    outcome(
+        provider,
+        &name,
+        checked.check_error,
+        checked.azure_targets,
+        &api.page(),
+    )
 }
 
 /// The gateway's record of a check.
@@ -254,6 +346,7 @@ pub async fn check(
 #[serde(rename_all = "camelCase")]
 struct Checked {
     check_error: Option<String>,
+    azure_targets: Option<AzureTargets>,
 }
 
 /// A request that the gateway refused, and why.
@@ -268,11 +361,46 @@ struct RefusalDetail {
 }
 
 /// What to print when the provider accepted the credential, or the error that says why it did not.
-fn outcome(provider: &str, name: &str, check_error: Option<String>) -> Result<String> {
-    check_error.map_or_else(
-        || Ok(format!("{provider} accepted {name}.")),
-        |error| Err(anyhow!("{}", printable(&error))),
-    )
+/// An Azure credential also shows its targets, and where to choose them when a model needs one.
+fn outcome(
+    provider: &str,
+    name: &str,
+    check_error: Option<String>,
+    targets: Option<AzureTargets>,
+    page: &str,
+) -> Result<String> {
+    if let Some(error) = check_error {
+        bail!("{}", printable(&error));
+    }
+    let accepted = format!("{provider} accepted {name}.");
+    let Some(targets) = targets else {
+        return Ok(accepted);
+    };
+    if targets.selected == 0 && targets.unselected == 0 {
+        return Ok(format!(
+            "{accepted}\nIts account has no deployments of models in the catalog, so no request \
+             can use it. Deploy one in Microsoft Foundry, then check the credential again."
+        ));
+    }
+    let unavailable = match targets.unavailable {
+        0 => String::new(),
+        count => format!(", {count} of them unavailable"),
+    };
+    let unselected = match targets.unselected {
+        0 => String::new(),
+        1 => "; 1 model without a target".to_owned(),
+        count => format!("; {count} models without a target"),
+    };
+    let summary = format!(
+        "Targets: {} selected{unavailable}{unselected}",
+        targets.selected
+    );
+    let next = if targets.unavailable > 0 || targets.unselected > 0 {
+        "Choose targets at"
+    } else {
+        "Review them at"
+    };
+    Ok(format!("{accepted}\n{summary}.\n{next} {page}"))
 }
 
 fn provider_name(provider: &str) -> &str {
@@ -322,6 +450,10 @@ mod tests {
                 encryption_key_id: self.key_id.clone(),
             })
         }
+
+        fn page(&self) -> String {
+            "https://app.stogas.ai/org/byok?credential=id".into()
+        }
     }
 
     struct Gateway {
@@ -349,6 +481,7 @@ mod tests {
             kind: kind.into(),
             provider: "openai".into(),
             check_error: None,
+            azure_targets: None,
         }
     }
 
@@ -402,7 +535,9 @@ mod tests {
         let unused = gateway(StatusCode::OK, Value::Null);
         // The terminal never shows a control character from the server.
         assert_eq!(
-            check(&api, &unused, &KeySource::Terminal).await.unwrap(),
+            check(&api, &unused, &Keys::new(KeySource::Terminal))
+                .await
+                .unwrap(),
             "OpenAI accepted Production\u{fffd}[31m."
         );
         let refused = Fake {
@@ -410,15 +545,19 @@ mod tests {
             ..api
         };
         assert_eq!(
-            check(&refused, &unused, &KeySource::Terminal)
+            check(&refused, &unused, &Keys::new(KeySource::Terminal))
                 .await
                 .unwrap_err()
                 .to_string(),
             "OpenAI did not accept this API key or configuration"
         );
-        let error = check(&refused, &unused, &KeySource::File("org.key".into()))
-            .await
-            .unwrap_err();
+        let error = check(
+            &refused,
+            &unused,
+            &Keys::new(KeySource::File("org.key".into())),
+        )
+        .await
+        .unwrap_err();
         assert!(error.to_string().contains("needs no key"), "{error}");
         assert!(unused.sent.lock().unwrap().is_empty());
         assert_eq!(
@@ -442,7 +581,7 @@ mod tests {
             json!({ "checkedAt": "2026-11-03T12:00:00Z", "checkError": null }),
         );
         assert_eq!(
-            check(&api, &accepted, &KeySource::File(path.clone()))
+            check(&api, &accepted, &Keys::new(KeySource::File(path.clone())))
                 .await
                 .unwrap(),
             "OpenAI accepted Production\u{fffd}[31m."
@@ -461,7 +600,7 @@ mod tests {
             json!({ "checkedAt": "2026-11-03T12:00:00Z", "checkError": "OpenAI did not accept this API key or configuration" }),
         );
         assert_eq!(
-            check(&api, &rejected, &KeySource::File(path.clone()))
+            check(&api, &rejected, &Keys::new(KeySource::File(path.clone())))
                 .await
                 .unwrap_err()
                 .to_string(),
@@ -472,7 +611,7 @@ mod tests {
             json!({ "error": { "message": "You do not manage this credential.\u{7}", "code": "permission_denied" } }),
         );
         assert_eq!(
-            check(&api, &refused, &KeySource::File(path))
+            check(&api, &refused, &Keys::new(KeySource::File(path)))
                 .await
                 .unwrap_err()
                 .to_string(),
@@ -492,7 +631,7 @@ mod tests {
             calls: Mutex::new(Vec::new()),
         };
         let unused = gateway(StatusCode::OK, Value::Null);
-        let error = check(&api, &unused, &KeySource::File(other))
+        let error = check(&api, &unused, &Keys::new(KeySource::File(other)))
             .await
             .unwrap_err();
         assert_eq!(
@@ -522,10 +661,158 @@ mod tests {
         let error = check(
             &api,
             &gateway(StatusCode::OK, Value::Null),
-            &KeySource::Terminal,
+            &Keys::new(KeySource::Terminal),
         )
         .await
         .unwrap_err();
         assert!(error.is::<NotFound>());
+    }
+
+    #[tokio::test]
+    async fn shows_an_azure_credentials_targets_after_its_check() {
+        let directory = Directory::new();
+        let (path, _, id) = key_file(directory.path(), 7);
+        let azure = Credential {
+            provider: "azure".into(),
+            name: "stogas-east".into(),
+            ..credential("encrypted")
+        };
+        let api = Fake {
+            credential: Some(azure.clone()),
+            stored_error: None,
+            key_id: id,
+            calls: Mutex::new(Vec::new()),
+        };
+        let checked = |targets: Value| {
+            gateway(
+                StatusCode::OK,
+                json!({ "checkedAt": "2026-11-03T12:00:00Z", "checkError": null, "azureTargets": targets }),
+            )
+        };
+        let keys = Keys::new(KeySource::File(path));
+        let link = "https://app.stogas.ai/org/byok?credential=id";
+        for (targets, expected) in [
+            (
+                json!({ "selected": 3, "unavailable": 0, "unselected": 0 }),
+                format!("Targets: 3 selected.\nReview them at {link}"),
+            ),
+            (
+                json!({ "selected": 3, "unavailable": 1, "unselected": 2 }),
+                format!(
+                    "Targets: 3 selected, 1 of them unavailable; 2 models without a target.\n\
+                     Choose targets at {link}"
+                ),
+            ),
+            (
+                json!({ "selected": 0, "unavailable": 0, "unselected": 1 }),
+                format!("Targets: 0 selected; 1 model without a target.\nChoose targets at {link}"),
+            ),
+            (
+                json!({ "selected": 0, "unavailable": 0, "unselected": 0 }),
+                "Its account has no deployments of models in the catalog, so no request can use \
+                 it. Deploy one in Microsoft Foundry, then check the credential again."
+                    .to_owned(),
+            ),
+        ] {
+            assert_eq!(
+                check(&api, &checked(targets), &keys).await.unwrap(),
+                format!("Azure accepted stogas-east.\n{expected}")
+            );
+        }
+        // A check that failed says why, whatever the targets.
+        let failed = gateway(
+            StatusCode::OK,
+            json!({
+                "checkedAt": "2026-11-03T12:00:00Z",
+                "checkError": "The application has no data role on this account, so requests to its deployments fail. Give it the Foundry User role on the account.",
+                "azureTargets": { "selected": 3, "unavailable": 0, "unselected": 0 },
+            }),
+        );
+        assert!(
+            check(&api, &failed, &keys)
+                .await
+                .unwrap_err()
+                .to_string()
+                .starts_with("The application has no data role")
+        );
+
+        // Stogas checks a stored Azure credential, and the dashboard counts its targets alike.
+        let stored = Fake {
+            credential: Some(Credential {
+                kind: "stored".into(),
+                azure_targets: Some(AzureTargets {
+                    selected: 1,
+                    unavailable: 0,
+                    unselected: 1,
+                }),
+                ..azure
+            }),
+            stored_error: None,
+            key_id: String::new(),
+            calls: Mutex::new(Vec::new()),
+        };
+        assert_eq!(
+            check(
+                &stored,
+                &gateway(StatusCode::OK, Value::Null),
+                &Keys::new(KeySource::Terminal)
+            )
+            .await
+            .unwrap(),
+            format!(
+                "Azure accepted stogas-east.\nTargets: 1 selected; 1 model without a target.\n\
+                 Choose targets at {link}"
+            )
+        );
+    }
+
+    #[test]
+    fn links_to_the_credential_on_the_dashboard() {
+        let dashboard = Dashboard::new(dashboard::ORIGIN, None, Network::direct()).unwrap();
+        let remote = Remote::new(
+            &dashboard,
+            "6f1c7d1e-9a3b-4c2d-8e5f-0a1b2c3d4e5f",
+            "0b9a8c7d-6e5f-4a3b-9c2d-1e0f2a3b4c5d",
+        );
+        assert_eq!(
+            remote.page(),
+            "https://app.stogas.ai/6f1c7d1e-9a3b-4c2d-8e5f-0a1b2c3d4e5f/byok?credential=\
+             0b9a8c7d-6e5f-4a3b-9c2d-1e0f2a3b4c5d"
+        );
+    }
+
+    #[tokio::test]
+    async fn reads_each_key_once_for_the_checks_of_one_command() {
+        let directory = Directory::new();
+        let (path, encoded, id) = key_file(directory.path(), 7);
+        let api = Fake {
+            credential: Some(credential("encrypted")),
+            stored_error: None,
+            key_id: id,
+            calls: Mutex::new(Vec::new()),
+        };
+        let accepted = gateway(
+            StatusCode::OK,
+            json!({ "checkedAt": "2026-11-03T12:00:00Z", "checkError": null }),
+        );
+        let keys = Keys::new(KeySource::File(path.clone()));
+        check(&api, &accepted, &keys).await.unwrap();
+        // The second check of the command finds the key that the first one read.
+        std::fs::remove_file(&path).unwrap();
+        check(&api, &accepted, &keys).await.unwrap();
+        let sent = accepted.sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 2);
+        assert!(
+            sent.iter()
+                .all(|(_, body)| body == &json!({ "encryption_keys": { "prod": encoded } }))
+        );
+        // A credential that another key encrypted needs that key.
+        let (_, _, other) = key_file(directory.path(), 8);
+        let api = Fake {
+            key_id: other,
+            ..api
+        };
+        let error = check(&api, &accepted, &keys).await.unwrap_err();
+        assert!(error.to_string().starts_with("could not read"), "{error}");
     }
 }
