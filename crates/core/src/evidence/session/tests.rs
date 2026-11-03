@@ -448,7 +448,7 @@ fn learned_release_withdrawal_blocks_warm_reappraisal_but_keeps_owned_request_ev
         commitment(Side::Response, &[4; 32], &response),
     ];
     let metadata = serde_json::json!({});
-    let digest: [u8; 32] = sha2::Sha256::digest(b"{}").into();
+    let digest: [u8; 64] = sha2::Sha512::digest(b"{}").into();
     let message = crate::receipt::message(&commitments[0], &commitments[1], &digest);
     let receipt = crate::receipt::Receipt {
         schema: crate::receipt::SCHEMA.into(),
