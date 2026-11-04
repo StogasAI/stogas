@@ -749,9 +749,9 @@ pub mod tests {
             (
                 json!({ "plugins": readable }),
                 json!({ "plugins": encrypted }),
-                json!({ "plugins": { "redaction": { "emails": true }, "textExtraction": true } }),
+                json!({ "plugins": { "redaction": { "emails": true }, "textExtraction": "always" } }),
                 json!({
-                    "plugins": { "redaction": { "encrypted": envelope("a") }, "textExtraction": true }
+                    "plugins": { "redaction": { "encrypted": envelope("a") }, "textExtraction": "always" }
                 }),
                 &[],
                 &["plugins.redaction"],

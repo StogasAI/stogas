@@ -298,7 +298,7 @@ mod tests {
             ),
             (
                 "plugins/export",
-                br#"{"textExtraction":true,"export":{"destinations":[]}}"#,
+                br#"{"textExtraction":"always","export":{"destinations":[]}}"#,
             ),
             ("plugins/export", br#"{"encrypted":{"version":1}}"#),
             ("byok/openai", b"secret\n"),
