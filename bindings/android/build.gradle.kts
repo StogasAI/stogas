@@ -30,7 +30,14 @@ androidComponents {
 
 dependencies {
     api("net.java.dev.jna:jna:5.19.1@aar")
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.21.6")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.21.8")
+}
+
+// gradle.lockfile pins what consumers install with the SDK, transitive dependencies included, so
+// scanners can read it. `gradle dependencies --configuration releaseRuntimeClasspath --write-locks`
+// updates it after a dependency changes.
+configurations.matching { it.name == "releaseRuntimeClasspath" }.configureEach {
+    resolutionStrategy.activateDependencyLocking()
 }
 
 tasks.withType<AbstractArchiveTask>().configureEach {

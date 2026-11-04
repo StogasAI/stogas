@@ -1,0 +1,12 @@
+# This is a Gradle generated file for dependency locking.
+# Manual edits can break the build and are not advised.
+# This file is expected to be part of source control.
+# To regenerate this file, run: ./gradlew :dependencies --write-locks
+com.fasterxml.jackson.core:jackson-annotations:2.21=releaseRuntimeClasspath
+com.fasterxml.jackson.core:jackson-core:2.21.8=releaseRuntimeClasspath
+com.fasterxml.jackson.core:jackson-databind:2.21.8=releaseRuntimeClasspath
+com.fasterxml.jackson:jackson-bom:2.21.8=releaseRuntimeClasspath
+net.java.dev.jna:jna:5.19.1=releaseRuntimeClasspath
+org.jetbrains.kotlin:kotlin-stdlib:2.2.10=releaseRuntimeClasspath
+org.jetbrains:annotations:13.0=releaseRuntimeClasspath
+empty=
