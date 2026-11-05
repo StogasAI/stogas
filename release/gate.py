@@ -1,12 +1,13 @@
 """Require a complete, production-only release before signing or publication.
 
 A preview is a pre-release that passes every offline case, runs no live case and carries
-no Stogas signature. Every other release
-passes every case."""
+no Stogas signature. Every other release passes every case."""
 
 import json
 import re
 import sys
+import tarfile
+import tomllib
 from pathlib import Path
 
 from artifacts import canonical, release_source, verify_inventory, wheel, write_json
@@ -18,6 +19,13 @@ HEX = re.compile(r"[0-9a-f]{64}\Z")
 CASES = ("offline", "live")
 PREVIEW_CASES = ("offline",)
 NPM_RUNTIMES = ("node", "node-minimum", "bun", "deno", "worker", "chromium", "firefox", "webkit")
+# In dependency order, which crates.io requires for a first upload.
+CRATES = ("stogas-sigstore", "stogas-core", "stogas", "stogas-cli")
+# crates.io reads a crate's keywords and categories from its archive's Cargo.toml, and its
+# publish.rs refuses more than 5 of either, a keyword over 20 bytes or of another form, and a
+# category missing from https://crates.io/api/v1/category_slugs, as listed on November 5, 2026.
+CRATE_KEYWORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_+-]*\Z")
+CRATE_CATEGORIES = frozenset(Path(__file__).with_name("crates-io-category-slugs.txt").read_text().split())
 
 
 def attempt(name, action):
@@ -112,14 +120,35 @@ def check_release(directory, *, reports=True):
     if manifest["targets"] != sorted([*targets, "portable"]):
         raise ValueError("Release does not include every declared platform and portable package")
     check_artifact_families(names, targets, manifest["version"])
+    check_crates(directory, manifest["version"])
     preview = reports and check_qualification(read_document(directory / "qualification.json"), manifest_sha256, targets, manifest["version"])
     return manifest, preview
+
+
+def crate_refusals(package):
+    """What crates.io would refuse in a crate's [package] table."""
+    keywords, categories = package.get("keywords", []), package.get("categories", [])
+    refusals = [f"{len(keywords)} keywords"] if len(keywords) > 5 else []
+    refusals += [f"keyword {keyword!r}" for keyword in keywords if len(keyword.encode()) > 20 or not CRATE_KEYWORD.match(keyword)]
+    refusals += [f"{len(categories)} categories"] if len(categories) > 5 else []
+    refusals += [f"category {category!r}" for category in categories if category not in CRATE_CATEGORIES]
+    return refusals
+
+
+def check_crates(directory, version):
+    """Refuse a release whose crates crates.io would refuse, since signed bytes never change."""
+    for name in CRATES:
+        path = Path(directory) / f"{name}-{version}.crate"
+        with tarfile.open(path) as archive:
+            package = tomllib.loads(archive.extractfile(f"{name}-{version}/Cargo.toml").read().decode())["package"]
+        if refusals := crate_refusals(package):
+            raise ValueError(f"crates.io would refuse {path.name}: {', '.join(refusals)}")
 
 
 def check_artifact_families(names, targets, version):
     expected = {
         f"stogas-{version}.tgz", f"stogas-sigstore-{version}.tgz",
-        *[f"{crate}-{version}.crate" for crate in ("stogas", "stogas-cli", "stogas-core", "stogas-sigstore")],
+        *[f"{crate}-{version}.crate" for crate in CRATES],
         f"stogas-go-v{version}.tar.gz", f"stogas-swift-v{version}.tar.gz",
         f"stogas-xcframework-v{version}.zip",
         f"stogas-source-v{version}.tar.gz",

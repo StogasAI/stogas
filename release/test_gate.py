@@ -1,9 +1,33 @@
 """Release authorization rejects incomplete or misidentified qualification."""
 
 import copy
+import io
+import tarfile
+import tempfile
 import unittest
+from pathlib import Path
 
-from gate import CASES, NPM_RUNTIMES, check_qualification
+from gate import CASES, CRATES, NPM_RUNTIMES, check_crates, check_qualification
+
+
+class CrateTests(unittest.TestCase):
+    def test_refuses_a_release_whose_crate_crates_io_would_refuse(self):
+        # crates.io refused alpha.1's stogas-core for this category, after it was signed.
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-gate-test-")))
+
+        def pack(name, categories):
+            manifest = f'[package]\nname = "{name}"\nversion = "1.2.3"\ncategories = {categories!r}\n'.encode().replace(b"'", b'"')
+            with tarfile.open(directory / f"{name}-1.2.3.crate", "w:gz") as archive:
+                entry = tarfile.TarInfo(f"{name}-1.2.3/Cargo.toml")
+                entry.size = len(manifest)
+                archive.addfile(entry, io.BytesIO(manifest))
+
+        for name in CRATES:
+            pack(name, ["cryptography"])
+        check_crates(directory, "1.2.3")
+        pack("stogas-core", ["web-programming::wasm"])
+        with self.assertRaisesRegex(ValueError, "^crates.io would refuse stogas-core-1.2.3.crate: category 'web-programming::wasm'$"):
+            check_crates(directory, "1.2.3")
 
 
 class QualificationTests(unittest.TestCase):

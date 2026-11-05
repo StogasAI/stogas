@@ -1,6 +1,7 @@
 """Check the package manager files and the container image without the network."""
 
 import contextlib
+import functools
 import gzip
 import hashlib
 import io
@@ -59,9 +60,72 @@ class VersionTests(unittest.TestCase):
         # Other tags, such as the Go module's, are not SDK releases.
         self.assertEqual(channels.offered([*full, release("go/v9.0.0"), release("v9"), release("v1.0.0", draft=True)]), "0.1.0")
 
-    def test_aur_versions_sort_previews_first(self):
-        self.assertEqual(channels.aur_version("0.1.0-alpha.1"), "0.1.0_alpha.1")
-        self.assertEqual(channels.aur_version("0.1.0"), "0.1.0")
+    def test_aur_versions_sort_as_releases_do(self):
+        ladder = ["0.1.0-alpha", "0.1.0-alpha.1", "0.1.0-alpha.2", "0.1.0-alpha.10", "0.1.0-beta", "0.1.0-beta.1", "0.1.0-rc.1", "0.1.0", "0.1.1-alpha.1", "0.1.1", "0.10.0", "1.0.0"]
+        self.assertEqual(sorted(reversed(ladder), key=channels.precedence), ladder)
+        pkgvers = [channels.aur_version(version) for version in reversed(ladder)]
+        self.assertEqual(sorted(pkgvers, key=functools.cmp_to_key(rpmvercmp)), [channels.aur_version(version) for version in ladder])
+        self.assertEqual(channels.aur_version("0.1.0-alpha.1"), "0.1.0alpha.1")
+        # vercmp orders these unlike Semantic Versioning: 1.0.00 equals 1.0.0, and alpha.1 follows alpha.beta.
+        for version in ("1.0.0-0", "1.0.0-alpha.beta", "1.0.0-alpha1", "1.0.0-preview.1", "1.0.0-alpha.1.2"):
+            with self.assertRaises(ValueError):
+                channels.aur_version(version)
+
+    def test_rpmvercmp_agrees_with_pacmans_vercmp(self):
+        # Recorded with vercmp from pacman in archlinux:latest on November 5, 2026, with the order
+        # in vercmp(8).
+        recorded = [
+            ("0.1.0_alpha.1", "0.1.0", 1), ("0.1.0alpha.1", "0.1.0", -1), ("0.1.0alpha.2", "0.1.0alpha.10", -1),
+            ("0.1.0alpha.10", "0.1.0beta.1", -1), ("0.1.0rc.1", "0.1.0", -1), ("0.1.0alpha", "0.1.0alpha.1", -1),
+            ("1.0.0alpha.1", "1.0.0alpha.beta", 1), ("1.0.00", "1.0.0", 0), ("0.1.1alpha.1", "0.1.0", 1),
+            ("0.1.1alpha.1", "0.1.1", -1), ("1.0a", "1.0b", -1), ("1.0rc", "1.0", -1), ("1.0", "1.0.a", -1),
+            ("1.0.a", "1.0.1", -1), ("1.1", "1.1.1", -1),
+        ]
+        for a, b, expected in recorded:
+            self.assertEqual((rpmvercmp(a, b), rpmvercmp(b, a)), (expected, -expected), (a, b))
+        ordered = ["1.0a", "1.0b", "1.0beta", "1.0p", "1.0pre", "1.0rc", "1.0", "1.0.a", "1.0.1"]
+        self.assertEqual(sorted(reversed(ordered), key=functools.cmp_to_key(rpmvercmp)), ordered)
+
+
+def rpmvercmp(a, b):
+    """pacman's pkgver order, from rpmvercmp in lib/libalpm/version.c."""
+    def run(text, start, kind):
+        end = start
+        while end < len(text) and text[end].isascii() and kind(text[end]):
+            end += 1
+        return end
+    if a == b:
+        return 0
+    i = j = 0
+    while i < len(a) and j < len(b):
+        separator_i, separator_j = run(a, i, lambda c: not c.isalnum()), run(b, j, lambda c: not c.isalnum())
+        if separator_i == len(a) or separator_j == len(b):
+            i, j = separator_i, separator_j
+            break
+        if separator_i - i != separator_j - j:
+            return -1 if separator_i - i < separator_j - j else 1
+        i, j = separator_i, separator_j
+        numeric = a[i].isdigit()
+        kind = str.isdigit if numeric else str.isalpha
+        end_i, end_j = run(a, i, kind), run(b, j, kind)
+        one, two = a[i:end_i], b[j:end_j]
+        if not two:
+            # A numeric segment is newer than an alphabetic one.
+            return 1 if numeric else -1
+        if numeric:
+            one, two = one.lstrip("0"), two.lstrip("0")
+            if len(one) != len(two):
+                return 1 if len(one) > len(two) else -1
+        if one != two:
+            return -1 if one < two else 1
+        i, j = end_i, end_j
+    rest_a, rest_b = a[i:], b[j:]
+    if not rest_a and not rest_b:
+        return 0
+    # A remaining alphabetic segment never beats an empty one.
+    if (not rest_a and not rest_b[:1].isalpha()) or rest_a[:1].isalpha():
+        return -1
+    return 1
 
 
 class ManifestTests(unittest.TestCase):
@@ -99,8 +163,8 @@ class ManifestTests(unittest.TestCase):
         value = manifest()
         pkgbuild = channels.pkgbuild(value)
         srcinfo = channels.srcinfo(value)
-        self.assertIn("pkgver=0.1.0_alpha.1\npkgrel=1\n", pkgbuild)
-        self.assertIn("\tpkgver = 0.1.0_alpha.1\n\tpkgrel = 1\n", srcinfo)
+        self.assertIn("pkgver=0.1.0alpha.1\npkgrel=1\n", pkgbuild)
+        self.assertIn("\tpkgver = 0.1.0alpha.1\n\tpkgrel = 1\n", srcinfo)
         for arch, platform in (("x86_64", "linux-amd64"), ("aarch64", "linux-arm64")):
             url = f"https://github.com/StogasAI/stogas/releases/download/v{VERSION}/stogas-v{VERSION}-{platform}.tar.gz"
             sha256 = hashlib.sha256(platform.encode()).hexdigest()

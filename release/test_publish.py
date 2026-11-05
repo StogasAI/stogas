@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import sys
 import tarfile
 import tempfile
@@ -13,6 +14,7 @@ import urllib.error
 from pathlib import Path
 from unittest import mock
 
+import gate
 import publish
 from publish import crate_metadata
 
@@ -61,16 +63,27 @@ class CargoUploadTests(unittest.TestCase):
 
 
 class CrateManifestTests(unittest.TestCase):
-    def test_categories_are_ones_crates_io_supports(self):
-        # crates.io refuses an upload that names any other category, and reads them from the
-        # archive's Cargo.toml. The list is https://crates.io/api/v1/category_slugs on November 5, 2026.
-        supported = set(Path(__file__).with_name("fixtures").joinpath("crates-io-category-slugs.txt").read_text().split())
+    def test_crates_io_accepts_every_published_crate(self):
         manifests = sorted(Path(__file__).resolve().parents[1].glob("crates/*/Cargo.toml"))
-        self.assertTrue(manifests)
+        published = {}
         for manifest in manifests:
             package = tomllib.loads(manifest.read_text())["package"]
             if package.get("publish", True) is not False:
-                self.assertEqual(set(package.get("categories", [])) - supported, set(), manifest)
+                published[package["name"]] = package
+                self.assertEqual(gate.crate_refusals(package), [], manifest)
+        self.assertEqual(set(published), set(gate.CRATES))
+
+    def test_names_what_crates_io_would_refuse(self):
+        # Both refusals that alpha.1's crates met, and the limits beside them in publish.rs.
+        package = {
+            "keywords": ["confidential-computing", "sev-snp", "-dash", "ok_1+", "e", "f"],
+            "categories": ["web-programming::wasm", "cryptography"],
+        }
+        self.assertEqual(gate.crate_refusals(package), [
+            "6 keywords", "keyword 'confidential-computing'", "keyword '-dash'", "category 'web-programming::wasm'",
+        ])
+        self.assertEqual(gate.crate_refusals({"categories": ["wasm"] * 6}), ["6 categories"])
+        self.assertEqual(gate.crate_refusals({}), [])
 
 
 class NpmStageTests(unittest.TestCase):
@@ -125,10 +138,12 @@ class NpmStageTests(unittest.TestCase):
         self.releases[1]["draft"] = False
         self.assertEqual(publish.npm_tag("0.1.0-alpha.1"), "next")
 
-    def test_a_failure_names_only_npms_error_code(self):
+    def test_a_failure_shows_the_tools_reason_and_names_npms_error_code(self):
         # Without --provenance=false, npm on a maintainer's machine refuses package.json's request.
-        with self.assertRaisesRegex(RuntimeError, r"^npm failed \(exit 1, npm error code EUSAGE\); registry publication stopped$"):
-            publish.run(["npm", "stage", "publish", str(self.packages / "stogas-1.2.3.tgz"), "--access", "public"])
+        with contextlib.redirect_stderr(io.StringIO()) as errors:
+            with self.assertRaisesRegex(RuntimeError, r"^npm failed \(exit 1, npm error code EUSAGE\); registry publication stopped$"):
+                publish.run(["npm", "stage", "publish", str(self.packages / "stogas-1.2.3.tgz"), "--access", "public"])
+        self.assertIn("Automatic provenance generation not supported", errors.getvalue())
 
     def test_refuses_a_staged_version_with_other_bytes(self):
         self.stage()
@@ -139,27 +154,67 @@ class NpmStageTests(unittest.TestCase):
 
 
 class ReadbackTests(unittest.TestCase):
-    def test_reads_back_until_the_deadline_then_names_it(self):
-        clock = [0.0]
+    def setUp(self):
+        self.clock = [0.0]
 
         def sleep(seconds):
-            clock[0] += seconds
+            self.clock[0] += seconds
 
-        with mock.patch.object(publish.time, "monotonic", side_effect=lambda: clock[0]), mock.patch.object(publish.time, "sleep", side_effect=sleep):
-            with self.assertRaisesRegex(RuntimeError, "within 60 minutes$"):
-                publish.wait_for(lambda: False, minutes=60)
-        self.assertGreaterEqual(clock[0], 3600)
-        self.assertLess(clock[0], 3610)
+        self.enterContext(mock.patch.object(publish.time, "monotonic", side_effect=lambda: self.clock[0]))
+        self.enterContext(mock.patch.object(publish.time, "sleep", side_effect=sleep))
 
-    def test_nuget_waits_an_hour_for_its_index(self):
+    def test_reads_back_until_the_deadline_then_names_it(self):
+        with self.assertRaisesRegex(RuntimeError, "^stogas@1.2.3 did not become available for verified readback within 60 minutes$"):
+            publish.wait_for(lambda: False, "stogas@1.2.3", minutes=60)
+        self.assertGreaterEqual(self.clock[0], 3600)
+        self.assertLess(self.clock[0], 3610)
+
+    def test_a_read_that_may_succeed_later_only_delays_readback(self):
+        failures = [urllib.error.HTTPError("https://api.nuget.org/x", 503, "unavailable", {}, None), urllib.error.URLError("no DNS"), TimeoutError()]
+
+        def urlopen(request, timeout):
+            if failures:
+                raise failures.pop(0)
+            return contextlib.closing(io.BytesIO(b"served"))
+
+        with mock.patch.object(publish.urllib.request, "urlopen", side_effect=urlopen):
+            publish.wait_for(lambda: publish.download("https://api.nuget.org/x") == b"served", "x")
+        self.assertEqual(self.clock[0], 30)
+
+    def test_names_the_last_failed_read_at_the_deadline(self):
+        with mock.patch.object(publish.urllib.request, "urlopen", side_effect=urllib.error.URLError("no DNS")):
+            with self.assertRaisesRegex(RuntimeError, r"within 5 minutes; the last read failed: Registry read of https://api.nuget.org/x failed \(URLError\)$"):
+                publish.wait_for(lambda: publish.download("https://api.nuget.org/x?token=1") is not None, "x")
+
+    def test_other_failures_stop_readback_at_once(self):
+        def differs():
+            raise ValueError("Registry already contains different bytes: x")
+
+        with self.assertRaisesRegex(ValueError, "different bytes"):
+            publish.wait_for(differs, "x")
+        self.assertEqual(self.clock[0], 0)
+
+    def test_nuget_waits_an_hour_for_its_index_and_skips_a_taken_version(self):
         # nuget.org served the first version more than 5 minutes after accepting it.
         directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-nuget-test-")))
         (directory / "Stogas.1.2.3.nupkg").write_bytes(b"package")
         commands, waits = [], []
-        with mock.patch.dict(os.environ, {"NUGET_API_KEY": "short-lived"}), mock.patch.object(publish, "download", return_value=None), mock.patch.object(publish, "run", side_effect=lambda arguments, **_: commands.append(arguments[:3])), mock.patch.object(publish, "wait_for", side_effect=lambda check, minutes=5: waits.append(minutes)):
+        with mock.patch.dict(os.environ, {"NUGET_API_KEY": "short-lived"}), mock.patch.object(publish, "download", return_value=None), mock.patch.object(publish, "run", side_effect=lambda arguments, **_: commands.append(arguments)), mock.patch.object(publish, "wait_for", side_effect=lambda check, what, minutes=5: waits.append((what, minutes))):
             publish.nuget(directory, "1.2.3")
-        self.assertEqual(commands, [["dotnet", "nuget", "push"]])
-        self.assertEqual(waits, [60])
+        self.assertEqual([command[:3] for command in commands], [["dotnet", "nuget", "push"]])
+        self.assertEqual(commands[0][-1], "--skip-duplicate")
+        self.assertEqual(waits, [("Stogas.1.2.3.nupkg", 60)])
+
+    def test_maven_waits_for_files_still_syncing_instead_of_deploying_again(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-maven-test-")))
+        for name in ("stogas-1.2.3.jar", "stogas-1.2.3.pom"):
+            (directory / name).write_bytes(name.encode())
+        served = {"https://repo.maven.apache.org/maven2/ai/stogas/stogas/1.2.3/stogas-1.2.3.pom": b"stogas-1.2.3.pom"}
+        commands = []
+        with mock.patch.object(publish, "download", side_effect=lambda url, absent=(404,): served.get(url)), mock.patch.object(publish, "run", side_effect=lambda arguments, **_: commands.append(arguments)):
+            with self.assertRaisesRegex(RuntimeError, "^ai.stogas 1.2.3 on Maven Central did not become available for verified readback within 30 minutes$"):
+                publish.maven(directory, "1.2.3")
+        self.assertEqual(commands, [])
 
 
 class StorageHostTests(unittest.TestCase):
@@ -176,7 +231,7 @@ class StorageHostTests(unittest.TestCase):
             return contextlib.closing(io.BytesIO(self.served[request.full_url]))
 
         self.enterContext(mock.patch.object(publish.urllib.request, "urlopen", side_effect=urlopen))
-        self.enterContext(mock.patch.object(publish, "wait_for", side_effect=lambda check, minutes=5: self.assertTrue(check())))
+        self.enterContext(mock.patch.object(publish, "wait_for", side_effect=lambda check, what, minutes=5: self.assertTrue(check(), what)))
 
     def test_uploads_each_crate_the_storage_host_does_not_hold(self):
         uploaded = []
@@ -197,6 +252,15 @@ class StorageHostTests(unittest.TestCase):
             publish.crates(self.packages, "1.2.3")
         self.assertEqual(uploaded, list(publish.CRATES))
 
+    def test_uploads_no_crate_while_crates_io_would_refuse_any(self):
+        for name in publish.CRATES:
+            (self.packages / f"{name}-1.2.3.crate").write_bytes(name.encode())
+        metadata = lambda path: {"keywords": ["confidential-computing"]} if path.name.startswith("stogas-core-") else {}
+        with mock.patch.object(publish, "crate_metadata", side_effect=metadata), mock.patch.object(publish, "crate_upload") as upload:
+            with self.assertRaisesRegex(ValueError, "^crates.io would refuse stogas-core-1.2.3.crate: keyword 'confidential-computing'$"):
+                publish.crates(self.packages, "1.2.3")
+        upload.assert_not_called()
+
     def test_pushes_a_gem_the_storage_host_does_not_hold(self):
         gem = self.packages / "stogas-1.2.3-x86_64-linux.gem"
         gem.write_bytes(b"gem")
@@ -214,17 +278,29 @@ class StorageHostTests(unittest.TestCase):
     def test_other_registries_still_fail_on_403(self):
         self.served.clear()
         with mock.patch.object(publish.urllib.request, "urlopen", side_effect=urllib.error.HTTPError("https://registry.npmjs.org/stogas", 403, "forbidden", {}, None)):
-            with self.assertRaisesRegex(RuntimeError, r"HTTP 403"):
+            with self.assertRaisesRegex(RuntimeError, r"^Registry read of https://registry.npmjs.org/stogas failed \(HTTP 403\)$"):
                 publish.download("https://registry.npmjs.org/stogas")
 
 
 class FirstVersionTests(unittest.TestCase):
-    def test_names_each_registry_with_none_of_its_packages(self):
-        existing = {"https://crates.io/api/v1/crates/stogas-core", "https://rubygems.org/api/v1/gems/stogas.json"}
-        with mock.patch.object(publish, "download", side_effect=lambda url: b"{}" if url in existing else None), contextlib.redirect_stdout(io.StringIO()) as output:
+    def first_versions(self, documents):
+        with mock.patch.object(publish, "download", side_effect=documents.get), contextlib.redirect_stdout(io.StringIO()) as output:
             publish.first_versions()
-        # One existing crate means crates.io trusts this workflow, or should.
-        self.assertEqual(output.getvalue().split(), ["crates=false", "npm=true", "ruby=false"])
+        return output.getvalue().split()
+
+    def test_names_each_registry_that_waits_for_a_one_time_setup(self):
+        documents = {"https://rubygems.org/api/v1/gems/stogas.json": b"{}"}
+        self.assertEqual(self.first_versions(documents), ["crates=true", "npm=true", "ruby=false"])
+
+    def test_crates_wait_until_every_crate_trusts_only_publish_yml(self):
+        # The one-time token finishes a partial first upload, which trusted publishing cannot.
+        crate = lambda trusted: json.dumps({"crate": {"trustpub_only": trusted}}).encode()
+        documents = {f"https://crates.io/api/v1/crates/{name}": crate(True) for name in publish.CRATES}
+        self.assertIn("crates=false", self.first_versions(documents))
+        documents["https://crates.io/api/v1/crates/stogas-cli"] = crate(False)
+        self.assertIn("crates=true", self.first_versions(documents))
+        del documents["https://crates.io/api/v1/crates/stogas-cli"]
+        self.assertIn("crates=true", self.first_versions(documents))
 
     def test_npm_waits_while_its_versions_are_only_staged(self):
         # As npm served both packages on November 3, 2026, between staging and approval.
@@ -240,7 +316,7 @@ class FirstVersionTests(unittest.TestCase):
 
 class CratesTrustTests(unittest.TestCase):
 
-    def test_trusts_only_publish_yml_then_revokes_the_token(self):
+    def test_trusts_only_publish_yml(self):
         calls = []
         existing = {"stogas-core": [{**publish.PUBLISHER, "crate": "stogas-core", "id": 1}]}
 
@@ -258,7 +334,27 @@ class CratesTrustTests(unittest.TestCase):
         self.assertEqual(created, ["stogas-sigstore", "stogas", "stogas-cli"])
         updated = [(path, body) for method, path, body in calls if method == "PATCH"]
         self.assertEqual(updated, [(f"crates/{name}", {"crate": {"trustpub_only": True}}) for name in publish.CRATES])
-        self.assertEqual(calls[-1][:2], ("DELETE", "tokens/current"))
+        # crates.io refuses a scoped token's request to revoke itself.
+        self.assertNotIn("DELETE", [method for method, _, _ in calls])
+
+
+
+class WorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.workflow = Path(__file__).resolve().parents[1].joinpath(".github/workflows/publish.yml").read_text()
+
+    def test_only_first_party_code_runs_where_registries_trust_the_workflow(self):
+        # Any step of a job with id-token can mint the token that every registry trusts.
+        jobs = re.split(r"^  (?=[a-z-]+:$)", self.workflow.split("\njobs:\n", 1)[1], flags=re.M)
+        trusted = [job for job in jobs if "id-token: write" in job]
+        self.assertEqual(len(trusted), 1)
+        for command in ("cargo ", "npm install", "npm ci", "pip install", "bun install", "uv "):
+            self.assertNotIn(command, trusted[0])
+        self.assertIn("needs: verify", trusted[0])
+
+    def test_a_pending_publication_waits_its_turn(self):
+        # By default a new run in the group cancels the pending one, which could be another release's.
+        self.assertIn("\n  cancel-in-progress: false\n  queue: max\n", self.workflow)
 
 
 if __name__ == "__main__":
