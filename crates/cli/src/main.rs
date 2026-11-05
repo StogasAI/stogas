@@ -132,6 +132,8 @@ enum Command {
     /// Verify downloaded SDK release artifacts, build provenance and the Stogas signature.
     /// Sigstore's keys come from current production evidence, or from saved evidence.
     VerifyRelease {
+        /// A directory with the files to check and the release's manifest, qualification,
+        /// attestation and signature files, and nothing else.
         directory: PathBuf,
         /// Saved evidence/latest.json to take Sigstore's keys from without a network request.
         #[arg(long)]
@@ -139,11 +141,14 @@ enum Command {
     },
     /// Check fresh session verification and gateway admission without a provider call.
     Probe {
+        /// The Stogas environment whose signed evidence to trust.
         #[arg(long, default_value = "prod", value_parser = parse_environment)]
         environment: stogas::Environment,
         /// Optional HTTPS API origin; the environment's evidence roots remain fixed.
         #[arg(long)]
         upstream: Option<String>,
+        /// `tls` ends TLS inside the attested gateway; `e2ee` encrypts each request to it over
+        /// HTTPS.
         #[arg(long, value_parser = security_parser(), default_value = "tls")]
         security: SecurityMode,
         /// Total evidence, session setup and response deadline in milliseconds. By default 8000,
@@ -168,6 +173,7 @@ enum Command {
         /// The receipt's `boot_sha256`.
         #[arg(long)]
         boot: String,
+        /// The Stogas environment whose signed evidence to trust.
         #[arg(long, default_value = "prod", value_parser = parse_environment)]
         environment: stogas::Environment,
         /// Directory for `boot.json` and `evidence.json`.
@@ -198,6 +204,7 @@ enum PolicyCommand {
 struct VerifyArgs {
     /// Evidence path, or `-` for stdin.
     evidence: PathBuf,
+    /// The Stogas environment whose signed evidence to trust.
     #[arg(long, default_value = "prod", value_parser = parse_environment)]
     environment: stogas::Environment,
     /// Emit stable JSON.
@@ -240,6 +247,7 @@ struct ProofArgs {
     /// Saved boot archive containing its quote, inclusion and evidence digest.
     #[arg(long, requires = "evidence")]
     boot: Option<PathBuf>,
+    /// The Stogas environment whose signed evidence to trust.
     #[arg(long, default_value = "prod", value_parser = parse_environment)]
     environment: stogas::Environment,
     /// Emit stable JSON with the commitments and which sides were checked.
@@ -258,16 +266,19 @@ enum ProofSide {
 
 #[derive(Args)]
 struct ServeArgs {
+    /// The Stogas environment whose signed evidence to trust.
     #[arg(long, default_value = "prod", value_parser = parse_environment)]
     environment: stogas::Environment,
     /// Optional HTTPS API origin; the environment's evidence roots remain fixed.
     #[arg(long)]
     upstream: Option<String>,
+    /// The loopback address and port to listen on; port 0 takes any free port.
     #[arg(long, default_value = "127.0.0.1:8787")]
     listen: String,
     /// Maximum reusable channels, opened lazily.
     #[arg(long, default_value_t = 4)]
     max_connections: usize,
+    /// `tls` ends TLS inside the attested gateway; `e2ee` encrypts each request to it over HTTPS.
     #[arg(long, value_parser = security_parser(), default_value = "tls")]
     security: SecurityMode,
     /// Let only this web origin call the endpoint. By default, any page with the printed URL can.
