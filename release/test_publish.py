@@ -7,7 +7,9 @@ import os
 import sys
 import tarfile
 import tempfile
+import tomllib
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -59,6 +61,19 @@ class CargoUploadTests(unittest.TestCase):
             dependency.setdefault("explicit_name_in_toml", None)
             dependency["version_req"] = dependency["version_req"].removeprefix("^")
         self.assertEqual(actual, expected)
+
+
+class CrateManifestTests(unittest.TestCase):
+    def test_categories_are_ones_crates_io_supports(self):
+        # crates.io refuses an upload that names any other category, and reads them from the
+        # archive's Cargo.toml. The list is https://crates.io/api/v1/category_slugs on November 5, 2026.
+        supported = set(Path(__file__).with_name("fixtures").joinpath("crates-io-category-slugs.txt").read_text().split())
+        manifests = sorted(Path(__file__).resolve().parents[1].glob("crates/*/Cargo.toml"))
+        self.assertTrue(manifests)
+        for manifest in manifests:
+            package = tomllib.loads(manifest.read_text())["package"]
+            if package.get("publish", True) is not False:
+                self.assertEqual(set(package.get("categories", [])) - supported, set(), manifest)
 
 
 class NpmStageTests(unittest.TestCase):
@@ -135,6 +150,62 @@ class ReadbackTests(unittest.TestCase):
             publish.nuget(directory, "1.2.3")
         self.assertEqual(commands, [["dotnet", "nuget", "push"]])
         self.assertEqual(waits, [60])
+
+
+class StorageHostTests(unittest.TestCase):
+    """static.crates.io and rubygems.org/downloads answered 403 for a missing file on November 5, 2026."""
+
+    def setUp(self):
+        self.packages = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-storage-test-")))
+        self.served = {}
+
+        def urlopen(request, timeout):
+            if request.full_url not in self.served:
+                storage = request.full_url.startswith(("https://static.crates.io/", "https://rubygems.org/downloads/"))
+                raise urllib.error.HTTPError(request.full_url, 403 if storage else 404, "absent", {}, None)
+            return contextlib.closing(io.BytesIO(self.served[request.full_url]))
+
+        self.enterContext(mock.patch.object(publish.urllib.request, "urlopen", side_effect=urlopen))
+        self.enterContext(mock.patch.object(publish, "wait_for", side_effect=lambda check, minutes=5: self.assertTrue(check())))
+
+    def test_uploads_each_crate_the_storage_host_does_not_hold(self):
+        uploaded = []
+
+        def upload(path, metadata, token):
+            name = path.name.removesuffix("-1.2.3.crate")
+            uploaded.append(name)
+            self.served[f"https://static.crates.io/crates/{name}/{path.name}"] = path.read_bytes()
+            entry = {"vers": "1.2.3", "cksum": publish.digest(path), "yanked": False}
+            self.served[f"https://index.crates.io/{name[:2]}/{name[2:4]}/{name}"] = json.dumps(entry).encode()
+
+        for name in publish.CRATES:
+            (self.packages / f"{name}-1.2.3.crate").write_bytes(name.encode())
+        with mock.patch.dict(os.environ, {"CARGO_REGISTRY_TOKEN": "one-time"}), mock.patch.object(publish, "crate_metadata", return_value={}), mock.patch.object(publish, "crate_upload", side_effect=upload):
+            publish.crates(self.packages, "1.2.3")
+            self.assertEqual(uploaded, list(publish.CRATES))
+            # A rerun finds every crate and uploads none.
+            publish.crates(self.packages, "1.2.3")
+        self.assertEqual(uploaded, list(publish.CRATES))
+
+    def test_pushes_a_gem_the_storage_host_does_not_hold(self):
+        gem = self.packages / "stogas-1.2.3-x86_64-linux.gem"
+        gem.write_bytes(b"gem")
+        pushed = []
+
+        def run(arguments, **_):
+            pushed.append(arguments[:2])
+            self.served[f"https://rubygems.org/downloads/{gem.name}"] = gem.read_bytes()
+
+        with mock.patch.object(publish, "run", side_effect=run):
+            publish.ruby(self.packages, "1.2.3")
+            publish.ruby(self.packages, "1.2.3")
+        self.assertEqual(pushed, [["gem", "push"]])
+
+    def test_other_registries_still_fail_on_403(self):
+        self.served.clear()
+        with mock.patch.object(publish.urllib.request, "urlopen", side_effect=urllib.error.HTTPError("https://registry.npmjs.org/stogas", 403, "forbidden", {}, None)):
+            with self.assertRaisesRegex(RuntimeError, r"HTTP 403"):
+                publish.download("https://registry.npmjs.org/stogas")
 
 
 class FirstVersionTests(unittest.TestCase):
