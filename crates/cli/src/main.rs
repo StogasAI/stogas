@@ -49,7 +49,8 @@ use tokio::io::AsyncReadExt as _;
 struct Cli {
     /// Connect through Tor: the tor service on port 9050, or else Tor Browser on 9150, or the
     /// port or address given, as --tor=9150. Each run gets its own Tor circuits, and reaches
-    /// Stogas at the onion address that its verified evidence names.
+    /// Stogas at the onion address that its verified evidence names. Evidence that names none
+    /// leaves connections to a Tor exit, as Tor Browser reaches a site without one.
     #[arg(
         long,
         global = true,
@@ -68,7 +69,7 @@ struct Cli {
     #[arg(long, global = true, env = "STOGAS_PROXY", value_name = "URL")]
     proxy: Option<String>,
     /// Reach the environment at the onion address that its verified evidence names, through the
-    /// proxy. --tor turns this on.
+    /// proxy, or through the proxy's exit where it names none. --tor turns this on.
     #[arg(long, global = true, env = "STOGAS_ONION", value_parser = BoolishValueParser::new())]
     onion: bool,
     #[command(subcommand)]
