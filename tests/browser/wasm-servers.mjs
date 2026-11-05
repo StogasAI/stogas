@@ -21,7 +21,8 @@ async function testArtifact(cargoPackage, features = []) {
 		[
 			'test',
 			'--locked',
-			'--release',
+			'--profile',
+			'wasm',
 			'--package',
 			cargoPackage,
 			'--lib',
