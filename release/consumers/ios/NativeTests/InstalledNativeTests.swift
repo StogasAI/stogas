@@ -3,7 +3,7 @@ import XCTest
 
 final class InstalledNativeTests: XCTestCase {
     // Device Farm cannot set environment variables, so the live run always uses production. A
-    // preview, published before production serves evidence, is built without it.
+    // preview, which runs no live case, is built without it.
     func testNativePackage() {
         XCTAssertEqual(stogas_native_contract(), 0)
         #if !STOGAS_OFFLINE_ONLY

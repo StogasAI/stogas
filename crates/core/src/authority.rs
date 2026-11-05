@@ -211,7 +211,7 @@ pub struct EvidenceDocument {
     pub catalogs: Vec<AllowedCatalog>,
     pub hardware_policies: Vec<AmdSevSnpPolicy>,
     pub vendor_collateral: Vec<AmdCollateral>,
-    /// Absent until Stogas signs the environment's onion addresses, and in revisions before then.
+    /// Absent when the environment signs no onion addresses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub onion_services: Option<OnionServices>,
 }

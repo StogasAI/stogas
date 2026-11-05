@@ -906,8 +906,8 @@ fn compiled_staging_root_verifies_actual_logged_operational_delegation() {
             .verify_key_manifest(&serde_json::to_vec(&changed).unwrap(), sigstore, now)
             .is_err()
     );
-    // The production root has no Rekor key yet, so its authority fails closed; once it has one,
-    // it must still reject this staging delegation.
+    // Without a Rekor key in the production root, its authority fails closed; with one, it must
+    // still reject this staging delegation.
     assert!(
         !crate::evidence::Verifier::stogas(Environment::Production)
             .is_ok_and(|production| production.verify_key_manifest(bytes, sigstore, now).is_ok())

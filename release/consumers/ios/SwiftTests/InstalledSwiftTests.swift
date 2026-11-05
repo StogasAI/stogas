@@ -4,7 +4,7 @@ import XCTest
 
 final class InstalledSwiftTests: XCTestCase {
     // Device Farm cannot set environment variables, so the live part always uses production. A
-    // preview, published before production serves evidence, is built without it.
+    // preview, which runs no live case, is built without it.
     func testSwiftPackage() async throws {
         for options in [TransportOptions(environment: "staging"), .init(security: "unsupported"), .init(maxConnections: 0)] {
             XCTAssertThrowsError(try Transport(options: options)) { error in

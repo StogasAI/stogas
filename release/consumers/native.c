@@ -84,9 +84,9 @@ static void offline(void) {
     require(result && strstr(result, "\"ok\":false") && !evidence, "Production package accepted staging evidence");
     stogas_string_free(result);
 
-    // The compiled production authority loads once its root names a Rekor key. Until then it
-    // fails closed for that reason alone and creates no owner; the live case, which every full
-    // release passes, needs it to load.
+    // The compiled production authority loads only when its root names a Rekor key; without
+    // one it fails closed for that reason alone and creates no owner. The live case, which
+    // every full release passes, needs it to load.
     result = configure("{\"environment\":\"prod\"}", &evidence);
     require(result && (strstr(result, "\"ok\":true") ? evidence != NULL
         : evidence == NULL && strstr(result, "rekor_public_key") != NULL),

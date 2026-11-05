@@ -230,7 +230,7 @@ if __name__ == "__main__":
     qualify_parser.add_argument("--package", action="append", default=[], help="Qualify a subset; release approval still requires every declared package")
     qualify_parser.add_argument("--device", help="Explicit Android adb serial or iOS destination UDID")
     qualify_parser.add_argument("--device-farm", help="AWS Device Farm project ARN for tests on a real phone")
-    qualify_parser.add_argument("--preview", action="store_true", help="Run only the offline cases, for a pre-release published before production serves evidence")
+    qualify_parser.add_argument("--preview", action="store_true", help="Run only the offline cases, for a pre-release that Stogas does not sign")
     gate_parser = commands.add_parser("gate", help="Require complete packages and their qualification")
     gate_parser.add_argument("directory", type=Path)
     gate_parser.add_argument("--packages-only", action="store_true", help="Validate a draft's complete artifacts before post-build qualification")

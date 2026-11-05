@@ -1,7 +1,7 @@
 """Require a complete, production-only release before signing or publication.
 
-A preview is a pre-release published before production serves evidence: it passes every
-offline case, runs no live case and carries no Stogas signature. Every other release
+A preview is a pre-release that passes every offline case, runs no live case and carries
+no Stogas signature. Every other release
 passes every case."""
 
 import json

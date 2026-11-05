@@ -25,9 +25,9 @@ fn offline() {
         })
         .is_err()
     );
-    // The compiled production authority loads once its root names a Rekor key. Until then it
-    // fails closed for that reason alone; the live case, which every full release passes, needs
-    // it to load.
+    // The compiled production authority loads only when its root names a Rekor key; without
+    // one it fails closed for that reason alone. The live case, which every full release
+    // passes, needs it to load.
     if let Err(error) = Verifier::stogas(Environment::Production) {
         assert!(error.to_string().contains("rekor_public_key"), "{error}");
     }

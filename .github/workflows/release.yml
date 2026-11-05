@@ -1,14 +1,14 @@
 name: Build SDK release proposal
 
 # Start on a release tag: `gh workflow run release.yml --ref vX.Y.Z`. The draft
-# release appears only after every package passed its tests. A preview, a
-# pre-release published before production serves evidence, runs only the
-# offline tests: `gh workflow run release.yml --ref vX.Y.Z-alpha.N -f preview=true`.
+# release appears only after every package passed its tests. A preview is a
+# pre-release that runs only the offline tests and carries no Stogas signature:
+# `gh workflow run release.yml --ref vX.Y.Z-alpha.N -f preview=true`.
 on:
   workflow_dispatch:
     inputs:
       preview:
-        description: Run only the offline tests of a pre-release published before production serves evidence
+        description: Run only the offline tests of a pre-release that Stogas does not sign
         type: boolean
         default: false
 
@@ -397,7 +397,8 @@ jobs:
           cp "$ATTESTATION_PATH" "$RUNNER_TEMP/sdk-packages/github-attestation.jsonl"
           notes="Verify downloads: https://stogas.ai/docs/reproducible-builds#verify-an-sdk-download"
           if [ "$PREVIEW" = true ]; then
-            notes="A preview published before Stogas's production gateways serve evidence: every package passed its offline tests, but none has reached a production gateway, and Stogas does not sign previews. Verify downloads with GitHub's build proof: gh attestation verify <file> --repo $GITHUB_REPOSITORY"
+            verify="gh attestation verify <file> --repo $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release.yml --source-ref $GITHUB_REF --deny-self-hosted-runners"
+            notes=$(printf 'Pre-release without a Stogas signature. Check each download with its GitHub build attestation:\n\n```console\n%s\n```' "$verify")
           fi
           prerelease=()
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease=(--prerelease); fi

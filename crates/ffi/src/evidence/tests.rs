@@ -83,7 +83,7 @@ fn compiled_authorities_never_substitute_another_environment() {
             configuration.len(),
             &raw mut handle,
         ));
-        // The production root has no Rekor key yet, so construction fails closed. Once it
+        // Without a Rekor key in the production root, construction fails closed. When it
         // succeeds, a genuine logged staging delegation still cannot override the production
         // authority selected through this ABI.
         assert_eq!(result["ok"], !handle.is_null());

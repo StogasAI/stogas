@@ -73,11 +73,7 @@ pub async fn verify_directory(
     let attestation = read(directory, ATTESTATION).await?;
     let qualification = read(directory, QUALIFICATION).await?;
     if let Some(version) = unsigned_preview(directory, &manifest_bytes) {
-        bail!(
-            "SDK {version} is a preview, published before Stogas's production gateways served \
-             evidence, so Stogas did not sign it. Check its GitHub build proof instead: \
-             gh attestation verify <file> --repo StogasAI/stogas --bundle {ATTESTATION}"
-        );
+        bail!("{}", preview_check(directory, &version));
     }
     let signature = read(directory, SIGNATURE).await?;
     // An incomplete release fails before any request.
@@ -111,6 +107,17 @@ fn unsigned_preview(directory: &Path, manifest: &[u8]) -> Option<String> {
     }
     let manifest: sdk_release::Manifest = serde_json::from_slice(manifest).ok()?;
     manifest.version.contains('-').then_some(manifest.version)
+}
+
+/// How to check a preview's files, which only their GitHub build attestation covers.
+fn preview_check(directory: &Path, version: &str) -> String {
+    format!(
+        "SDK {version} is a pre-release without a Stogas signature. Check each file's GitHub \
+         build attestation instead: gh attestation verify <file> --repo StogasAI/stogas \
+         --bundle {} --signer-workflow StogasAI/stogas/.github/workflows/release.yml \
+         --source-ref refs/tags/v{version} --deny-self-hosted-runners",
+        directory.join(ATTESTATION).display()
+    )
 }
 
 /// Check every file other than the release metadata against the manifest.
@@ -183,6 +190,15 @@ mod tests {
         );
         assert_eq!(unsigned_preview(&directory, &manifest("0.1.0")), None);
         assert_eq!(unsigned_preview(&directory, b"{"), None);
+        let check = super::preview_check(&directory, "0.1.0-alpha.1");
+        assert!(
+            check.contains(super::ATTESTATION)
+                && check.ends_with(
+                    " --signer-workflow StogasAI/stogas/.github/workflows/release.yml \
+                     --source-ref refs/tags/v0.1.0-alpha.1 --deny-self-hosted-runners"
+                ),
+            "{check}"
+        );
         std::fs::write(directory.join(super::SIGNATURE), b"{}").unwrap();
         assert_eq!(
             unsigned_preview(&directory, &manifest("0.1.0-alpha.1")),
