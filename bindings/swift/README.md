@@ -1,6 +1,6 @@
 # Stogas for Swift
 
-This Swift 6.2 package links the Rust verifier through its C ABI. Native artifacts support macOS 13 or later and Linux on x86-64 and ARM64. It does not include iOS or Windows artifacts.
+This Swift 6.2 package links the Rust verifier through its C ABI. Native artifacts support macOS 13 or later, iOS 15 or later on devices and the ARM64 simulator, and Linux on x86-64 and ARM64. It does not include Windows artifacts.
 
 ```swift
 import Stogas
