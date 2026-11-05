@@ -210,42 +210,46 @@ function initializeSigstore(page: import('@playwright/test').Page) {
 	return initializeModule(page, SIGSTORE_GLUE, SIGSTORE_WASM, 'stogasSigstoreBindings');
 }
 
-test('standalone lightweight package verifies GitHub evidence with networking disabled', async ({
-	page
-}) => {
-	const requests = await initializeSigstore(page);
-	const fixture = await readFile(FIXTURE, 'utf8');
-	const trustedRoot = await readFile(TRUSTED_ROOT, 'utf8');
-	const result = await page.evaluate(
-		({ fixture, subjects, policy, trustedRoot }) => {
-			const api = (
-				globalThis as typeof globalThis & {
-					stogasSigstoreBindings: {
-						verify_github_attestation(
-							bundle: Uint8Array,
-							subjects: string,
-							policy: string,
-							trustedRoot: string
-						): { subjects: unknown[] };
-					};
-				}
-			).stogasSigstoreBindings;
-			return api.verify_github_attestation(
-				new TextEncoder().encode(fixture),
-				JSON.stringify(subjects),
-				JSON.stringify(policy),
-				trustedRoot
-			);
-		},
-		{ fixture, subjects: SUBJECTS, policy: POLICY, trustedRoot }
-	);
-	expect(result.subjects).toHaveLength(2);
-	expect(requests).toEqual([]);
-});
+// Release qualification runs the tests tagged @release against the installed packages' bytes.
+test(
+	'standalone lightweight package verifies GitHub evidence with networking disabled',
+	{ tag: '@release' },
+	async ({ page }) => {
+		const requests = await initializeSigstore(page);
+		const fixture = await readFile(FIXTURE, 'utf8');
+		const trustedRoot = await readFile(TRUSTED_ROOT, 'utf8');
+		const result = await page.evaluate(
+			({ fixture, subjects, policy, trustedRoot }) => {
+				const api = (
+					globalThis as typeof globalThis & {
+						stogasSigstoreBindings: {
+							verify_github_attestation(
+								bundle: Uint8Array,
+								subjects: string,
+								policy: string,
+								trustedRoot: string
+							): { subjects: unknown[] };
+						};
+					}
+				).stogasSigstoreBindings;
+				return api.verify_github_attestation(
+					new TextEncoder().encode(fixture),
+					JSON.stringify(subjects),
+					JSON.stringify(policy),
+					trustedRoot
+				);
+			},
+			{ fixture, subjects: SUBJECTS, policy: POLICY, trustedRoot }
+		);
+		expect(result.subjects).toHaveLength(2);
+		expect(requests).toEqual([]);
+	}
+);
 
-test('concurrent initialization instantiates the browser package once', async ({ page }) => {
+/** Serve the `stogas` browser entry and its Wasm from a local origin, as a site would. */
+async function servePackage() {
 	const types: Record<string, string> = { '.js': 'text/javascript', '.wasm': 'application/wasm' };
-	let wasmRequests = 0;
+	const served = { origin: '', wasmRequests: 0, close: async () => {} };
 	const server = createServer((request, response) => {
 		const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
 		if (path === '/') return response.end('<!doctype html><title>SDK consumer</title>');
@@ -254,7 +258,7 @@ test('concurrent initialization instantiates the browser package once', async ({
 			response.statusCode = 404;
 			return response.end();
 		}
-		if (type === 'application/wasm') wasmRequests += 1;
+		if (type === 'application/wasm') served.wasmRequests += 1;
 		readFile(resolve(ROOT, `.${path}`)).then(
 			(body) => response.setHeader('content-type', type).end(body),
 			() => {
@@ -264,20 +268,85 @@ test('concurrent initialization instantiates the browser package once', async ({
 		);
 	});
 	await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
-	try {
-		const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-		await page.goto(origin);
-		const shared = await page.evaluate(async (origin) => {
-			const sdk = await import(`${origin}/bindings/browser/browser.js`);
-			const [first, second] = await Promise.all([sdk.default(), sdk.default()]);
-			return first === second && (await sdk.default()) === first;
-		}, origin);
-		expect(shared).toBe(true);
-		expect(wasmRequests).toBe(1);
-	} finally {
+	served.origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	served.close = async () => {
 		server.closeAllConnections();
 		await new Promise<void>((done, fail) =>
 			server.close((error) => (error ? fail(error) : done()))
 		);
+	};
+	return served;
+}
+
+test(
+	'concurrent initialization instantiates the browser package once',
+	{ tag: '@release' },
+	async ({ page }) => {
+		const served = await servePackage();
+		try {
+			await page.goto(served.origin);
+			const shared = await page.evaluate(async (origin) => {
+				const sdk = await import(`${origin}/bindings/browser/browser.js`);
+				const [first, second] = await Promise.all([sdk.default(), sdk.default()]);
+				return first === second && (await sdk.default()) === first;
+			}, served.origin);
+			expect(shared).toBe(true);
+			expect(served.wasmRequests).toBe(1);
+		} finally {
+			await served.close();
+		}
 	}
-});
+);
+
+test(
+	'the browser package checks a production root without the network',
+	{ tag: '@release' },
+	async ({ page }) => {
+		const { root } = JSON.parse(
+			await readFile(resolve(ROOT, 'tests/fixtures/hardware-session-v1.json'), 'utf8')
+		);
+		const served = await servePackage();
+		const elsewhere: string[] = [];
+		page.on('request', (request) => {
+			if (!request.url().startsWith(`${served.origin}/`)) elsewhere.push(request.url());
+		});
+		try {
+			await page.goto(served.origin);
+			const result = await page.evaluate(
+				async ({ origin, root }) => {
+					const sdk = await import(`${origin}/bindings/browser/browser.js`);
+					await sdk.default();
+					const verifier = new sdk.EvidenceVerifier('prod', root);
+					let refusedMalformed = false;
+					try {
+						verifier.refresh(new TextEncoder().encode('{"document":'));
+					} catch {
+						refusedMalformed = true;
+					} finally {
+						verifier.free();
+					}
+					const invalid = [
+						{ ...root, unknown: true },
+						{ ...root, rekor_public_key: 'bad-key' },
+						{ key_id: root.key_id, public_key: root.public_key },
+						JSON.stringify(root)
+					];
+					const refusedRoots = invalid.filter((candidate) => {
+						try {
+							new sdk.EvidenceVerifier('prod', candidate).free();
+							return false;
+						} catch {
+							return true;
+						}
+					}).length;
+					return { refusedMalformed, refusedRoots };
+				},
+				{ origin: served.origin, root }
+			);
+			expect(result).toEqual({ refusedMalformed: true, refusedRoots: 4 });
+			expect(elsewhere).toEqual([]);
+		} finally {
+			await served.close();
+		}
+	}
+);

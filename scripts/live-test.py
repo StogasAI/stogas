@@ -93,7 +93,7 @@ def main(environment):
         docker(BUN, {js: "/work"}, "bun", "test", "tests/node/live.test.mjs")
         docker(DENO, {js: "/work"}, "deno", "test", "--allow-all", "--no-check", "tests/node/live.test.mjs")
         (js / "tests/browser/live.config.mjs").write_text("""import {defineConfig} from '@playwright/test';
-export default defineConfig({testDir:'.',testMatch:'live.spec.ts',forbidOnly:true,retries:0,reporter:'line',projects:['chromium','firefox','webkit'].map(name=>({name,use:{browserName:name,headless:true}}))});
+export default defineConfig({testDir:'.',testMatch:'live.spec.ts',forbidOnly:true,retries:0,reporter:'line',projects:['chromium','firefox','webkit'].map(name=>({name,use:{browserName:name,headless:true,...(name==='webkit'?{launchOptions:{env:{...process.env,JSC_numberOfGCMarkers:'1'}}}:{})}}))});
 """)
         run("npx", "--no-install", "playwright", "test", "--config", "tests/browser/live.config.mjs", cwd=js)
     print(f"Every runtime reached the {environment} gateway and verified its evidence")

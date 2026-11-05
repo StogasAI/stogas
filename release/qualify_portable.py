@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -18,6 +19,46 @@ DENO = "denoland/deno:2.9.6@sha256:2014dc167ece617ef7e7ba40631ac2234c59e75ce693e
 NODE_MINIMUM = "node:20.20.2-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0"
 
 
+BROWSERS = ("chromium", "firefox", "webkit")
+# Playwright's WebKit sometimes stops a page for good inside JavaScriptCore's collector on four
+# cores; one marking thread avoids it, as in tests/browser/playwright.config.ts.
+RELEASE_CONFIG = """import {defineConfig} from '@playwright/test';
+export default defineConfig({testDir:'.',testMatch:['verifier.spec.ts','live.spec.ts'],forbidOnly:true,retries:0,workers:2,reporter:[['line'],['json',{outputFile:'/work/browser-results.json'}]],projects:['chromium','firefox','webkit'].map(name=>({name,use:{browserName:name,headless:true,...(name==='webkit'?{launchOptions:{env:{...process.env,JSC_numberOfGCMarkers:'1'}}}:{})}}))});
+"""
+
+
+def release_browser_tests(directory):
+    """How many browser tests release qualification runs, and how many of them are live."""
+    text = "".join(path.read_text() for path in sorted(Path(directory).glob("*.spec.ts")))
+    tags = re.findall(r"tag: (\[[^\]]*\]|'[^']*')", text)
+    release = [tag for tag in tags if "'@release'" in tag]
+    return len(release), sum("'@live'" in tag for tag in release)
+
+
+def browser_outcomes(report, case, expected):
+    """Each engine's outcome from Playwright's JSON report: passed only when it ran every release
+    test and all passed, except that an offline case skips the live ones."""
+    total, live = expected
+    results = {runtime: [] for runtime in BROWSERS}
+    def walk(suite):
+        for spec in suite.get("specs", []):
+            for test in spec.get("tests", []):
+                if test.get("projectName") in results:
+                    # The report names tags without their @.
+                    results[test["projectName"]].append(("live" in spec.get("tags", []), test.get("status")))
+        for child in suite.get("suites", []):
+            walk(child)
+    for suite in report.get("suites", []):
+        walk(suite)
+    outcomes = {}
+    for runtime, tests in results.items():
+        skipped = live if case == "offline" else 0
+        complete = len(tests) == total and sum(status == "skipped" and is_live for is_live, status in tests) == skipped
+        passed = complete and all(status == "expected" for is_live, status in tests if not (status == "skipped" and is_live))
+        outcomes[runtime] = "passed" if passed and total > live else "failed"
+    return outcomes
+
+
 def qualify(source, packages, version, requested, cases):
     selected = set(requested or ("npm", "rust"))
     if not selected <= {"npm", "rust"}:
@@ -29,7 +70,7 @@ def qualify(source, packages, version, requested, cases):
         shutil.copytree(source / "tests", work / "tests")
         # Setup steps use the network. Offline cases have none; live cases use
         # the production gateways.
-        def run(image, arguments, case=None):
+        def run(image, arguments, case=None, check=True):
             subprocess.run([
                 "docker", "run", "--rm", "--init", "--memory", "4g", "--cpus", "4", "--shm-size", "1g",
                 "--platform", "linux/amd64", "--user", f"{os.getuid()}:{os.getgid()}",
@@ -37,7 +78,7 @@ def qualify(source, packages, version, requested, cases):
                 "--env", "HOME=/work", "--env", "CARGO_HOME=/work/.cargo", "--env", "CARGO_BUILD_JOBS=4",
                 *(["--network", "none"] if case == "offline" else []), *(["--env", "STOGAS_LIVE=prod"] if case == "live" else []),
                 "--entrypoint", arguments[0], image, *arguments[1:],
-            ], check=True)
+            ], check=check)
         def record(package, case, runtime, outcome):
             checks.append({"platform": "portable", "package": package, "case": case, "runtime": runtime, "outcome": outcome})
         if "npm" in selected:
@@ -55,13 +96,11 @@ def qualify(source, packages, version, requested, cases):
             shutil.copytree(installed / "pkg/browser", work / "target/browser")
             shutil.copytree(work / "node_modules/@stogas/sigstore/pkg/browser", work / "target/sigstore-browser")
             tests = ["tests/node/" + path.name for path in sorted((work / "tests/node").glob("*.test.mjs")) if path.name != "fuzz-workflows.test.mjs"]
-            (work / "tests/browser/release.config.mjs").write_text("""import {defineConfig} from '@playwright/test';
-export default defineConfig({testDir:'.',testMatch:['verifier.spec.ts','live.spec.ts'],forbidOnly:true,retries:0,reporter:'line',workers:2,projects:['chromium','firefox','webkit'].map(name=>({name,use:{browserName:name,headless:true}}))});
-""")
-            # Staging authority cases require a different compile-time trust
-            # profile. Production packages test real offline GitHub evidence and
-            # independent signing vectors here.
-            browsers = ["npx", "--no-install", "playwright", "test", "--config", "tests/browser/release.config.mjs", "--grep", "ML-DSA publisher|standalone lightweight|real GitHub release|invalid Rekor|live gateway"]
+            (work / "tests/browser/release.config.mjs").write_text(RELEASE_CONFIG)
+            # The tests tagged @release run on the installed production packages; the others need
+            # the staging trust profile.
+            browsers = ["npx", "--no-install", "playwright", "test", "--config", "tests/browser/release.config.mjs", "--grep", "@release"]
+            expected = release_browser_tests(work / "tests/browser")
             for case in cases:
                 for runtime, image, arguments in (
                     ("node", PLAYWRIGHT, ["node", "--test", *tests]),
@@ -71,9 +110,13 @@ export default defineConfig({testDir:'.',testMatch:['verifier.spec.ts','live.spe
                     ("worker", PLAYWRIGHT, ["node", "--test", "tests/worker/transport.test.mjs"]),
                 ):
                     record("npm", f"{runtime}-{case}", image, attempt(f"npm/{runtime}-{case}", lambda: run(image, arguments, case)))
-                outcome = attempt(f"npm/browsers-{case}", lambda: run(PLAYWRIGHT, browsers, case))
-                for runtime in ("chromium", "firefox", "webkit"):
-                    record("npm", f"{runtime}-{case}", PLAYWRIGHT, outcome)
+                # Playwright fails when any test does; each engine's own results decide its outcome.
+                (work / "browser-results.json").unlink(missing_ok=True)
+                attempt(f"npm/browsers-{case}", lambda: run(PLAYWRIGHT, browsers, case, check=False))
+                results = work / "browser-results.json"
+                outcomes = browser_outcomes(json.loads(results.read_text()) if results.exists() else {}, case, expected)
+                for runtime in BROWSERS:
+                    record("npm", f"{runtime}-{case}", PLAYWRIGHT, outcomes[runtime])
         if "rust" in selected:
             crates = ("stogas-sigstore", "stogas-core", "stogas")
             for name in crates:
