@@ -195,8 +195,8 @@ func TestOfflineReceiptUsesLoggedHardwareKeyAndExactContentHashes(t *testing.T) 
 		now                time.Time
 		code               string
 	}{
-		{"content", encoded, inclusion, &response, now, "invalid_receipt"},
-		{"unknown field", append([]byte(`{"durability":true,`), encoded[1:]...), inclusion, &request, now, "invalid_receipt"},
+		{"content", encoded, inclusion, &response, now, "receipt_content"},
+		{"unknown field", append([]byte(`{"durability":true,`), encoded[1:]...), inclusion, &request, now, "receipt_signature"},
 		{"duplicate field", append([]byte(`{"receipt":{},`), encoded[1:]...), inclusion, &request, now, "invalid_receipt"},
 		{"missing inclusion", encoded, nil, &request, now, ""},
 		{"expired collateral", encoded, inclusion, &request, now.AddDate(30, 0, 0), "expired_collateral"},

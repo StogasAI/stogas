@@ -41,6 +41,22 @@ pub enum Error {
     Canonical(#[from] CanonicalError),
 }
 
+impl Error {
+    /// Stable reason for bindings; callers never classify failures by parsing display text.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Invalid => "invalid_receipt",
+            Self::Content(_) => "receipt_content",
+            Self::Salt(_) => "receipt_salt",
+            Self::Identity => "receipt_identity",
+            Self::Signature => "receipt_signature",
+            Self::Canonical(CanonicalError::Json) => "invalid_content",
+            Self::Canonical(CanonicalError::Integer) => "inexact_integer",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {

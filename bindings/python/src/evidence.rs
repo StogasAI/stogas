@@ -276,16 +276,7 @@ fn evidence_error(py: Python<'_>, error: &evidence::Error) -> PyErr {
 }
 
 fn receipt_error(py: Python<'_>, error: &receipt::Error) -> PyErr {
-    let code = match error {
-        receipt::Error::Invalid => "invalid_receipt",
-        receipt::Error::Content(_) => "receipt_content",
-        receipt::Error::Salt(_) => "receipt_salt",
-        receipt::Error::Identity => "receipt_identity",
-        receipt::Error::Signature => "receipt_signature",
-        receipt::Error::Canonical(receipt::CanonicalError::Json) => "invalid_content",
-        receipt::Error::Canonical(receipt::CanonicalError::Integer) => "inexact_integer",
-    };
-    coded_error(py, code, error.to_string())
+    coded_error(py, error.code(), error.to_string())
 }
 
 pub fn coded_error(py: Python<'_>, code: &str, message: String) -> PyErr {
