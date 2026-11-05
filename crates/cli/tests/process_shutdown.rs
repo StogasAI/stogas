@@ -1,4 +1,4 @@
-#![cfg(all(unix, feature = "staging"))]
+#![cfg(feature = "staging")]
 
 use std::{
     io::{BufRead, BufReader},
@@ -19,7 +19,14 @@ impl Drop for Process {
 
 #[test]
 fn proxy_process_closes_cleanly_on_signals_and_parent_pipe_loss() {
-    for trigger in ["-INT", "-TERM", "stdin", "-TERM-with-stdin"] {
+    // Windows has no kill(1), and a console's Ctrl-C reaches every process attached to it, so it
+    // checks only the parent's pipe, which applications that start the proxy rely on.
+    let triggers: &[&str] = if cfg!(unix) {
+        &["-INT", "-TERM", "stdin", "-TERM-with-stdin"]
+    } else {
+        &["stdin"]
+    };
+    for &trigger in triggers {
         let mut command = Command::new(env!("CARGO_BIN_EXE_stogas"));
         command
             .args([

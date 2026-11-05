@@ -7,9 +7,14 @@ current evidence from both origins.
 
 import json
 import os
+import queue
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -45,11 +50,58 @@ def offline(cli, version, fixtures, work):
         raise SystemExit("The encrypted envelope names a different key")
     (work / "empty").mkdir()
     run(cli, "verify-release", str(work / "empty"), accepted=False)
+    # Without evidence, serve exits without advertising an endpoint. The closed proxy port makes
+    # this hold on runners that have a network.
+    if "OpenAI base URL" in run(cli, "--proxy", "http://127.0.0.1:9", "serve", "--listen", "127.0.0.1:0", accepted=False):
+        raise SystemExit("serve advertised an endpoint without verified evidence")
+
+
+def serve(cli, environment, security):
+    """The CLI's local endpoint answers through the gateway, then closes when its parent's pipe
+    does, as an application that starts it relies on."""
+    process = subprocess.Popen(
+        [cli, "serve", "--environment", environment, "--security", security, "--listen", "127.0.0.1:0", "--exit-on-stdin-close"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        lines = queue.Queue()
+        threading.Thread(target=lambda: [lines.put(line) for line in process.stdout], daemon=True).start()
+        try:
+            line = lines.get(timeout=60)
+        except queue.Empty:
+            raise SystemExit(f"serve --security {security} named no endpoint within 60 seconds") from None
+        if not line.startswith("OpenAI base URL: "):
+            raise SystemExit(f"serve --security {security} began with {line.strip()!r}")
+        base = line.removeprefix("OpenAI base URL: ").strip()
+        request = urllib.request.Request(
+            f"{base}/chat/completions", method="POST",
+            data=b'{"model":"stogas-status-monitor","messages":[{"role":"user","content":"ping"}]}',
+            headers={"Authorization": "Bearer stogas-status-monitor-uncredentialed", "Content-Type": "application/json"},
+        )
+        try:
+            urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=60).close()
+            raise SystemExit(f"serve --security {security} accepted an invalid key")
+        except urllib.error.HTTPError as error:
+            with error:
+                if error.code != 401 or json.loads(error.read())["error"]["type"] != "authentication_error":
+                    raise SystemExit(f"serve --security {security} answered an invalid key with HTTP {error.code}") from None
+        process.stdin.close()
+        if process.wait(timeout=10) != 0:
+            raise SystemExit(f"serve --security {security} exited {process.returncode} when its stdin closed")
+        try:
+            socket.create_connection(("127.0.0.1", urllib.parse.urlsplit(base).port), timeout=5).close()
+        except ConnectionRefusedError:
+            return
+        raise SystemExit(f"serve --security {security} kept listening after it exited")
+    finally:
+        process.kill()
+        process.wait()
 
 
 def live(cli, environment, work):
     for security in ("tls", "e2ee"):
         run(cli, "probe", "--environment", environment, "--security", security)
+        serve(cli, environment, security)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     for index, origin in enumerate(ORIGINS[environment]):
         evidence = work / f"current-{index}.json"
