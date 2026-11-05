@@ -14,7 +14,7 @@ hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-stogas-sigstore = { path = "../sigstore" }
+stogas-sigstore.workspace = true
 
 [lints]
 workspace = true

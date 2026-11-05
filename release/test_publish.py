@@ -18,6 +18,8 @@ import gate
 import publish
 from publish import crate_metadata
 
+ROOT = Path(__file__).resolve().parents[1]
+
 # Plays npm's staging queue: the registry keeps each staged archive under a new ID.
 FAKE_NPM = """#!{python} -I
 import json, os, shutil, sys, tarfile, uuid
@@ -62,16 +64,48 @@ class CargoUploadTests(unittest.TestCase):
         self.assertEqual(actual, expected)
 
 
+def published_manifests():
+    for path in sorted(ROOT.glob("crates/*/Cargo.toml")):
+        manifest = tomllib.loads(path.read_text())
+        if manifest["package"].get("publish", True) is not False:
+            yield path, manifest
+
+
+def locked(path):
+    return {(package["name"], package["version"]) for package in tomllib.loads(path.read_text())["package"] if "source" in package}
+
+
 class CrateManifestTests(unittest.TestCase):
     def test_crates_io_accepts_every_published_crate(self):
-        manifests = sorted(Path(__file__).resolve().parents[1].glob("crates/*/Cargo.toml"))
         published = {}
-        for manifest in manifests:
-            package = tomllib.loads(manifest.read_text())["package"]
-            if package.get("publish", True) is not False:
-                published[package["name"]] = package
-                self.assertEqual(gate.crate_refusals(package), [], manifest)
+        for path, manifest in published_manifests():
+            published[manifest["package"]["name"]] = manifest
+            self.assertEqual(gate.crate_refusals(manifest["package"]), [], path)
         self.assertEqual(set(published), set(gate.CRATES))
+
+    def test_published_crates_require_versions_that_dependents_can_share(self):
+        # An exact requirement makes every project that uses the crate take that one version.
+        # The siblings release together, and signatures cover the canonicalizer's output; Cargo
+        # refuses an exact sibling requirement that differs from the sibling's version.
+        workspace = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]
+        exact = {"stogas", "stogas-core", "stogas-sigstore", "serde_json_canonicalizer"}
+        for path, manifest in published_manifests():
+            for table in [manifest, *manifest.get("target", {}).values()]:
+                for kind in ("dependencies", "build-dependencies"):
+                    for name, dependency in table.get(kind, {}).items():
+                        if isinstance(dependency, dict) and dependency.get("workspace"):
+                            dependency = workspace["dependencies"][name]
+                        requirement = dependency if isinstance(dependency, str) else dependency["version"]
+                        with self.subTest(crate=path.parent.name, dependency=name):
+                            self.assertEqual(requirement.startswith("="), name in exact, requirement)
+
+    def test_test_workspaces_lock_the_shipped_versions(self):
+        # The probe and fuzz targets must test the dependency versions that the crates ship with.
+        shipped = locked(ROOT / "Cargo.lock")
+        names = {name for name, _ in shipped}
+        for workspace in ("fuzz", "tests/security/probe"):
+            with self.subTest(workspace=workspace):
+                self.assertEqual(sorted(entry for entry in locked(ROOT / workspace / "Cargo.lock") - shipped if entry[0] in names), [])
 
     def test_names_what_crates_io_would_refuse(self):
         # Both refusals that alpha.1's crates met, and the limits beside them in publish.rs.
@@ -341,7 +375,7 @@ class CratesTrustTests(unittest.TestCase):
 
 class WorkflowTests(unittest.TestCase):
     def setUp(self):
-        self.workflow = Path(__file__).resolve().parents[1].joinpath(".github/workflows/publish.yml").read_text()
+        self.workflow = (ROOT / ".github/workflows/publish.yml").read_text()
 
     def test_only_first_party_code_runs_where_registries_trust_the_workflow(self):
         # Any step of a job with id-token can mint the token that every registry trusts.

@@ -19,7 +19,7 @@ staging = ["stogas-core/staging", "stogas-sdk/staging"]
 pyo3 = { version = "0.29.0", features = ["abi3-py310", "extension-module", "generate-import-lib"] }
 serde_json.workspace = true
 serde.workspace = true
-stogas-core = { path = "../../crates/core" }
+stogas-core.workspace = true
 stogas-sdk = { package = "stogas", path = "../../crates/sdk" }
 
 [lints]

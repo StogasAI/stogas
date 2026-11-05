@@ -441,10 +441,12 @@ jobs:
         with:
           node-version: 24.22.1
           cache: npm
+      # stogas-sigstore builds alone, with no setup; stogas-core needs the application to select
+      # getrandom's WebAssembly backend, as stogas-wasm does.
       - name: Reject native cryptography in the WebAssembly builds
         run: |
           set -euo pipefail
-          for package in stogas-sigstore-wasm stogas-wasm; do
+          for package in stogas-sigstore stogas-sigstore-wasm stogas-wasm; do
             cargo tree --locked --package "$package" --target wasm32-unknown-unknown > "${package}-dependencies.txt"
             if grep -E '(^| )(aws-lc-rs|openssl|ring) v' "${package}-dependencies.txt"; then
               echo "$package contains a native cryptographic backend." >&2

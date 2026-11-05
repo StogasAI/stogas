@@ -33,7 +33,13 @@ reqwest = { version = "0.12.23", default-features = false, features = ["brotli",
 rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "prefer-post-quantum", "std", "tls12"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.143", features = ["preserve_order"] }
+# Signatures cover its RFC 8785 output, so every build uses the version the test vectors pass.
+serde_json_canonicalizer = "=0.3.2"
 sha2 = "0.10.9"
+# The published crates release together, so each requires its siblings' exact version.
+stogas = { path = "crates/sdk", version = "=0.1.0-alpha.1" }
+stogas-core = { path = "crates/core", version = "=0.1.0-alpha.1" }
+stogas-sigstore = { path = "crates/sigstore", version = "=0.1.0-alpha.1" }
 thiserror = "2.0.16"
 tokio = "1.47.1"
 url = "2.5.7"

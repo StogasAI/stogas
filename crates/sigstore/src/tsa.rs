@@ -127,12 +127,7 @@ fn verify_timestamp(token: &[u8], signature: &[u8], root: &TrustedRoot) -> Resul
         return Err("unsupported RFC 3161 TSTInfo".into());
     }
     verify_message_imprint(&info.message_imprint, signature)?;
-    let time = info
-        .gen_time
-        .to_system_time()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| "RFC 3161 timestamp predates the Unix epoch".to_owned())?
-        .as_secs();
+    let time = info.gen_time.to_unix_duration().as_secs();
     let time = i64::try_from(time).map_err(|_| "RFC 3161 timestamp is too large".to_owned())?;
     let authorities = root.tsa_authorities_at(time)?;
     if authorities.is_empty() {
