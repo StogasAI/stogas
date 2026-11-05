@@ -81,7 +81,12 @@ class CrateManifestTests(unittest.TestCase):
         for path, manifest in published_manifests():
             published[manifest["package"]["name"]] = manifest
             self.assertEqual(gate.crate_refusals(manifest["package"]), [], path)
+            # crates.io records an SPDX expression; the archive carries the text, which release
+            # inputs cannot link to.
+            self.assertEqual(manifest["package"]["license"], {"workspace": True}, path)
+            self.assertEqual((path.parent / "LICENSE").read_bytes(), (ROOT / "LICENSE").read_bytes(), path)
         self.assertEqual(set(published), set(gate.CRATES))
+        self.assertEqual(tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["license"], "Apache-2.0")
 
     def test_published_crates_require_versions_that_dependents_can_share(self):
         # An exact requirement makes every project that uses the crate take that one version.

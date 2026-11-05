@@ -89,6 +89,9 @@ pub struct VerifiedAttestation {
     pub predicate_type: String,
     /// Subject names and SHA-256 digests from the verified statement.
     pub subjects: Vec<(String, String)>,
+    /// The statement's predicate, as its signer wrote it, for the caller's own policy. In a GitHub
+    /// attestation the workflow writes it, so only the certificate's claims are GitHub's.
+    pub predicate: Value,
 }
 
 /// A verified Rekor entry that logged a document.
@@ -180,8 +183,8 @@ pub fn verify_github_attestation(
 
 /// Verify the supported Sigstore v0.3 DSSE profile with exact identity and subjects.
 ///
-/// This generic seam contains no Stogas release policy. Callers which need GitHub build claims
-/// must apply their policy to the authenticated statement, as `verify_github_attestation` does.
+/// It applies no policy to the predicate, which the result returns for the caller's. GitHub
+/// build claims belong in [`verify_github_attestation`], which reads them from the certificate.
 ///
 /// # Errors
 ///
@@ -297,6 +300,7 @@ fn verify_statement(
             .into_iter()
             .map(|subject| (subject.name, subject.digest.sha256))
             .collect(),
+        predicate: statement.predicate,
     })
 }
 
@@ -390,9 +394,7 @@ struct Statement {
     subject: Vec<StatementSubject>,
     #[serde(rename = "predicateType")]
     predicate_type: String,
-    // Required but unread: whoever controls the workflow writes it.
-    #[serde(rename = "predicate")]
-    _predicate: Value,
+    predicate: Value,
 }
 
 #[derive(Deserialize)]
@@ -475,7 +477,7 @@ mod tests {
             kind: "https://in-toto.io/Statement/v1".into(),
             subject,
             predicate_type: "https://slsa.dev/provenance/v1".into(),
-            _predicate: json!({}),
+            predicate: json!({}),
         }
     }
 

@@ -65,6 +65,10 @@ fn verifies_real_gateway_release_attestation() {
     let bundle = include_bytes!("../../../tests/fixtures/gateway-v0.0.1-attestation.jsonl");
     let result = verify_github_attestation(production(), bundle, &subjects(), &policy()).unwrap();
     assert_eq!(result.subjects.len(), 2);
+    assert_eq!(
+        result.predicate["buildDefinition"]["buildType"],
+        "https://actions.github.io/buildtypes/workflow/v1"
+    );
 }
 
 #[test]

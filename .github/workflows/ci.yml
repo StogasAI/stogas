@@ -517,13 +517,32 @@ jobs:
           npx --yes --package bun@1.4.4 bun tests/clients/fetch-load.mjs
           npx --yes --package deno@2.9.6 deno test --allow-all --no-check tests/node/*.test.mjs
           npx --yes --package deno@2.9.6 deno run --allow-all tests/clients/fetch-load.mjs
+      - name: 'npm: both packages installed by name'
+        # It installs the two tarballs that this job packs, which have no dependencies and which a
+        # lockfile cannot hold; the job holds no secrets and can write nothing.
+        # zizmor: ignore[adhoc-packages]
+        run: |
+          set -euo pipefail
+          consumer="$RUNNER_TEMP/npm-consumer"
+          mkdir "$consumer"
+          npm pack --pack-destination "$consumer"
+          npm pack ./packages/sigstore --pack-destination "$consumer"
+          cp tests/package/exports.test.mjs "$consumer"
+          cd "$consumer"
+          echo '{"name": "consumer", "private": true, "type": "module"}' > package.json
+          npm install --no-save --ignore-scripts --no-audit --no-fund ./*.tgz
+          node --test exports.test.mjs
+          npx --yes --package bun@1.4.4 bun test ./exports.test.mjs
+          npx --yes --package deno@2.9.6 deno test --allow-all --no-check exports.test.mjs
       - name: 'Cloudflare Workers: package in workerd'
         run: npm run test:worker
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: 20.20.2
       - name: 'Node 20: minimum supported version'
-        run: npm run test:node
+        run: |
+          npm run test:node
+          node --test "$RUNNER_TEMP/npm-consumer/exports.test.mjs"
 
   # Each documented client against the shared HTTP and SSE failure fixtures,
   # both directly and through the E2EE record transport.

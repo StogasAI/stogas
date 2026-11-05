@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { verify_github_attestation } from '../../packages/sigstore/bindings/node/node.js';
+import {
+	verify_dsse_attestation,
+	verify_github_attestation
+} from '../../packages/sigstore/bindings/node/node.js';
 
 const attestation = readFileSync(
 	new URL('../fixtures/gateway-v0.0.1-attestation.jsonl', import.meta.url)
@@ -35,6 +38,34 @@ const verified = verify_github_attestation(
 	trustedRoot
 );
 assert.equal(verified.subjects.length, 2);
+assert.equal(
+	verified.predicate.buildDefinition.buildType,
+	'https://actions.github.io/buildtypes/workflow/v1'
+);
+
+// The generic check takes any signer's identity and returns the same predicate.
+const identity = {
+	certificate_identity: policy.workflow_identity,
+	certificate_oidc_issuer: 'https://token.actions.githubusercontent.com',
+	predicate_type: policy.predicate_type
+};
+const generic = verify_dsse_attestation(
+	attestation,
+	JSON.stringify(subjects),
+	JSON.stringify(identity),
+	trustedRoot
+);
+assert.deepEqual(generic, verified);
+assert.throws(
+	() =>
+		verify_dsse_attestation(
+			attestation,
+			JSON.stringify(subjects),
+			JSON.stringify({ ...identity, certificate_oidc_issuer: 'https://accounts.google.com' }),
+			trustedRoot
+		),
+	/Sigstore cryptographic verification failed/
+);
 
 const mutation = JSON.parse(attestation);
 const hash = mutation.verificationMaterial.tlogEntries[0].inclusionProof.hashes[0];

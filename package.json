@@ -29,16 +29,17 @@
 	"exports": {
 		".": {
 			"types": "./bindings/node/node.d.ts",
-			"import": "./bindings/node/node.js"
+			"default": "./bindings/node/node.js"
 		},
 		"./browser": {
 			"types": "./bindings/browser/browser.d.ts",
-			"import": "./bindings/browser/browser.js"
+			"default": "./bindings/browser/browser.js"
 		},
 		"./worker": {
 			"types": "./bindings/worker/worker.d.ts",
-			"import": "./bindings/worker/worker.js"
-		}
+			"default": "./bindings/worker/worker.js"
+		},
+		"./package.json": "./package.json"
 	},
 	"scripts": {
 		"typecheck": "tsc -p tsconfig.json",

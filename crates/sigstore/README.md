@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 `gh attestation download app.tar.gz --repo OWNER/REPO` saves a file's bundles as JSON Lines. Pass one bundle or the whole file; exactly one bundle must match. The repository, ref, commit and GitHub-hosted runner come from the Fulcio certificate, as `gh attestation verify` checks them, because the workflow writes the provenance predicate itself.
 
-`verify_dsse_attestation` takes any signer's exact certificate identity and OIDC issuer instead. `verify_rekor_document_inclusion` checks that a given Ed25519 key logged exact document bytes as a Rekor hashedrekord entry signed with Ed25519ph over SHA-512.
+`verify_dsse_attestation` takes any signer's exact certificate identity and OIDC issuer instead. Both return the statement's predicate, as its signer wrote it, for your own policy. `verify_rekor_document_inclusion` checks that a given Ed25519 key logged exact document bytes as a Rekor hashedrekord entry signed with Ed25519ph over SHA-512.
 
 ## Trusted root
 
