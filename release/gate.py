@@ -162,11 +162,24 @@ def check_artifact_families(names, targets, version):
         expected |= {f"stogas-v{version}-{platform}.{extension}", f"stogas-v{version}-{platform}-debug.{extension}"}
         if "ruby" in target:
             expected.add(f"stogas-{version.replace('-', '.')}-{target['ruby']}.gem")
-    if expected - names:
-        raise ValueError("Release package families are missing or contain unexpected artifacts")
+    if missing := expected - names:
+        raise ValueError(f"Release is missing {', '.join(sorted(missing))}")
     wheels = {wheel(names, target) for target in targets.values() if "python" in target["packages"]}
-    if names - expected - wheels:
-        raise ValueError("Release contains unexpected artifacts")
+    if unexpected := names - expected - wheels:
+        raise ValueError(f"Release contains unexpected {', '.join(sorted(unexpected))}")
+    if {name.split("-")[1] for name in wheels} - {python_version(version)}:
+        raise ValueError(f"Release wheels must have version {python_version(version)}")
+
+
+def python_version(version):
+    """The normalized PEP 440 version that a wheel carries, such as 0.1.0a1 for 0.1.0-alpha.1."""
+    release, _, pre = version.partition("-")
+    if not pre:
+        return release
+    # The pre-release forms that scripts/check-package-versions.py allows; PEP 440 numbers a bare one 0.
+    if not (match := re.fullmatch(r"(alpha|beta|rc)(?:\.([0-9]+))?", pre)):
+        raise ValueError(f"No Python version for {version}")
+    return f"{release}{ {'alpha': 'a', 'beta': 'b', 'rc': 'rc'}[match[1]] }{int(match[2] or 0)}"
 
 
 def combine_reports(paths, destination, manifest_sha256, targets, version):
