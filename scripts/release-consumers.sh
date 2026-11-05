@@ -14,6 +14,9 @@ trap 'rm -rf "$work"' EXIT
 cc -Wall -Wextra -Werror -Iinclude release/consumers/native.c -L"$target/debug" -lstogas_ffi \
   -Wl,-rpath,"$target/debug" -o "$work/native-consumer"
 "$work/native-consumer"
+c++ -Wall -Wextra -Werror -Iinclude release/consumers/native.cpp -L"$target/debug" -lstogas_ffi \
+  -Wl,-rpath,"$target/debug" -o "$work/native-cpp-consumer"
+"$work/native-cpp-consumer"
 python3 -I release/consumers/cli.py "$target/debug/stogas" "$version" tests/fixtures
 
 # The Rust consumer reads its offline root from ../tests, as it does in a release.

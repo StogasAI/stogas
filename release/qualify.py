@@ -98,7 +98,8 @@ def qualify_linux(source, packages, version, platform, target, requested, select
         archive = f"stogas-v{version}-{platform}.tar.gz"
         unpack(packages / archive, work / "native")
         native = next((work / "native").iterdir())
-        shutil.copyfile(source / "release/consumers/native.c", native / "native.c")
+        for name in ("native.c", "native.cpp"):
+            shutil.copyfile(source / "release/consumers" / name, native / name)
 
         # Setup steps use the network. Offline cases have none; live cases use
         # the production gateways.
@@ -121,6 +122,8 @@ def qualify_linux(source, packages, version, platform, target, requested, select
         relative_native = "/work/" + native.relative_to(work).as_posix()
         if "native" in selected:
             run(python_image, ["cc", "-Wall", "-Wextra", "-Werror", "native.c", "-L.", "-lstogas_ffi", "-o", "native-consumer"], directory=relative_native, case="offline")
+            run(python_image, ["c++", "-Wall", "-Wextra", "-Werror", "native.cpp", "-L.", "-lstogas_ffi", "-o", "native-cpp-consumer"], directory=relative_native, case="offline")
+            run(python_image, ["./native-cpp-consumer"], directory=relative_native, case="offline", environment=["LD_LIBRARY_PATH=."])
             for case in selected_cases:
                 qualify_case("native", python_image, ["./native-consumer"], case, directory=relative_native, environment=["LD_LIBRARY_PATH=."])
         if "cli" in selected:
