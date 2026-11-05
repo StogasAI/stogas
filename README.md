@@ -61,7 +61,7 @@ dotnet add package Stogas --prerelease
 go get github.com/StogasAI/stogas/go@v0.1.0-alpha.1
 ```
 
-Maven uses `ai.stogas:stogas:0.1.0-alpha.1`. Check any release download with `gh attestation verify <file> --repo StogasAI/stogas`.
+Maven uses `ai.stogas:stogas:0.1.0-alpha.1`. Check any release download with `gh attestation verify <file> --repo StogasAI/stogas --signer-workflow StogasAI/stogas/.github/workflows/release.yml --source-ref refs/tags/v<version> --deny-self-hosted-runners`.
 
 ## Contributing
 

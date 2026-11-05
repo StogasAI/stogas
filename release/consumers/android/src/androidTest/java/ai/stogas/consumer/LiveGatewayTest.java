@@ -14,7 +14,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import static org.junit.Assert.*;
 
-// A preview, published before production serves evidence, is qualified without this test.
+// A preview, which runs no live case, is qualified without this test.
 @RunWith(AndroidJUnit4.class)
 public final class LiveGatewayTest {
     // Device Farm cannot pass test arguments, so this always uses the production gateways.

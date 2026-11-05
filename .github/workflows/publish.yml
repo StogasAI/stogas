@@ -56,8 +56,8 @@ jobs:
           gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/approved"
       # Stogas signs a release only after rebuilding it, so a draft made public without
       # that check publishes nothing. The CLI comes from the tagged source, not the release.
-      # Stogas does not sign a preview, made before production serves evidence: its gate
-      # and GitHub's build proof stand alone, and only a pre-release can be one.
+      # Stogas does not sign a preview: its gate and GitHub's build proof stand alone, and
+      # only a pre-release can be one.
       - name: Require the Stogas signature on every file, or a preview's build proof
         id: check
         env:
@@ -72,8 +72,8 @@ jobs:
           fi
       # Each registry publishes once the release passed its check, even when another failed,
       # so a failed or waiting registry holds up no other; the job still fails, and the next
-      # run skips what is already published. Those that need no first-release step from the
-      # owner go first.
+      # run skips what is already published. Those that need no one-time registry setup go
+      # first.
       - if: ${{ !cancelled() && steps.check.outcome == 'success' }}
         name: Stage approved wheels
         run: |
@@ -119,8 +119,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 -B release/publish.py go "$RUNNER_TEMP/approved"
       # crates.io and npm trust this workflow only for packages that exist, and RubyGems
-      # only once the owner added a pending publisher, so their first versions wait for
-      # the owner's one-time steps; run this workflow again afterwards.
+      # only once a pending publisher names it, so their first versions wait for a one-time
+      # registry setup; run this workflow again afterwards.
       - if: ${{ !cancelled() && steps.check.outcome == 'success' }}
         name: Find the registries that still wait for a first version
         id: first
@@ -184,7 +184,7 @@ jobs:
           # GitHub's artifact inventory would need artifact-metadata: write; the proof needs none.
           create-storage-record: false
       - if: ${{ !cancelled() && steps.first.outcome == 'success' && (steps.first.outputs.crates == 'true' || steps.first.outputs.npm == 'true' || steps.rubygems.outcome != 'success') }}
-        name: Name the registries that wait for the owner's one-time steps
+        name: Name the registries that wait for a one-time setup
         env:
           CRATES: ${{ steps.first.outputs.crates }}
           NPM: ${{ steps.first.outputs.npm }}
@@ -194,4 +194,4 @@ jobs:
           if [ "$CRATES" = true ]; then waiting+=(crates.io); fi
           if [ "$NPM" = true ]; then waiting+=(npm); fi
           if [ "$RUBYGEMS" != success ]; then waiting+=(RubyGems); fi
-          echo "::warning::${waiting[*]} still wait for the owner's one-time steps; run this workflow again afterwards"
+          echo "::warning::${waiting[*]} still wait for a one-time registry setup; run this workflow again afterwards"

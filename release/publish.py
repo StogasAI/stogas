@@ -470,9 +470,9 @@ def tap(packages, version, remote=TAP):
 
 
 def aur(packages, version, remote=AUR):
-    """The stogas-bin package in the Arch User Repository, which the owner's account maintains."""
+    """The stogas-bin package in the Arch User Repository, which AUR_SSH_KEY's account maintains."""
     if not os.environ.get("AUR_SSH_KEY") and remote == AUR:
-        print("::warning::AUR_SSH_KEY is not set, so the AUR package waits for the owner's account")
+        print("::warning::AUR_SSH_KEY is not set, so the AUR package waits")
         return
     if not offered_now(version, "AUR"):
         return
@@ -485,7 +485,7 @@ def aur(packages, version, remote=AUR):
             changed = commit_files(repo, environment, "master", files, f"Install stogas {version}")
     except PermissionError:
         # The AUR knows a key only once its account adds it.
-        print("::warning::The AUR refused AUR_SSH_KEY, so the AUR package waits for its public key on the owner's account")
+        print("::warning::The AUR refused AUR_SSH_KEY, so the AUR package waits for an account that holds its public key")
         return
     print(f"AUR: stogas-bin {'now offers' if changed else 'already offers'} {version}")
 
@@ -591,10 +591,9 @@ def container(packages, version, image=channels.IMAGE, output=None):
 
 
 def preview(packages):
-    """Stogas signs with the online key that production evidence publishes, so a preview, made
-    before production serves evidence, has no Stogas signature. Require the gate's preview, every
-    file the manifest names and nothing else, and GitHub's build proof for the manifest and the
-    qualification report, which together name every artifact."""
+    """A preview has no Stogas signature. Require the gate's preview, every file the manifest
+    names and nothing else, and GitHub's build proof for the manifest and the qualification
+    report, which together name every artifact."""
     from gate import check_release
     manifest, is_preview = check_release(packages)
     if not is_preview:
@@ -614,13 +613,13 @@ def preview(packages):
 
 def first_versions():
     """Print which registries have none of their packages yet, as GitHub output lines. crates.io
-    and npm trust a workflow only for an existing package, and RubyGems only after the owner adds a
-    pending publisher, so their first versions wait for the owner's first-release steps."""
+    and npm trust a workflow only for an existing package, and RubyGems only once a pending
+    publisher names it, so their first versions wait for a one-time registry setup."""
     def missing(urls):
         return all(download(url) is None for url in urls)
     def unpublished(name):
         # Staging a new package's first version reserves its name with a placeholder version,
-        # 0.0.0-stage, which publishes nothing; the package waits until the owner approves.
+        # 0.0.0-stage, which publishes nothing; the package waits until a maintainer approves.
         document = download(f"https://registry.npmjs.org/{urllib.parse.quote(name, safe='')}")
         return document is None or not set(json.loads(document).get("versions", {})) - {NPM_STAGE_PLACEHOLDER}
     waiting = {
