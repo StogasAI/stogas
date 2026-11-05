@@ -25,15 +25,12 @@ queue = Path(os.environ["FAKE_NPM_QUEUE"])
 command = sys.argv[1:]
 if command == ["stage", "list", "--json"]:
     print(json.dumps([json.loads(item.read_text()) for item in sorted(queue.glob("*.json"))]))
-elif command[:2] == ["stage", "publish"] and command[3:5] == ["--access", "public"] and command[5:] in (["--provenance=false"], ["--tag", "next", "--provenance=false"]):
+elif command[:2] == ["stage", "publish"] and command[3:6] == ["--access", "public", "--tag"] and command[7:] == ["--provenance=false"]:
     with tarfile.open(command[2]) as archive:
         manifest = json.load(archive.extractfile("package/package.json"))
-    # Like npm, refuse a pre-release without a dist-tag.
-    if "-" in manifest["version"] and command[5] != "--tag":
-        sys.exit("npm requires a tag for a pre-release")
     stage = str(uuid.uuid4())
     shutil.copyfile(command[2], queue / f"{{stage}}.tgz")
-    item = {{"id": stage, "packageName": manifest["name"], "version": manifest["version"], "tag": command[6] if command[5] == "--tag" else "latest"}}
+    item = {{"id": stage, "packageName": manifest["name"], "version": manifest["version"], "tag": command[6]}}
     (queue / f"{{stage}}.json").write_text(json.dumps(item))
 elif command[:2] == ["stage", "publish"]:
     # npm outside CI cannot generate the provenance that package.json's publishConfig asks for.
@@ -95,8 +92,10 @@ class NpmStageTests(unittest.TestCase):
         (tools / "npm").chmod(0o755)
         path = f"{tools}{os.pathsep}{os.environ['PATH']}"
         self.enterContext(mock.patch.dict(os.environ, {"PATH": path, "FAKE_NPM_QUEUE": str(self.queue)}))
-        # Neither version is published yet.
+        # Neither version is published yet, and 1.0.0 is the newest full release.
         self.enterContext(mock.patch.object(publish, "download", return_value=None))
+        self.releases = [{"tag_name": "v1.0.0", "draft": False}]
+        self.enterContext(mock.patch.object(publish, "releases", side_effect=lambda: self.releases))
 
     def stage(self, version="1.2.3"):
         with contextlib.redirect_stdout(io.StringIO()) as output:
@@ -114,6 +113,17 @@ class NpmStageTests(unittest.TestCase):
         self.assertIn("stogas@1.2.3-alpha.1 awaits approval", self.stage("1.2.3-alpha.1"))
         staged = [json.loads(item.read_text()) for item in self.queue.glob("*.json")]
         self.assertEqual({(item["version"], item["tag"]) for item in staged}, {("1.2.3-alpha.1", "next")})
+
+    def test_latest_follows_what_the_other_package_managers_offer(self):
+        self.assertEqual(publish.npm_tag("1.2.3"), "latest")
+        self.assertEqual(publish.npm_tag("0.9.1"), "maintenance")
+        self.assertEqual(publish.npm_tag("1.2.3-alpha.1"), "next")
+        # Before the first full release, the newest preview is latest, even while its GitHub
+        # release is still a draft, as when the first version is staged.
+        self.releases = [{"tag_name": "v0.1.0-alpha.1", "draft": False}, {"tag_name": "v0.1.0-alpha.2", "draft": True}]
+        self.assertEqual(publish.npm_tag("0.1.0-alpha.2"), "latest")
+        self.releases[1]["draft"] = False
+        self.assertEqual(publish.npm_tag("0.1.0-alpha.1"), "next")
 
     def test_a_failure_names_only_npms_error_code(self):
         # Without --provenance=false, npm on a maintainer's machine refuses package.json's request.

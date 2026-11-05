@@ -54,6 +54,7 @@ def download(url, absent=(404,)):
                 raise ValueError("Registry artifact exceeds its size limit")
             return value
     except urllib.error.HTTPError as error:
+        error.close()
         if error.code in absent:
             return None
         raise RuntimeError(f"Registry read failed (HTTP {error.code})") from None
@@ -198,12 +199,22 @@ NPM_PACKAGES = (("@stogas/sigstore", "stogas-sigstore"), ("stogas", "stogas"))
 NPM_STAGE_PLACEHOLDER = "0.0.0-stage"
 
 
+def npm_tag(version):
+    """The dist-tag for a new version. `latest` follows what the other package managers offer once
+    this version is public: the newest full release, or before the first one, the newest preview,
+    which also replaces the stub npm serves while a new package's first version awaits approval.
+    Another preview goes to `next`, and an older line's release to `maintenance`, so neither moves
+    `latest`. npm requires a pre-release to name its tag."""
+    if channels.offered([*releases(), {"tag_name": f"v{version}", "draft": False}]) == version:
+        return "latest"
+    return "next" if channels.preview(version) else "maintenance"
+
+
 def npm(packages, version, stage=False):
     """With `stage`, upload each archive for a maintainer to approve with two-factor
     authentication instead of publishing it. A token can create a package only this way once
-    npm stops tokens that bypass two-factor authentication from publishing. npm requires a
-    pre-release to name its dist-tag, so one goes to `next` and leaves `latest` alone."""
-    tag = ["--tag", "next"] if "-" in version else []
+    npm stops tokens that bypass two-factor authentication from publishing."""
+    tag = ["--tag", npm_tag(version)]
     for name, filename in NPM_PACKAGES:
         path = packages / f"{filename}-{version}.tgz"
         def check():
