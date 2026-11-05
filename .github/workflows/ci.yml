@@ -439,6 +439,47 @@ jobs:
           CGO_ENABLED: '1'
         run: go -C go test -tags staging,stogas_gateway,netgo,osusergo -ldflags='-linkmode=external -extldflags "-static -Wl,--gc-sections,--build-id=none"' ./...
 
+  # The platform jobs and releases test the oldest Java, Ruby and Go that the packages declare.
+  # This tests the same bindings on the newest release of each runtime.
+  newest-runtimes:
+    name: Newest Java, Ruby and Go
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Stage the C library in the language packages
+        run: |
+          cargo build --locked --package stogas-ffi
+          python3 scripts/stage-native-bindings.py --platform linux-amd64 --native-dir target/debug
+          mkdir -p go/native/linux-amd64
+          cp target/debug/libstogas_ffi.a go/native/linux-amd64/
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: 'Java 25: package'
+        run: mvn -q -f bindings/java/pom.xml install
+      - uses: ruby/setup-ruby@e8944e80fb94b20106697132f8c20c665fab29e9
+        with:
+          ruby-version: '4.0'
+      - name: 'Ruby 4.0: platform gem'
+        # The test gems are exact versions; the job holds no secrets and can write nothing.
+        # zizmor: ignore[adhoc-packages]
+        run: |
+          gem -C bindings/ruby build stogas.gemspec --output "$RUNNER_TEMP/stogas.gem"
+          gem install "$RUNNER_TEMP/stogas.gem" minitest:6.0.6 --no-document
+          ruby bindings/ruby/test/transport_test.rb
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-version: '1.27'
+          cache: false
+      - name: 'Go 1.27: module'
+        env:
+          CGO_ENABLED: '1'
+        run: go -C go test -race ./...
+
   javascript:
     name: JavaScript and WebAssembly
     runs-on: ubuntu-24.04
