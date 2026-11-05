@@ -466,7 +466,7 @@ struct Rebased {
 
 // Sections and their settings merge separately. A setting's value, such as a sort list, the named
 // request limits or an encrypted plugin, changes as one unit, and so does each rule. The
-// dashboard's editor merges the same way, in `apps/web/src/lib/policy-rebase.ts`.
+// dashboard's editor merges the same way.
 const SETTING_DEPTH: usize = 2;
 
 /// Applies the changes that `draft` made to `base` onto `latest`. No policy reads as an empty one,
