@@ -34,7 +34,7 @@ keyring-core = "1.0.1"
 qrcode = { version = "0.14.1", default-features = false }
 rpassword = "7.5.4"
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
 sha2.workspace = true
 stogas.workspace = true
 stogas-core.workspace = true
