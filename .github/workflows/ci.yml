@@ -442,10 +442,10 @@ jobs:
           CGO_ENABLED: '1'
         run: go -C go test -tags staging,stogas_gateway,netgo,osusergo -ldflags='-linkmode=external -extldflags "-static -Wl,--gc-sections,--build-id=none"' ./...
 
-  # The platform jobs and releases test the oldest Java, Ruby and Go that the packages declare.
-  # This tests the same bindings on the newest release of each runtime.
+  # The platform jobs test the oldest Python, Java, Ruby and Go that the packages declare. This
+  # tests the same bindings on the newest release of each, and on Java's newest long-term release.
   newest-runtimes:
-    name: Newest Java, Ruby and Go
+    name: Newest Python, Java, Ruby and Go
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -458,11 +458,31 @@ jobs:
           python3 scripts/stage-native-bindings.py --platform linux-amd64 --native-dir target/debug
           mkdir -p go/native/linux-amd64
           cp target/debug/libstogas_ffi.a go/native/linux-amd64/
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.15'
+      - name: 'Python 3.15: build the wheel'
+        uses: PyO3/maturin-action@36db84001d74475ad1b8e6613557ae4ee2dc3598
+        with:
+          maturin-version: v1.15.0
+          manylinux: 'off'
+          args: --locked --profile dev --out dist --manifest-path bindings/python/Cargo.toml
+      - name: 'Python 3.15: package tests'
+        run: |
+          python -m pip install dist/*.whl -r bindings/python/tests/requirements.txt
+          python -m unittest discover -s bindings/python/tests -v
+          python -m mypy.stubtest stogas
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
         with:
           distribution: temurin
           java-version: '25'
       - name: 'Java 25: package'
+        run: mvn -q -f bindings/java/pom.xml install
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '27'
+      - name: 'Java 27: package'
         run: mvn -q -f bindings/java/pom.xml install
       - uses: ruby/setup-ruby@e8944e80fb94b20106697132f8c20c665fab29e9
         with:
@@ -494,7 +514,7 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
-          node-version: 24.22.1
+          node-version: 26.13.0
           cache: npm
       # stogas-sigstore builds alone, with no setup; stogas-core needs the application to select
       # getrandom's WebAssembly backend, as stogas-wasm does.
