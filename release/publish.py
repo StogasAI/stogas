@@ -664,6 +664,9 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["first-versions"]:
         first_versions()
         raise SystemExit
+    if sys.argv[1:] == ["offered"]:
+        print(channels.offered(releases()))
+        raise SystemExit
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("ecosystem", choices=["crates", "npm", "pypi", "ruby", "nuget", "maven", "go", "preview", "tap", "aur", "container"])
     parser.add_argument("packages", type=Path)
