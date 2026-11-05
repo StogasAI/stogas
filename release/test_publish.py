@@ -130,6 +130,12 @@ class CrateManifestTests(unittest.TestCase):
             with self.subTest(workspace=workspace):
                 self.assertEqual(sorted(entry for entry in locked(ROOT / workspace / "Cargo.lock") - shipped if entry[0] in names), [])
 
+    def test_the_wasm_profile_names_only_dependencies(self):
+        # Cargo only warns about a profile entry that matches no crate, so a crate that an update
+        # drops would otherwise leave the WebAssembly's list of crates kept fast without notice.
+        named = tomllib.loads((ROOT / "Cargo.toml").read_text())["profile"]["wasm"]["package"]
+        self.assertEqual(sorted(set(named) - {name for name, _ in locked(ROOT / "Cargo.lock")}), [])
+
     def test_names_what_crates_io_would_refuse(self):
         # Both refusals that alpha.1's crates met, and the limits beside them in publish.rs.
         package = {

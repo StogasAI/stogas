@@ -73,3 +73,37 @@ strip = "symbols"
 inherits = "release"
 debug = "line-tables-only"
 strip = "none"
+
+# Web pages download the WebAssembly, so it is built for size, apart from the arithmetic that
+# verification and setup spend their time in. Building it all for size made evidence checks 40%
+# slower. `release/test_publish.py` checks that each crate named here is still a dependency.
+[profile.wasm]
+inherits = "release"
+opt-level = "z"
+
+[profile.wasm.package]
+aes = { opt-level = 3 }
+aes-gcm = { opt-level = 3 }
+crypto-bigint = { opt-level = 3 }
+curve25519-dalek = { opt-level = 3 }
+ecdsa = { opt-level = 3 }
+elliptic-curve = { opt-level = 3 }
+ghash = { opt-level = 3 }
+libcrux-hacl-rs = { opt-level = 3 }
+libcrux-intrinsics = { opt-level = 3 }
+libcrux-ml-dsa = { opt-level = 3 }
+libcrux-ml-kem = { opt-level = 3 }
+libcrux-sha3 = { opt-level = 3 }
+num-bigint-dig = { opt-level = 3 }
+p256 = { opt-level = 3 }
+p384 = { opt-level = 3 }
+polyval = { opt-level = 3 }
+primeorder = { opt-level = 3 }
+rsa = { opt-level = 3 }
+sha2 = { opt-level = 3 }
+
+# The npm packages' WebAssembly keeps function names, as `dist` does for native packages.
+[profile.wasm-dist]
+inherits = "wasm"
+debug = "line-tables-only"
+strip = "none"

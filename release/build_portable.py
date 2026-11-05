@@ -29,12 +29,12 @@ def build(output, epoch):
         subprocess.run([str(argument) for argument in arguments], cwd=work, env=env, check=True)
 
     output.mkdir(parents=True, exist_ok=True)
-    run("cargo", "build", "--locked", "--profile", "dist", "--target", "wasm32-unknown-unknown", "-p", "stogas-wasm", "-p", "stogas-sigstore-wasm")
+    run("cargo", "build", "--locked", "--profile", "wasm-dist", "--target", "wasm32-unknown-unknown", "-p", "stogas-wasm", "-p", "stogas-sigstore-wasm")
     for crate, destination, name in [
         ("stogas_wasm", "pkg/browser", "stogas"),
         ("stogas_sigstore_wasm", "packages/sigstore/pkg/browser", "stogas_sigstore"),
     ]:
-        run("wasm-bindgen", f"/build/target/wasm32-unknown-unknown/dist/{crate}.wasm", "--target", "web", "--out-dir", destination, "--out-name", name)
+        run("wasm-bindgen", f"/build/target/wasm32-unknown-unknown/wasm-dist/{crate}.wasm", "--target", "web", "--out-dir", destination, "--out-name", name)
     run("node", "scripts/package-npm.mjs", "--pack-destination", output)
     # Cargo packages interdependent workspace members together, using an isolated
     # temporary registry for verification before any real registry publication.

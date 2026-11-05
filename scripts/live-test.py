@@ -48,7 +48,7 @@ def main(environment):
     cargo = ["cargo", "build", "--locked", "--target-dir", target]
     run(*cargo, "--package", "stogas-ffi", *features)
     run(*cargo, "--package", "stogas-cli", *features)
-    run(*cargo, "--release", "--package", "stogas-wasm", "--target", "wasm32-unknown-unknown", *features)
+    run(*cargo, "--profile", "wasm", "--package", "stogas-wasm", "--target", "wasm32-unknown-unknown", *features)
     run(sys.executable, "-B", "scripts/stage-native-bindings.py", "--platform", "linux-amd64", "--native-dir", native)
     (ROOT / "go/native/linux-amd64").mkdir(parents=True, exist_ok=True)
     shutil.copyfile(native / "libstogas_ffi.a", ROOT / "go/native/linux-amd64/libstogas_ffi.a")
@@ -83,7 +83,7 @@ def main(environment):
 
         # JavaScript runtimes load this environment's Wasm build from a package copy.
         js = work / "js"
-        run("wasm-bindgen", target / "wasm32-unknown-unknown/release/stogas_wasm.wasm", "--target", "web", "--out-dir", js / "pkg/browser", "--out-name", "stogas")
+        run("wasm-bindgen", target / "wasm32-unknown-unknown/wasm/stogas_wasm.wasm", "--target", "web", "--out-dir", js / "pkg/browser", "--out-name", "stogas")
         for name in ("bindings", "tests"):
             shutil.copytree(ROOT / name, js / name)
         shutil.copyfile(ROOT / "package.json", js / "package.json")

@@ -460,39 +460,50 @@ jobs:
         run: |
           set -euo pipefail
           cargo install wasm-bindgen-cli --version =0.2.129 --locked
-          cargo build --locked --release --package stogas-sigstore-wasm --package stogas-wasm --target wasm32-unknown-unknown
-          wasm-bindgen target/wasm32-unknown-unknown/release/stogas_sigstore_wasm.wasm \
+          cargo build --locked --profile wasm --package stogas-sigstore-wasm --package stogas-wasm --target wasm32-unknown-unknown
+          wasm-bindgen target/wasm32-unknown-unknown/wasm/stogas_sigstore_wasm.wasm \
             --target web \
             --out-dir target/sigstore-browser \
             --out-name stogas_sigstore
-          wasm-bindgen target/wasm32-unknown-unknown/release/stogas_wasm.wasm \
+          wasm-bindgen target/wasm32-unknown-unknown/wasm/stogas_wasm.wasm \
             --target web \
             --out-dir pkg/browser \
             --out-name stogas
-          wasm-bindgen target/wasm32-unknown-unknown/release/stogas_sigstore_wasm.wasm \
+          wasm-bindgen target/wasm32-unknown-unknown/wasm/stogas_sigstore_wasm.wasm \
             --target web \
             --out-dir packages/sigstore/pkg/browser \
             --out-name stogas_sigstore
-          cargo build --locked --release --package stogas-wasm --features staging \
+          cargo build --locked --profile wasm --package stogas-wasm --features staging \
             --target wasm32-unknown-unknown --target-dir target/wasm-staging
-          wasm-bindgen target/wasm-staging/wasm32-unknown-unknown/release/stogas_wasm.wasm \
+          wasm-bindgen target/wasm-staging/wasm32-unknown-unknown/wasm/stogas_wasm.wasm \
             --target web \
             --out-dir target/browser \
             --out-name stogas
-          cargo build --locked --release --package stogas-wasm --features staging,operator \
+          cargo build --locked --profile wasm --package stogas-wasm --features staging,operator \
             --target wasm32-unknown-unknown --target-dir target/wasm-operator
-          wasm-bindgen target/wasm-operator/wasm32-unknown-unknown/release/stogas_wasm.wasm \
+          wasm-bindgen target/wasm-operator/wasm32-unknown-unknown/wasm/stogas_wasm.wasm \
             --target web \
             --out-dir target/operator \
             --out-name stogas
           # The browser load page's build; the next step builds the other Wasm tests.
-          cargo test --locked --release --package stogas-wasm --lib --features staging \
+          cargo test --locked --profile wasm --package stogas-wasm --lib --features staging \
             --target wasm32-unknown-unknown --no-run
+      # Web pages download this module. A change that needs it larger raises the limit too.
+      - name: Keep the browser WebAssembly within its download size
+        run: |
+          set -euo pipefail
+          size=$(gzip -9 -n -c pkg/browser/stogas_bg.wasm | wc -c)
+          limit=720000
+          echo "pkg/browser/stogas_bg.wasm: $size bytes with gzip -9, limit $limit"
+          if [ "$size" -gt "$limit" ]; then
+            echo "::error::The browser WebAssembly is $size bytes with gzip -9, over its $limit-byte limit."
+            exit 1
+          fi
       # The browser tests run these again in each engine.
       - name: 'WebAssembly: Rust tests in Node'
         run: |
-          cargo test --locked --release --package stogas-core --lib --target wasm32-unknown-unknown
-          cargo test --locked --release --package stogas-wasm --lib --target wasm32-unknown-unknown
+          cargo test --locked --profile wasm --package stogas-core --lib --target wasm32-unknown-unknown
+          cargo test --locked --profile wasm --package stogas-wasm --lib --target wasm32-unknown-unknown
       - name: Install the test browsers
         run: |
           npm ci --ignore-scripts --workspaces=false
