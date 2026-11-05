@@ -40,7 +40,12 @@ def run(arguments, stderr=subprocess.STDOUT, **kwargs):
     return result.stdout
 
 
-def download(url):
+# static.crates.io and rubygems.org/downloads answer 403, not 404, for a file they do not hold.
+STORAGE_ABSENT = (403, 404)
+
+
+def download(url, absent=(404,)):
+    """The registry's bytes at `url`, or None when it answers one of the `absent` statuses."""
     request = urllib.request.Request(url, headers={"User-Agent": "stogas-sdk-release/1 (https://github.com/StogasAI/stogas)"})
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
@@ -49,13 +54,13 @@ def download(url):
                 raise ValueError("Registry artifact exceeds its size limit")
             return value
     except urllib.error.HTTPError as error:
-        if error.code == 404:
+        if error.code in absent:
             return None
         raise RuntimeError(f"Registry read failed (HTTP {error.code})") from None
 
 
-def exact_remote(path, url):
-    value = download(url)
+def exact_remote(path, url, absent=(404,)):
+    value = download(url, absent)
     if value is None:
         return False
     if hashlib.sha256(value).hexdigest() != digest(path):
@@ -131,7 +136,13 @@ def crates_api(method, path, token, body=None, content_type="application/json"):
         with urllib.request.build_opener(NoRedirect).open(request, timeout=120) as response:
             return json.loads(response.read(1024 * 1024) or b"null")
     except urllib.error.HTTPError as error:
-        raise RuntimeError(f"crates.io {method} {path.split('?')[0]} failed (HTTP {error.code})") from None
+        # crates.io explains a refusal in its errors' details, which never repeat the request.
+        try:
+            details = "; ".join(item["detail"] for item in json.loads(error.read(64 * 1024))["errors"])
+        except (ValueError, KeyError, TypeError):
+            details = ""
+        cause = f": {details}" if details else ""
+        raise RuntimeError(f"crates.io {method} {path.split('?')[0]} failed (HTTP {error.code}){cause}") from None
 
 
 def crate_upload(path, metadata, token):
@@ -159,7 +170,7 @@ def crates(packages, version, trust=False):
     for name in CRATES:
         path = packages / f"{name}-{version}.crate"
         url = f"https://static.crates.io/crates/{name}/{path.name}"
-        check = lambda: exact_remote(path, url)
+        check = lambda: exact_remote(path, url, STORAGE_ABSENT)
         if not check():
             crate_upload(path, crate_metadata(path), os.environ["CARGO_REGISTRY_TOKEN"])
         wait_for(check)
@@ -261,7 +272,7 @@ def pypi(packages, version):
 def ruby(packages, version):
     for path in sorted(packages.glob("*.gem")):
         url = f"https://rubygems.org/downloads/{path.name}"
-        check = lambda: exact_remote(path, url)
+        check = lambda: exact_remote(path, url, STORAGE_ABSENT)
         if not check():
             run(["gem", "push", str(path), "--host", "https://rubygems.org"])
         wait_for(check)
