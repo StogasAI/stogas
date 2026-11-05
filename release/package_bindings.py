@@ -77,9 +77,9 @@ def assemble(build_directory, output):
                     with tempfile.TemporaryDirectory(prefix="apple-archive-", dir=work) as temporary:
                         tree = Path(temporary) / "tree"
                         unpack(path, tree)
-                        pack_archive(work, tree, output / path.name, epoch)
+                        pack_archive(work, tree, claim(output, path.name), epoch)
                 else:
-                    shutil.copyfile(path, output / path.name)
+                    shutil.copyfile(path, claim(output, path.name))
             if platform == "portable":
                 continue
             if platform == "apple":
@@ -105,16 +105,16 @@ def assemble(build_directory, output):
                 shutil.copyfile(source / "LICENSE", work / "bindings/ruby/LICENSE")
                 gem = f"stogas-{version.replace('-', '.')}-{target['ruby']}.gem"
                 container(RUBY, work, ["gem", "-C", "bindings/ruby", "build", "stogas.gemspec", "--output", f"/build/{gem}"], epoch, [f"STOGAS_RUBY_PLATFORM={target['ruby']}"])
-                shutil.copyfile(work / gem, output / gem)
+                shutil.copyfile(work / gem, claim(output, gem))
         packages = {kind for platform in platforms if platform != "portable" for kind in targets[platform]["packages"]}
         if "java" in packages:
             container(MAVEN, work, ["mvn", "-B", "-ntp", "-f", "bindings/java/pom.xml", f"-Dproject.build.outputTimestamp={epoch}", "-DskipTests", "package"], epoch)
             jar = work / "bindings/java/target" / f"stogas-{version}.jar"
-            shutil.copyfile(jar, output / jar.name)
+            shutil.copyfile(jar, claim(output, jar.name))
             for classifier in ("sources", "javadoc"):
                 jar = work / "bindings/java/target" / f"stogas-{version}-{classifier}.jar"
-                shutil.copyfile(jar, output / jar.name)
-            shutil.copyfile(source / "bindings/java/pom.xml", output / f"stogas-{version}.pom")
+                shutil.copyfile(jar, claim(output, jar.name))
+            shutil.copyfile(source / "bindings/java/pom.xml", claim(output, f"stogas-{version}.pom"))
         if "android" in packages:
             identity = work / ".android-image"
             subprocess.run(["docker", "build", "--iidfile", str(identity), "--file", str(source / "release/android.Dockerfile"), str(source / "release")], check=True)
@@ -124,33 +124,41 @@ def assemble(build_directory, output):
             # module metadata. Preserve that complete publication unchanged.
             for suffix in (".aar", ".pom", ".module", "-sources.jar", "-javadoc.jar"):
                 artifact = repository / f"stogas-android-{version}{suffix}"
-                shutil.copyfile(artifact, output / artifact.name)
+                shutil.copyfile(artifact, claim(output, artifact.name))
         if "dotnet" in packages:
             container(DOTNET, work, ["dotnet", "pack", "bindings/dotnet/Stogas", "--output", "/build/nuget", "-p:ContinuousIntegrationBuild=true", "-p:Deterministic=true", "-p:PathMap=/build=/stogas"], epoch)
             for archive in (work / "nuget").glob("*.nupkg"):
                 tree = work / "nuget-unpacked"
                 unpack(archive, tree)
-                pack_archive(work, tree, output / archive.name, epoch)
+                pack_archive(work, tree, claim(output, archive.name), epoch)
         if "swift" in packages:
             swift = work / "bindings/swift"
             if any(targets[name]["os"] in {"macos", "ios"} for name in platforms if name != "portable") and not (swift / "CStogas.xcframework").is_dir():
                 raise ValueError("Apple Swift packaging requires build --platform apple")
             shutil.copyfile(source / "LICENSE", swift / "LICENSE")
-            pack_archive(work, swift, output / f"stogas-swift-v{version}.tar.gz", epoch, "Stogas")
+            pack_archive(work, swift, claim(output, f"stogas-swift-v{version}.tar.gz"), epoch, "Stogas")
         if "go" in packages:
             # The Go proxy accepts at most 500 MiB both compressed and expanded.
             # Keep the complete self-contained module below that public limit.
             if sum(path.stat().st_size for path in regular_files(work / "go")) > 500 * 1024**2:
                 raise ValueError("The Go module exceeds the Go proxy's expanded archive limit")
-            pack_archive(work, work / "go", output / f"stogas-go-v{version}.tar.gz", epoch, "go")
+            pack_archive(work, work / "go", claim(output, f"stogas-go-v{version}.tar.gz"), epoch, "go")
         shutil.copytree(source, work / "source")
-        pack_archive(work, work / "source", output / f"stogas-source-v{version}.tar.gz", epoch, f"stogas-v{version}")
-        write_json(output / MANIFEST, {
+        pack_archive(work, work / "source", claim(output, f"stogas-source-v{version}.tar.gz"), epoch, f"stogas-v{version}")
+        write_json(claim(output, MANIFEST), {
             "schema": "stogas.sdk-release.v1", "environment": "prod", "version": version,
             "source": metadata["source"], "targets": platforms,
             "artifacts": [{"name": path.name, "sha256": digest(path), "size": path.stat().st_size} for path in sorted(output.iterdir())],
         })
     print(f"Packaged {len(platforms)} native targets; qualification is required before approval")
+
+
+def claim(output, name):
+    """Where an artifact goes. Every artifact has its own name, so none replaces another."""
+    destination = output / name
+    if destination.exists():
+        raise ValueError(f"Two release artifacts are named {name}")
+    return destination
 
 
 def pack_archive(work, source, destination, epoch, prefix=""):
