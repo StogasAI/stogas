@@ -32,6 +32,17 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertLess(job.index("name: Require the tag at this commit and no release for it"), job.index("uses: actions/attest@"))
 
 
+class CiWorkflowTests(unittest.TestCase):
+    def test_wheels_are_built_with_the_maturin_that_releases_use(self):
+        release = WORKFLOWS.parents[1] / "release"
+        pins = re.findall(r"maturin(?:==|-)([0-9]+\.[0-9]+\.[0-9]+)\b", (release / "Dockerfile").read_text() + (release / "apple-requirements.txt").read_text())
+        self.assertEqual(len(pins), 2)
+        ci = (WORKFLOWS / "ci.yml").read_text()
+        builds = re.findall(r"uses: PyO3/maturin-action@[0-9a-f]+\n        with:\n(?:          #.*\n)?          maturin-version: v(\S+)\n", ci)
+        self.assertEqual(len(builds), ci.count("PyO3/maturin-action@"))
+        self.assertEqual(set(pins) | set(builds), {pins[0]})
+
+
 class PublishWorkflowTests(unittest.TestCase):
     def test_publication_ends_by_installing_from_every_channel_without_credentials(self):
         self.assertIn("uses: $/.github/workflows/installs.yml\n", jobs("publish.yml")["installs"])
