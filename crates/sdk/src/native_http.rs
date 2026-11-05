@@ -64,7 +64,7 @@ pub struct RequestContext {
     pub snapshot: Arc<Snapshot>,
     pub session: Arc<VerifiedSession>,
 }
-pub(crate) struct Channel {
+pub struct Channel {
     current: Mutex<Arc<RequestContext>>,
 }
 
@@ -234,10 +234,7 @@ const MAX_REFUSAL_BYTES: usize = 1024;
 
 /// Read a refusal, so that its session or stream holds no capacity a resend needs.
 /// `None` means it could not be read. The gateway still did not process the request.
-pub(crate) async fn read_refusal(
-    response: Response<Body>,
-    deadline: Instant,
-) -> Option<Response<Body>> {
+pub async fn read_refusal(response: Response<Body>, deadline: Instant) -> Option<Response<Body>> {
     let (parts, body) = response.into_parts();
     let body = timeout_at(deadline, axum::body::to_bytes(body, MAX_REFUSAL_BYTES))
         .await

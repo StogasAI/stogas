@@ -440,22 +440,74 @@ async fn run_verify(input: VerifyArgs) -> Result<()> {
 }
 
 async fn run_serve(input: ServeArgs, route: Route) -> Result<()> {
-    stogas::serve(stogas::ServeOptions {
-        transport: stogas::TransportOptions {
-            environment: input.environment,
-            security: input.security,
-            max_connections: input.max_connections,
-            base_url: input.upstream,
-            proxy: route.proxy,
-            onion: route.onion,
-            no_proxy: route.no_proxy,
+    let shutdown = shutdown_signal(input.exit_on_stdin_close)?;
+    stogas::serve(
+        stogas::ServeOptions {
+            transport: stogas::TransportOptions {
+                environment: input.environment,
+                security: input.security,
+                max_connections: input.max_connections,
+                base_url: input.upstream,
+                proxy: route.proxy,
+                onion: route.onion,
+                no_proxy: route.no_proxy,
+            },
+            listen: input.listen,
+            browser_origin: input.browser_origin,
         },
-        listen: input.listen,
-        browser_origin: input.browser_origin,
-        exit_on_stdin_close: input.exit_on_stdin_close,
-    })
+        shutdown,
+    )
     .await?;
     Ok(())
+}
+
+/// Completes on SIGINT or SIGTERM, or Ctrl-C outside Unix, and, when asked, once the parent
+/// closes stdin. It installs the Unix handlers before `serve` advertises readiness.
+fn shutdown_signal(exit_on_stdin_close: bool) -> Result<impl Future<Output = ()> + Send + 'static> {
+    let stdin_closed = if exit_on_stdin_close {
+        let (closed, receiver) = tokio::sync::oneshot::channel();
+        // Tokio's blocking stdin worker cannot be cancelled and would delay runtime
+        // shutdown. A plain process-owned thread does not keep a stopped CLI alive.
+        std::thread::Builder::new()
+            .name("stogas-parent".into())
+            .spawn(move || {
+                let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+                let _ = closed.send(());
+            })?;
+        Some(receiver)
+    } else {
+        None
+    };
+    #[cfg(unix)]
+    let signal = {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut interrupt = signal(SignalKind::interrupt())?;
+        let mut terminate = signal(SignalKind::terminate())?;
+        async move {
+            tokio::select! {
+                _ = interrupt.recv() => {},
+                _ = terminate.recv() => {},
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let signal = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    Ok(async move {
+        let parent_closed = async move {
+            match stdin_closed {
+                Some(receiver) => {
+                    let _ = receiver.await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::select! {
+            () = signal => {},
+            () = parent_closed => {},
+        }
+    })
 }
 
 /// A verified receipt, and the content that a shared proof can reveal, each side as its

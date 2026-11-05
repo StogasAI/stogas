@@ -31,7 +31,7 @@ const MAX_REQUEST_BYTES: usize = 128 * 1024 * 1024;
 /// The gateway authenticated this request and refused it without processing it.
 /// It refuses its other sessions too, so the request may go once to another.
 #[derive(Clone, Copy)]
-pub(crate) struct Refused;
+pub struct Refused;
 
 struct ResponseMetadata {
     status: StatusCode,
@@ -419,9 +419,9 @@ fn response_metadata(bytes: &[u8]) -> Result<ResponseMetadata, Error> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests;
+pub mod tests;
 
-pub(super) fn elapsed_ms() -> u64 {
+pub fn elapsed_ms() -> u64 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     u64::try_from(
         START
