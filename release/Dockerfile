@@ -29,6 +29,12 @@ RUN tar -xJf /tmp/nasm.tar.xz -C /tmp && cd /tmp/nasm-3.02 && \
 RUN rustup target add --toolchain 1.97.1 \
     x86_64-pc-windows-msvc aarch64-pc-windows-msvc \
     x86_64-pc-windows-gnullvm aarch64-pc-windows-gnullvm
+# Microsoft services the SDK and CRT under the same version numbers, so the
+# live channel could change Windows outputs between a build and its rebuild.
+# xwin reads these manifests from its download cache instead (Visual Studio
+# 17.14.44, October 28, 2026) and checks every payload against them.
+ADD --checksum=sha256:b300b5af6b2056b64861c3bb0329fe3356e24cd2c4b45e9d78a9a7ec123b1ed6 https://download.visualstudio.microsoft.com/download/pr/6bd63d7f-1818-4e03-a552-9feb11496c19/8d9e516e27b5de40b0b3c5f042ea975a63c1744999a72125df4fbfc136b4ae9d/VisualStudio.17.Release.chman /opt/xwin/xwin/dl/manifest_17.json
+ADD --checksum=sha256:963760b01f621ed4fa40d1cf97aeb042f7bc6e04e3176c13c38abb19d265f789 https://download.visualstudio.microsoft.com/download/pr/6bd63d7f-1818-4e03-a552-9feb11496c19/4cc372d79f02e331c999a926b833a49eb74b30357d30f41ba9cffa1dc0369379/VisualStudio.vsman /opt/xwin/xwin/dl/pkg_manifest_4cc372d79f02e331c999a926b833a49eb74b30357d30f41ba9cffa1dc0369379.vsman
 ENV XWIN_VERSION=17 XWIN_SDK_VERSION=10.0.26100 XWIN_CRT_VERSION=14.44.17.14 XWIN_ARCH=x86_64,aarch64 XWIN_CACHE_DIR=/opt/xwin
 RUN cargo xwin cache xwin
 ADD --checksum=sha256:5f9c6ed95b2d4bdb2869a488c5fd5857fbdabcf288a0aa3eb1da43f6a08d8ab4 https://github.com/mstorsjo/llvm-mingw/releases/download/20261006/llvm-mingw-20261006-ucrt-ubuntu-22.04-x86_64.tar.xz /tmp/llvm-mingw.tar.xz
