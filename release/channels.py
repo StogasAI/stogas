@@ -73,7 +73,7 @@ def formula(manifest):
         url, sha256 = archive(manifest, platform, "tar.gz")
         return f'      url "{url}"\n      sha256 "{sha256}"\n'
     return (
-        f"# The publish workflow of {REPOSITORY} writes this file from each release's checked files.\n"
+        f"# Generated from each {REPOSITORY} release; edits here are overwritten.\n"
         "class Stogas < Formula\n"
         f'  desc "{DESCRIPTION}"\n'
         f'  homepage "{HOMEPAGE}"\n'
@@ -137,7 +137,7 @@ def pkgbuild(manifest, pkgrel=1):
     sources = {arch: archive(manifest, platform, "tar.gz") for arch, platform in (("x86_64", "linux-amd64"), ("aarch64", "linux-arm64"))}
     return (
         "# Maintainer: Stogas <devops@stogas.ai>\n"
-        f"# The publish workflow of {REPOSITORY} writes this file from each release's checked files.\n"
+        f"# Generated from each {REPOSITORY} release; edits here are overwritten.\n"
         "pkgname=stogas-bin\n"
         f"pkgver={aur_version(manifest['version'])}\n"
         f"pkgrel={pkgrel}\n"
