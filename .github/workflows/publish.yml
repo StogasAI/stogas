@@ -213,8 +213,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$GH_TOKEN"
-      # `gh attestation verify oci://ghcr.io/stogasai/stogas:<version> --repo StogasAI/stogas`
-      # checks the image, which holds the release's own CLI bytes.
+      # `gh attestation verify oci://ghcr.io/stogasai/stogas:<version> --repo StogasAI/stogas
+      # --signer-workflow StogasAI/stogas/.github/workflows/publish.yml
+      # --source-ref refs/tags/v<version> --deny-self-hosted-runners` checks the image, which holds
+      # the release's own CLI bytes.
       - if: ${{ !cancelled() && steps.image.outputs.digest != '' }}
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
