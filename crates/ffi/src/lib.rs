@@ -74,7 +74,7 @@ impl From<stogas_core::receipt::Error> for AbiError {
     fn from(error: stogas_core::receipt::Error) -> Self {
         Self {
             message: error.to_string(),
-            code: Some("invalid_receipt"),
+            code: Some(error.code()),
         }
     }
 }
