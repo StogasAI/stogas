@@ -1,9 +1,13 @@
-"""The Android package compiles the Java package's sources, so it ships the same dependencies."""
+"""The Android package compiles the Java package's sources, so it ships the same dependencies,
+and packaging gives every artifact its own name."""
 
 import re
+import tempfile
 import unittest
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
+
+from package_bindings import claim
 
 ROOT = Path(__file__).resolve().parents[1]
 POM = "{http://maven.apache.org/POM/4.0.0}"
@@ -34,6 +38,17 @@ class BindingTests(unittest.TestCase):
         for name, version in re.findall(r'(?:api|implementation)\("([\w.-]+:[\w.-]+):([\w.-]+)(?:@\w+)?"\)', build):
             with self.subTest(declared=name):
                 self.assertEqual(android.get(name), version)
+
+
+class AssembleTests(unittest.TestCase):
+    def test_no_artifact_replaces_another_with_its_name(self):
+        # Shards and packages write into one directory, and the manifest lists what is there.
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            claim(output, "stogas-v1.0.0-linux-amd64.tar.gz").write_bytes(b"first")
+            with self.assertRaisesRegex(ValueError, "Two release artifacts are named stogas-v1.0.0-linux-amd64.tar.gz"):
+                claim(output, "stogas-v1.0.0-linux-amd64.tar.gz")
+            self.assertEqual(claim(output, "stogas-v1.0.0-linux-arm64.tar.gz"), output / "stogas-v1.0.0-linux-arm64.tar.gz")
 
 
 if __name__ == "__main__":
