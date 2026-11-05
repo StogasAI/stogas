@@ -41,12 +41,13 @@ def offline(cli, version, fixtures, work):
     run(cli, "verify", "--environment", "staging", str(evidence), accepted=False)
     run(cli, "verify", "--now-unix-ms", str(fixture["verified_at_ms"]), str(evidence), accepted=False)
     key = work / "organization.key"
-    key_id = run(cli, "encryption-key", "--output", str(key)).strip()
-    plaintext = work / "plugins.json"
-    plaintext.write_text('{"plugins":[]}')
-    envelope = work / "plugins.sealed"
-    run(cli, "encrypt", "--key-file", str(key), "--organization", "0b4f1e2a-3c5d-4e6f-8a7b-9c0d1e2f3a4b", "--purpose", "plugins", "--input", str(plaintext), "--output", str(envelope))
-    if json.loads(envelope.read_text())["keyId"] != key_id:
+    key_id = run(cli, "encryption-key", "create", "--output", str(key)).strip()
+    # A plugin's settings need a signed-in check by the gateway first; a credential seals offline.
+    credential = work / "openai.key"
+    credential.write_text("sk-offline-consumer-test")
+    envelope = work / "openai.sealed"
+    run(cli, "encrypt", "--key-file", str(key), "--organization", "0b4f1e2a-3c5d-4e6f-8a7b-9c0d1e2f3a4b", "--purpose", "byok/openai", "--input", str(credential), "--output", str(envelope))
+    if json.loads(envelope.read_text())["encryptedSecret"]["keyId"] != key_id:
         raise SystemExit("The encrypted envelope names a different key")
     (work / "empty").mkdir()
     run(cli, "verify-release", str(work / "empty"), accepted=False)
