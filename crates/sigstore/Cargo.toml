@@ -1,7 +1,7 @@
 [package]
 name = "stogas-sigstore"
 description = "Networkless verification of the GitHub/Sigstore in-toto profile"
-readme = "../../README.md"
+readme = "README.md"
 homepage = "https://github.com/StogasAI/stogas"
 documentation = "https://docs.rs/stogas-sigstore"
 keywords = ["sigstore", "in-toto", "slsa", "verification", "wasm"]
@@ -23,18 +23,18 @@ hex.workspace = true
 p256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "pkcs8"] }
 p384 = { version = "0.14.0", default-features = false, features = ["ecdsa", "pkcs8"] }
 pem = "3.0.5"
-rsa = { version = "0.9.10", default-features = false, features = ["sha2", "std"] }
+rsa = { version = "0.9.10", default-features = false, features = ["sha2"] }
 rustls-pki-types = { version = "1.15.0", default-features = false, features = ["alloc"] }
 rustls-webpki = { version = "0.103.13", default-features = false, features = ["alloc", "std"] }
 serde.workspace = true
 serde_json = { workspace = true, features = ["unbounded_depth"] }
-serde_json_canonicalizer = "0.3.2"
+serde_json_canonicalizer.workspace = true
 sha2.workspace = true
 signature = "2.2.0"
 spki = "0.7.3"
 thiserror.workspace = true
 tls_codec = { version = "0.4.2", default-features = false, features = ["derive"] }
-x509-cert = { version = "0.2.5", features = ["builder", "sct"] }
+x509-cert = { version = "0.2.5", default-features = false, features = ["sct"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 sigstore-trust-root = { version = "=0.11.0", default-features = false }

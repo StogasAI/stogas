@@ -1,4 +1,3 @@
 [target.wasm32-unknown-unknown]
-rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]
 # `cargo test --target wasm32-unknown-unknown` runs the tests in Node.
 runner = "wasm-bindgen-test-runner"

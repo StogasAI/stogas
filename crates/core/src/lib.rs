@@ -1,4 +1,4 @@
-//! Deterministic, networkless verification for Stogas confidential evidence.
+#![doc = include_str!("../README.md")]
 
 pub(crate) use stogas_sigstore::strict_json;
 mod kem;

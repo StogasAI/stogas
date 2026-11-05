@@ -1,4 +1,4 @@
-//! Offline verification of GitHub build attestations and Stogas document publication.
+#![doc = include_str!("../README.md")]
 
 mod crypto;
 mod hashedrekord;
