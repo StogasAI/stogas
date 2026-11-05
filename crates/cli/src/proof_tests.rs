@@ -1,7 +1,7 @@
 use super::*;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
-use sha2::{Digest as _, Sha256};
+use sha2::{Digest as _, Sha256, Sha512};
 use stogas_core::attestation::certificate::ParsedNativeCertificate;
 use stogas_core::log_batch;
 use stogas_core::receipt::canonical::{self, Side};
@@ -100,7 +100,7 @@ impl Files {
                 &canonical::digest(response).unwrap(),
             ),
         ];
-        let digest = Sha256::digest(b"{}");
+        let digest = Sha512::digest(b"{}");
         let message = [
             receipt::SCHEMA.as_bytes(),
             b"\0",

@@ -3,7 +3,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::stream;
 use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
-use sha2::{Digest as _, Sha256};
+use sha2::{Digest as _, Sha512};
 use std::time::Duration;
 use stogas_core::receipt::{
     ContentDigest,
@@ -50,7 +50,7 @@ fn metadata(peer: &VerifiedSession, request: &ContentDigest, response: &ContentD
         canonical::commitment(Side::Request, &SALTS[0], request),
         canonical::commitment(Side::Response, &SALTS[1], response),
     ];
-    let digest: [u8; 32] = Sha256::digest(b"{}").into();
+    let digest: [u8; 64] = Sha512::digest(b"{}").into();
     let message = [
         receipt::SCHEMA.as_bytes(),
         b"\0",
