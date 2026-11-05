@@ -21,7 +21,7 @@ staging = ["stogas-core/staging", "stogas-sdk?/staging"]
 
 [dependencies]
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
 stogas-sdk = { package = "stogas", path = "../sdk", optional = true }
 stogas-core.workspace = true
 zeroize = { workspace = true, optional = true }

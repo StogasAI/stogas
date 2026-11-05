@@ -31,6 +31,7 @@ mod keys;
 pub(crate) use keys::{KeyState, VerifiedKeys};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum Environment {
     #[serde(rename = "prod")]
     Production,

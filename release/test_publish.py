@@ -71,6 +71,23 @@ def published_manifests():
             yield path, manifest
 
 
+def published_dependencies():
+    """Each published crate's normal and build dependencies, with workspace entries resolved."""
+    workspace = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["dependencies"]
+    for path, manifest in published_manifests():
+        for table in [manifest, *manifest.get("target", {}).values()]:
+            for kind in ("dependencies", "build-dependencies"):
+                for name, dependency in table.get(kind, {}).items():
+                    if isinstance(dependency, str):
+                        dependency = {"version": dependency}
+                    features = set(dependency.get("features", ()))
+                    if dependency.get("workspace"):
+                        dependency = workspace[name]
+                        dependency = {"version": dependency} if isinstance(dependency, str) else dependency
+                        features |= set(dependency.get("features", ()))
+                    yield path, name, dependency["version"], features
+
+
 def locked(path):
     return {(package["name"], package["version"]) for package in tomllib.loads(path.read_text())["package"] if "source" in package}
 
@@ -92,17 +109,18 @@ class CrateManifestTests(unittest.TestCase):
         # An exact requirement makes every project that uses the crate take that one version.
         # The siblings release together, and signatures cover the canonicalizer's output; Cargo
         # refuses an exact sibling requirement that differs from the sibling's version.
-        workspace = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]
         exact = {"stogas", "stogas-core", "stogas-sigstore", "serde_json_canonicalizer"}
-        for path, manifest in published_manifests():
-            for table in [manifest, *manifest.get("target", {}).values()]:
-                for kind in ("dependencies", "build-dependencies"):
-                    for name, dependency in table.get(kind, {}).items():
-                        if isinstance(dependency, dict) and dependency.get("workspace"):
-                            dependency = workspace["dependencies"][name]
-                        requirement = dependency if isinstance(dependency, str) else dependency["version"]
-                        with self.subTest(crate=path.parent.name, dependency=name):
-                            self.assertEqual(requirement.startswith("="), name in exact, requirement)
+        for path, name, requirement, _ in published_dependencies():
+            with self.subTest(crate=path.parent.name, dependency=name):
+                self.assertEqual(requirement.startswith("="), name in exact, requirement)
+
+    def test_published_libraries_leave_map_order_to_the_application(self):
+        # Cargo unifies features, so preserve_order in a library changes every map in its
+        # dependents' builds.
+        for path, name, _, features in published_dependencies():
+            if (path.parent / "src/lib.rs").exists():
+                with self.subTest(crate=path.parent.name, dependency=name):
+                    self.assertNotIn("preserve_order", features)
 
     def test_test_workspaces_lock_the_shipped_versions(self):
         # The probe and fuzz targets must test the dependency versions that the crates ship with.

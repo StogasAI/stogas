@@ -219,6 +219,7 @@ pub enum AmdCollateralType {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ReleaseProvenance {
     Github,
     #[cfg(feature = "staging")]
