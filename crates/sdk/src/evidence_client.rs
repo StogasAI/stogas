@@ -404,7 +404,7 @@ async fn run_cpu<T: Send + 'static>(
     .map_err(|_| Error::Worker)?
 }
 
-pub(crate) fn wall_clock_ms() -> Result<i64, Error> {
+pub fn wall_clock_ms() -> Result<i64, Error> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
@@ -413,4 +413,4 @@ pub(crate) fn wall_clock_ms() -> Result<i64, Error> {
 }
 
 #[cfg(all(test, feature = "staging"))]
-pub(crate) mod tests;
+pub mod tests;

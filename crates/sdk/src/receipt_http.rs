@@ -11,10 +11,10 @@ use tokio::time::{Instant, timeout_at};
 const MAX_RESPONSE_BYTES: usize = stogas_core::receipt::MAX_BUFFERED_BYTES;
 
 /// The `Stogas-Metadata` value that asks for this receipt format.
-pub(crate) const METADATA_VERSION: &str = "v2";
+pub const METADATA_VERSION: &str = "v2";
 
 /// Whether a request asks for metadata, or `None` for any other header value.
-pub(crate) fn requests_metadata(headers: &HeaderMap) -> Option<bool> {
+pub fn requests_metadata(headers: &HeaderMap) -> Option<bool> {
     let mut values = headers.get_all("stogas-metadata").iter();
     match (values.next(), values.next()) {
         (None, None) => Some(false),
@@ -34,7 +34,7 @@ pub enum Error {
 }
 
 /// This function has no request sender. Evidence refresh cannot replay inference.
-pub(crate) async fn verify(
+pub async fn verify(
     response: Response<Body>,
     peer: Arc<VerifiedSession>,
     request: receipt::ContentDigest,

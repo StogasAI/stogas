@@ -11,19 +11,19 @@ use tokio::{runtime::Handle, sync::oneshot};
 
 pub use stogas_core::evidence::{Error, Snapshot, Verifier};
 
-pub mod encrypted_client;
-pub mod encrypted_http;
-pub mod encrypted_setup;
-pub mod evidence_client;
+mod encrypted_client;
+mod encrypted_http;
+mod encrypted_setup;
+mod evidence_client;
 pub mod gateway_request;
-pub mod http2_pool;
+mod http2_pool;
 pub mod https;
-pub mod native_http;
-pub mod native_tls;
+mod native_http;
+mod native_tls;
 pub mod network;
 pub mod probe;
 mod proxy;
-pub mod receipt_http;
+mod receipt_http;
 mod upstream;
 
 pub use stogas_core::authority::Environment;
@@ -111,8 +111,6 @@ pub struct ServeOptions {
     pub listen: String,
     /// The only web origin that may call the endpoint. When unset, any page with the URL can.
     pub browser_origin: Option<String>,
-    /// Close when a supervising parent's stdin pipe closes.
-    pub exit_on_stdin_close: bool,
 }
 
 impl Default for TransportOptions {
@@ -362,20 +360,26 @@ impl Drop for Transport {
     }
 }
 
-/// Run the optional foreground transport frontend.
+/// Serve the transport on a loopback listener until `shutdown` completes, then close it.
+///
+/// The caller decides what ends it, such as a signal or a parent process exiting; the function
+/// installs no process handlers.
 ///
 /// # Errors
 ///
 /// Returns an error when configuration, initial evidence verification, listener binding, or the
 /// transport runtime fails.
-pub async fn serve(options: ServeOptions) -> Result<(), TransportError> {
+pub async fn serve(
+    options: ServeOptions,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), TransportError> {
     let config = proxy::ServeConfig::new(
         &options.transport,
         &options.listen,
         options.browser_origin.as_deref(),
     )
     .map_err(TransportError::options)?;
-    proxy::serve(config, options.exit_on_stdin_close)
+    proxy::serve(config, shutdown)
         .await
         .map_err(TransportError::internal)
 }
