@@ -8,7 +8,7 @@
 		"url": "git+https://github.com/StogasAI/stogas.git",
 		"directory": "packages/sigstore"
 	},
-	"homepage": "https://github.com/StogasAI/stogas#packages",
+	"homepage": "https://github.com/StogasAI/stogas/tree/main/packages/sigstore#readme",
 	"bugs": "https://github.com/StogasAI/stogas/issues",
 	"engines": {
 		"node": ">=20"
@@ -27,15 +27,16 @@
 	"exports": {
 		".": {
 			"types": "./bindings/node/node.d.ts",
-			"import": "./bindings/node/node.js"
+			"default": "./bindings/node/node.js"
 		},
 		"./browser": {
 			"types": "./pkg/browser/stogas_sigstore.d.ts",
-			"import": "./pkg/browser/stogas_sigstore.js"
+			"default": "./pkg/browser/stogas_sigstore.js"
 		},
 		"./worker": {
 			"types": "./bindings/worker/worker.d.ts",
-			"import": "./bindings/worker/worker.js"
-		}
+			"default": "./bindings/worker/worker.js"
+		},
+		"./package.json": "./package.json"
 	}
 }

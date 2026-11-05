@@ -23,5 +23,11 @@ const verified = verify_github_attestation(
 );
 ```
 
+It returns the authenticated log time, the subjects and the statement's predicate. In a GitHub
+attestation the workflow writes the predicate, so the policy's repository, ref, commit and workflow
+come from the Fulcio certificate instead. `verify_dsse_attestation` takes the same arguments with
+any signer's identity, `{ certificate_identity, certificate_oidc_issuer, predicate_type }`, and
+leaves the predicate to your own policy.
+
 The default Node/Bun export initializes WebAssembly synchronously. Browser consumers initialize
 the `/browser` module once with its default initializer; compatible Workers use `/worker`.

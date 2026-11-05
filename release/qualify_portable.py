@@ -96,6 +96,8 @@ def qualify(source, packages, version, requested, cases):
             shutil.copytree(installed / "pkg/browser", work / "target/browser")
             shutil.copytree(work / "node_modules/@stogas/sigstore/pkg/browser", work / "target/sigstore-browser")
             tests = ["tests/node/" + path.name for path in sorted((work / "tests/node").glob("*.test.mjs")) if path.name != "fuzz-workflows.test.mjs"]
+            # Resolves each entry point by package name from the installed packages.
+            tests.append("tests/package/exports.test.mjs")
             (work / "tests/browser/release.config.mjs").write_text(RELEASE_CONFIG)
             # The tests tagged @release run on the installed production packages; the others need
             # the staging trust profile.
