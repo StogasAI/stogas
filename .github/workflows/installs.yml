@@ -1,0 +1,194 @@
+name: Install the CLI from its channels
+
+# Installs the CLI as its users do, from every channel, and requires the version that the channel
+# should offer. Publication runs it after each release; run it by hand with
+# `gh workflow run installs.yml -f tag=v<version>`.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The published release's tag, such as v0.1.0
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The published release's tag, such as v0.1.0
+        type: string
+        required: true
+
+permissions: {}
+
+env:
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  # Homebrew, Scoop and the AUR follow the newest full release, or the newest preview before
+  # the first; crates.io and the container registry keep every version.
+  offered:
+    name: Find the release that Homebrew, Scoop and the AUR offer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.offered.outputs.version }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - id: offered
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::$TAG is not a release tag"
+            exit 1
+          fi
+          echo "version=$(python3 -B release/publish.py offered)" >> "$GITHUB_OUTPUT"
+
+  homebrew:
+    name: Homebrew (${{ matrix.os }})
+    needs: offered
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.offered.outputs.version }}
+      HOMEBREW_NO_ANALYTICS: '1'
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+    steps:
+      - name: Install from StogasAI/tap
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"; fi
+          brew install stogasai/tap/stogas
+          installed=$(stogas --version)
+          if [ "$installed" != "stogas $VERSION" ]; then
+            echo "::error::Homebrew installed $installed, not stogas $VERSION"
+            exit 1
+          fi
+          brew test stogasai/tap/stogas
+
+  scoop:
+    name: Scoop (${{ matrix.os }})
+    needs: offered
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.offered.outputs.version }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Install Scoop
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'install-scoop.ps1'
+          Invoke-WebRequest https://raw.githubusercontent.com/ScoopInstaller/Install/1e2f334083d609986d8c8bc9e31ae8e87c39fab4/install.ps1 -OutFile $installer
+          if ((Get-FileHash -Algorithm SHA256 $installer).Hash -ne '94f983b190438311e006b957db7c8422709e0ba62a6c2ac04e278164108f2512') {
+            throw 'The Scoop installer differs from the reviewed one'
+          }
+          # Hosted runners run as an administrator, which the installer otherwise refuses.
+          & $installer -RunAsAdmin
+          Join-Path $env:USERPROFILE 'scoop\shims' | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+      - name: Install from StogasAI's bucket
+        run: |
+          scoop bucket add stogas https://github.com/StogasAI/homebrew-tap
+          scoop install stogas/stogas
+          $installed = stogas --version
+          if ($installed -ne "stogas $env:VERSION") { throw "Scoop installed $installed, not stogas $env:VERSION" }
+
+  aur:
+    name: Arch User Repository
+    needs: offered
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container: archlinux:base-devel@sha256:767de6eaa40dcfeda5263a48737ea03a782caabdf3a403b6e6a203c7fd333681
+    env:
+      VERSION: ${{ needs.offered.outputs.version }}
+    steps:
+      - name: Build and install stogas-bin
+        run: |
+          # The package exists once the AUR account that publication uses has pushed it.
+          if curl -fsS 'https://aur.archlinux.org/rpc/v5/info?arg%5B%5D=stogas-bin' | grep -qF '"resultcount":0'; then
+            echo "::warning::The AUR has no stogas-bin yet"
+            exit 0
+          fi
+          pacman -Syu --noconfirm --needed git
+          useradd --create-home builder
+          su builder --command 'git clone https://aur.archlinux.org/stogas-bin.git ~/stogas-bin && cd ~/stogas-bin && makepkg --noconfirm'
+          pacman -U --noconfirm /home/builder/stogas-bin/stogas-bin-*.pkg.tar.zst
+          installed=$(stogas --version)
+          if [ "$installed" != "stogas $VERSION" ]; then
+            echo "::error::The AUR installed $installed, not stogas $VERSION"
+            exit 1
+          fi
+
+  binstall:
+    name: cargo-binstall (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-2025, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # cargo-binstall reads the crate's metadata from crates.io and installs this release's archive
+      # for the host.
+      - name: Install from crates.io
+        # An exact version from crates.io, in a job that holds no credentials.
+        # zizmor: ignore[adhoc-packages]
+        run: |
+          version="${TAG#v}"
+          if ! curl -fsS https://index.crates.io/st/og/stogas-cli | grep -qF "\"vers\":\"$version\""; then
+            echo "::warning::crates.io has no stogas-cli $version, so cargo-binstall cannot install it"
+            exit 0
+          fi
+          cargo install cargo-binstall --version 1.26.2 --locked
+          cargo binstall --no-confirm --disable-telemetry --disable-strategies compile "stogas-cli@$version"
+          installed=$(stogas --version)
+          if [ "$installed" != "stogas $version" ]; then
+            echo "::error::cargo-binstall installed $installed, not stogas $version"
+            exit 1
+          fi
+
+  container:
+    name: Container (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    permissions:
+      attestations: read
+    steps:
+      - name: Check the image's build proof and run it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${TAG#v}"
+          image="ghcr.io/stogasai/stogas:$version"
+          # GitHub keeps a new package private until an organization owner makes it public.
+          access=$(curl -sS -o /dev/null -w '%{http_code}' 'https://ghcr.io/token?scope=repository:stogasai/stogas:pull')
+          if [ "$access" != 200 ]; then
+            echo "::warning::ghcr.io/stogasai/stogas is not public, so users cannot pull it"
+            exit 0
+          fi
+          gh attestation verify "oci://$image" --repo StogasAI/stogas \
+            --signer-workflow StogasAI/stogas/.github/workflows/publish.yml \
+            --source-ref "refs/tags/$TAG" --deny-self-hosted-runners
+          installed=$(docker run --rm "$image" --version)
+          if [ "$installed" != "stogas $version" ]; then
+            echo "::error::The image runs $installed, not stogas $version"
+            exit 1
+          fi

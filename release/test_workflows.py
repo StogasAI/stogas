@@ -32,5 +32,14 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertLess(job.index("name: Require the tag at this commit and no release for it"), job.index("uses: actions/attest@"))
 
 
+class PublishWorkflowTests(unittest.TestCase):
+    def test_publication_ends_by_installing_from_every_channel_without_credentials(self):
+        self.assertIn("uses: $/.github/workflows/installs.yml\n", jobs("publish.yml")["installs"])
+        installs = (WORKFLOWS / "installs.yml").read_text()
+        self.assertEqual(set(jobs("installs.yml")), {"offered", "homebrew", "scoop", "aur", "binstall", "container"})
+        for forbidden in (": write", "secrets.", "id-token"):
+            self.assertNotIn(forbidden, installs)
+
+
 if __name__ == "__main__":
     unittest.main()

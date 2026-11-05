@@ -237,3 +237,15 @@ jobs:
           if [ "$NPM" = true ]; then waiting+=(npm); fi
           if [ "$RUBYGEMS" != success ]; then waiting+=(RubyGems); fi
           echo "::warning::${waiting[*]} still wait for a one-time registry setup; run this workflow again afterwards"
+
+  # Users install the CLI from these channels, so publication ends by doing the same.
+  installs:
+    name: Install the CLI from its channels
+    needs: publish
+    if: ${{ !cancelled() && needs.publish.result != 'skipped' }}
+    permissions:
+      attestations: read
+      contents: read
+    uses: $/.github/workflows/installs.yml
+    with:
+      tag: ${{ github.ref_name }}
