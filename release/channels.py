@@ -125,10 +125,19 @@ def scoop(manifest):
     }, indent=4) + "\n"
 
 
+# The release forms whose pkgver pacman orders as Semantic Versioning does. vercmp ranks a version
+# followed by letters below the bare version (0.1.0alpha.1 < 0.1.0), but one followed by "_", "."
+# or "~" above it, so the hyphen goes rather than becoming another separator.
+AUR_FORM = re.compile(r"(\d+\.\d+\.\d+)(?:-((?:alpha|beta|rc)(?:\.\d+)?))?\Z")
+
+
 def aur_version(version):
-    """pacman's pkgver allows no hyphen, and its order puts 0.1.0_alpha.1 before 0.1.0."""
+    """pacman's pkgver, which allows no hyphen."""
     precedence(version)
-    return version.replace("-", "_")
+    match = AUR_FORM.match(version)
+    if not match:
+        raise ValueError(f"pacman orders no pkgver for {version} as Semantic Versioning does")
+    return match[1] + (match[2] or "")
 
 
 def pkgbuild(manifest, pkgrel=1):

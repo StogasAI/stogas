@@ -20,29 +20,28 @@ env:
   CARGO_NET_RETRY: 10
   RUSTUP_MAX_RETRIES: 10
 
+# Runs wait in turn rather than replacing a pending one, so no release's publication is dropped.
+# One at a time, since Homebrew, Scoop, the AUR and npm's latest follow the newest release.
 concurrency:
   group: sdk-registry-publication
   cancel-in-progress: false
+  queue: max
 
 jobs:
-  publish:
-    name: Publish to the package registries
+  # Building the CLI runs its dependencies' build scripts, so it happens here, with no
+  # credential that a registry trusts.
+  verify:
+    name: Check the published release
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
-    environment: release
+    timeout-minutes: 60
     permissions:
-      attestations: write
-      contents: write
-      id-token: write
-      packages: write
+      contents: read
+    outputs:
+      digest: ${{ steps.check.outputs.digest }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
-        with:
-          node-version: 24.22.1
-          registry-url: https://registry.npmjs.org
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.14.7'
@@ -70,6 +69,43 @@ jobs:
           else
             python3 -B release/publish.py preview "$RUNNER_TEMP/approved"
           fi
+          echo "digest=$(cd "$RUNNER_TEMP/approved" && LC_ALL=C sha256sum -- * | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish to the package registries
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    environment: release
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+      packages: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.22.1
+          registry-url: https://registry.npmjs.org
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14.7'
+      # The release again from GitHub, which the check job's code cannot change, with the
+      # same files.
+      - name: Download the checked release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKED: ${{ needs.verify.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = false
+          mkdir "$RUNNER_TEMP/approved"
+          gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/approved"
+          test "$(cd "$RUNNER_TEMP/approved" && LC_ALL=C sha256sum -- * | sha256sum | cut -d ' ' -f 1)" = "$CHECKED"
       # Each registry publishes once the release passed its check, even when another failed,
       # so a failed or waiting registry holds up no other; the job still fails, and the next
       # run skips what is already published. Those that need no one-time registry setup go
@@ -146,6 +182,10 @@ jobs:
       - if: ${{ !cancelled() && steps.rubygems.outcome == 'success' }}
         name: Publish the exact platform gems
         run: python3 -B release/publish.py ruby "$RUNNER_TEMP/approved"
+      # The RubyGems action leaves its key in every later step's environment.
+      - if: ${{ !cancelled() && steps.rubygems.outcome == 'success' }}
+        name: Keep the RubyGems key from later steps
+        run: printf '%s=\n' RUBYGEMS_API_KEY BUNDLE_GEM__PUSH_KEY GEM_HOST_API_KEY >> "$GITHUB_ENV"
       # Package managers that install the release's own archives follow the newest full release,
       # or the newest preview before the first. They run even when a registry above failed, but
       # never on files that failed the check.

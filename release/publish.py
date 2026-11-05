@@ -5,6 +5,7 @@ import argparse
 import base64
 import contextlib
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -26,16 +27,19 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 from artifacts import digest, source_digest, unpack
 import channels
+from gate import CRATES, check_release, crate_refusals
 
 
 def run(arguments, stderr=subprocess.STDOUT, **kwargs):
-    # Registry clients may include response bodies in errors. Keep their output
-    # private; tokens are supplied through the client's documented environment.
-    # npm's error code names the cause without any of the response.
+    """A tool's output. On failure, its last lines go to standard error, since they name the
+    registry's reason. Tools take credentials from their environment and never print them;
+    GitHub masks every secret in the log, and the release tool redacts its own token."""
     result = subprocess.run(arguments, stdout=subprocess.PIPE, stderr=stderr, **kwargs)
     if result.returncode:
-        codes = re.findall(rb"^npm error code ([A-Z0-9_]+)$", result.stdout or b"", re.M)
-        cause = f", npm error code {codes[0].decode()}" if codes else ""
+        output = (result.stdout or b"").decode(errors="replace").splitlines()
+        sys.stderr.write("".join(f"{line}\n" for line in output[-60:]))
+        codes = re.findall(r"^npm error code ([A-Z0-9_]+)$", "\n".join(output), re.M)
+        cause = f", npm error code {codes[0]}" if codes else ""
         raise RuntimeError(f"{Path(arguments[0]).name} failed (exit {result.returncode}{cause}); registry publication stopped")
     return result.stdout
 
@@ -44,20 +48,28 @@ def run(arguments, stderr=subprocess.STDOUT, **kwargs):
 STORAGE_ABSENT = (403, 404)
 
 
+class TransientRead(RuntimeError):
+    """A registry read that may succeed when repeated: a lost connection, HTTP 429 or a 5xx."""
+
+
 def download(url, absent=(404,)):
     """The registry's bytes at `url`, or None when it answers one of the `absent` statuses."""
     request = urllib.request.Request(url, headers={"User-Agent": "stogas-sdk-release/1 (https://github.com/StogasAI/stogas)"})
+    where = urllib.parse.urlsplit(url)._replace(query="").geturl()
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             value = response.read(2 * 1024**3 + 1)
-            if len(value) > 2 * 1024**3:
-                raise ValueError("Registry artifact exceeds its size limit")
-            return value
     except urllib.error.HTTPError as error:
         error.close()
         if error.code in absent:
             return None
-        raise RuntimeError(f"Registry read failed (HTTP {error.code})") from None
+        failure = TransientRead if error.code == 429 or error.code >= 500 else RuntimeError
+        raise failure(f"Registry read of {where} failed (HTTP {error.code})") from None
+    except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException) as error:
+        raise TransientRead(f"Registry read of {where} failed ({type(error).__name__})") from None
+    if len(value) > 2 * 1024**3:
+        raise ValueError(f"Registry artifact at {where} exceeds its size limit")
+    return value
 
 
 def exact_remote(path, url, absent=(404,)):
@@ -69,12 +81,20 @@ def exact_remote(path, url, absent=(404,)):
     return True
 
 
-def wait_for(check, minutes=5):
-    """Reads a publication back until it matches, for at most `minutes`."""
+def wait_for(check, what, minutes=5):
+    """Reads `what` back until it matches, for at most `minutes`. A read that may succeed when
+    repeated only delays it; any other failure, such as different bytes, stops at once."""
     deadline = time.monotonic() + minutes * 60
-    while not check():
+    while True:
+        try:
+            if check():
+                return
+            failed = None
+        except TransientRead as error:
+            failed = error
         if time.monotonic() >= deadline:
-            raise RuntimeError(f"Published package did not become available for verified readback within {minutes} minutes")
+            cause = f"; the last read failed: {failed}" if failed else ""
+            raise RuntimeError(f"{what} did not become available for verified readback within {minutes} minutes{cause}")
         time.sleep(10)
 
 
@@ -116,7 +136,6 @@ def crate_metadata(path):
         }
 
 
-CRATES = ("stogas-sigstore", "stogas-core", "stogas", "stogas-cli")
 # publish.yml in the release environment, the only workflow a registry may trust.
 PUBLISHER = {"repository_owner": "StogasAI", "repository_name": "stogas", "workflow_filename": "publish.yml", "environment": "release"}
 
@@ -156,25 +175,32 @@ def crate_upload(path, metadata, token):
 
 
 def crates_trust(token):
-    """After the first upload, let only publish.yml publish each crate and revoke the token.
-    The token needs the publish-new and trusted-publishing scopes."""
+    """Once every crate exists, let only publish.yml publish each one. The token needs the
+    publish-new, publish-update and trusted-publishing scopes. crates.io lets only a legacy
+    token revoke itself, and refuses a legacy token this handover, so its creator revokes it."""
     for name in CRATES:
         configs = crates_api("GET", f"trusted_publishing/github_configs?crate={name}", token)["github_configs"]
         if not any(all(config.get(key) == value for key, value in PUBLISHER.items()) for config in configs):
             crates_api("POST", "trusted_publishing/github_configs", token, {"github_config": {"crate": name, **PUBLISHER}})
         crates_api("PATCH", f"crates/{name}", token, {"crate": {"trustpub_only": True}})
-    crates_api("DELETE", "tokens/current", token)
-    print("crates: publish.yml is each crate's only publisher, and the one-time token is revoked")
+    print("crates: publish.yml is each crate's only publisher; revoke the one-time token on crates.io")
 
 
 def crates(packages, version, trust=False):
-    for name in CRATES:
-        path = packages / f"{name}-{version}.crate"
+    """Upload each crate in dependency order. With `trust`, a one-time token creates the crates,
+    finishing a partial first upload under a later version too, then hands them to publish.yml."""
+    paths = [packages / f"{name}-{version}.crate" for name in CRATES]
+    metadata = {path: crate_metadata(path) for path in paths}
+    # A refusal after the first crate would leave the rest unpublished at this version.
+    for path, upload in metadata.items():
+        if refusals := crate_refusals(upload):
+            raise ValueError(f"crates.io would refuse {path.name}: {', '.join(refusals)}")
+    for name, path in zip(CRATES, paths):
         url = f"https://static.crates.io/crates/{name}/{path.name}"
         check = lambda: exact_remote(path, url, STORAGE_ABSENT)
         if not check():
-            crate_upload(path, crate_metadata(path), os.environ["CARGO_REGISTRY_TOKEN"])
-        wait_for(check)
+            crate_upload(path, metadata[path], os.environ["CARGO_REGISTRY_TOKEN"])
+        wait_for(check, path.name)
         # A downloadable dependency also needs to be visible in the index before
         # crates.io accepts the next dependent package.
         index = f"https://index.crates.io/{name[:2]}/{name[2:4]}/{name}"
@@ -189,7 +215,7 @@ def crates(packages, version, trust=False):
                         raise ValueError("Crate index differs from the approved release")
                     return True
             return False
-        wait_for(indexed)
+        wait_for(indexed, f"{name} {version} in the crates.io index")
     if trust:
         crates_trust(os.environ["CARGO_REGISTRY_TOKEN"])
 
@@ -229,7 +255,7 @@ def npm(packages, version, stage=False):
             continue
         if not stage:
             run(["npm", "publish", str(path), "--access", "public", *tag])
-            wait_for(check)
+            wait_for(check, f"{name}@{version}")
             continue
         # A rerun finds the upload that still awaits approval.
         if not (staged := npm_staged(name, version)):
@@ -277,7 +303,7 @@ def pypi(packages, version):
             if not exact_remote(path, files[name]["url"]):
                 return False
         return True
-    wait_for(check)
+    wait_for(check, f"stogas {python_version} on PyPI")
 
 
 def ruby(packages, version):
@@ -286,7 +312,7 @@ def ruby(packages, version):
         check = lambda: exact_remote(path, url, STORAGE_ABSENT)
         if not check():
             run(["gem", "push", str(path), "--host", "https://rubygems.org"])
-        wait_for(check)
+        wait_for(check, path.name)
 
 
 def nuget(packages, version):
@@ -309,11 +335,12 @@ def nuget(packages, version):
                 if any(before.read(name) != after.read(name) for name in before.namelist()):
                     raise ValueError("NuGet changed approved package contents")
         return True
-    if not check():
-        run(["dotnet", "nuget", "push", str(path), "--api-key", os.environ["NUGET_API_KEY"], "--source", "https://api.nuget.org/v3/index.json"])
     # nuget.org validates and indexes a version before serving it, usually within 15 minutes;
-    # its support takes over after an hour. The first version took longer than 5.
-    wait_for(check, minutes=60)
+    # its support takes over after an hour. The first version took longer than 5. A rerun in
+    # the meantime finds the version taken, which only readback can check.
+    if not check():
+        run(["dotnet", "nuget", "push", str(path), "--api-key", os.environ["NUGET_API_KEY"], "--source", "https://api.nuget.org/v3/index.json", "--skip-duplicate"])
+    wait_for(check, path.name, minutes=60)
 
 
 def maven(packages, version):
@@ -321,10 +348,9 @@ def maven(packages, version):
     def url(path):
         name = "stogas-android" if path.name.startswith("stogas-android-") else "stogas"
         return f"https://repo.maven.apache.org/maven2/ai/stogas/{name}/{version}/{path.name}"
-    existing = [exact_remote(path, url(path)) for path in artifacts]
-    if any(existing) and not all(existing):
-        raise ValueError("Maven Central has a partial release; resolve the existing deployment before retrying")
-    if not all(existing):
+    # Central publishes a deployment whole, but repo.maven.apache.org serves its files as they
+    # sync, so any file there means the deployment exists and readback waits for the rest.
+    if not any([exact_remote(path, url(path)) for path in artifacts]):
         with tempfile.TemporaryDirectory(prefix="stogas-central-") as temporary:
             work = Path(temporary)
             configuration = Path(__file__).with_name("jreleaser.yml").read_text()
@@ -335,7 +361,7 @@ def maven(packages, version):
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(path, destination)
             run(["jreleaser", "deploy", "--config-file", str(work / "jreleaser.yml"), "--basedir", str(Path(__file__).resolve().parents[1]), "--output-directory", str(work / "output")], env={**os.environ, "JRELEASER_PROJECT_VERSION": version})
-    wait_for(lambda: all(exact_remote(path, url(path)) for path in artifacts))
+    wait_for(lambda: all(exact_remote(path, url(path)) for path in artifacts), f"ai.stogas {version} on Maven Central", minutes=30)
 
 
 def go(packages, version, source):
@@ -594,7 +620,6 @@ def preview(packages):
     """A preview has no Stogas signature. Require the gate's preview, every file the manifest
     names and nothing else, and GitHub's build proof for the manifest and the qualification
     report, which together name every artifact."""
-    from gate import check_release
     manifest, is_preview = check_release(packages)
     if not is_preview:
         raise ValueError("Only a preview is published without the Stogas signature")
@@ -612,18 +637,22 @@ def preview(packages):
 
 
 def first_versions():
-    """Print which registries have none of their packages yet, as GitHub output lines. crates.io
+    """Print which registries still wait for a one-time setup, as GitHub output lines. crates.io
     and npm trust a workflow only for an existing package, and RubyGems only once a pending
-    publisher names it, so their first versions wait for a one-time registry setup."""
+    publisher names it. crates.io waits until every crate exists and trusts only publish.yml,
+    since its one-time token finishes a partial first upload."""
     def missing(urls):
         return all(download(url) is None for url in urls)
+    def handed_over(name):
+        document = download(f"https://crates.io/api/v1/crates/{name}")
+        return document is not None and json.loads(document)["crate"].get("trustpub_only") is True
     def unpublished(name):
         # Staging a new package's first version reserves its name with a placeholder version,
         # 0.0.0-stage, which publishes nothing; the package waits until a maintainer approves.
         document = download(f"https://registry.npmjs.org/{urllib.parse.quote(name, safe='')}")
         return document is None or not set(json.loads(document).get("versions", {})) - {NPM_STAGE_PLACEHOLDER}
     waiting = {
-        "crates": missing(f"https://crates.io/api/v1/crates/{name}" for name in CRATES),
+        "crates": not all(handed_over(name) for name in CRATES),
         "npm": all(unpublished(name) for name, _ in NPM_PACKAGES),
         "ruby": missing(["https://rubygems.org/api/v1/gems/stogas.json"]),
     }
@@ -639,7 +668,7 @@ if __name__ == "__main__":
     parser.add_argument("ecosystem", choices=["crates", "npm", "pypi", "ruby", "nuget", "maven", "go", "preview", "tap", "aur", "container"])
     parser.add_argument("packages", type=Path)
     parser.add_argument("--stage", action="store_true", help="npm only: leave each new version for a maintainer to approve")
-    parser.add_argument("--trust", action="store_true", help="crates only: then trust publish.yml alone and revoke the one-time token")
+    parser.add_argument("--trust", action="store_true", help="crates only: then let publish.yml alone publish each crate")
     parser.add_argument("--remote", help="tap and aur only: another Git remote, such as an HTTPS one for a manual run")
     args = parser.parse_args()
     if args.stage and args.ecosystem != "npm":

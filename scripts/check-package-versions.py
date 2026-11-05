@@ -9,8 +9,10 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
 version = sys.argv[1]
-if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?", version):
-    raise SystemExit("Invalid release version")
+# pacman, PEP 440, RubyGems and Maven order alpha, beta and rc as Semantic Versioning does, and
+# other pre-release forms differently.
+if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)(\.(0|[1-9][0-9]*))?)?", version):
+    raise SystemExit("Invalid release version: use X.Y.Z, or X.Y.Z-alpha.N, -beta.N or -rc.N")
 for name in ["package.json", "packages/sigstore/package.json"]:
     assert json.loads((root / name).read_text())["version"] == version, name
 assert re.search(r'^version = "([^"]+)"', (root / "Cargo.toml").read_text(), re.M)[1] == version
