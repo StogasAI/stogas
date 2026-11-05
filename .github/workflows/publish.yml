@@ -135,6 +135,8 @@ jobs:
         run: python3 -B release/publish.py crates "$RUNNER_TEMP/approved"
       - if: ${{ !cancelled() && steps.first.outputs.npm == 'false' }}
         name: Publish the exact npm archives with trusted publishing and provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 -B release/publish.py npm "$RUNNER_TEMP/approved"
       # A pending publisher for a new gem lasts only 12 hours, so a missing one skips RubyGems.
       - if: ${{ !cancelled() && steps.first.outcome == 'success' }}
