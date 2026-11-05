@@ -147,12 +147,8 @@ jobs:
   qualify:
     name: Qualify ${{ matrix.name }}
     needs: [package]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
     permissions:
       contents: read
-      # Signs in to AWS Device Farm for the real phones.
-      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -179,7 +175,6 @@ jobs:
             }
           - { name: darwin-amd64, platform: darwin-amd64, desktop: true, runner: macos-15-intel }
           - { name: darwin-arm64, platform: darwin-arm64, desktop: true, runner: macos-15 }
-          - { name: ios-arm64, platform: ios-arm64, runner: macos-15, device-farm: true }
           - { name: ios-simulator-arm64, platform: ios-simulator-arm64, runner: macos-15 }
           # x86_64 system images under KVM. Google's native bridge in the API 35
           # images runs ARM64 code; the API 33 image has none. A real ARM64
@@ -213,13 +208,6 @@ jobs:
               image-sha256: c67b9ba0ff5bc0eb6d046871bfa228af14d4d47b02f0cdae94f048e511b7566e
             }
           - {
-              name: android-arm64-phone,
-              platform: android-arm64,
-              package: android,
-              runner: ubuntu-24.04,
-              device-farm: true
-            }
-          - {
               name: android-arm64-16k,
               platform: android-arm64,
               runner: ubuntu-24.04,
@@ -229,134 +217,39 @@ jobs:
               image-sha256: 61ae26a86ec209e200337fcd04329c2f568b1d920d4e555712dec95fd89c22ec
             }
           - { name: portable, platform: portable, runner: ubuntu-24.04 }
-    defaults:
-      run:
-        shell: bash
-    env:
-      PLATFORM: ${{ matrix.platform }}
-      NAME: ${{ matrix.name }}
-      PACKAGE: ${{ matrix.package }}
-      DEVICE_FARM: ${{ matrix.device-farm && vars.DEVICE_FARM_PROJECT || '' }}
-      PREVIEW: ${{ inputs.preview && 'true' || '' }}
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          persist-credentials: false
-      - if: matrix.device-farm
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
-        with:
-          role-to-assume: ${{ vars.DEVICE_FARM_ROLE }}
-          role-duration-seconds: 7200
-          aws-region: us-west-2
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: '3.14.7'
-      - if: runner.os == 'macOS'
-        run: echo 'DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer' >> "$GITHUB_ENV"
-      - if: matrix.desktop
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
-        with:
-          # The JAR's Java 17 floor, on every desktop target including Windows ARM64.
-          distribution: microsoft
-          java-version: '17'
-      - if: matrix.desktop
-        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
-        with:
-          dotnet-version: '10.0.x'
-      - if: matrix.desktop
-        uses: ruby/setup-ruby@e8944e80fb94b20106697132f8c20c665fab29e9
-        with:
-          ruby-version: '3.4.9'
-      - if: matrix.desktop
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
-        with:
-          go-version-file: go/go.mod
-          cache: false
-      - if: matrix.mingw
-        name: Install the pinned MinGW C compiler
-        env:
-          MINGW: ${{ matrix.mingw }}
-          MINGW_SHA256: ${{ matrix.mingw-sha256 }}
-        run: |
-          set -euo pipefail
-          curl -sSfL -o "$RUNNER_TEMP/$MINGW.zip" "https://github.com/mstorsjo/llvm-mingw/releases/download/20261006/$MINGW.zip"
-          echo "$MINGW_SHA256  $RUNNER_TEMP/$MINGW.zip" | sha256sum -c -
-          python -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$RUNNER_TEMP/$MINGW.zip" "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/$MINGW/bin" >> "$GITHUB_PATH"
-      - if: startsWith(matrix.platform, 'ios-')
-        name: Install the pinned XcodeGen
-        run: |
-          set -euo pipefail
-          curl -sSfL -o "$RUNNER_TEMP/xcodegen.zip" https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip
-          echo "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
-          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
-      - if: matrix.platform == 'ios-simulator-arm64'
-        name: Boot a new iOS simulator
-        run: |
-          set -euo pipefail
-          device=$(xcrun simctl create stogas-qualification com.apple.CoreSimulator.SimDeviceType.iPhone-16 com.apple.CoreSimulator.SimRuntime.iOS-26-2)
-          xcrun simctl bootstatus "$device" -b
-          echo "DEVICE=$device" >> "$GITHUB_ENV"
-      - if: matrix.image
-        name: Install the pinned Android emulator and system image
-        env:
-          IMAGE: ${{ matrix.image }}
-          IMAGE_SHA256: ${{ matrix.image-sha256 }}
-          SYSTEM: system-images/android-${{ matrix.api }}/${{ matrix.tag }}
-        run: |
-          set -euo pipefail
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          sdk="$RUNNER_TEMP/android-sdk"
-          mkdir -p "$sdk/$SYSTEM" "$RUNNER_TEMP/avd/stogas.avd"
-          ln -s "$ANDROID_HOME/platform-tools" "$sdk/platform-tools"
-          repository=https://dl.google.com/android/repository
-          curl -sSfL -o "$RUNNER_TEMP/emulator.zip" "$repository/emulator-linux_x64-16428233.zip"
-          curl -sSfL -o "$RUNNER_TEMP/image.zip" "$repository/sys-img/google_apis/$IMAGE"
-          sha256sum -c - <<SUMS
-          b08fc43d8608d2955f607f1b287beb525041e730086bdca3af152accac3af9c1  $RUNNER_TEMP/emulator.zip
-          $IMAGE_SHA256  $RUNNER_TEMP/image.zip
-          SUMS
-          unzip -q "$RUNNER_TEMP/emulator.zip" -d "$sdk"
-          unzip -q "$RUNNER_TEMP/image.zip" -d "$sdk/$SYSTEM"
-          rm "$RUNNER_TEMP/emulator.zip" "$RUNNER_TEMP/image.zip"
-          printf 'avd.ini.encoding=UTF-8\npath=%s\ntarget=android-%s\n' "$RUNNER_TEMP/avd/stogas.avd" "${{ matrix.api }}" > "$RUNNER_TEMP/avd/stogas.ini"
-          printf '%s\n' AvdId=stogas abi.type=x86_64 hw.cpu.arch=x86_64 hw.ramSize=4096 disk.dataPartition.size=6G \
-            "image.sysdir.1=$SYSTEM/x86_64/" "tag.id=${{ matrix.tag }}" hw.gpu.enabled=no hw.audioInput=no hw.audioOutput=no \
-            > "$RUNNER_TEMP/avd/stogas.avd/config.ini"
-          echo "ANDROID_HOME=$sdk" >> "$GITHUB_ENV"
-          echo "ANDROID_AVD_HOME=$RUNNER_TEMP/avd" >> "$GITHUB_ENV"
-          echo "$sdk/platform-tools" >> "$GITHUB_PATH"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: sdk-packages
-          path: ${{ runner.temp }}/sdk-packages
-      - if: '!matrix.image'
-        name: Run installed-package checks with the release's own test code
-        run: python -B release/release.py qualify "$RUNNER_TEMP/sdk-packages" --platform "$PLATFORM" --out "$RUNNER_TEMP/report/$NAME.json" ${DEVICE:+--device "$DEVICE"} ${DEVICE_FARM:+--device-farm "$DEVICE_FARM"} ${PACKAGE:+--package "$PACKAGE"} ${PREVIEW:+--preview}
-      - if: matrix.image
-        name: Boot the emulator and run installed-package checks
-        run: |
-          set -euo pipefail
-          "$ANDROID_HOME/emulator/emulator" -avd stogas -port 5554 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > "$RUNNER_TEMP/emulator.log" 2>&1 &
-          # shellcheck disable=SC2016 # The loop runs in the emulator's shell.
-          timeout 900 adb -s emulator-5554 wait-for-device shell 'until [ "$(getprop sys.boot_completed)" = 1 ]; do sleep 5; done'
-          python -B release/release.py qualify "$RUNNER_TEMP/sdk-packages" --platform "$PLATFORM" --out "$RUNNER_TEMP/report/$NAME.json" --device emulator-5554 ${PACKAGE:+--package "$PACKAGE"} ${PREVIEW:+--preview}
-          adb -s emulator-5554 emu kill
-      - if: failure() && matrix.image
-        run: tail -n 200 "$RUNNER_TEMP/emulator.log"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: sdk-report-${{ matrix.name }}
-          path: ${{ runner.temp }}/report/${{ matrix.name }}.json
-          if-no-files-found: error
-          retention-days: 7
+    uses: $/.github/workflows/qualify.yml
+    with:
+      target: ${{ toJSON(matrix) }}
+      preview: ${{ inputs.preview }}
+
+  qualify-phones:
+    name: Qualify ${{ matrix.name }}
+    needs: [package]
+    permissions:
+      contents: read
+      # Signs in to AWS Device Farm for the real phones. The token names
+      # qualify.yml, so it cannot pass for this workflow's attestations.
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: ios-arm64, platform: ios-arm64, runner: macos-15, device-farm: true }
+          - {
+              name: android-arm64-phone,
+              platform: android-arm64,
+              package: android,
+              runner: ubuntu-24.04,
+              device-farm: true
+            }
+    uses: $/.github/workflows/qualify.yml
+    with:
+      target: ${{ toJSON(matrix) }}
+      preview: ${{ inputs.preview }}
 
   release:
     name: Attest and draft the release
-    needs: [qualify]
+    needs: [qualify, qualify-phones]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -380,6 +273,24 @@ jobs:
       # a preview passes every offline check and runs no live one.
       - name: Require every platform report to pass
         run: python3 -B release/release.py reports "$RUNNER_TEMP"/reports/*.json --packages "$RUNNER_TEMP/sdk-packages"
+      # An attestation cannot be withdrawn, so a version gets one build: its tag
+      # must still name this commit, and no release, draft or not, may exist.
+      - name: Require the tag at this commit and no release for it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .sha)
+          if [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "::error::$GITHUB_REF_NAME names $tagged, not the built commit $GITHUB_SHA"
+            exit 1
+          fi
+          # shellcheck disable=SC2016 # jq reads the tag from its environment.
+          releases=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[] | select(.tag_name == env.GITHUB_REF_NAME) | .id')
+          if [ -n "$releases" ]; then
+            echo "::error::$GITHUB_REF_NAME already has a release"
+            exit 1
+          fi
       # One proof names every artifact, the manifest and the test report, so
       # `gh attestation verify` works on any single file.
       - name: Create one build proof for every file
