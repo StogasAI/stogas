@@ -83,7 +83,7 @@ def main(environment):
 
         # JavaScript runtimes load this environment's Wasm build from a package copy.
         js = work / "js"
-        run("wasm-bindgen", target / "wasm32-unknown-unknown/wasm/stogas_wasm.wasm", "--target", "web", "--out-dir", js / "pkg/browser", "--out-name", "stogas")
+        run("wasm-bindgen", target / "wasm32-unknown-unknown/wasm/stogas_wasm.wasm", "--target", "web", "--remove-name-section", "--out-dir", js / "pkg/browser", "--out-name", "stogas")
         for name in ("bindings", "tests"):
             shutil.copytree(ROOT / name, js / name)
         shutil.copyfile(ROOT / "package.json", js / "package.json")

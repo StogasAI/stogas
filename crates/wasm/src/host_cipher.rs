@@ -16,7 +16,7 @@ use zeroize::Zeroizing;
 
 // Every record has a fresh key. Up to this size, Rust is no slower than a
 // WebCrypto key import plus operation in Node, Chromium, Firefox or WebKit;
-// WebCrypto wins on larger records. The key is already in Wasm memory.
+// Chromium's WebCrypto wins on larger records. The key is already in Wasm memory.
 const RUST_RECORD_BYTES: usize = 256;
 
 thread_local! {

@@ -8,7 +8,69 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from artifacts import MANIFEST, canonical, digest, inventory, source_digest, tar_gz, unpack, verify_inventory, verify_source, write_json, zip_archive
+from artifacts import MANIFEST, canonical, digest, function_names, inventory, source_digest, tar_gz, unpack, verify_inventory, verify_source, without_names, write_json, zip_archive
+
+
+def wasm_section(identifier, payload):
+    return bytes([identifier, len(payload)]) + payload
+
+
+def wasm_custom(name, payload):
+    return wasm_section(0, bytes([len(name)]) + name.encode() + payload)
+
+
+def wasm_code(count):
+    """A module of `count` functions that return nothing, which Node accepts."""
+    return b"\0asm\x01\0\0\0" + wasm_section(1, b"\x01\x60\x00\x00") + wasm_section(3, bytes([count]) + b"\x00" * count) + wasm_section(10, bytes([count]) + b"\x02\x00\x0b" * count)
+
+
+WASM_PRODUCERS = wasm_custom("producers", b"\x00")
+
+
+def wasm_names(*functions):
+    """A name section with a module name, the given function names and empty local names."""
+    names = bytes([len(functions)]) + b"".join(bytes([index, len(name)]) + name.encode() for index, name in enumerate(functions))
+    return wasm_custom("name", b"\x00\x05\x04demo" + wasm_section(1, names) + b"\x02\x03\x01\x00\x00")
+
+
+def named_wasm(*functions):
+    """A module of one function for each name, with its names and DWARF, then a producers section."""
+    return wasm_code(len(functions)) + wasm_names(*functions) + wasm_custom(".debug_info", b"dwarf") + WASM_PRODUCERS
+
+
+class WasmTests(unittest.TestCase):
+    def test_removing_names_keeps_every_other_byte(self):
+        self.assertEqual(without_names(named_wasm("run")), wasm_code(1) + WASM_PRODUCERS)
+        self.assertEqual(without_names(wasm_code(2)), wasm_code(2))
+
+    def test_symbol_maps_number_each_named_function(self):
+        self.assertEqual(function_names(named_wasm("run")), b"0:run\n")
+        self.assertEqual(function_names(named_wasm("run", "stogas::verify")), b"0:run\n1:stogas::verify\n")
+        self.assertEqual(function_names(wasm_code(1)), b"")
+
+    def test_refuses_names_before_code_and_malformed_modules(self):
+        header, sections = wasm_code(1)[:8], wasm_code(1)[8:]
+        cases = {
+            "before code": header + wasm_names("run") + sections,
+            "not wasm": b"\0asm\x02\0\0\0" + sections,
+            "truncated section": wasm_code(1)[:-1],
+            "integer over 32 bits": header + b"\x01\xff\xff\xff\xff\x7f",
+            "unterminated integer": header + b"\x01\xff\xff\xff\xff\xff",
+            "custom name past its section": header + b"\x00\x01\x05",
+        }
+        for case, module in cases.items():
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                without_names(module)
+        names = {
+            "line break": named_wasm("run\n"),
+            "truncated name": wasm_code(1) + wasm_custom("name", b"\x01\x04\x01\x00\x09run"),
+            "bytes after the names": wasm_code(1) + wasm_custom("name", b"\x01\x07\x01\x00\x03run\x00"),
+            "subsection past its section": wasm_code(1) + wasm_custom("name", b"\x02\x09\x01\x00\x00"),
+            "index over 32 bits": wasm_code(1) + wasm_custom("name", b"\x01\x0a\x01\xff\xff\xff\xff\x7f\x03run"),
+        }
+        for case, module in names.items():
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                function_names(module)
 
 
 class ArtifactsTests(unittest.TestCase):

@@ -8,9 +8,9 @@ import re
 import sys
 import tarfile
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from artifacts import canonical, release_source, verify_inventory, wheel, write_json
+from artifacts import canonical, function_names, release_source, verify_inventory, wheel, without_names, write_json
 
 METADATA = {"github-attestation.jsonl", "stogas-signature.json", "qualification.json"}
 HEX = re.compile(r"[0-9a-f]{64}\Z")
@@ -21,6 +21,8 @@ PREVIEW_CASES = ("offline",)
 NPM_RUNTIMES = ("node", "node-minimum", "bun", "deno", "worker", "chromium", "firefox", "webkit")
 # In dependency order, which crates.io requires for a first upload.
 CRATES = ("stogas-sigstore", "stogas-core", "stogas", "stogas-cli")
+# Each npm package's archive name and the path of its WebAssembly inside the package.
+NPM_MODULES = (("stogas", "pkg/browser/stogas_bg.wasm"), ("stogas-sigstore", "pkg/browser/stogas_sigstore_bg.wasm"))
 # crates.io reads a crate's keywords and categories from its archive's Cargo.toml, and its
 # publish.rs refuses more than 5 of either, a keyword over 20 bytes or of another form, and a
 # category missing from https://crates.io/api/v1/category_slugs, as listed on November 5, 2026.
@@ -121,6 +123,7 @@ def check_release(directory, *, reports=True):
         raise ValueError("Release does not include every declared platform and portable package")
     check_artifact_families(names, targets, manifest["version"])
     check_crates(directory, manifest["version"])
+    check_wasm_debug(directory, manifest["version"])
     preview = reports and check_qualification(read_document(directory / "qualification.json"), manifest_sha256, targets, manifest["version"])
     return manifest, preview
 
@@ -145,9 +148,38 @@ def check_crates(directory, version):
             raise ValueError(f"crates.io would refuse {path.name}: {', '.join(refusals)}")
 
 
+def read_member(archive, name):
+    try:
+        member = archive.getmember(name)
+    except KeyError:
+        raise ValueError(f"Release archive lacks {name}") from None
+    if not member.isfile() or member.size > 64 * 1024**2:
+        raise ValueError(f"Release archive entry is not a file of at most 64 MiB: {name}")
+    return archive.extractfile(member).read()
+
+
+def check_wasm_debug(directory, version):
+    """Refuse npm WebAssembly that keeps its function names, and a debug archive that does not hold
+    exactly those modules with their names, and their symbol maps."""
+    prefix = f"stogas-v{version}-wasm32-debug"
+    modules = [(package, path, PurePosixPath(path).name) for package, path in NPM_MODULES]
+    expected = sorted([f"{prefix}/LICENSE", *(f"{prefix}/{name}{suffix}" for *_, name in modules for suffix in ("", ".symbols"))])
+    with tarfile.open(Path(directory) / f"{prefix}.tar.gz") as debug:
+        if sorted(member.name for member in debug.getmembers()) != expected:
+            raise ValueError(f"{prefix}.tar.gz must hold exactly {', '.join(expected)}")
+        for package, path, name in modules:
+            with tarfile.open(Path(directory) / f"{package}-{version}.tgz") as archive:
+                shipped = read_member(archive, f"package/{path}")
+            named = read_member(debug, f"{prefix}/{name}")
+            if named == shipped or without_names(named) != shipped:
+                raise ValueError(f"{prefix}.tar.gz must hold the {name} of {package}-{version}.tgz with the function names that it leaves out")
+            if read_member(debug, f"{prefix}/{name}.symbols") != function_names(named):
+                raise ValueError(f"{prefix}.tar.gz holds a symbol map that differs from the names in {name}")
+
+
 def check_artifact_families(names, targets, version):
     expected = {
-        f"stogas-{version}.tgz", f"stogas-sigstore-{version}.tgz",
+        f"stogas-{version}.tgz", f"stogas-sigstore-{version}.tgz", f"stogas-v{version}-wasm32-debug.tar.gz",
         *[f"{crate}-{version}.crate" for crate in CRATES],
         f"stogas-go-v{version}.tar.gz", f"stogas-swift-v{version}.tar.gz",
         f"stogas-xcframework-v{version}.zip",
