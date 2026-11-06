@@ -535,27 +535,27 @@ jobs:
           cargo install wasm-bindgen-cli --version =0.2.129 --locked
           cargo build --locked --profile wasm --package stogas-sigstore-wasm --package stogas-wasm --target wasm32-unknown-unknown
           wasm-bindgen target/wasm32-unknown-unknown/wasm/stogas_sigstore_wasm.wasm \
-            --target web \
+            --target web --remove-name-section \
             --out-dir target/sigstore-browser \
             --out-name stogas_sigstore
           wasm-bindgen target/wasm32-unknown-unknown/wasm/stogas_wasm.wasm \
-            --target web \
+            --target web --remove-name-section \
             --out-dir pkg/browser \
             --out-name stogas
           wasm-bindgen target/wasm32-unknown-unknown/wasm/stogas_sigstore_wasm.wasm \
-            --target web \
+            --target web --remove-name-section \
             --out-dir packages/sigstore/pkg/browser \
             --out-name stogas_sigstore
           cargo build --locked --profile wasm --package stogas-wasm --features staging \
             --target wasm32-unknown-unknown --target-dir target/wasm-staging
           wasm-bindgen target/wasm-staging/wasm32-unknown-unknown/wasm/stogas_wasm.wasm \
-            --target web \
+            --target web --remove-name-section \
             --out-dir target/browser \
             --out-name stogas
           cargo build --locked --profile wasm --package stogas-wasm --features staging,operator \
             --target wasm32-unknown-unknown --target-dir target/wasm-operator
           wasm-bindgen target/wasm-operator/wasm32-unknown-unknown/wasm/stogas_wasm.wasm \
-            --target web \
+            --target web --remove-name-section \
             --out-dir target/operator \
             --out-name stogas
           # The browser load page's build; the next step builds the other Wasm tests.

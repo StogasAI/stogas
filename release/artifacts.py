@@ -229,6 +229,88 @@ def inventory(directory, expected):
     return files
 
 
+def leb128(data, offset):
+    """Read the unsigned 32-bit LEB128 integer at `offset`; return it and the offset after it."""
+    value = 0
+    for index in range(5):
+        if offset + index >= len(data):
+            raise ValueError("Truncated WebAssembly integer")
+        byte = data[offset + index]
+        value |= (byte & 0x7F) << (7 * index)
+        if not byte & 0x80:
+            if value > 0xFFFFFFFF:
+                raise ValueError("WebAssembly integer exceeds 32 bits")
+            return value, offset + index + 1
+    raise ValueError("WebAssembly integer exceeds 32 bits")
+
+
+def wasm_sections(module):
+    """Each section of a WebAssembly module as (id, custom section name or None, start, payload
+    start, end), with offsets into the module."""
+    if module[:8] != b"\0asm\x01\0\0\0":
+        raise ValueError("Not a WebAssembly 1.0 module")
+    sections, offset = [], 8
+    while offset < len(module):
+        identifier = module[offset]
+        size, payload = leb128(module, offset + 1)
+        end = payload + size
+        if end > len(module):
+            raise ValueError("Truncated WebAssembly section")
+        name = None
+        if identifier == 0:
+            length, start = leb128(module, payload)
+            if start + length > end:
+                raise ValueError("Malformed WebAssembly custom section")
+            name, payload = module[start:start + length].decode(), start + length
+        sections.append((identifier, name, offset, payload, end))
+        offset = end
+    return sections
+
+
+def without_names(module):
+    """The module without its function names and DWARF debug information. Stack traces and
+    debuggers read only those sections, which follow the code, so every function keeps its index
+    and byte offset and the names still describe the result."""
+    kept, removed = [module[:8]], False
+    for identifier, name, start, _, end in wasm_sections(module):
+        if name == "name" or (name or "").startswith(".debug"):
+            removed = True
+        elif removed and identifier:
+            raise ValueError("WebAssembly debug information precedes the module's code")
+        else:
+            kept.append(module[start:end])
+    return b"".join(kept)
+
+
+def function_names(module):
+    """The function names of a module's name section as the `index:name` lines that Emscripten's
+    `--emit-symbol-map` writes, which name the `wasm-function[index]` frames of a stack trace."""
+    lines = []
+    for _, name, _, offset, end in wasm_sections(module):
+        if name != "name":
+            continue
+        while offset < end:
+            kind = module[offset]
+            size, offset = leb128(module, offset + 1)
+            stop = offset + size
+            if stop > end:
+                raise ValueError("Truncated WebAssembly name subsection")
+            if kind == 1:
+                count, cursor = leb128(module, offset)
+                for _ in range(count):
+                    index, cursor = leb128(module, cursor)
+                    length, cursor = leb128(module, cursor)
+                    text = module[cursor:cursor + length].decode()
+                    if "\n" in text:
+                        raise ValueError("WebAssembly function name holds a line break")
+                    lines.append(f"{index}:{text}\n")
+                    cursor += length
+                if cursor != stop:
+                    raise ValueError("Malformed WebAssembly function names")
+            offset = stop
+    return "".join(lines).encode()
+
+
 def verify_inventory(directory, manifest, metadata=()):
     expected = manifest["artifacts"]
     names = [entry["name"] for entry in expected]

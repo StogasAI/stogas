@@ -77,9 +77,14 @@ strip = "none"
 # Web pages download the WebAssembly, so it is built for size, apart from the arithmetic that
 # verification and setup spend their time in. Building it all for size made evidence checks 40%
 # slower. `release/test_publish.py` checks that each crate named here is still a dependency.
+# Unlike `release`, it keeps function names and the `target_features` section, from which
+# wasm-bindgen learns that it may use reference types and multi-value returns. Builds that ship
+# leave the names out with `wasm-bindgen --remove-name-section`; the release keeps them in its
+# WebAssembly debug archive.
 [profile.wasm]
 inherits = "release"
 opt-level = "z"
+strip = "debuginfo"
 
 [profile.wasm.package]
 aes = { opt-level = 3 }
@@ -101,9 +106,3 @@ polyval = { opt-level = 3 }
 primeorder = { opt-level = 3 }
 rsa = { opt-level = 3 }
 sha2 = { opt-level = 3 }
-
-# The npm packages' WebAssembly keeps function names, as `dist` does for native packages.
-[profile.wasm-dist]
-inherits = "wasm"
-debug = "line-tables-only"
-strip = "none"

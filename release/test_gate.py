@@ -7,8 +7,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from artifacts import write_json
-from gate import CASES, CRATES, NPM_RUNTIMES, check_artifact_families, check_crates, check_qualification, combine_reports, python_version, read_document
+from artifacts import function_names, without_names, write_json
+from gate import CASES, CRATES, NPM_RUNTIMES, check_artifact_families, check_crates, check_qualification, check_wasm_debug, combine_reports, python_version, read_document
+from test_artifacts import named_wasm
 
 TARGETS = {
     "linux-amd64": {"os": "linux", "packages": ["native"]},
@@ -48,6 +49,43 @@ class CrateTests(unittest.TestCase):
         pack("stogas-core", ["web-programming::wasm"])
         with self.assertRaisesRegex(ValueError, "^crates.io would refuse stogas-core-1.2.3.crate: category 'web-programming::wasm'$"):
             check_crates(directory, "1.2.3")
+
+
+class WasmDebugTests(unittest.TestCase):
+    PREFIX = "stogas-v1.2.3-wasm32-debug"
+
+    def check(self, modules, debug):
+        """Check a release whose npm packages hold `modules` and whose debug archive holds `debug`."""
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-gate-test-")))
+        for archive, members in (("stogas-1.2.3.tgz", {"package/pkg/browser/stogas_bg.wasm": modules[0]}), ("stogas-sigstore-1.2.3.tgz", {"package/pkg/browser/stogas_sigstore_bg.wasm": modules[1]}), (f"{self.PREFIX}.tar.gz", debug)):
+            with tarfile.open(directory / archive, "w:gz") as output:
+                for name, data in members.items():
+                    member = tarfile.TarInfo(name)
+                    member.size = len(data)
+                    output.addfile(member, io.BytesIO(data))
+        check_wasm_debug(directory, "1.2.3")
+
+    def debug(self, *named):
+        files = {"LICENSE": b"license"}
+        for name, module in zip(("stogas_bg.wasm", "stogas_sigstore_bg.wasm"), named):
+            files |= {name: module, f"{name}.symbols": function_names(module)}
+        return {f"{self.PREFIX}/{name}": data for name, data in files.items()}
+
+    def test_npm_ships_each_named_module_of_the_debug_archive_without_names(self):
+        named = [named_wasm("run"), named_wasm("run", "verify")]
+        shipped = [without_names(module) for module in named]
+        self.check(shipped, self.debug(*named))
+        cases = {
+            "npm keeps the names": (named, self.debug(*named)),
+            "the debug archive has no names": (shipped, self.debug(*shipped)),
+            "another module's names": (shipped, self.debug(named[1], named[0])),
+            "a changed symbol map": (shipped, self.debug(*named) | {f"{self.PREFIX}/stogas_bg.wasm.symbols": b"0:other\n"}),
+            "a missing symbol map": (shipped, {name: data for name, data in self.debug(*named).items() if not name.endswith("stogas_bg.wasm.symbols")}),
+            "an extra file": (shipped, self.debug(*named) | {f"{self.PREFIX}/notes.txt": b"notes"}),
+        }
+        for case, (modules, debug) in cases.items():
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                self.check(modules, debug)
 
 
 class QualificationTests(unittest.TestCase):
@@ -143,7 +181,7 @@ class ArtifactFamilyTests(unittest.TestCase):
         "android-arm64": {"os": "android", "arch": "arm64", "packages": ["native", "android"]},
     }
     NAMES = frozenset({
-        "stogas-1.2.3-rc.1.tgz", "stogas-sigstore-1.2.3-rc.1.tgz", "stogas-source-v1.2.3-rc.1.tar.gz",
+        "stogas-1.2.3-rc.1.tgz", "stogas-sigstore-1.2.3-rc.1.tgz", "stogas-v1.2.3-rc.1-wasm32-debug.tar.gz", "stogas-source-v1.2.3-rc.1.tar.gz",
         "stogas-sigstore-1.2.3-rc.1.crate", "stogas-core-1.2.3-rc.1.crate", "stogas-1.2.3-rc.1.crate", "stogas-cli-1.2.3-rc.1.crate",
         "stogas-go-v1.2.3-rc.1.tar.gz", "stogas-swift-v1.2.3-rc.1.tar.gz", "stogas-xcframework-v1.2.3-rc.1.zip", "Stogas.1.2.3-rc.1.nupkg",
         "stogas-1.2.3-rc.1.jar", "stogas-1.2.3-rc.1.pom", "stogas-1.2.3-rc.1-sources.jar", "stogas-1.2.3-rc.1-javadoc.jar",
