@@ -10,7 +10,7 @@ use http::{HeaderMap, HeaderName, HeaderValue, Method};
 use serde_json::{Map, Value};
 use std::{
     collections::HashSet,
-    io::{IsTerminal as _, Write as _},
+    io::{IsTerminal as _, Write},
     path::PathBuf,
 };
 use stogas::network::Network;
@@ -55,7 +55,7 @@ pub struct Args {
     #[arg(long, requires = "paginate")]
     slurp: bool,
     /// Print no response body.
-    #[arg(short = 'q', long)]
+    #[arg(long)]
     silent: bool,
     /// The organization that {org} names. Without it, your personal organization.
     #[arg(long, env = "STOGAS_ORG", value_parser = topup::parse_organization)]
@@ -65,36 +65,55 @@ pub struct Args {
 pub async fn run(args: Args, network: &Network) -> Result<()> {
     let method = request_method(&args)?;
     let dashboard = account::signed_in(network).await?;
-    let request = prepare(&args, &method, &dashboard).await?;
+    let Request {
+        path,
+        query,
+        headers,
+        body,
+    } = prepare(&args, &method, &dashboard).await?;
     let mut printer = Printer {
+        out: std::io::stdout(),
         terminal: std::io::stdout().is_terminal(),
         include: args.include,
         silent: args.silent,
         slurp: args.slurp.then(Vec::new),
     };
-    let Request {
-        path,
-        mut query,
-        headers,
-        body,
-    } = request;
+    let (method, headers, body, dashboard) = (&method, &headers, body.as_ref(), &dashboard);
+    follow(
+        args.paginate,
+        &path,
+        query,
+        &mut printer,
+        move |target| async move {
+            dashboard
+                .exchange(method.clone(), &target, headers.clone(), body)
+                .await
+        },
+    )
+    .await
+}
+
+/// Sends the request through `exchange` and prints the reply. With `paginate`, it then asks for
+/// each next page until the last one.
+async fn follow<W: Write, F: Future<Output = Result<Reply>>>(
+    paginate: bool,
+    path: &str,
+    mut query: Vec<(String, String)>,
+    printer: &mut Printer<W>,
+    mut exchange: impl FnMut(String) -> F,
+) -> Result<()> {
     let mut cursors = HashSet::new();
     loop {
-        let reply = dashboard
-            .exchange(
-                method.clone(),
-                &with_query(&path, &query),
-                headers.clone(),
-                body.as_ref(),
-            )
-            .await?;
+        let reply = exchange(with_query(path, &query)).await?;
         printer.status(&reply)?;
         if !reply.status.is_success() {
-            printer.finish()?;
+            // A --slurp array prints only once every page arrived, so a partial list never
+            // looks whole.
+            printer.slurp = None;
             printer.error_body(&reply.body)?;
             return Err(dashboard::api_error(reply.status, &reply.body).into());
         }
-        if !args.paginate {
+        if !paginate {
             return printer.body(&reply.body);
         }
         let page: Value =
@@ -156,16 +175,18 @@ async fn prepare(args: &Args, method: &Method, dashboard: &Dashboard) -> Result<
         let (name, value) = parse_header(spec)?;
         headers.append(name, value);
     }
-    let reads_stdin = args
-        .input
-        .as_deref()
-        .is_some_and(|path| path.as_os_str() == "-");
-    if reads_stdin
-        && fields.iter().any(
-            |field| matches!(&field.value, Some(FieldValue::File(path)) if path.as_os_str() == "-"),
-        )
-    {
-        bail!("standard input can give the body or one field, not both");
+    // Standard input can be read once.
+    let stdin_readers = fields
+        .iter()
+        .filter_map(|field| match &field.value {
+            Some(FieldValue::File(path)) => Some(path),
+            _ => None,
+        })
+        .chain(&args.input)
+        .filter(|path| path.as_os_str() == "-")
+        .count();
+    if stdin_readers > 1 {
+        bail!("only one field or the body can read standard input");
     }
     let names_organization = path.contains(ORGANIZATION)
         || fields.iter().any(
@@ -185,7 +206,7 @@ async fn prepare(args: &Args, method: &Method, dashboard: &Dashboard) -> Result<
 
     let (path, mut query) = api_path(&substitute(path))?;
     let in_query = *method == Method::GET || args.input.is_some();
-    let mut object = Value::Null;
+    let mut object = Map::new();
     for field in fields {
         let value = match field.value {
             None => None,
@@ -219,7 +240,7 @@ async fn prepare(args: &Args, method: &Method, dashboard: &Dashboard) -> Result<
             )
             .context("the request body is not JSON")?,
         ),
-        None => (!object.is_null()).then_some(object),
+        None => (!object.is_empty()).then_some(Value::Object(object)),
     };
     Ok(Request {
         path,
@@ -374,56 +395,63 @@ fn query_text(value: &Value) -> String {
     }
 }
 
-/// Puts `value` at `parts` in `slot`. `[]` adds to a list, and `[][key]` fills the list's last
-/// object until it already has that key, as `gh api` does.
-fn insert(slot: &mut Value, parts: &[Part], value: Option<Value>, key: &str) -> Result<()> {
+/// Puts `value` at `parts` in `object`. `[]` adds to a list, and `[][key]` fills the list's last
+/// object until it already has that key, as `gh api` does. A key that another field set, even to
+/// null, conflicts.
+fn insert(
+    object: &mut Map<String, Value>,
+    parts: &[Part],
+    value: Option<Value>,
+    key: &str,
+) -> Result<()> {
     let conflict = || anyhow::anyhow!("{} conflicts with another field", dashboard::printable(key));
-    match parts.split_first() {
+    // parse_key starts every field and every list item with a name.
+    let Some((Part::Key(name), rest)) = parts.split_first() else {
+        return Err(conflict());
+    };
+    match rest.split_first() {
         None => {
-            if !slot.is_null() {
+            if object.contains_key(name) {
                 return Err(conflict());
             }
-            *slot = value.ok_or_else(|| {
+            let value = value.ok_or_else(|| {
                 anyhow::anyhow!("{}: a field is key=value", dashboard::printable(key))
             })?;
+            object.insert(name.clone(), value);
             Ok(())
         }
-        Some((Part::Key(name), rest)) => {
-            if slot.is_null() {
-                *slot = Value::Object(Map::new());
-            }
-            let Value::Object(object) = slot else {
+        Some((Part::Key(_), _)) => {
+            let Value::Object(inner) = object
+                .entry(name.clone())
+                .or_insert_with(|| Value::Object(Map::new()))
+            else {
                 return Err(conflict());
             };
-            insert(
-                object.entry(name.clone()).or_insert(Value::Null),
-                rest,
-                value,
-                key,
-            )
+            insert(inner, rest, value, key)
         }
-        Some((Part::Append, rest)) => {
-            if slot.is_null() {
-                *slot = Value::Array(Vec::new());
-            }
-            let Value::Array(items) = slot else {
+        Some((Part::Append, after)) => {
+            let Value::Array(items) = object
+                .entry(name.clone())
+                .or_insert_with(|| Value::Array(Vec::new()))
+            else {
                 return Err(conflict());
             };
-            match rest.first() {
+            match after.first() {
                 None => {
                     items.extend(value);
                     Ok(())
                 }
                 Some(Part::Key(next)) => {
-                    let continues = matches!(
+                    if !matches!(
                         items.last(),
-                        Some(Value::Object(object)) if !object.contains_key(next)
-                    );
-                    if !continues {
+                        Some(Value::Object(last)) if !last.contains_key(next)
+                    ) {
                         items.push(Value::Object(Map::new()));
                     }
-                    let last = items.last_mut().ok_or_else(conflict)?;
-                    insert(last, rest, value, key)
+                    let Some(Value::Object(last)) = items.last_mut() else {
+                        return Err(conflict());
+                    };
+                    insert(last, after, value, key)
                 }
                 Some(Part::Append) => bail!(
                     "{}: a list of lists needs --input",
@@ -456,7 +484,8 @@ fn next_cursor(page: &Value) -> Option<&str> {
         .filter(|cursor| !cursor.is_empty())
 }
 
-struct Printer {
+struct Printer<W> {
+    out: W,
     terminal: bool,
     include: bool,
     silent: bool,
@@ -464,43 +493,41 @@ struct Printer {
     slurp: Option<Vec<Value>>,
 }
 
-impl Printer {
-    fn status(&self, reply: &Reply) -> Result<()> {
+impl<W: Write> Printer<W> {
+    fn status(&mut self, reply: &Reply) -> Result<()> {
         if !self.include {
             return Ok(());
         }
-        let mut stdout = std::io::stdout().lock();
-        writeln!(stdout, "HTTP {}", reply.status)?;
+        writeln!(self.out, "HTTP {}", reply.status)?;
         for (name, value) in &reply.headers {
             writeln!(
-                stdout,
+                self.out,
                 "{name}: {}",
                 dashboard::printable(&String::from_utf8_lossy(value.as_bytes()))
             )?;
         }
-        writeln!(stdout)?;
+        writeln!(self.out)?;
         Ok(())
     }
 
     /// A terminal gets formatted JSON with control characters made inert; anything else gets the
     /// exact bytes.
-    fn body(&self, body: &[u8]) -> Result<()> {
+    fn body(&mut self, body: &[u8]) -> Result<()> {
         if self.silent || body.is_empty() {
             return Ok(());
         }
-        let mut stdout = std::io::stdout().lock();
         if !self.terminal {
-            stdout.write_all(body)?;
+            self.out.write_all(body)?;
             return Ok(());
         }
         let value: Value = serde_json::from_slice(body)
             .context("the response is not JSON; send it to a file instead")?;
-        print_value(&mut stdout, &value)
+        print_value(&mut self.out, &value)
     }
 
     /// A refusal's body. A terminal shows it only when it is JSON, since the error names the
     /// status either way.
-    fn error_body(&self, body: &[u8]) -> Result<()> {
+    fn error_body(&mut self, body: &[u8]) -> Result<()> {
         if self.terminal && serde_json::from_slice::<Value>(body).is_err() {
             return Ok(());
         }
@@ -515,7 +542,7 @@ impl Printer {
         }
         self.body(body)?;
         if !self.terminal && !self.silent && !body.ends_with(b"\n") {
-            std::io::stdout().lock().write_all(b"\n")?;
+            self.out.write_all(b"\n")?;
         }
         Ok(())
     }
@@ -528,18 +555,17 @@ impl Printer {
             return Ok(());
         }
         let pages = Value::Array(pages);
-        let mut stdout = std::io::stdout().lock();
         if self.terminal {
-            print_value(&mut stdout, &pages)
+            print_value(&mut self.out, &pages)
         } else {
-            serde_json::to_writer(&mut stdout, &pages)?;
-            stdout.write_all(b"\n")?;
+            serde_json::to_writer(&mut self.out, &pages)?;
+            self.out.write_all(b"\n")?;
             Ok(())
         }
     }
 }
 
-fn print_value(stdout: &mut impl std::io::Write, value: &Value) -> Result<()> {
+fn print_value(stdout: &mut impl Write, value: &Value) -> Result<()> {
     for line in serde_json::to_string_pretty(value)?.lines() {
         writeln!(stdout, "{}", dashboard::printable(line))?;
     }
@@ -668,7 +694,7 @@ mod tests {
 
     #[test]
     fn builds_nested_objects_and_lists_like_gh_api() {
-        let mut body = Value::Null;
+        let mut body = Map::new();
         for (key, value) in [
             ("name", Some(json!("Build bot"))),
             ("limits[requests]", Some(json!(10))),
@@ -682,7 +708,7 @@ mod tests {
             insert(&mut body, &parse_key(key).unwrap(), value, key).unwrap();
         }
         assert_eq!(
-            body,
+            Value::Object(body.clone()),
             json!({
                 "name": "Build bot",
                 "limits": { "requests": 10, "models": ["gpt-5.6-sol", "claude-fable-5-1"] },
@@ -703,6 +729,37 @@ mod tests {
                 "{key}"
             );
         }
+    }
+
+    #[test]
+    fn a_key_set_to_null_conflicts_in_either_order() {
+        for pair in [
+            [("limit", Value::Null), ("limit", json!(20))],
+            [("limit", json!(20)), ("limit", Value::Null)],
+            [("a", Value::Null), ("a[b]", json!(1))],
+            [("a[b]", json!(1)), ("a", Value::Null)],
+            [("a", Value::Null), ("a[]", json!(1))],
+        ] {
+            let mut body = Map::new();
+            let [(first, one), (second, two)] = pair;
+            insert(&mut body, &parse_key(first).unwrap(), Some(one), first).unwrap();
+            assert!(
+                insert(&mut body, &parse_key(second).unwrap(), Some(two), second).is_err(),
+                "{first} then {second}"
+            );
+        }
+        // A list item that has the key already starts the next item, as with any other value.
+        let mut body = Map::new();
+        for (key, value) in [
+            ("rules[][name]", Value::Null),
+            ("rules[][name]", json!("b")),
+        ] {
+            insert(&mut body, &parse_key(key).unwrap(), Some(value), key).unwrap();
+        }
+        assert_eq!(
+            Value::Object(body),
+            json!({ "rules": [{ "name": null }, { "name": "b" }] })
+        );
     }
 
     #[test]
@@ -737,5 +794,106 @@ mod tests {
         );
         assert_eq!(next_cursor(&json!({ "items": [], "nextCursor": "" })), None);
         assert_eq!(next_cursor(&json!([1, 2])), None);
+    }
+
+    /// Runs `follow` against `pages`, which answer the requests in order, and returns the paths
+    /// that it asked for, what it printed and its result.
+    async fn follow_pages(
+        paginate: bool,
+        slurp: bool,
+        pages: &[(u16, Value)],
+    ) -> (Vec<String>, String, Result<()>) {
+        let mut printer = Printer {
+            out: Vec::new(),
+            terminal: false,
+            include: false,
+            silent: false,
+            slurp: slurp.then(Vec::new),
+        };
+        let mut asked = Vec::new();
+        let mut replies = pages.iter();
+        let query = vec![("limit".to_owned(), "2".to_owned())];
+        let result = follow(paginate, "/api/x/keys", query, &mut printer, |target| {
+            asked.push(target);
+            let (status, body) = replies.next().expect("a request past the last page");
+            let reply = Reply {
+                status: http::StatusCode::from_u16(*status).unwrap(),
+                headers: HeaderMap::new(),
+                body: serde_json::to_vec(body).unwrap(),
+            };
+            async move { Ok(reply) }
+        })
+        .await;
+        (asked, String::from_utf8(printer.out).unwrap(), result)
+    }
+
+    #[tokio::test]
+    async fn follows_each_next_cursor_until_the_last_page() {
+        let served = [
+            (200, json!({ "items": [1, 2], "nextCursor": "c2" })),
+            (200, json!({ "items": [3, 4], "nextCursor": "c3" })),
+            (200, json!({ "items": [5], "nextCursor": null })),
+        ];
+        let pages: Vec<Value> = served.iter().map(|(_, page)| page.clone()).collect();
+        let (asked, printed, result) = follow_pages(true, true, &served).await;
+        result.unwrap();
+        assert_eq!(
+            asked,
+            [
+                "/api/x/keys?limit=2",
+                "/api/x/keys?limit=2&cursor=c2",
+                "/api/x/keys?limit=2&cursor=c3"
+            ]
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&printed).unwrap(),
+            Value::Array(pages.clone())
+        );
+        // Without --slurp, each page prints as its own line as it arrives.
+        let (_, printed, result) = follow_pages(true, false, &served).await;
+        result.unwrap();
+        let lines: Vec<Value> = printed
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines, pages);
+        // Without --paginate, the first page is the whole answer.
+        let (asked, printed, result) = follow_pages(false, false, &served).await;
+        result.unwrap();
+        assert_eq!(asked, ["/api/x/keys?limit=2"]);
+        assert_eq!(serde_json::from_str::<Value>(&printed).unwrap(), pages[0]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_page_or_a_repeated_cursor_prints_no_slurp_array() {
+        let refused = json!({ "code": "UNAUTHORIZED", "message": "Your token expired." });
+        let (asked, printed, result) = follow_pages(
+            true,
+            true,
+            &[
+                (200, json!({ "items": [1], "nextCursor": "c2" })),
+                (401, refused.clone()),
+            ],
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(asked.len(), 2);
+        assert_eq!(serde_json::from_str::<Value>(&printed).unwrap(), refused);
+
+        let (asked, printed, result) = follow_pages(
+            true,
+            true,
+            &[
+                (200, json!({ "items": [1], "nextCursor": "c2" })),
+                (200, json!({ "items": [2], "nextCursor": "c2" })),
+            ],
+        )
+        .await;
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "the API sent a page cursor twice"
+        );
+        assert_eq!(asked.len(), 2);
+        assert_eq!(printed, "");
     }
 }
