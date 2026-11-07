@@ -208,14 +208,10 @@ async fn checks_an_encrypted_credential(dashboard: &Dashboard) {
         .unwrap();
     let registration: Value = serde_json::from_slice(&std::fs::read(&sealed).unwrap()).unwrap();
 
-    let policy = policy::Remote::new(dashboard, &organization, "organization", &organization);
-    let revision = policy.read().await.unwrap().revision;
     let key_id = customer_encryption::read_key(&key).unwrap().id;
-    policy
-        .save(
-            &json!({ "encryption": { "keys": { "live": key_id } } }),
-            revision,
-        )
+    let registration_path = format!("/api/{organization}/encryption-keys/{key_id}");
+    let _: Value = dashboard
+        .put(&registration_path, &json!({ "label": "live" }))
         .await
         .unwrap();
     let created: Value = dashboard
@@ -264,8 +260,10 @@ async fn checks_an_encrypted_credential(dashboard: &Dashboard) {
         )
         .await
         .unwrap();
-    let revision = policy.read().await.unwrap().revision;
-    policy.save(&Value::Null, revision).await.unwrap();
+    dashboard
+        .send(Method::DELETE, &registration_path, None)
+        .await
+        .unwrap();
     std::fs::remove_dir_all(&directory).unwrap();
 }
 

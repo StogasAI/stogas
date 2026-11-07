@@ -67,7 +67,7 @@ fn key_id(root: &[u8]) -> String {
 }
 
 /// An organization key: the unpadded base64url text that its file holds, and its public identifier,
-/// which the organization policy registers under a label.
+/// which the organization registers under a label.
 pub struct OrganizationKey {
     pub encoded: Zeroizing<String>,
     pub id: String,
