@@ -11,7 +11,7 @@ use anyhow::{Context as _, Result, bail};
 use chrono::{DateTime, Utc};
 use http::Method;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::{
     env,
     io::{self, BufRead as _},
@@ -141,7 +141,7 @@ pub async fn register(dashboard: &Dashboard, machine_name: &str) -> Result<Regis
     struct Record {
         expires_at: Option<String>,
     }
-    let altcha = proof_of_work(dashboard).await?;
+    let altcha = altcha::proof_of_work(dashboard).await?;
     let account: Account = dashboard
         .post(
             "/api/auth/register",
@@ -170,12 +170,6 @@ fn seconds_until(time: &str) -> Result<u64> {
         .context("the dashboard sent an unexpected expiry date")?;
     let left = time.signed_duration_since(DateTime::<Utc>::from(SystemTime::now()));
     Ok(u64::try_from(left.num_seconds()).unwrap_or_default())
-}
-
-/// Solves a challenge, whose work the dashboard raises on its own for busy senders.
-pub async fn proof_of_work(dashboard: &Dashboard) -> Result<String> {
-    let challenge: Value = dashboard.get("/api/auth/challenge").await?;
-    tokio::task::spawn_blocking(move || altcha::solve(&challenge)).await?
 }
 
 /// How long a token works, in whole days as the dashboard offers them, or hours under a day.

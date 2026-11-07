@@ -3,6 +3,7 @@
 //! A challenge names a key prefix that PBKDF2 derives from its nonce and one secret
 //! counter. The solver tries counters from zero upward on every core.
 
+use crate::dashboard::Dashboard;
 use anyhow::{Context as _, Result, bail};
 use aws_lc_rs::pbkdf2;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -16,6 +17,12 @@ use std::{
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+/// Fetches a challenge and solves it. The dashboard raises its work on its own for busy senders.
+pub async fn proof_of_work(dashboard: &Dashboard) -> Result<String> {
+    let challenge: Value = dashboard.get("/api/auth/challenge").await?;
+    tokio::task::spawn_blocking(move || solve(&challenge)).await?
+}
 
 /// Returns the value the dashboard expects: the challenge and its solution as base64 JSON.
 pub fn solve(challenge: &Value) -> Result<String> {
