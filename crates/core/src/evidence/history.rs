@@ -4,7 +4,11 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use super::{Error, Verifier, boot::VerifiedBoot};
+use super::{
+    Error, Verifier,
+    boot::{BOOT_PUBLICATION_SCHEMA, BOOT_SCHEMA, VerifiedBoot},
+};
+use crate::format;
 
 /// Maximum encoded boot archive size, including its inclusion proof.
 pub const MAX_ARCHIVE_BYTES: usize = 64 * 1024;
@@ -166,6 +170,17 @@ mod tests {
             );
             assert!(verifier.current().is_none());
         }
+        for (pointer, schema) in [
+            ("/document/schema", "stogas.node-registration.v2"),
+            ("/document/boot/schema", "stogas.node-boot.v2"),
+        ] {
+            let mut changed = archive.clone();
+            *changed.pointer_mut(pointer).unwrap() = json!(schema);
+            let error = verifier
+                .verify_boot_archive(&bytes(&changed), &bytes(&evidence), now)
+                .unwrap_err();
+            assert_eq!(error.code(), "newer_format", "{pointer}");
+        }
         let mut changed = evidence.clone();
         changed["document"]["gateways"] = json!([]);
         assert!(
@@ -209,7 +224,9 @@ impl Verifier {
         evidence: &[u8],
         now_unix_ms: i64,
     ) -> Result<Value, Error> {
-        let at = logged_time(&super::parse_json(evidence)?["inclusion"], now_unix_ms)?;
+        let value = super::parse_json(evidence)?;
+        crate::authority::check_formats(&value["document"])?;
+        let at = logged_time(&value["inclusion"], now_unix_ms)?;
         let snapshot = self.historical_verifier()?.refresh(evidence, at)?;
         if snapshot
             .evidence()
@@ -247,14 +264,14 @@ impl Verifier {
         if archive.len() > MAX_ARCHIVE_BYTES || evidence.len() > crate::MAX_INPUT_BYTES {
             return Err(Error::TooLarge);
         }
-        let archive: Archive = serde_json::from_value(
-            crate::strict_json::from_slice(archive).map_err(super::invalid)?,
-        )
-        .map_err(super::invalid)?;
+        let archive = crate::strict_json::from_slice(archive).map_err(super::invalid)?;
+        format::check(&archive["document"], BOOT_PUBLICATION_SCHEMA)?;
+        format::check(&archive["document"]["boot"], BOOT_SCHEMA)?;
+        let archive: Archive = serde_json::from_value(archive).map_err(super::invalid)?;
         // verify_logged_boot authenticates this exact time before returning anything.
         let at = logged_time(&archive.inclusion, now_unix_ms)?;
         let snapshot = self.historical_verifier()?.refresh(evidence, at)?;
-        if archive.document.schema != super::boot::BOOT_PUBLICATION_SCHEMA
+        if archive.document.schema != BOOT_PUBLICATION_SCHEMA
             || snapshot.evidence_sha256() != archive.document.evidence_sha256
         {
             return Err(super::invalid("boot archive evidence identity differs"));

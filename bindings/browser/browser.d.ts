@@ -22,6 +22,8 @@ export interface StogasEvidenceSnapshot {
 	readonly evidence: unknown | null;
 	readonly evidenceURL: string | null;
 	readonly error: string | null;
+	/** The failed refresh's code from the SDK's error codes, such as `newer_format`. */
+	readonly errorCode: string | null;
 	readonly fetchedAtUnixMs: number | null;
 	readonly status: 'idle' | 'refreshing' | 'ready' | 'error';
 	/** Time spent waiting for origins, from the start of acquisition until this delivery,

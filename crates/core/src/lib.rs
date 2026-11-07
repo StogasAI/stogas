@@ -8,6 +8,7 @@ pub mod attestation;
 pub mod authority;
 pub mod channel;
 pub mod evidence;
+pub mod format;
 #[cfg(feature = "gateway")]
 pub mod gateway;
 #[cfg(feature = "snp")]
@@ -49,6 +50,10 @@ use x509_parser::{
 
 /// Maximum serialized evidence accepted by public adapters.
 pub const MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
+// The formats of the release documents that evidence lists.
+pub const GATEWAY_RELEASE_SCHEMA: &str = "stogas.gateway.release.v1";
+pub const CATALOG_RELEASE_SCHEMA: &str = "stogas.catalog.release.v2";
+pub const LAUNCH_POLICIES_SCHEMA: &str = "stogas.snp-launch-policies.v1";
 const MAX_NODES: usize = 1_024;
 /// Release sequences stay exact in every JSON consumer.
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -605,7 +610,7 @@ fn parse_u64_hex(value: &str, label: &str) -> Result<u64, Error> {
 const CATALOG_ROOT_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 fn validate_catalog_shape(manifest: &CatalogReleaseManifest) -> Result<(), Error> {
-    if manifest.schema != "stogas.catalog.release.v2"
+    if manifest.schema != CATALOG_RELEASE_SCHEMA
         || manifest.minimum_gateway_sequence == 0
         || manifest.minimum_gateway_sequence > MAX_SAFE_INTEGER
         || manifest.sequence == 0
@@ -657,7 +662,7 @@ fn validate_gateway_release_manifest(manifest: &GatewayReleaseManifest) -> Resul
 fn gateway_release_manifest_shape_is_valid(manifest: &GatewayReleaseManifest) -> bool {
     let sev_snp = &manifest.sev_snp;
     let build = &manifest.build;
-    manifest.schema == "stogas.gateway.release.v1"
+    manifest.schema == GATEWAY_RELEASE_SCHEMA
         && manifest.source.repository == "https://github.com/StogasAI/gateway"
         && gateway_release_sequence(&manifest.source.tag) == Some(manifest.sequence)
         && manifest.minimum_catalog_sequence > 0
@@ -738,7 +743,7 @@ fn validate_gateway_release_build(build: &GatewayReleaseBuild) -> Result<(), Err
 }
 
 fn validate_gateway_launch_policies(policies: &LaunchPolicies) -> Result<(), Error> {
-    if policies.schema != "stogas.snp-launch-policies.v1" || policies.policies.is_empty() {
+    if policies.schema != LAUNCH_POLICIES_SCHEMA || policies.policies.is_empty() {
         return Err(Error::InvalidEvidence(
             "invalid gateway launch policies".into(),
         ));

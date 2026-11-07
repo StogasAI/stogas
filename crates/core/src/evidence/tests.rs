@@ -356,6 +356,46 @@ mod staging {
     }
 
     #[test]
+    fn documents_in_another_version_of_their_format_fail_before_any_other_check() {
+        let (mut verifier, evidence, now) = fixture();
+        for (pointer, schema, code) in [
+            ("/document/schema", "stogas.evidence.v2", "newer_format"),
+            ("/document/schema", "other", "invalid_evidence"),
+            (
+                "/document/keys/document/schema",
+                "stogas.keys.v2",
+                "newer_format",
+            ),
+            (
+                "/document/gateways/0/document/schema",
+                "stogas.gateway.release.v2",
+                "newer_format",
+            ),
+            (
+                "/document/gateways/0/document/sev_snp/launch_policies/schema",
+                "stogas.snp-launch-policies.v2",
+                "newer_format",
+            ),
+            (
+                "/document/catalogs/1/document/schema",
+                "stogas.catalog.release.v1",
+                "retired_format",
+            ),
+        ] {
+            let mut changed = evidence.clone();
+            *changed.pointer_mut(pointer).unwrap() = json!(schema);
+            // The changed document no longer matches its signature, which is checked later.
+            let error = verifier.refresh(&encode(&changed), now).unwrap_err();
+            assert_eq!(error.code(), code, "{pointer}");
+            let unsigned = verifier.check_unsigned(&encode(&changed["document"]), now);
+            assert_eq!(unsigned.unwrap_err().code(), code, "{pointer}");
+            let archived = verifier.verify_evidence_archive(&encode(&changed), now);
+            assert_eq!(archived.unwrap_err().code(), code, "{pointer}");
+        }
+        assert!(verifier.current().is_none());
+    }
+
+    #[test]
     fn signed_onion_addresses_are_checked_and_reported() {
         let (verifier, evidence, now) = fixture();
         let address = |seed| crate::tests::onion_address([seed; 32], 3);

@@ -156,6 +156,20 @@ fn the_receipt_sample_proves_each_side_under_its_own_salt() {
 }
 
 #[test]
+fn a_receipt_in_another_version_of_its_format_is_newer_or_retired() {
+    let vector = sample().vector;
+    for (schema, code) in [
+        ("stogas.receipt.v1", "retired_format"),
+        ("stogas.receipt.v3", "newer_format"),
+    ] {
+        let mut receipt = vector["receipt"].clone();
+        receipt["schema"] = json!(schema);
+        let error = Receipt::parse(&serde_json::to_vec(&receipt).unwrap()).unwrap_err();
+        assert_eq!(error.code(), code);
+    }
+}
+
+#[test]
 fn the_receipt_sample_binds_its_metadata_boot_and_key() {
     let sample = sample();
     let (request, response) = (Some(&sample.request), Some(&sample.response));

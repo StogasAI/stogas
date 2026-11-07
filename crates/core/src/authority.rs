@@ -18,9 +18,11 @@ use stogas_sigstore::{LogPosition, TrustedRoot};
 use thiserror::Error;
 
 use crate::{
-    AllowedCatalog, AllowedIgvm, AmdCollateral, AmdSevSnpPolicy, MAX_INPUT_BYTES,
-    STOGAS_SIGNATURE_DOMAIN, StogasSignature, VerifiedCatalogRelease, VerifiedRelease,
-    canonical_json, strict_json,
+    AllowedCatalog, AllowedIgvm, AmdCollateral, AmdSevSnpPolicy, CATALOG_RELEASE_SCHEMA,
+    GATEWAY_RELEASE_SCHEMA, LAUNCH_POLICIES_SCHEMA, MAX_INPUT_BYTES, STOGAS_SIGNATURE_DOMAIN,
+    StogasSignature, VerifiedCatalogRelease, VerifiedRelease, canonical_json,
+    format::{self, FormatError},
+    strict_json,
 };
 
 pub const KEY_MANIFEST_SCHEMA: &str = "stogas.keys.v1";
@@ -411,6 +413,8 @@ pub enum Error {
     NotApproved(&'static str),
     #[error("listed evidence failed verification: {0}")]
     Evidence(String),
+    #[error(transparent)]
+    Format(#[from] FormatError),
 }
 
 /// The online signature and Rekor entry that publish one evidence document.
@@ -604,7 +608,9 @@ impl Authority {
         if bytes.len() > MAX_INPUT_BYTES {
             return Err(Error::TooLarge);
         }
-        let keys: SignedKeyManifest = parse(bytes)?;
+        let keys = strict_json::from_slice(bytes).map_err(invalid)?;
+        format::check(&keys["document"], KEY_MANIFEST_SCHEMA)?;
+        let keys: SignedKeyManifest = serde_json::from_value(keys).map_err(invalid)?;
         validate_keys(&keys.document, self.environment, &self.root)?;
         let document = serde_json::to_value(&keys.document).map_err(invalid)?;
         verify_signature(
@@ -741,6 +747,22 @@ pub(crate) fn verify_proof(
 pub fn payload_sha256(payload: &impl Serialize) -> Result<String, Error> {
     let value = serde_json::to_value(payload).map_err(invalid)?;
     Ok(hex::encode(Sha256::digest(canonical_payload(&value)?)))
+}
+
+/// Rejects evidence in another version of its format, or listing a document in another version of
+/// that document's format, before anything else is checked.
+pub(crate) fn check_formats(document: &Value) -> Result<(), FormatError> {
+    format::check(document, EVIDENCE_SCHEMA)?;
+    format::check(&document["keys"]["document"], KEY_MANIFEST_SCHEMA)?;
+    for release in document["gateways"].as_array().into_iter().flatten() {
+        format::check(&release["document"], GATEWAY_RELEASE_SCHEMA)?;
+        let policies = &release["document"]["sev_snp"]["launch_policies"];
+        format::check(policies, LAUNCH_POLICIES_SCHEMA)?;
+    }
+    for release in document["catalogs"].as_array().into_iter().flatten() {
+        format::check(&release["document"], CATALOG_RELEASE_SCHEMA)?;
+    }
+    Ok(())
 }
 
 fn check_document(
@@ -932,10 +954,6 @@ fn canonical_payload(value: &Value) -> Result<Vec<u8>, Error> {
     let mut canonical = canonical_json(value).map_err(invalid)?;
     canonical.pop(); // The document-file newline is not signed or hashed as a payload.
     Ok(canonical.into_bytes())
-}
-
-fn parse<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
-    serde_json::from_value(strict_json::from_slice(bytes).map_err(invalid)?).map_err(invalid)
 }
 
 /// Sigstore files with no roots after the compiled one, as the TUF fixtures captured them.

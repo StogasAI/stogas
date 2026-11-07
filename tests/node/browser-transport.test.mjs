@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { createTransportClass } from '../../bindings/shared/transport.js';
 
 // Lifecycle doubles; cryptographic checks use the real Wasm core in browser tests.
-function binding() {
+function binding(refresh) {
 	let freed = 0;
 	const Transport = createTransportClass({
 		transport_configuration(environment) {
@@ -19,6 +19,7 @@ function binding() {
 				return new this();
 			}
 			refresh(bytes) {
+				if (refresh) return refresh(bytes);
 				assert.equal(new TextDecoder().decode(bytes), '{}');
 				return {
 					summary: () => ({ document: { revision: 1 } }),
@@ -161,6 +162,31 @@ test('explicit refresh shares acquisition, exposes frozen evidence, and isolates
 	await transport.close();
 	await transport.close();
 	assert.equal(fixture.freed, 1);
+});
+
+test("a failed refresh reports the verifier's code, or evidence_unavailable", async () => {
+	const failure = Object.assign(
+		new Error('this version reads stogas.evidence.v1, not the newer stogas.evidence.v2'),
+		{ name: 'EvidenceVerificationError', code: 'newer_format' }
+	);
+	for (const [refresh, status, code] of [
+		[
+			() => {
+				throw failure;
+			},
+			200,
+			'newer_format'
+		],
+		[undefined, 503, 'evidence_unavailable']
+	]) {
+		const transport = new (binding(refresh).Transport)({
+			fetch: async () => new Response(status === 200 ? '{}' : null, { status })
+		});
+		await assert.rejects(transport.refreshEvidence());
+		assert.equal(transport.evidenceSnapshot.status, 'error');
+		assert.equal(transport.evidenceSnapshot.errorCode, code);
+		await transport.close();
+	}
 });
 
 test('disposal aborts acquisition and failed creation frees the compiled verifier', async () => {

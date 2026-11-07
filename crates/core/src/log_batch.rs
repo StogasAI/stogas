@@ -52,6 +52,8 @@ pub enum Error {
     Identity,
     #[error("the batch signature failed")]
     Signature,
+    #[error(transparent)]
+    Format(#[from] crate::format::FormatError),
 }
 
 /// One sealed batch, as the gateway stores it without its leaves and as a proof carries it.
@@ -293,13 +295,19 @@ impl Proof {
             return Err(Error::Invalid);
         }
         let value = canonical::parse_object(bytes).map_err(|_| Error::Invalid)?;
+        crate::format::check(&value, PROOF_SCHEMA)?;
+        crate::format::check(&value["batch"], SCHEMA)?;
         serde_json::from_value(value).map_err(|_| Error::Invalid)
     }
 
-    /// Whether a JSON document is a request log proof rather than a receipt's metadata.
+    /// Whether a JSON document is a request log proof, in any version of its format, rather than
+    /// a receipt's metadata.
     #[must_use]
     pub fn is_proof(value: &Value) -> bool {
-        value.get("schema").and_then(Value::as_str) == Some(PROOF_SCHEMA)
+        value
+            .get("schema")
+            .and_then(Value::as_str)
+            .is_some_and(|schema| crate::format::same_format(schema, PROOF_SCHEMA))
     }
 
     /// Check the row's place and path against the batch, without its signature.

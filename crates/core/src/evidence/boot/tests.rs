@@ -203,6 +203,10 @@ fn boot_parser_rejects_alternate_bytes_unknown_fields_and_invalid_sizes() {
         assert!(parse_record(crate::canonical_json(&record).unwrap().as_bytes()).is_err());
     }
     let mut record = vector["record"].clone();
+    record["schema"] = json!("stogas.node-boot.v2");
+    let newer = parse_record(crate::canonical_json(&record).unwrap().as_bytes()).unwrap_err();
+    assert_eq!(newer.code(), "newer_format");
+    let mut record = vector["record"].clone();
     record["node_id"] = json!("untrusted alias");
     assert!(parse_record(crate::canonical_json(&record).unwrap().as_bytes()).is_err());
     assert!(

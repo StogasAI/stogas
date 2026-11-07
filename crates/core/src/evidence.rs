@@ -12,6 +12,7 @@ use crate::{
         self, Authority, Environment, EvidenceDocument, KeyManifest, RootKey, SignedEvidence,
         SigstoreFiles, VerifiedEvidence, VerifiedKeys, VerifiedSigstore, payload_sha256,
     },
+    format::FormatError,
 };
 
 #[cfg(feature = "snp")]
@@ -80,12 +81,19 @@ pub enum Error {
     Attestation(String),
 }
 
+impl From<FormatError> for Error {
+    fn from(error: FormatError) -> Self {
+        Self::Authority(error.into())
+    }
+}
+
 impl Error {
     /// Stable reason for bindings; callers never classify failures by parsing display text.
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
             Self::TooLarge | Self::Authority(authority::Error::TooLarge) => "evidence_too_large",
+            Self::Authority(authority::Error::Format(error)) => error.code(),
             Self::MissingCollateral => "missing_collateral",
             Self::CollateralExpired => "expired_collateral",
             Self::Revoked => "revoked",
@@ -351,6 +359,7 @@ impl Verifier {
             });
         };
         let value = parse_json(bytes)?;
+        authority::check_formats(&value["document"])?;
         checked(VerificationStep::Decode, None, false);
         let (keys, sigstore) = self.observe(&value["document"], now_unix_ms, &mut checked)?;
         let signed: SignedEvidence = serde_json::from_value(value).map_err(invalid)?;
@@ -403,6 +412,7 @@ impl Verifier {
     /// Rejects everything [`Self::refresh`] rejects, except the missing signature.
     pub fn check_unsigned(&self, bytes: &[u8], now_unix_ms: i64) -> Result<Arc<Snapshot>, Error> {
         let value = parse_json(bytes)?;
+        authority::check_formats(&value)?;
         let (keys, sigstore) = self.observe(&value, now_unix_ms, &mut |_, _, _| {})?;
         let document: EvidenceDocument = serde_json::from_value(value).map_err(invalid)?;
         let candidate = self
