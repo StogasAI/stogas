@@ -437,6 +437,7 @@ fn parse_record(document: &[u8]) -> Result<BootRecord, Error> {
         return Err(Error::TooLarge);
     }
     let value = crate::strict_json::from_slice(document).map_err(invalid)?;
+    crate::format::check(&value, BOOT_SCHEMA)?;
     // One byte identity is used by the log, archive and live-session commitment.
     if crate::canonical_json(&value).map_err(invalid)?.as_bytes() != document {
         return Err(invalid("noncanonical boot document"));

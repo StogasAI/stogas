@@ -8,10 +8,11 @@ use stogas_sigstore::{GithubPolicy, Subject, verify_github_attestation};
 use crate::{
     MAX_INPUT_BYTES, StogasSignature,
     authority::{self, Authority, Environment, SignedKeyManifest, VerifiedSigstore},
-    strict_json,
+    format, strict_json,
 };
 
 const REPOSITORY: &str = "https://github.com/StogasAI/stogas";
+pub const SCHEMA: &str = "stogas.sdk-release.v1";
 pub const MANIFEST: &str = "release-manifest.json";
 pub const ATTESTATION: &str = "github-attestation.jsonl";
 pub const SIGNATURE: &str = "stogas-signature.json";
@@ -87,9 +88,9 @@ pub fn verify(
     {
         return Err(authority::Error::TooLarge);
     }
-    let manifest: Manifest =
-        serde_json::from_value(strict_json::from_slice(manifest_bytes).map_err(invalid)?)
-            .map_err(invalid)?;
+    let manifest = strict_json::from_slice(manifest_bytes).map_err(invalid)?;
+    format::check(&manifest, SCHEMA)?;
+    let manifest: Manifest = serde_json::from_value(manifest).map_err(invalid)?;
     validate_manifest(&manifest)?;
     let signed: Signature =
         serde_json::from_value(strict_json::from_slice(signature_bytes).map_err(invalid)?)
@@ -158,7 +159,7 @@ pub fn verify(
 }
 
 fn validate_manifest(manifest: &Manifest) -> Result<(), authority::Error> {
-    if manifest.schema != "stogas.sdk-release.v1"
+    if manifest.schema != SCHEMA
         || manifest.environment != Environment::Production
         || manifest.source.dirty
         || !hex_digest(&manifest.source.commit, 40)
@@ -241,6 +242,22 @@ mod tests {
     #[test]
     fn accepts_a_well_formed_production_manifest() {
         validate_manifest(&parse(&manifest())).unwrap();
+    }
+
+    #[test]
+    fn a_manifest_in_another_version_of_its_format_is_newer() {
+        let mut newer = manifest();
+        newer["schema"] = json!("stogas.sdk-release.v2");
+        newer["notes"] = json!("a field that version 1 does not have");
+        let sigstore = &crate::authority::sigstore_fixture().1;
+        let error = verify(
+            &serde_json::to_vec(&newer).unwrap(),
+            b"",
+            b"",
+            b"",
+            sigstore,
+        );
+        assert!(matches!(error, Err(authority::Error::Format(error)) if error.newer));
     }
 
     #[test]

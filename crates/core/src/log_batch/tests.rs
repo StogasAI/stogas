@@ -342,6 +342,18 @@ fn a_proof_reads_strictly_and_names_itself() {
     ));
     let bytes = serde_json::to_vec(&proof).unwrap();
     Proof::parse(&bytes).unwrap().verify_inclusion().unwrap();
+    for (pointer, schema) in [
+        ("/schema", "stogas.log-proof.v2"),
+        ("/batch/schema", "stogas.log-batch.v2"),
+    ] {
+        let mut newer = proof.clone();
+        *newer.pointer_mut(pointer).unwrap() = json!(schema);
+        assert!(Proof::is_proof(&newer));
+        assert!(matches!(
+            Proof::parse(&serde_json::to_vec(&newer).unwrap()),
+            Err(Error::Format(error)) if error.newer
+        ));
+    }
     let mut extra = proof;
     extra["note"] = json!("unsigned");
     assert!(Proof::parse(&serde_json::to_vec(&extra).unwrap()).is_err());

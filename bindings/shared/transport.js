@@ -61,6 +61,7 @@ export function createTransportClass({
 			evidence: null,
 			evidenceURL: null,
 			error: null,
+			errorCode: null,
 			fetchedAtUnixMs: null,
 			fetchDurationMs: null,
 			verificationDurationMs: null,
@@ -96,7 +97,7 @@ export function createTransportClass({
 				core,
 				this.#origins,
 				fetch,
-				(snapshot) => this.#publish({ ...snapshot, status: 'ready', error: null }),
+				(snapshot) => this.#publish({ ...snapshot, status: 'ready', error: null, errorCode: null }),
 				patience
 			);
 			this.#sessions = new SessionTransport({
@@ -159,7 +160,7 @@ export function createTransportClass({
 		async refreshEvidence() {
 			this.#assertOpen();
 			if (this.#refresh) return this.#refresh;
-			this.#publish({ ...this.#snapshot, status: 'refreshing', error: null });
+			this.#publish({ ...this.#snapshot, status: 'refreshing', error: null, errorCode: null });
 			const refresh = this.#evidence
 				.acquire()
 				.catch((error) => {
@@ -167,7 +168,11 @@ export function createTransportClass({
 						this.#publish({
 							...this.#snapshot,
 							status: 'error',
-							error: String(error.message ?? error)
+							error: String(error.message ?? error),
+							// The verifier's own code, or evidence_unavailable when the last origin
+							// delivered nothing to check.
+							errorCode:
+								error?.name === 'EvidenceVerificationError' ? error.code : 'evidence_unavailable'
 						});
 					throw error;
 				})

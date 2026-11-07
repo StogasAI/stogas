@@ -9,6 +9,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 
 use crate::evidence::boot::VerifiedBoot;
+use crate::format::FormatError;
 
 pub mod canonical;
 mod chat;
@@ -39,6 +40,8 @@ pub enum Error {
     Signature,
     #[error(transparent)]
     Canonical(#[from] CanonicalError),
+    #[error(transparent)]
+    Format(#[from] FormatError),
 }
 
 impl Error {
@@ -53,6 +56,7 @@ impl Error {
             Self::Signature => "receipt_signature",
             Self::Canonical(CanonicalError::Json) => "invalid_content",
             Self::Canonical(CanonicalError::Integer) => "inexact_integer",
+            Self::Format(error) => error.code(),
         }
     }
 }
@@ -108,8 +112,9 @@ impl Receipt {
         if bytes.len() > MAX_BYTES {
             return Err(Error::Invalid);
         }
-        serde_json::from_value(crate::strict_json::from_slice(bytes).map_err(|_| Error::Invalid)?)
-            .map_err(|_| Error::Invalid)
+        let value = crate::strict_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
+        crate::format::check(&value, SCHEMA)?;
+        serde_json::from_value(value).map_err(|_| Error::Invalid)
     }
 
     /// Verify using the retained request appraisal or an independently verified historical
