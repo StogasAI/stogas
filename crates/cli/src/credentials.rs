@@ -8,7 +8,7 @@ use zeroize::Zeroizing;
 
 const SERVICE: &str = "stogas";
 /// Each organization key is saved under its organization and the label that the organization
-/// policy registers it with, the pair that names it in a request's `encryption_keys`.
+/// registers it under, the pair that names it in a request's `encryption_keys`.
 const KEY_SERVICE: &str = "stogas-encryption-key";
 pub const VARIABLE: &str = "STOGAS_TOKEN";
 

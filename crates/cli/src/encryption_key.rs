@@ -1,5 +1,5 @@
 //! `stogas encryption-key`: organization keys, generated on this machine and kept in its keychain,
-//! each under its organization and the label that the organization policy registers it with.
+//! each under its organization and the label that the organization registers it under.
 
 use crate::{
     account, credentials,
@@ -28,12 +28,11 @@ pub enum Command {
             .multiple(true)
     ))]
     Create {
-        /// The organization whose policy will register the key. With --label, the key is saved in
-        /// this system's keychain.
+        /// The organization that will register the key. With --label, the key is saved in this
+        /// system's keychain.
         #[arg(long, value_parser = parse_organization, requires = "label")]
         organization: Option<String>,
-        /// The label that you will register the key under in the organization policy's
-        /// `encryption.keys`.
+        /// The label that you will register the key under in the organization's encryption keys.
         #[arg(long, value_parser = parse_label, requires = "organization")]
         label: Option<String>,
         /// A new file for the key, readable only by you. The CLI never overwrites a file.
@@ -82,7 +81,7 @@ pub struct EncryptArgs {
     /// system's keychain.
     #[arg(long, value_parser = parse_label)]
     key: Option<String>,
-    /// The organization whose policy registers the key. Only its requests can use the result.
+    /// The organization that registers the key. Only its requests can use the result.
     #[arg(long, value_parser = parse_organization)]
     organization: String,
     /// What you encrypt: the settings of the plugin that follows plugins/, or a credential for
@@ -144,18 +143,18 @@ pub async fn encrypt(
     )
 }
 
-/// A saved key's name: the organization, and the label that its policy registers the key under.
+/// A saved key's name: the organization, and the label that it registers the key under.
 #[derive(clap::Args)]
 pub struct Name {
-    /// The organization whose policy registers the key.
+    /// The organization that registers the key.
     #[arg(long, value_parser = parse_organization)]
     organization: String,
-    /// The key's label in the organization policy's `encryption.keys`.
+    /// The key's label in the organization's encryption keys.
     #[arg(long, value_parser = parse_label)]
     label: String,
 }
 
-/// A label as the organization policy registers it.
+/// A label as an organization registers a key under it.
 pub fn parse_label(value: &str) -> Result<String, String> {
     let mut characters = value.chars();
     let valid = value.len() <= 48
@@ -173,7 +172,7 @@ pub fn parse_label(value: &str) -> Result<String, String> {
     } else {
         Err(
             "a label is a lowercase letter followed by up to 47 lowercase letters, digits, \
-             underscores or hyphens, as the organization policy registers it"
+             underscores or hyphens"
                 .into(),
         )
     }
@@ -308,7 +307,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_only_labels_that_a_policy_can_register() {
+    fn accepts_only_labels_that_an_organization_can_register() {
         for label in ["prod", "a", "eu-west_2", &format!("a{}", "b".repeat(47))] {
             assert_eq!(parse_label(label).as_deref(), Ok(label));
         }
