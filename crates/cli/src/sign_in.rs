@@ -5,7 +5,7 @@
 //! a machine that shows no browser, such as one reached over SSH.
 
 use crate::{
-    account::proof_of_work,
+    altcha::proof_of_work,
     dashboard::{Dashboard, Reply, api_error, printable},
 };
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -168,10 +168,14 @@ pub async fn in_browser(
             };
             (result, ended)
         }
-        Outcome::Refused(refusal) if refusal.error == "access_denied" => {
-            (Err(anyhow!("the sign-in was denied")), "denied")
+        Outcome::Refused(refusal) => {
+            let ended = if refusal.error == "access_denied" {
+                "denied"
+            } else {
+                "failed"
+            };
+            (Err(refusal.into()), ended)
         }
-        Outcome::Refused(refusal) => (Err(refusal.into()), "failed"),
     };
     // The browser then shows how the sign-in ended on the dashboard's own page.
     let mut finished = dashboard.origin().join("/device")?;
@@ -235,8 +239,7 @@ pub async fn with_code(
                     failures = 0;
                     interval += SLOW_DOWN;
                 }
-                "access_denied" => bail!("the sign-in was denied"),
-                "expired_token" => bail!(EXPIRED),
+                // A denial or an expiry prints the dashboard's own words.
                 _ => return Err(refusal.into()),
             },
             // The network may come back before the code expires. Waiting longer also answers a

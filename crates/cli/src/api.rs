@@ -35,8 +35,8 @@ pub struct Args {
     /// to a list.
     #[arg(short = 'f', long = "raw-field", value_name = "KEY=VALUE")]
     raw_field: Vec<String>,
-    /// A typed field, as key=value: true, false, null and integers become JSON values, @file
-    /// reads a file (@- standard input), and {org} becomes the organization's ID.
+    /// A typed field, as key=value: true, false, null and integers such as 42 or -7 become JSON
+    /// values, @file reads a file (@- standard input), and {org} becomes the organization's ID.
     #[arg(short = 'F', long, value_name = "KEY=VALUE")]
     field: Vec<String>,
     /// A request header, as "Name: value".
@@ -111,15 +111,17 @@ async fn follow<W: Write, F: Future<Output = Result<Reply>>>(
             // looks whole.
             printer.slurp = None;
             printer.error_body(&reply.body)?;
+            printer.flush()?;
             return Err(dashboard::api_error(reply.status, &reply.body).into());
         }
         if !paginate {
-            return printer.body(&reply.body);
+            printer.body(&reply.body)?;
+            return printer.flush();
         }
         let page: Value =
             serde_json::from_slice(&reply.body).context("--paginate needs JSON pages")?;
         let cursor = next_cursor(&page).map(str::to_owned);
-        printer.page(&reply.body, page)?;
+        printer.page(&reply.body)?;
         let Some(cursor) = cursor else { break };
         if !cursors.insert(cursor.clone()) {
             bail!("the API sent a page cursor twice");
@@ -133,6 +135,7 @@ async fn follow<W: Write, F: Future<Output = Result<Reply>>>(
 /// The method that the flag or the path names, or else the one that the body implies.
 fn request_method(args: &Args) -> Result<Method> {
     let (positional, _) = method_and_path(&args.request)?;
+    let named = positional.is_some() || args.method.is_some();
     let method = match (positional, args.method.clone()) {
         (Some(positional), Some(flag)) if positional != flag => {
             bail!("the path's method {positional} and -X {flag} differ")
@@ -146,6 +149,9 @@ fn request_method(args: &Args) -> Result<Method> {
         (None, None) => Method::GET,
     };
     if args.paginate && method != Method::GET {
+        if !named && args.input.is_none() {
+            bail!("--paginate follows the pages of a GET request; add -X GET to query with fields");
+        }
         bail!("--paginate follows the pages of a GET request");
     }
     if method == Method::GET && args.input.is_some() {
@@ -217,7 +223,7 @@ async fn prepare(args: &Args, method: &Method, dashboard: &Dashboard) -> Result<
                     crate::read_bounded_input(&path, dashboard::MAX_BODY_BYTES, "a field's file")
                         .await?,
                 )
-                .with_context(|| format!("{} is not UTF-8 text", path.display()))?,
+                .with_context(|| format!("{} is not UTF-8 text", input_name(&path)))?,
             )),
         };
         if in_query {
@@ -248,6 +254,15 @@ async fn prepare(args: &Args, method: &Method, dashboard: &Dashboard) -> Result<
         headers,
         body,
     })
+}
+
+/// A file that a flag names, or standard input for `-`.
+fn input_name(path: &std::path::Path) -> String {
+    if path.as_os_str() == "-" {
+        "standard input".to_owned()
+    } else {
+        path.display().to_string()
+    }
 }
 
 /// The method that can come before the path, and the path.
@@ -368,7 +383,9 @@ fn parse_key(key: &str) -> Result<Vec<Part>> {
     Ok(parts)
 }
 
-/// `true`, `false`, `null` and integers as JSON values, and any other text as a string.
+/// `true`, `false`, `null` and integers as JSON values, and any other text as a string. Text that
+/// only reads as a number, such as `007`, `+1` or `-0`, keeps its characters, as an ID or a code
+/// with a leading zero must.
 fn typed(text: &str) -> Value {
     match text {
         "true" => Value::Bool(true),
@@ -396,8 +413,8 @@ fn query_text(value: &Value) -> String {
 }
 
 /// Puts `value` at `parts` in `object`. `[]` adds to a list, and `[][key]` fills the list's last
-/// object until it already has that key, as `gh api` does. A key that another field set, even to
-/// null, conflicts.
+/// object until it already has that key, unless that key holds a list, which grows, as `gh api`
+/// does. A key that another field set, even to null, conflicts.
 fn insert(
     object: &mut Map<String, Value>,
     parts: &[Part],
@@ -444,7 +461,7 @@ fn insert(
                 Some(Part::Key(next)) => {
                     if !matches!(
                         items.last(),
-                        Some(Value::Object(last)) if !last.contains_key(next)
+                        Some(Value::Object(last)) if last.get(next).is_none_or(Value::is_array)
                     ) {
                         items.push(Value::Object(Map::new()));
                     }
@@ -490,7 +507,7 @@ struct Printer<W> {
     include: bool,
     silent: bool,
     /// The pages of --slurp, printed as one list at the end.
-    slurp: Option<Vec<Value>>,
+    slurp: Option<Vec<Vec<u8>>>,
 }
 
 impl<W: Write> Printer<W> {
@@ -510,8 +527,8 @@ impl<W: Write> Printer<W> {
         Ok(())
     }
 
-    /// A terminal gets formatted JSON with control characters made inert; anything else gets the
-    /// exact bytes.
+    /// A terminal gets formatted JSON, or other text line by line, with control characters made
+    /// inert, and no binary data; anything else gets the exact bytes.
     fn body(&mut self, body: &[u8]) -> Result<()> {
         if self.silent || body.is_empty() {
             return Ok(());
@@ -520,9 +537,17 @@ impl<W: Write> Printer<W> {
             self.out.write_all(body)?;
             return Ok(());
         }
-        let value: Value = serde_json::from_slice(body)
-            .context("the response is not JSON; send it to a file instead")?;
-        print_value(&mut self.out, &value)
+        if let Ok(value) = serde_json::from_slice::<Value>(body) {
+            return print_value(&mut self.out, &value);
+        }
+        let text = std::str::from_utf8(body)
+            .ok()
+            .filter(|text| !text.contains('\0'))
+            .context("the response is binary; send it to a file instead")?;
+        for line in text.lines() {
+            writeln!(self.out, "{}", dashboard::printable(line))?;
+        }
+        Ok(())
     }
 
     /// A refusal's body. A terminal shows it only when it is JSON, since the error names the
@@ -535,9 +560,9 @@ impl<W: Write> Printer<W> {
     }
 
     /// Each page as its own JSON document, one after another, or saved for --slurp.
-    fn page(&mut self, body: &[u8], page: Value) -> Result<()> {
+    fn page(&mut self, body: &[u8]) -> Result<()> {
         if let Some(pages) = &mut self.slurp {
-            pages.push(page);
+            pages.push(body.to_vec());
             return Ok(());
         }
         self.body(body)?;
@@ -547,21 +572,35 @@ impl<W: Write> Printer<W> {
         Ok(())
     }
 
+    /// Prints the --slurp array, of each page's exact bytes unless a terminal shows it.
     fn finish(&mut self) -> Result<()> {
-        let Some(pages) = self.slurp.take() else {
-            return Ok(());
-        };
-        if self.silent {
-            return Ok(());
+        if let Some(pages) = self.slurp.take()
+            && !self.silent
+        {
+            if self.terminal {
+                let pages = pages
+                    .iter()
+                    .map(|page| serde_json::from_slice(page))
+                    .collect::<Result<Vec<Value>, _>>()?;
+                print_value(&mut self.out, &Value::Array(pages))?;
+            } else {
+                self.out.write_all(b"[")?;
+                for (index, page) in pages.iter().enumerate() {
+                    if index > 0 {
+                        self.out.write_all(b",")?;
+                    }
+                    self.out.write_all(page.trim_ascii())?;
+                }
+                self.out.write_all(b"]\n")?;
+            }
         }
-        let pages = Value::Array(pages);
-        if self.terminal {
-            print_value(&mut self.out, &pages)
-        } else {
-            serde_json::to_writer(&mut self.out, &pages)?;
-            self.out.write_all(b"\n")?;
-            Ok(())
-        }
+        self.flush()
+    }
+
+    /// Standard output holds bytes after its last newline until it is flushed, and a failed
+    /// write at exit would go unreported.
+    fn flush(&mut self) -> Result<()> {
+        Ok(self.out.flush()?)
     }
 }
 
@@ -576,6 +615,49 @@ fn print_value(stdout: &mut impl Write, value: &Value) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The arguments of `stogas api` from a command line without the program's name.
+    fn args(line: &[&str]) -> Args {
+        #[derive(clap::Parser)]
+        struct Command {
+            #[command(flatten)]
+            args: Args,
+        }
+        <Command as clap::Parser>::try_parse_from(
+            std::iter::once("api").chain(line.iter().copied()),
+        )
+        .unwrap()
+        .args
+    }
+
+    #[test]
+    fn infers_post_from_a_body_and_explains_a_paginated_post() {
+        let method = |line: &[&str]| request_method(&args(line)).map_err(|error| error.to_string());
+        assert_eq!(method(&["/api/account"]), Ok(Method::GET));
+        assert_eq!(method(&["{org}/keys", "-f", "name=a"]), Ok(Method::POST));
+        assert_eq!(method(&["{org}/keys", "--input", "-"]), Ok(Method::POST));
+        assert_eq!(
+            method(&["x", "-X", "get", "-f", "a=b", "--paginate"]),
+            Ok(Method::GET)
+        );
+        assert_eq!(method(&["PATCH", "x", "-X", "PATCH"]), Ok(Method::PATCH));
+        assert_eq!(
+            method(&["GET", "x", "-X", "POST"]),
+            Err("the path's method GET and -X POST differ".to_owned())
+        );
+        assert_eq!(
+            method(&["x", "-F", "limit=5", "--paginate"]),
+            Err(
+                "--paginate follows the pages of a GET request; add -X GET to query with fields"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            method(&["POST", "x", "--paginate"]),
+            Err("--paginate follows the pages of a GET request".to_owned())
+        );
+        assert!(method(&["x", "-X", "GET", "--input", "body.json"]).is_err());
+    }
 
     #[test]
     fn takes_the_method_before_the_path_or_infers_it() {
@@ -703,6 +785,8 @@ mod tests {
             ("rules[][name]", Some(json!("first"))),
             ("rules[][value]", Some(json!(1))),
             ("rules[][name]", Some(json!("second"))),
+            ("rules[][tags][]", Some(json!("x"))),
+            ("rules[][tags][]", Some(json!("y"))),
             ("tags[]", None),
         ] {
             insert(&mut body, &parse_key(key).unwrap(), value, key).unwrap();
@@ -712,7 +796,10 @@ mod tests {
             json!({
                 "name": "Build bot",
                 "limits": { "requests": 10, "models": ["gpt-5.6-sol", "claude-fable-5-1"] },
-                "rules": [{ "name": "first", "value": 1 }, { "name": "second" }],
+                "rules": [
+                    { "name": "first", "value": 1 },
+                    { "name": "second", "tags": ["x", "y"] }
+                ],
                 "tags": []
             })
         );
@@ -895,5 +982,118 @@ mod tests {
         );
         assert_eq!(asked.len(), 2);
         assert_eq!(printed, "");
+    }
+
+    fn printer(terminal: bool) -> Printer<Vec<u8>> {
+        Printer {
+            out: Vec::new(),
+            terminal,
+            include: false,
+            silent: false,
+            slurp: None,
+        }
+    }
+
+    #[test]
+    fn a_terminal_shows_json_and_text_but_never_binary() {
+        let mut shown = printer(true);
+        shown.body(br#"{"a":1}"#).unwrap();
+        shown.body(b"id,name\n1,\x1b[31mred\n").unwrap();
+        assert_eq!(
+            String::from_utf8(shown.out).unwrap(),
+            "{\n  \"a\": 1\n}\nid,name\n1,\u{fffd}[31mred\n"
+        );
+        for binary in [&b"PAR1\0\x15"[..], &[0xff, 0xfe]] {
+            assert_eq!(
+                printer(true).body(binary).unwrap_err().to_string(),
+                "the response is binary; send it to a file instead"
+            );
+            let mut piped = printer(false);
+            piped.body(binary).unwrap();
+            assert_eq!(piped.out, binary);
+        }
+    }
+
+    #[test]
+    fn prints_the_status_and_headers_first_and_no_body_when_silent() {
+        let reply = Reply {
+            status: http::StatusCode::CREATED,
+            headers: HeaderMap::from_iter([(
+                http::header::ETAG,
+                HeaderValue::from_static("\"3\""),
+            )]),
+            body: b"{}".to_vec(),
+        };
+        let mut included = Printer {
+            include: true,
+            ..printer(false)
+        };
+        included.status(&reply).unwrap();
+        included.body(&reply.body).unwrap();
+        assert_eq!(
+            String::from_utf8(included.out).unwrap(),
+            "HTTP 201 Created\netag: \"3\"\n\n{}"
+        );
+        let mut silent = Printer {
+            silent: true,
+            ..printer(true)
+        };
+        silent.body(b"{}").unwrap();
+        silent.body(b"").unwrap();
+        assert!(silent.out.is_empty());
+    }
+
+    #[test]
+    fn slurp_joins_the_exact_bytes_of_each_page() {
+        let mut slurped = Printer {
+            slurp: Some(Vec::new()),
+            ..printer(false)
+        };
+        slurped
+            .page(b"{\"items\":[1e3],\"nextCursor\":\"c\"}\n")
+            .unwrap();
+        slurped.page(b"{\"items\":[18446744073709551616]}").unwrap();
+        slurped.finish().unwrap();
+        assert_eq!(
+            slurped.out,
+            b"[{\"items\":[1e3],\"nextCursor\":\"c\"},{\"items\":[18446744073709551616]}]\n"
+        );
+    }
+
+    /// Takes every write and fails to flush, as a full disk does.
+    struct FullDisk(Vec<u8>);
+
+    impl Write for FullDisk {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.0.write(data)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::other("no space left on the device"))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_flush_fails_the_command() {
+        let mut printer = Printer {
+            out: FullDisk(Vec::new()),
+            terminal: false,
+            include: false,
+            silent: false,
+            slurp: None,
+        };
+        let result = follow(false, "/api/x", Vec::new(), &mut printer, |_| async {
+            Ok(Reply {
+                status: http::StatusCode::OK,
+                headers: HeaderMap::new(),
+                body: b"{}".to_vec(),
+            })
+        })
+        .await;
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "no space left on the device"
+        );
+        assert_eq!(printer.out.0, b"{}");
     }
 }

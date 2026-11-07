@@ -30,9 +30,11 @@ pub struct Reply {
     pub body: Vec<u8>,
 }
 
-/// Headers that only the CLI sets: the token, the JSON body's framing and the connection's own.
-const PROTECTED_HEADERS: [header::HeaderName; 10] = [
+/// Headers that only the CLI sets: the token, the JSON body's framing, the content codings that
+/// it decodes and the connection's own.
+const PROTECTED_HEADERS: [header::HeaderName; 11] = [
     header::AUTHORIZATION,
+    header::ACCEPT_ENCODING,
     header::COOKIE,
     header::HOST,
     header::CONTENT_TYPE,
@@ -170,6 +172,11 @@ impl Dashboard {
         let url = self.url(path)?;
         let mut headers = HeaderMap::new();
         headers.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
+        // The codings that `decoded` reads, which shrink a large export several times over.
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("br, gzip"),
+        );
         headers.insert(
             header::USER_AGENT,
             HeaderValue::from_static(concat!("stogas-cli/", env!("CARGO_PKG_VERSION"))),
