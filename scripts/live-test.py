@@ -50,8 +50,10 @@ def main(environment):
     run(*cargo, "--package", "stogas-cli", *features)
     run(*cargo, "--profile", "wasm", "--package", "stogas-wasm", "--target", "wasm32-unknown-unknown", *features)
     run(sys.executable, "-B", "scripts/stage-native-bindings.py", "--platform", "linux-amd64", "--native-dir", native)
-    (ROOT / "go/native/linux-amd64").mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(native / "libstogas_ffi.a", ROOT / "go/native/linux-amd64/libstogas_ffi.a")
+    # Go links this directory's static archive, not the shared library beside it in target.
+    go_native = target / "go-native"
+    go_native.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(native / "libstogas_ffi.a", go_native / "libstogas_ffi.a")
 
     target.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="live-", dir=target) as temporary:
@@ -59,7 +61,7 @@ def main(environment):
         run(sys.executable, "-I", "release/consumers/cli.py", native / "stogas", version, "tests/fixtures")
         run("cc", "-Wall", "-Wextra", "-Werror", "-Iinclude", "release/consumers/native.c", f"-L{native}", "-lstogas_ffi", f"-Wl,-rpath,{native}", "-o", work / "native")
         run(work / "native")
-        run("go", "test", "-count=1", *(["-tags", "staging"] if staging else []), "./...", cwd=ROOT / "go", CGO_ENABLED="1", GOWORK="off")
+        run("go", "test", "-count=1", *(["-tags", "staging"] if staging else []), "./...", cwd=ROOT / "go", CGO_ENABLED="1", CGO_LDFLAGS=f"-L{go_native}", GOWORK="off")
         run("mvn", "-B", "-q", "-f", "bindings/java/pom.xml", "test")
         gems = {"GEM_HOME": work / "gems", "GEM_PATH": work / "gems"}
         run("gem", "-C", "bindings/ruby", "build", "stogas.gemspec", "--output", work / "stogas.gem")
