@@ -412,35 +412,42 @@ jobs:
       - name: 'Go: add the MinGW Rust target'
         if: matrix.go-target
         run: rustup target add "$GO_TARGET"
+      # The development archive goes through CGO_LDFLAGS, which Go trusts. In go/native, Go would
+      # refuse the LLVM bitcode that Rust's standard library leaves in it; release archives have
+      # none. Go's test cache does not see the archive, so -count=1 runs every test again.
       - name: 'Go: module and OpenAI client example'
         env:
           CGO_ENABLED: '1'
+          CGO_LDFLAGS: -L${{ runner.temp }}/stogas-ffi
         run: |
           cargo build --locked --package stogas-ffi ${GO_TARGET:+--target "$GO_TARGET"}
-          mkdir -p "go/native/$PLATFORM"
-          cp "target/${GO_TARGET:+$GO_TARGET/}debug/libstogas_ffi.a" "go/native/$PLATFORM/"
-          go -C go test ./...
-          go -C examples/go-openai test -race ./...
+          mkdir -p "$RUNNER_TEMP/stogas-ffi"
+          cp "target/${GO_TARGET:+$GO_TARGET/}debug/libstogas_ffi.a" "$RUNNER_TEMP/stogas-ffi/"
+          go -C go test -count=1 ./...
+          go -C examples/go-openai test -count=1 -race ./...
       - name: 'Go: staging snapshot ownership'
         env:
           CGO_ENABLED: '1'
+          CGO_LDFLAGS: -L${{ runner.temp }}/stogas-ffi
         run: |
           cargo build --locked --package stogas-ffi --features staging ${GO_TARGET:+--target "$GO_TARGET"}
-          cp "target/${GO_TARGET:+$GO_TARGET/}debug/libstogas_ffi.a" "go/native/$PLATFORM/"
-          go -C go test -race -tags staging ./...
+          cp "target/${GO_TARGET:+$GO_TARGET/}debug/libstogas_ffi.a" "$RUNNER_TEMP/stogas-ffi/"
+          go -C go test -count=1 -race -tags staging ./...
       - name: 'Go: gateway build without the native transport'
         env:
           CGO_ENABLED: '1'
+          CGO_LDFLAGS: -L${{ runner.temp }}/stogas-ffi
         run: |
           cargo test --locked --package stogas-ffi --no-default-features --features staging,gateway ${GO_TARGET:+--target "$GO_TARGET"}
           cargo build --locked --package stogas-ffi --no-default-features --features staging,gateway ${GO_TARGET:+--target "$GO_TARGET"}
-          cp "target/${GO_TARGET:+$GO_TARGET/}debug/libstogas_ffi.a" "go/native/$PLATFORM/"
-          go -C go test -race -tags staging,stogas_gateway ./...
+          cp "target/${GO_TARGET:+$GO_TARGET/}debug/libstogas_ffi.a" "$RUNNER_TEMP/stogas-ffi/"
+          go -C go test -count=1 -race -tags staging,stogas_gateway ./...
       - name: 'Go: fully static gateway build'
         if: matrix.platform == 'linux-amd64'
         env:
           CGO_ENABLED: '1'
-        run: go -C go test -tags staging,stogas_gateway,netgo,osusergo -ldflags='-linkmode=external -extldflags "-static -Wl,--gc-sections,--build-id=none"' ./...
+          CGO_LDFLAGS: -L${{ runner.temp }}/stogas-ffi
+        run: go -C go test -count=1 -tags staging,stogas_gateway,netgo,osusergo -ldflags='-linkmode=external -extldflags "-static -Wl,--gc-sections,--build-id=none"' ./...
 
   # The platform jobs test the oldest Python, Java, Ruby and Go that the packages declare. This
   # tests the same bindings on the newest release of each, and on Java's newest long-term release.
@@ -456,8 +463,11 @@ jobs:
         run: |
           cargo build --locked --package stogas-ffi
           python3 scripts/stage-native-bindings.py --platform linux-amd64 --native-dir target/debug
+          # The archive goes in go/native without LLVM bitcode, as release/build_native.py packages
+          # it, so the newest Go checks the module the way it is published.
           mkdir -p go/native/linux-amd64
-          cp target/debug/libstogas_ffi.a go/native/linux-amd64/
+          objcopy --strip-debug --remove-section=.llvmbc --remove-section=.llvmcmd \
+            target/debug/libstogas_ffi.a go/native/linux-amd64/libstogas_ffi.a
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: '3.15'
@@ -750,9 +760,9 @@ jobs:
               ;;
             go)
               cargo build --locked --package stogas-ffi
-              mkdir -p go/native/linux-amd64
-              cp target/debug/libstogas_ffi.a go/native/linux-amd64/
-              go -C examples/go-openai build -o "$RUNNER_TEMP/stogas-go-example" .
+              mkdir -p "$RUNNER_TEMP/stogas-ffi"
+              cp target/debug/libstogas_ffi.a "$RUNNER_TEMP/stogas-ffi/"
+              CGO_LDFLAGS="-L$RUNNER_TEMP/stogas-ffi" go -C examples/go-openai build -o "$RUNNER_TEMP/stogas-go-example" .
               check "$RUNNER_TEMP/stogas-go-example"
               ;;
             c)

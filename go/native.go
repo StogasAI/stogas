@@ -5,10 +5,10 @@
 package stogas
 
 /*
-#cgo linux,amd64,!musl LDFLAGS: -L${SRCDIR}/native/linux-amd64 -l:libstogas_ffi.a -ldl -lpthread -lm
-#cgo linux,arm64,!musl LDFLAGS: -L${SRCDIR}/native/linux-arm64 -l:libstogas_ffi.a -ldl -lpthread -lm
-#cgo linux,amd64,musl LDFLAGS: -L${SRCDIR}/native/linux-musl-amd64 -l:libstogas_ffi.a -ldl -lpthread -lm
-#cgo linux,arm64,musl LDFLAGS: -L${SRCDIR}/native/linux-musl-arm64 -l:libstogas_ffi.a -ldl -lpthread -lm
+#cgo linux,amd64,!musl LDFLAGS: -L${SRCDIR}/native/linux-amd64 -lstogas_ffi -ldl -lpthread -lm
+#cgo linux,arm64,!musl LDFLAGS: -L${SRCDIR}/native/linux-arm64 -lstogas_ffi -ldl -lpthread -lm
+#cgo linux,amd64,musl LDFLAGS: -L${SRCDIR}/native/linux-musl-amd64 -lstogas_ffi -ldl -lpthread -lm
+#cgo linux,arm64,musl LDFLAGS: -L${SRCDIR}/native/linux-musl-arm64 -lstogas_ffi -ldl -lpthread -lm
 #cgo darwin,amd64 LDFLAGS: -L${SRCDIR}/native/darwin-amd64 -lstogas_ffi -framework Security -framework CoreFoundation
 #cgo darwin,arm64 LDFLAGS: -L${SRCDIR}/native/darwin-arm64 -lstogas_ffi -framework Security -framework CoreFoundation
 #cgo windows,amd64 LDFLAGS: -static-libgcc -L${SRCDIR}/native/windows-amd64 -lstogas_ffi -lws2_32 -lbcrypt -luserenv -lntdll
