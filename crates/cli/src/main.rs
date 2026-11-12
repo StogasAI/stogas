@@ -287,6 +287,13 @@ struct ServeArgs {
     /// Close when the parent closes stdin; intended for supervised child processes.
     #[arg(long)]
     exit_on_stdin_close: bool,
+    /// The organization whose saved keys --encryption-key names.
+    #[arg(long, value_parser = topup::parse_organization, requires = "encryption_key")]
+    organization: Option<String>,
+    /// Send the key that `stogas encryption-key` saved under this label with each request that
+    /// sends no `encryption_keys`. Repeat it for more keys.
+    #[arg(long, value_name = "LABEL", value_parser = encryption_key::parse_label, requires = "organization")]
+    encryption_key: Vec<String>,
 }
 
 #[tokio::main]
@@ -388,6 +395,7 @@ async fn run() -> Result<()> {
                     proxy: route.proxy.clone(),
                     onion: route.onion,
                     no_proxy: route.no_proxy.clone(),
+                    encryption_keys: stogas::EncryptionKeys::default(),
                 },
                 timeout,
             )
@@ -451,6 +459,13 @@ async fn run_verify(input: VerifyArgs) -> Result<()> {
 }
 
 async fn run_serve(input: ServeArgs, route: Route) -> Result<()> {
+    let mut keys = Vec::with_capacity(input.encryption_key.len());
+    if let Some(organization) = &input.organization {
+        for label in &input.encryption_key {
+            let key = encryption_key::saved(organization, label).await?;
+            keys.push((label.clone(), key.encoded.as_str().to_owned()));
+        }
+    }
     let shutdown = shutdown_signal(input.exit_on_stdin_close)?;
     stogas::serve(
         stogas::ServeOptions {
@@ -462,6 +477,7 @@ async fn run_serve(input: ServeArgs, route: Route) -> Result<()> {
                 proxy: route.proxy,
                 onion: route.onion,
                 no_proxy: route.no_proxy,
+                encryption_keys: keys.into_iter().collect(),
             },
             listen: input.listen,
             browser_origin: input.browser_origin,
@@ -1098,6 +1114,30 @@ mod tests {
             Cli::try_parse_from(["stogas", "serve", "--environment", "staging"]).is_ok(),
             cfg!(feature = "staging")
         );
+        // A saved key has an organization and a label, so serve takes both or neither.
+        let organization = "019a0000-0000-7000-8000-0000000000a1";
+        for (arguments, valid) in [
+            (
+                &["--organization", organization, "--encryption-key", "prod"][..],
+                true,
+            ),
+            (
+                &[
+                    "--organization",
+                    organization,
+                    "--encryption-key",
+                    "prod",
+                    "--encryption-key",
+                    "policies",
+                ],
+                true,
+            ),
+            (&["--encryption-key", "prod"], false),
+            (&["--organization", organization], false),
+        ] {
+            let parsed = Cli::try_parse_from(["stogas", "serve"].iter().chain(arguments));
+            assert_eq!(parsed.is_ok(), valid, "{arguments:?}");
+        }
         assert_eq!(
             Cli::try_parse_from([
                 "stogas",

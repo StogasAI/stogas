@@ -238,6 +238,7 @@ async fn checks_an_encrypted_credential(dashboard: &Dashboard) {
             proxy: None,
             onion: false,
             no_proxy: None,
+            encryption_keys: stogas::EncryptionKeys::default(),
         });
         let refused = byok::check(&api, &gateway, &Keys::new(KeySource::File(key.clone())))
             .await
@@ -285,6 +286,7 @@ async fn checks_plugin_settings_before_encrypting_them(dashboard: &Dashboard) {
             proxy: None,
             onion: false,
             no_proxy: None,
+            encryption_keys: stogas::EncryptionKeys::default(),
         });
         let check = |settings: &'static [u8]| {
             policy_check::check(dashboard, &gateway, &organization, "redaction", settings)

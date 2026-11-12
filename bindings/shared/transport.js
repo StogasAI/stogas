@@ -14,7 +14,8 @@ const OPTIONS = new Set([
 	'maxConnections',
 	'fetch',
 	'onMetadata',
-	'proxied'
+	'proxied',
+	'encryptionKeys'
 ]);
 // Through a proxy, such as Tor, each request crosses several relays and may wait for a new circuit,
 // so every time limit is four times as long, as the Rust SDK's are through a proxy.
@@ -38,6 +39,27 @@ function baseURL(value) {
 	return `${url.origin}/v1`;
 }
 
+// Adds `member`, a transport's `encryption_keys`, to a JSON object that has none. The rest of the
+// body keeps its text, and the gateway answers for a body that is no JSON object.
+export function withEncryptionKeys(text, member) {
+	let parsed;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return text;
+	}
+	if (
+		parsed === null ||
+		typeof parsed !== 'object' ||
+		Array.isArray(parsed) ||
+		Object.hasOwn(parsed, 'encryption_keys')
+	)
+		return text;
+	const open = text.indexOf('{') + 1;
+	const comma = Object.keys(parsed).length ? ',' : '';
+	return `${text.slice(0, open)}${member}${comma}${text.slice(open)}`;
+}
+
 // The same Fetch adapter runs in browsers, Node and Workers. All cryptographic
 // state and trust choices come from the compiled Wasm core. `proxied` is the default of the option
 // of that name, such as true on a page served from an onion address.
@@ -56,6 +78,8 @@ export function createTransportClass({
 		#closed = false;
 		#closing;
 		#refresh;
+		// The `encryption_keys` member that requests without one receive.
+		#encryptionKeys;
 		// Snapshots and everything in them are frozen, so every listener shares one.
 		#snapshot = Object.freeze({
 			evidence: null,
@@ -88,6 +112,16 @@ export function createTransportClass({
 				throw new TypeError('fetch and onMetadata must be functions');
 			const proxied = options.proxied ?? proxiedByDefault;
 			if (typeof proxied !== 'boolean') throw new TypeError('proxied must be a boolean');
+			const keys = options.encryptionKeys ?? {};
+			if (
+				!keys ||
+				typeof keys !== 'object' ||
+				Array.isArray(keys) ||
+				Object.entries(keys).some(([label, key]) => !label || typeof key !== 'string' || !key)
+			)
+				throw new TypeError('encryptionKeys must give a key for each label');
+			if (Object.keys(keys).length)
+				this.#encryptionKeys = `"encryption_keys":${JSON.stringify(keys)}`;
 			const patience = proxied ? PROXIED_PATIENCE : 1;
 			const config = transport_configuration(options.environment ?? 'prod');
 			this.#baseURL = baseURL(options.baseURL ?? `${config.e2ee_origin}/v1`);
@@ -204,7 +238,23 @@ export function createTransportClass({
 					'not_sent'
 				);
 			}
-			return this.#sessions.send(request, init?.onProgress);
+			// Routing simulation takes labels and no keys.
+			const keyed =
+				this.#encryptionKeys && url.pathname !== '/v1/policies/simulate'
+					? await this.#withEncryptionKeys(request)
+					: request;
+			return this.#sessions.send(keyed, init?.onProgress);
+		}
+
+		async #withEncryptionKeys(request) {
+			const headers = new Headers(request.headers);
+			headers.delete('content-length');
+			return new Request(request.url, {
+				method: 'POST',
+				headers,
+				body: withEncryptionKeys(await request.text(), this.#encryptionKeys),
+				signal: request.signal
+			});
 		}
 
 		close() {

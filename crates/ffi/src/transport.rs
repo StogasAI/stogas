@@ -1,6 +1,6 @@
 use super::{AbiError, input_slice, response_coded};
 use serde::{Deserialize, Serialize};
-use std::{ffi::c_char, sync::Mutex};
+use std::{collections::BTreeMap, ffi::c_char, sync::Mutex};
 use stogas_sdk::{SecurityMode, Transport as ManagedTransport, TransportError, TransportOptions};
 
 impl From<TransportError> for AbiError {
@@ -26,6 +26,7 @@ struct AbiTransportOptions {
     base_url: Option<String>,
     proxy: Option<String>,
     onion: bool,
+    encryption_keys: BTreeMap<String, String>,
 }
 
 impl Default for AbiTransportOptions {
@@ -37,6 +38,7 @@ impl Default for AbiTransportOptions {
             base_url: None,
             proxy: None,
             onion: false,
+            encryption_keys: BTreeMap::new(),
         }
     }
 }
@@ -88,6 +90,7 @@ pub unsafe extern "C" fn stogas_transport_start(
             proxy: configuration.proxy,
             onion: configuration.onion,
             no_proxy: None,
+            encryption_keys: configuration.encryption_keys.into_iter().collect(),
         };
         let transport = ManagedTransport::start(&options)?;
         let base_url = transport.base_url().to_owned();

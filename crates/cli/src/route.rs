@@ -74,6 +74,7 @@ impl Route {
             proxy: self.proxy.clone(),
             onion: self.onion,
             no_proxy: self.no_proxy.clone(),
+            encryption_keys: stogas::EncryptionKeys::default(),
         }
     }
 }

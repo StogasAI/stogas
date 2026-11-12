@@ -29,6 +29,7 @@ class Transport:
         base_url: str | None = None,
         proxy: str | None = None,
         onion: bool = False,
+        encryption_keys: dict[str, str] | None = None,
     ) -> Transport: ...
     @property
     def base_url(self) -> str: ...

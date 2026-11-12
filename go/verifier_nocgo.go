@@ -21,6 +21,7 @@ type TransportOptions struct {
 	BaseURL        string
 	Proxy          string
 	Onion          bool
+	EncryptionKeys map[string]string
 }
 
 // Transport is unavailable without cgo.

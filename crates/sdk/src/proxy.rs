@@ -8,7 +8,7 @@ use crate::{
 use anyhow::{Context as _, Result, bail};
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::{Body, Bytes, to_bytes},
     extract::{Request, State},
     http::{HeaderName, HeaderValue, Method, StatusCode, header},
     response::Response,
@@ -16,8 +16,10 @@ use axum::{
 };
 use futures_util::{StreamExt as _, stream};
 use rand::Rng as _;
+use serde::de::{Deserializer, IgnoredAny, MapAccess, Visitor};
 use std::{
     collections::HashSet,
+    fmt,
     net::SocketAddr,
     sync::{Arc, Weak, mpsc::SyncSender},
     time::Duration,
@@ -27,6 +29,7 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 use url::Url;
+use zeroize::Zeroizing;
 
 const REQUEST_BUDGET: Duration = Duration::from_hours(1);
 const CLOSE_BUDGET: Duration = Duration::from_secs(5);
@@ -40,6 +43,8 @@ pub struct ServeConfig {
     control_capability: String,
     client_capability: String,
     browser_origin: Option<String>,
+    /// The `encryption_keys` member that requests without one receive.
+    encryption_keys: Option<Zeroizing<String>>,
 }
 impl ServeConfig {
     pub fn new(
@@ -60,6 +65,7 @@ impl ServeConfig {
             control_capability: random_capability(),
             client_capability: random_capability(),
             browser_origin: browser_origin.map(secure_browser_origin).transpose()?,
+            encryption_keys: options.encryption_keys.member(),
         })
     }
     fn base_url(&self) -> String {
@@ -462,6 +468,11 @@ async fn forward_request(
             "invalid upstream URI",
         )
     })?;
+    let body = match &state.config.encryption_keys {
+        // Routing simulation takes labels and no keys.
+        Some(member) if path != "/v1/policies/simulate" => with_encryption_keys(body, member),
+        _ => body,
+    };
     let request = Request::from_parts(parts, body);
     let response = match &state.upstream {
         Upstream::Tls(client) => client
@@ -500,6 +511,62 @@ async fn forward_request(
         }
     }));
     Ok(Response::from_parts(parts, body))
+}
+/// Adds the transport's `encryption_keys` to a JSON object that has none. It reads only the
+/// member names, so the rest of the body stays byte for byte what the client sent, and the gateway
+/// answers for a body that is no JSON object.
+fn with_encryption_keys(body: Bytes, member: &str) -> Bytes {
+    let Ok(members) = serde_json::from_slice::<Members>(&body) else {
+        return body;
+    };
+    let Some(open) = body.iter().position(|byte| *byte == b'{') else {
+        return body;
+    };
+    if members.keys {
+        return body;
+    }
+    let mut joined = Vec::with_capacity(body.len() + member.len() + 1);
+    joined.extend_from_slice(&body[..=open]);
+    joined.extend_from_slice(member.as_bytes());
+    if members.any {
+        joined.push(b',');
+    }
+    joined.extend_from_slice(&body[open + 1..]);
+    joined.into()
+}
+
+/// What a JSON object's member names say: whether it has any, and whether one is
+/// `encryption_keys`.
+struct Members {
+    any: bool,
+    keys: bool,
+}
+
+impl<'de> serde::Deserialize<'de> for Members {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Names;
+        impl<'de> Visitor<'de> for Names {
+            type Value = Members;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a JSON object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Members, A::Error> {
+                let mut members = Members {
+                    any: false,
+                    keys: false,
+                };
+                while let Some(name) = map.next_key::<String>()? {
+                    map.next_value::<IgnoredAny>()?;
+                    members.any = true;
+                    members.keys |= name == "encryption_keys";
+                }
+                Ok(members)
+            }
+        }
+        deserializer.deserialize_map(Names)
+    }
 }
 fn is_local_browser_header(name: &HeaderName) -> bool {
     name == header::ORIGIN || name.as_str().starts_with("access-control-")
