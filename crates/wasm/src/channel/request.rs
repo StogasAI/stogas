@@ -13,11 +13,10 @@ use std::{
 
 use js_sys::{Function, Promise, Uint8Array, futures::future_to_promise};
 use stogas_core::{
-    channel::{ClientRequest, Error, Kind, ResponseDecoder},
+    channel::{ClientRequest, Error, Kind, PlaintextBuffer, ResponseDecoder},
     evidence::{Snapshot, VerifiedSession},
 };
 use wasm_bindgen::prelude::*;
-use zeroize::Zeroizing;
 
 use super::{ResponseCompletion, ResponseReceipt, channel_error};
 use crate::{evidence::EvidenceSnapshot, host_cipher::HostCipher};
@@ -36,7 +35,7 @@ struct RequestIo {
     decoder: Option<ResponseDecoder<HostCipher>>,
     /// The sealed request body, kept only when a receipt was requested: its digest needs the
     /// whole body.
-    request_body: Option<Zeroizing<Vec<u8>>>,
+    request_body: Option<PlaintextBuffer>,
     request_finished: bool,
 }
 
@@ -139,7 +138,7 @@ impl EncryptedRequest {
                 io: RefCell::new(Some(RequestIo {
                     request: Some(request),
                     decoder: None,
-                    request_body: receipt.then(|| Zeroizing::new(Vec::new())),
+                    request_body: receipt.then(PlaintextBuffer::default),
                     request_finished: false,
                 })),
                 closed: Cell::new(false),
@@ -216,7 +215,7 @@ impl EncryptedRequest {
     /// # Errors
     /// Rejects overlapping operations, record ordering/usage errors and writes after decoding.
     pub fn seal(&self, kind: u8, content: Vec<u8>) -> Result<Promise, JsValue> {
-        let content = Zeroizing::new(content);
+        let content = PlaintextBuffer::from(content);
         let (operation, mut io) = Operation::begin(&self.state)?;
         let kind = Kind::try_from(kind).map_err(|error| channel_error(&error))?;
         Ok(future_to_promise(async move {

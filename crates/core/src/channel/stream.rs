@@ -1,16 +1,15 @@
 use super::session::ResponseReader;
 use super::{
-    ClientRequest, Error, Kind,
+    ClientRequest, Error, Kind, PlaintextBuffer,
     cipher::{Cipher, SoftwareCipher},
     record_size,
 };
-use zeroize::{Zeroize as _, Zeroizing};
 
 /// Incremental response framing shared by native and browser transports. Only one encoded
 /// record is retained; authenticated plaintext borrows that buffer during the callback.
 pub struct ResponseDecoder<C: Cipher = SoftwareCipher> {
     request: Option<ResponseReader<C>>,
-    buffer: Zeroizing<Vec<u8>>,
+    buffer: PlaintextBuffer,
     needed: usize,
     finished: bool,
 }
@@ -24,7 +23,7 @@ impl<C: Cipher> ResponseDecoder<C> {
     pub(super) fn from_reader(request: ResponseReader<C>) -> Self {
         Self {
             request: Some(request),
-            buffer: Zeroizing::new(Vec::new()),
+            buffer: PlaintextBuffer::default(),
             needed: 4,
             finished: false,
         }
@@ -99,7 +98,6 @@ impl<C: Cipher> ResponseDecoder<C> {
     }
 
     fn clear_buffer(&mut self) {
-        self.buffer.as_mut_slice().zeroize();
         self.buffer.clear();
         self.needed = 4;
     }
