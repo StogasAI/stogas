@@ -154,6 +154,15 @@ pub struct Name {
     label: String,
 }
 
+/// A label and the file that holds its key, as `LABEL=FILE`.
+pub fn parse_label_file(value: &str) -> Result<(String, PathBuf), String> {
+    let (label, path) = value
+        .split_once('=')
+        .filter(|(_, path)| !path.is_empty())
+        .ok_or("name the key as LABEL=FILE")?;
+    Ok((parse_label(label)?, PathBuf::from(path)))
+}
+
 /// A label as an organization registers a key under it.
 pub fn parse_label(value: &str) -> Result<String, String> {
     let mut characters = value.chars();

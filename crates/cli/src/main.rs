@@ -294,6 +294,10 @@ struct ServeArgs {
     /// sends no `encryption_keys`. Repeat it for more keys.
     #[arg(long, value_name = "LABEL", value_parser = encryption_key::parse_label, requires = "organization")]
     encryption_key: Vec<String>,
+    /// Send the key in this file under this label, as --encryption-key does for a saved key.
+    /// Repeat it for more keys.
+    #[arg(long, value_name = "LABEL=FILE", value_parser = encryption_key::parse_label_file)]
+    encryption_key_file: Vec<(String, PathBuf)>,
 }
 
 #[tokio::main]
@@ -459,11 +463,19 @@ async fn run_verify(input: VerifyArgs) -> Result<()> {
 }
 
 async fn run_serve(input: ServeArgs, route: Route) -> Result<()> {
-    let mut keys = Vec::with_capacity(input.encryption_key.len());
+    let mut keys = std::collections::BTreeMap::new();
     if let Some(organization) = &input.organization {
-        for label in &input.encryption_key {
-            let key = encryption_key::saved(organization, label).await?;
-            keys.push((label.clone(), key.encoded.as_str().to_owned()));
+        for label in input.encryption_key {
+            let key = encryption_key::saved(organization, &label).await?;
+            keys.insert(label, key);
+        }
+    }
+    for (label, path) in input.encryption_key_file {
+        if keys
+            .insert(label.clone(), customer_encryption::read_key(&path)?)
+            .is_some()
+        {
+            bail!("--encryption-key and --encryption-key-file both name {label}");
         }
     }
     let shutdown = shutdown_signal(input.exit_on_stdin_close)?;
@@ -477,7 +489,10 @@ async fn run_serve(input: ServeArgs, route: Route) -> Result<()> {
                 proxy: route.proxy,
                 onion: route.onion,
                 no_proxy: route.no_proxy,
-                encryption_keys: keys.into_iter().collect(),
+                encryption_keys: keys
+                    .into_iter()
+                    .map(|(label, key)| (label, key.encoded.as_str().to_owned()))
+                    .collect(),
             },
             listen: input.listen,
             browser_origin: input.browser_origin,
@@ -1134,6 +1149,13 @@ mod tests {
             ),
             (&["--encryption-key", "prod"], false),
             (&["--organization", organization], false),
+            // A key in a file needs no organization, since no keychain entry is looked up.
+            (
+                &["--encryption-key-file", "prod=/run/secrets/prod.key"],
+                true,
+            ),
+            (&["--encryption-key-file", "prod"], false),
+            (&["--encryption-key-file", "Prod=key"], false),
         ] {
             let parsed = Cli::try_parse_from(["stogas", "serve"].iter().chain(arguments));
             assert_eq!(parsed.is_ok(), valid, "{arguments:?}");
