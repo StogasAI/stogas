@@ -306,12 +306,41 @@ def pypi(packages, version):
     wait_for(check, f"stogas {python_version} on PyPI")
 
 
-def ruby(packages, version):
+def gem_push(path, bundle, key):
+    """Push a gem with GitHub's build proof, as `gem push --attestation` does from RubyGems 3.6
+    on; the runner's RubyGems is 3.4. RubyGems.org accepts the proof only when this workflow made
+    it for these exact bytes, and shows it on the version's page."""
+    boundary = os.urandom(16).hex()
+    body = b"".join([
+        f'--{boundary}\r\nContent-Disposition: form-data; name="gem"; filename="{path.name}"\r\n'
+        "Content-Type: application/octet-stream\r\n\r\n".encode(),
+        path.read_bytes(),
+        f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="attestations"\r\n\r\n'
+        f"{json.dumps([bundle])}\r\n--{boundary}--\r\n".encode(),
+    ])
+    request = urllib.request.Request("https://rubygems.org/api/v1/gems", data=body, method="POST", headers={
+        "Authorization": key, "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "User-Agent": "stogas-sdk-release/1 (https://github.com/StogasAI/stogas)",
+    })
+    try:
+        with urllib.request.build_opener(NoRedirect).open(request, timeout=300) as response:
+            response.read(64 * 1024)
+    except urllib.error.HTTPError as error:
+        # RubyGems.org explains a refusal in plain text, which never repeats the key.
+        reason = error.read(4096).decode(errors="replace").strip()
+        raise RuntimeError(f"RubyGems.org refused {path.name} (HTTP {error.code}): {reason}") from None
+
+
+def ruby(packages, attestation):
+    """Push each platform gem with the build proof in `attestation`, a Sigstore bundle whose
+    subjects are every gem."""
+    bundle = json.loads(attestation.read_text())
+    key = os.environ["GEM_HOST_API_KEY"]
     for path in sorted(packages.glob("*.gem")):
         url = f"https://rubygems.org/downloads/{path.name}"
         check = lambda: exact_remote(path, url, STORAGE_ABSENT)
         if not check():
-            run(["gem", "push", str(path), "--host", "https://rubygems.org"])
+            gem_push(path, bundle, key)
         wait_for(check, path.name)
 
 
@@ -673,6 +702,7 @@ if __name__ == "__main__":
     parser.add_argument("--stage", action="store_true", help="npm only: leave each new version for a maintainer to approve")
     parser.add_argument("--trust", action="store_true", help="crates only: then let publish.yml alone publish each crate")
     parser.add_argument("--remote", help="tap and aur only: another Git remote, such as an HTTPS one for a manual run")
+    parser.add_argument("--attestation", type=Path, help="ruby only, and required: the Sigstore bundle that proves where every gem was built")
     args = parser.parse_args()
     if args.stage and args.ecosystem != "npm":
         parser.error("only npm stages packages")
@@ -680,6 +710,8 @@ if __name__ == "__main__":
         parser.error("only crates hand over to trusted publishing here")
     if args.remote and args.ecosystem not in ("tap", "aur"):
         parser.error("only tap and aur take another remote")
+    if (args.attestation is not None) != (args.ecosystem == "ruby"):
+        parser.error("ruby, and only ruby, takes --attestation")
     packages = args.packages.resolve()
     if args.ecosystem == "preview":
         preview(packages)
@@ -691,6 +723,8 @@ if __name__ == "__main__":
         npm(packages, manifest["version"], args.stage)
     elif args.ecosystem == "crates":
         crates(packages, manifest["version"], args.trust)
+    elif args.ecosystem == "ruby":
+        ruby(packages, args.attestation)
     elif args.ecosystem in ("tap", "aur"):
         globals()[args.ecosystem](packages, manifest["version"], *([args.remote] if args.remote else []))
         raise SystemExit
