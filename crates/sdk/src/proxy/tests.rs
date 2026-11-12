@@ -255,3 +255,52 @@ fn typed_failures_keep_revocation_separate_from_delivery_and_execution_uncertain
         ("invalid_request", "not_sent")
     );
 }
+
+#[test]
+fn a_transport_with_encryption_keys_adds_them_only_to_requests_that_send_none() {
+    let options = TransportOptions {
+        encryption_keys: [("providers", "key-one"), ("policies", "key-two")]
+            .into_iter()
+            .collect(),
+        ..TransportOptions::default()
+    };
+    assert_eq!(
+        format!("{:?}", options.encryption_keys),
+        r#"{"policies", "providers"}"#
+    );
+    let keyed = ServeConfig::new(&options, "127.0.0.1:1234", None).unwrap();
+    let member = keyed.encryption_keys.as_deref().unwrap();
+    let keys = r#""encryption_keys":{"policies":"key-two","providers":"key-one"}"#;
+    assert_eq!(member.as_str(), keys);
+    for (sent, forwarded) in [
+        // The rest of the body keeps its bytes, such as a number that a parser would round.
+        (
+            r#" {"model":"m","seed":12345678901234567890.5}"#.to_owned(),
+            format!(r#" {{{keys},"model":"m","seed":12345678901234567890.5}}"#),
+        ),
+        ("{}".to_owned(), format!("{{{keys}}}")),
+        // A request's own keys stand, and so does a body that is no JSON object.
+        (
+            r#"{"encryption_keys":{"providers":"mine"},"model":"m"}"#.to_owned(),
+            String::new(),
+        ),
+        (r#"["model"]"#.to_owned(), String::new()),
+        (r#"{"model":"#.to_owned(), String::new()),
+    ] {
+        let expected = if forwarded.is_empty() {
+            sent.clone()
+        } else {
+            forwarded
+        };
+        assert_eq!(
+            with_encryption_keys(Bytes::from(sent), member),
+            Bytes::from(expected)
+        );
+    }
+    assert!(config(None).encryption_keys.is_none());
+    let empty = TransportOptions {
+        encryption_keys: std::iter::once(("providers", "")).collect(),
+        ..TransportOptions::default()
+    };
+    assert!(empty.validate().is_err());
+}

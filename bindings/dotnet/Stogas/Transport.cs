@@ -13,6 +13,8 @@ public sealed record TransportOptions
     [JsonPropertyName("base_url")] public string? BaseUrl { get; init; }
     [JsonPropertyName("proxy")] public string? Proxy { get; init; }
     [JsonPropertyName("onion")] public bool Onion { get; init; }
+    /// <summary>Organization keys by registered label, sent with each request that sends no encryption_keys.</summary>
+    [JsonPropertyName("encryption_keys")] public IReadOnlyDictionary<string, string> EncryptionKeys { get; init; } = new Dictionary<string, string>();
 }
 
 public sealed class VerificationException(string message, string code) : Exception(message)

@@ -27,14 +27,16 @@ var ErrTransportClosed = errors.New("stogas transport is closed")
 // socks5h:// or http:// proxy for every connection, such as Tor's socks5h://127.0.0.1:9050,
 // with an optional username:password@; Onion reaches the environment at the onion address
 // that its verified evidence names, through Proxy, and leaves through the proxy's exit while
-// the evidence names none.
+// the evidence names none. EncryptionKeys holds organization keys by registered label, which
+// go as encryption_keys with each request that sends none.
 type TransportOptions struct {
-	Environment    string `json:"environment,omitempty"`
-	Security       string `json:"security,omitempty"`
-	MaxConnections uint64 `json:"max_connections,omitempty"`
-	BaseURL        string `json:"base_url,omitempty"`
-	Proxy          string `json:"proxy,omitempty"`
-	Onion          bool   `json:"onion,omitempty"`
+	Environment    string            `json:"environment,omitempty"`
+	Security       string            `json:"security,omitempty"`
+	MaxConnections uint64            `json:"max_connections,omitempty"`
+	BaseURL        string            `json:"base_url,omitempty"`
+	Proxy          string            `json:"proxy,omitempty"`
+	Onion          bool              `json:"onion,omitempty"`
+	EncryptionKeys map[string]string `json:"encryption_keys,omitempty"`
 }
 
 // Transport owns evidence recovery, attested TLS, E2EE, and streaming in the native Rust core.

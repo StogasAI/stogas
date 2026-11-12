@@ -2350,6 +2350,7 @@ dependencies = [
  "tower-service",
  "url",
  "webpki-roots",
+ "zeroize",
 ]
 
 [[package]]

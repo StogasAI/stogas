@@ -18,7 +18,11 @@ struct PythonTransport {
 #[pymethods]
 impl PythonTransport {
     #[new]
-    #[pyo3(signature = (*, environment = "prod", security = "tls", max_connections = 4, base_url = None, proxy = None, onion = false))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one parameter for each Python keyword"
+    )]
+    #[pyo3(signature = (*, environment = "prod", security = "tls", max_connections = 4, base_url = None, proxy = None, onion = false, encryption_keys = None))]
     fn new(
         py: Python<'_>,
         environment: &str,
@@ -27,6 +31,7 @@ impl PythonTransport {
         base_url: Option<String>,
         proxy: Option<String>,
         onion: bool,
+        encryption_keys: Option<std::collections::BTreeMap<String, String>>,
     ) -> PyResult<Self> {
         let options = TransportOptions {
             environment: serde_json::from_value(serde_json::Value::String(environment.to_owned()))
@@ -41,6 +46,7 @@ impl PythonTransport {
             proxy,
             onion,
             no_proxy: None,
+            encryption_keys: encryption_keys.unwrap_or_default().into_iter().collect(),
         };
         let inner = py
             .detach(move || ManagedTransport::start(&options))

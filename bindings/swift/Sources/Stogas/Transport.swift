@@ -11,10 +11,12 @@ public struct TransportOptions: Encodable, Sendable {
     public var proxy: String?
     /// Reach the environment at the onion address that its verified evidence names, through `proxy`.
     public var onion: Bool
+    /// Organization keys by registered label, sent with each request that sends no `encryption_keys`.
+    public var encryptionKeys: [String: String]
 
     public init(
         environment: String = "prod", security: String = "tls", maxConnections: UInt32 = 4, baseURL: String? = nil,
-        proxy: String? = nil, onion: Bool = false
+        proxy: String? = nil, onion: Bool = false, encryptionKeys: [String: String] = [:]
     ) {
         self.environment = environment
         self.security = security
@@ -22,12 +24,14 @@ public struct TransportOptions: Encodable, Sendable {
         self.baseURL = baseURL
         self.proxy = proxy
         self.onion = onion
+        self.encryptionKeys = encryptionKeys
     }
 
     enum CodingKeys: String, CodingKey {
         case environment, security, proxy, onion
         case maxConnections = "max_connections"
         case baseURL = "base_url"
+        case encryptionKeys = "encryption_keys"
     }
 }
 

@@ -48,6 +48,7 @@ tokio-rustls = "0.26.4"
 tower-service = "0.3.3"
 url.workspace = true
 webpki-roots.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 brotli = "9"

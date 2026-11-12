@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createTransportClass } from '../../bindings/shared/transport.js';
+import { createTransportClass, withEncryptionKeys } from '../../bindings/shared/transport.js';
 
 // Lifecycle doubles; cryptographic checks use the real Wasm core in browser tests.
 function binding(refresh) {
@@ -221,4 +221,25 @@ test('disposal aborts acquisition and failed creation frees the compiled verifie
 		/503/
 	);
 	assert.equal(fixture.freed, 2);
+});
+
+test('a transport adds its encryption keys only to requests that send none', () => {
+	const member = '"encryption_keys":{"providers":"key-one"}';
+	for (const [sent, forwarded] of [
+		// The rest of the body keeps its text, such as a number that a parser would round.
+		[
+			' {"model":"m","seed":12345678901234567890.5}',
+			` {${member},"model":"m","seed":12345678901234567890.5}`
+		],
+		['{}', `{${member}}`],
+		// A request's own keys stand, and so does a body that is no JSON object.
+		['{"encryption_keys":{"providers":"mine"},"model":"m"}', undefined],
+		['["model"]', undefined],
+		['{"model":', undefined]
+	])
+		assert.equal(withEncryptionKeys(sent, member), forwarded ?? sent);
+	const { Transport } = binding();
+	for (const encryptionKeys of [[], 'key', { providers: '' }, { providers: 1 }])
+		assert.throws(() => new Transport({ encryptionKeys }), TypeError);
+	new Transport({ encryptionKeys: { providers: 'key-one' } }).close();
 });

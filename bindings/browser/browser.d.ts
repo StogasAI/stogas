@@ -15,6 +15,11 @@ export interface StogasTransportOptions {
 	proxied?: boolean;
 	/** Delivered only after the requested terminal content receipt verifies. */
 	onMetadata?: (metadata: unknown) => void;
+	/**
+	 * Organization keys by registered label, sent as `encryption_keys` with each request that sends
+	 * none.
+	 */
+	encryptionKeys?: Record<string, string>;
 }
 
 /** Frozen, with everything in it, and shared by every listener. */

@@ -3,11 +3,14 @@
 use anyhow::{Result, bail};
 use evidence_client::EvidenceClient;
 use std::{
+    collections::BTreeMap,
+    fmt,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex, Weak, mpsc},
     thread,
 };
 use tokio::{runtime::Handle, sync::oneshot};
+use zeroize::Zeroizing;
 
 pub use stogas_core::evidence::{Error, Snapshot, Verifier};
 
@@ -83,6 +86,46 @@ pub enum SecurityMode {
     E2ee,
 }
 
+/// Organization encryption keys by the label that the organization registers each under.
+///
+/// The transport sends them as `encryption_keys` with each request that has none of its own, so
+/// the application's OpenAI-compatible client needs no change and never holds a key.
+#[derive(Clone, Default)]
+pub struct EncryptionKeys(BTreeMap<String, Zeroizing<String>>);
+
+impl EncryptionKeys {
+    /// The `encryption_keys` member of a request body as JSON text, or `None` without keys.
+    fn member(&self) -> Option<Zeroizing<String>> {
+        if self.0.is_empty() {
+            return None;
+        }
+        let keys: BTreeMap<&str, &str> = self
+            .0
+            .iter()
+            .map(|(label, key)| (label.as_str(), key.as_str()))
+            .collect();
+        let keys = Zeroizing::new(serde_json::to_string(&keys).ok()?);
+        Some(Zeroizing::new(format!("\"encryption_keys\":{}", *keys)))
+    }
+}
+
+impl<L: Into<String>, K: Into<String>> FromIterator<(L, K)> for EncryptionKeys {
+    fn from_iter<I: IntoIterator<Item = (L, K)>>(keys: I) -> Self {
+        Self(
+            keys.into_iter()
+                .map(|(label, key)| (label.into(), Zeroizing::new(key.into())))
+                .collect(),
+        )
+    }
+}
+
+/// Names the labels and never the keys.
+impl fmt::Debug for EncryptionKeys {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_set().entries(self.0.keys()).finish()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TransportOptions {
     pub environment: Environment,
@@ -102,6 +145,8 @@ pub struct TransportOptions {
     /// Hosts that connect directly instead of through `proxy`, as `NO_PROXY` lists them: names
     /// that also cover their subdomains, or `*` for every host.
     pub no_proxy: Option<String>,
+    /// Keys to send with each request that sends none.
+    pub encryption_keys: EncryptionKeys,
 }
 
 #[derive(Clone, Debug)]
@@ -123,6 +168,7 @@ impl Default for TransportOptions {
             proxy: None,
             onion: false,
             no_proxy: None,
+            encryption_keys: EncryptionKeys::default(),
         }
     }
 }
@@ -130,6 +176,16 @@ impl TransportOptions {
     fn validate(&self) -> Result<(), TransportError> {
         if self.max_connections == 0 {
             return Err(TransportError::options("max_connections must be positive"));
+        }
+        if self
+            .encryption_keys
+            .0
+            .iter()
+            .any(|(label, key)| label.is_empty() || key.is_empty())
+        {
+            return Err(TransportError::options(
+                "encryption_keys needs a label and a key for each entry",
+            ));
         }
         if self.onion && self.base_url.is_some() {
             return Err(TransportError::options(
