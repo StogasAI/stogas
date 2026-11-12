@@ -2,6 +2,7 @@
 //! record layer; application credentials are released only after verified setup.
 
 pub mod cipher;
+mod plaintext;
 mod ratchet;
 mod record;
 mod server;
@@ -9,6 +10,7 @@ mod session;
 pub mod setup;
 mod stream;
 
+pub use plaintext::PlaintextBuffer;
 pub use record::{
     MAX_RECORD_BYTES, MAX_RECORD_PLAINTEXT, MAX_REQUEST_WIRE_BYTES, MAX_RESPONSE_WIRE_BYTES,
     record_size,
