@@ -1,6 +1,8 @@
 """Check crate upload metadata and npm staging without a registry."""
 
 import contextlib
+import email.parser
+import email.policy
 import io
 import json
 import os
@@ -327,16 +329,36 @@ class StorageHostTests(unittest.TestCase):
     def test_pushes_a_gem_the_storage_host_does_not_hold(self):
         gem = self.packages / "stogas-1.2.3-x86_64-linux.gem"
         gem.write_bytes(b"gem")
+        proof = self.packages / "attestation.json"
+        proof.write_text('{"mediaType": "bundle"}\n')
         pushed = []
 
-        def run(arguments, **_):
-            pushed.append(arguments[:2])
+        def push(path, bundle, key):
+            pushed.append((path.name, bundle, key))
             self.served[f"https://rubygems.org/downloads/{gem.name}"] = gem.read_bytes()
 
-        with mock.patch.object(publish, "run", side_effect=run):
-            publish.ruby(self.packages, "1.2.3")
-            publish.ruby(self.packages, "1.2.3")
-        self.assertEqual(pushed, [["gem", "push"]])
+        with mock.patch.dict(os.environ, {"GEM_HOST_API_KEY": "rubygems-key"}), mock.patch.object(publish, "gem_push", side_effect=push):
+            publish.ruby(self.packages, proof)
+            publish.ruby(self.packages, proof)
+        self.assertEqual(pushed, [(gem.name, {"mediaType": "bundle"}, "rubygems-key")])
+
+    def test_sends_a_gem_and_its_proof_as_gem_push_attestation_does(self):
+        # The form that RubyGems 4.0.20's `gem push --attestation` sent on November 12, 2026.
+        gem = self.packages / "stogas-1.2.3-x86_64-linux.gem"
+        gem.write_bytes(b"gem\r\n--bytes")
+        sent = []
+        opener = mock.Mock()
+        opener.open.side_effect = lambda request, timeout: sent.append(request) or contextlib.closing(io.BytesIO(b"Successfully registered gem"))
+        with mock.patch.object(publish.urllib.request, "build_opener", return_value=opener):
+            publish.gem_push(gem, {"mediaType": "bundle"}, "rubygems-key")
+        [request] = sent
+        self.assertEqual((request.full_url, request.get_header("Authorization")), ("https://rubygems.org/api/v1/gems", "rubygems-key"))
+        head = f"Content-Type: {request.get_header('Content-type')}\r\n\r\n".encode()
+        form = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(head + request.data)
+        self.assertEqual([(part["Content-Disposition"], part["Content-Type"], part.get_payload(decode=True)) for part in form.iter_parts()], [
+            ('form-data; name="gem"; filename="stogas-1.2.3-x86_64-linux.gem"', "application/octet-stream", b"gem\r\n--bytes"),
+            ('form-data; name="attestations"', None, b'[{"mediaType": "bundle"}]'),
+        ])
 
     def test_other_registries_still_fail_on_403(self):
         self.served.clear()
