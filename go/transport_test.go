@@ -37,12 +37,16 @@ func TestTransportRejectsInvalidConfigurationBeforeEvidenceAcquisition(t *testin
 }
 
 func TestTransportPassesTheProxyAndOnionToTheNativeTransport(t *testing.T) {
-	for options, message := range map[TransportOptions]string{
-		{Proxy: "socks5://127.0.0.1:9050"}:              "use socks5h://",
-		{Proxy: "socks5h://127.0.0.1"}:                  "needs a host and a port",
-		{Onion: true}:                                   "onion needs a proxy",
-		{Proxy: "socks5://127.0.0.1:9050", Onion: true}: "use socks5h://",
+	for _, test := range []struct {
+		options TransportOptions
+		message string
+	}{
+		{TransportOptions{Proxy: "socks5://127.0.0.1:9050"}, "use socks5h://"},
+		{TransportOptions{Proxy: "socks5h://127.0.0.1"}, "needs a host and a port"},
+		{TransportOptions{Onion: true}, "onion needs a proxy"},
+		{TransportOptions{Proxy: "socks5://127.0.0.1:9050", Onion: true}, "use socks5h://"},
 	} {
+		options, message := test.options, test.message
 		t.Run(fmt.Sprintf("%+v", options), func(t *testing.T) {
 			transport, err := NewTransport(options)
 			if transport != nil {
