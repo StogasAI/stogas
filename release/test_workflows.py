@@ -42,6 +42,14 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertEqual(len(builds), ci.count("PyO3/maturin-action@"))
         self.assertEqual(set(pins) | set(builds), {pins[0]})
 
+    def test_wasm_bindgen_runs_at_the_version_of_its_locked_library(self):
+        # wasm-bindgen refuses a module that another version of its library built.
+        root = WORKFLOWS.parents[1]
+        locked = re.search(r'\[\[package\]\]\nname = "wasm-bindgen"\nversion = "([^"]+)"', (root / "Cargo.lock").read_text())[1]
+        pins = re.findall(r"wasm-bindgen-cli --version =?(\S+)", (root / "release" / "Dockerfile").read_text() + (WORKFLOWS / "ci.yml").read_text())
+        self.assertEqual(len(pins), 2)
+        self.assertEqual(set(pins), {locked})
+
 
 class PublishWorkflowTests(unittest.TestCase):
     def test_publication_ends_by_installing_from_every_channel_without_credentials(self):
