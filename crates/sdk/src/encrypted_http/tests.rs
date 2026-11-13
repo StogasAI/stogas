@@ -725,6 +725,7 @@ async fn sse_terminal_waits_for_authenticated_completion_without_receipt_opt_in(
             }),
         );
         let server = Server::new(app).await;
+        let limit = deadline();
         let response = send(
             &http(),
             server.endpoint.clone(),
@@ -733,7 +734,7 @@ async fn sse_terminal_waits_for_authenticated_completion_without_receipt_opt_in(
             Request::post("/v1/chat/completions")
                 .body(Bytes::from_static(b"{}"))
                 .unwrap(),
-            Instant::now() + Duration::from_secs(1),
+            limit,
             None,
         )
         .await
@@ -749,10 +750,17 @@ async fn sse_terminal_waits_for_authenticated_completion_without_receipt_opt_in(
                 .await
                 .is_err()
         );
-        if fault != "stall" {
+        if fault == "stall" {
+            // The terminal record never comes, so the deadline ends the body: skip to it.
+            tokio::time::pause();
+            tokio::time::advance(limit - Instant::now() + Duration::from_millis(1)).await;
+        } else {
             release.add_permits(1);
         }
         let completion = body.frame().await.unwrap();
+        if fault == "stall" {
+            tokio::time::resume();
+        }
         if fault == "none" {
             assert_eq!(completion.unwrap().into_data().unwrap(), b"\n\n".as_slice());
             assert!(body.frame().await.is_none());
