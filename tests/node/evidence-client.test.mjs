@@ -530,7 +530,11 @@ test(
 			}
 			const label = JSON.stringify(kase);
 			assert.deepEqual({ result, requests: log.splice(0), current }, state, label);
-			assert.ok(took >= elapsed - 2 && took < elapsed + 250, `${label} took ${took} ms`);
+			// A case that returns at once never waits for the hedge delay. The cases share one event
+			// loop, so a case that waits leaves room for the others' verification, as the Rust
+			// client's test does.
+			const slack = elapsed === 0 ? 800 : 1_500;
+			assert.ok(took >= elapsed - 2 && took < elapsed + slack, `${label} took ${took} ms`);
 			if (result.failure) {
 				// A failed acquisition pauses every caller without contacting either origin.
 				await assert.rejects(client.acquire(undefined, check), /cooling down/, label);
