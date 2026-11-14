@@ -75,7 +75,7 @@ fn platform_facts_read_and_write_the_json_that_stogas_stores() {
 #[test]
 fn the_readme_policy_is_valid() {
     let readme = include_str!("../../README.md");
-    let (_, rest) = readme.split_once("```json\n").unwrap();
+    let (_, rest) = readme.split_once("```json").unwrap();
     let (example, _) = rest.split_once("```").unwrap();
     let example = example.replace("<96 lowercase hexadecimal digits>", &"ab".repeat(48));
     let policy: Policy = serde_json::from_str(&example).unwrap();

@@ -59,8 +59,8 @@ export default {
 		const attested = (bundle) =>
 			verify_github_attestation(
 				new TextEncoder().encode(bundle),
-				JSON.stringify(attestation.subjects),
-				JSON.stringify(attestation.policy),
+				attestation.subjects,
+				attestation.policy,
 				attestation.trustedRoot
 			);
 		try {
