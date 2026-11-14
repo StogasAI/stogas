@@ -106,7 +106,6 @@ pub struct GatewayReleaseBuild {
     pub environment: GatewayReleaseBuildEnvironment,
     pub go_vendor_tree_sha256: String,
     pub go_version: String,
-    pub guest_ca_bundle_path: String,
     pub guix_channel_commit: String,
     pub input_sha256: BTreeMap<String, String>,
     pub kernel_config_sha256: String,
