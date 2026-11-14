@@ -688,7 +688,6 @@ fn gateway_release_manifest_shape_is_valid(manifest: &GatewayReleaseManifest) ->
         && build.environment.source_date_epoch == "1"
         && build.environment.tz == "UTC"
         && build.environment.umask == "022"
-        && build.guest_ca_bundle_path == "/etc/ssl/certs/ca-certificates.crt"
         && is_lower_hex(&build.guix_channel_commit, 20)
         && !build.input_sha256.is_empty()
         && build.input_sha256.len() <= 256
@@ -704,7 +703,6 @@ fn validate_gateway_release_build(build: &GatewayReleaseBuild) -> Result<(), Err
         "core/go.sum",
         "transports/go.mod",
         "transports/go.sum",
-        "guix/nss-certs/ca-certificates.crt",
         "stogas/release/guix/cmdline.txt",
         "stogas/release/guix/os-release",
         "stogas/release/pins.lock.json",
@@ -1968,7 +1966,6 @@ mod tests {
                     "environment": { "lc_all": "C", "source_date_epoch": "1", "tz": "UTC", "umask": "022" },
                     "go_vendor_tree_sha256": "17".repeat(32),
                     "go_version": "go1.25.0",
-                    "guest_ca_bundle_path": "/etc/ssl/certs/ca-certificates.crt",
                     "guix_channel_commit": "19".repeat(20),
                     "input_sha256": {
                         "stogas/release/guix/cmdline.txt": "12".repeat(32),
@@ -1976,7 +1973,6 @@ mod tests {
                         "core/go.sum": "14".repeat(32),
                         "transports/go.mod": "15".repeat(32),
                         "transports/go.sum": "16".repeat(32),
-                        "guix/nss-certs/ca-certificates.crt": "18".repeat(32),
                         "stogas/release/guix/os-release": "23".repeat(32),
                         "stogas/release/pins.lock.json": "25".repeat(32),
                         "source": "20".repeat(32),
