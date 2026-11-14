@@ -177,6 +177,15 @@ pub fn cases() -> Vec<Case> {
     };
     cases.extend([
         file(
+            "azure-genoa",
+            "azure-genoa/report.bin",
+            "azure-genoa/vcek.der",
+            Product::Genoa,
+            3,
+            Some([0x19, 0x11, 0x01]),
+            "0a00000000001754",
+        ),
+        file(
             "go-sev-guest",
             "go-sev-guest/report.bin",
             "go-sev-guest/vcek.der",
