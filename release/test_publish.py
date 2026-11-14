@@ -282,6 +282,27 @@ class ReadbackTests(unittest.TestCase):
                 publish.maven(directory, "1.2.3")
         self.assertEqual(commands, [])
 
+    def test_maven_checks_each_signature_before_deploying_and_as_central_serves_it(self):
+        # Central never replaces a published file, so a bad signature would stay.
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-maven-test-")))
+        names = ("stogas-1.2.3.jar", "stogas-1.2.3.pom")
+        for name in names:
+            (directory / name).write_bytes(name.encode())
+        served, steps = {}, []
+        def run(arguments, **_):
+            tool, action, *rest = arguments
+            steps.append((tool, action, Path(rest[-1]).name if tool == "cosign" else None))
+            if action == "verify-blob":
+                self.assertIn("https://github.com/StogasAI/stogas/.github/workflows/publish.yml@refs/tags/v1.2.3", arguments)
+            if tool == "jreleaser":
+                for name in names:
+                    url = f"https://repo.maven.apache.org/maven2/ai/stogas/stogas/1.2.3/{name}"
+                    served.update({url: name.encode(), f"{url}.sigstore.json": b"bundle"})
+        with mock.patch.object(publish, "download", side_effect=lambda url, absent=(404,): served.get(url)), mock.patch.object(publish, "run", side_effect=run):
+            publish.maven(directory, "1.2.3")
+        signing = [step for name in names for step in (("cosign", "sign-blob", name), ("cosign", "verify-blob", name))]
+        self.assertEqual(steps, [*signing, ("jreleaser", "deploy", None), *(("cosign", "verify-blob", name) for name in names)])
+
 
 class StorageHostTests(unittest.TestCase):
     """static.crates.io and rubygems.org/downloads answered 403 for a missing file on November 5, 2026."""

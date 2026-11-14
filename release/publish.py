@@ -25,7 +25,7 @@ import zipfile
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-from artifacts import digest, source_digest, unpack
+from artifacts import REPOSITORY, digest, source_digest, unpack
 import channels
 from gate import CRATES, check_release, crate_refusals
 
@@ -373,10 +373,14 @@ def nuget(packages, version):
 
 
 def maven(packages, version):
-    artifacts = [path for path in packages.iterdir() if path.suffix in {".pom", ".jar", ".aar", ".module"}]
+    artifacts = sorted(path for path in packages.iterdir() if path.suffix in {".pom", ".jar", ".aar", ".module"})
     def url(path):
         name = "stogas-android" if path.name.startswith("stogas-android-") else "stogas"
         return f"https://repo.maven.apache.org/maven2/ai/stogas/{name}/{version}/{path.name}"
+    # Central checks a Sigstore signature beside each file's PGP signature. This workflow makes it
+    # with its GitHub identity at the release tag, in the log that Sigstore's signing config names.
+    def verify(path, bundle):
+        run(["cosign", "verify-blob", "--bundle", str(bundle), "--certificate-identity", f"{REPOSITORY}/.github/workflows/publish.yml@refs/tags/v{version}", "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com", str(path)])
     # Central publishes a deployment whole, but repo.maven.apache.org serves its files as they
     # sync, so any file there means the deployment exists and readback waits for the rest.
     if not any([exact_remote(path, url(path)) for path in artifacts]):
@@ -389,8 +393,20 @@ def maven(packages, version):
                 destination = work / "release-staging/maven/ai/stogas" / name / version / path.name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(path, destination)
+                run(["cosign", "sign-blob", "--yes", "--bundle", f"{destination}.sigstore.json", str(destination)])
+                verify(path, f"{destination}.sigstore.json")
             run(["jreleaser", "deploy", "--config-file", str(work / "jreleaser.yml"), "--basedir", str(Path(__file__).resolve().parents[1]), "--output-directory", str(work / "output")], env={**os.environ, "JRELEASER_PROJECT_VERSION": version})
-    wait_for(lambda: all(exact_remote(path, url(path)) for path in artifacts), f"ai.stogas {version} on Maven Central", minutes=30)
+    pending = set(artifacts)
+    def served():
+        for path in sorted(pending):
+            bundle = exact_remote(path, url(path)) and download(f"{url(path)}.sigstore.json")
+            if bundle:
+                with tempfile.TemporaryDirectory(prefix="stogas-central-") as temporary:
+                    (Path(temporary) / "bundle").write_bytes(bundle)
+                    verify(path, Path(temporary) / "bundle")
+                pending.remove(path)
+        return not pending
+    wait_for(served, f"ai.stogas {version} on Maven Central", minutes=30)
 
 
 def go(packages, version, source):
