@@ -23,8 +23,8 @@ env:
   TAG: ${{ inputs.tag }}
 
 jobs:
-  # Homebrew, Scoop and the AUR follow the newest full release, or the newest preview before
-  # the first; crates.io and the container registry keep every version.
+  # Homebrew, Scoop, the AUR and the install scripts follow the newest full release, or the
+  # newest preview before the first; PyPI, crates.io and the container registry keep every version.
   offered:
     name: Find the release that Homebrew, Scoop and the AUR offer
     runs-on: ubuntu-24.04
@@ -33,8 +33,9 @@ jobs:
       contents: read
     outputs:
       version: ${{ steps.offered.outputs.version }}
+      python: ${{ steps.offered.outputs.python }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - id: offered
@@ -46,6 +47,7 @@ jobs:
             exit 1
           fi
           echo "version=$(python3 -B release/publish.py offered)" >> "$GITHUB_OUTPUT"
+          echo "python=$(cd release && python3 -B -c 'import sys; from gate import python_version; print(python_version(sys.argv[1]))' "${TAG#v}")" >> "$GITHUB_OUTPUT"
 
   homebrew:
     name: Homebrew (${{ matrix.os }})
@@ -130,6 +132,71 @@ jobs:
             exit 1
           fi
 
+  # The scripts on main install the newest release, or the one that --version names.
+  script:
+    name: Install script (${{ matrix.os }})
+    needs: offered
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-2025, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      OFFERED: ${{ needs.offered.outputs.version }}
+    steps:
+      - if: runner.os != 'Windows'
+        name: Install with install.sh
+        run: |
+          check() {
+            installed=$("$RUNNER_TEMP/$1/stogas" --version)
+            if [ "$installed" != "stogas $2" ]; then
+              echo "::error::install.sh installed $installed, not stogas $2"
+              exit 1
+            fi
+          }
+          curl -fsSL https://raw.githubusercontent.com/StogasAI/stogas/main/install.sh | sh -s -- --dir "$RUNNER_TEMP/newest"
+          check newest "$OFFERED"
+          curl -fsSL https://raw.githubusercontent.com/StogasAI/stogas/main/install.sh | sh -s -- --dir "$RUNNER_TEMP/tagged" --version "$TAG"
+          check tagged "${TAG#v}"
+      - if: runner.os == 'Windows'
+        name: Install with install.ps1
+        shell: pwsh
+        run: |
+          $script = Invoke-RestMethod https://raw.githubusercontent.com/StogasAI/stogas/main/install.ps1
+          $env:STOGAS_INSTALL_DIR = Join-Path $env:RUNNER_TEMP 'newest'
+          Invoke-Expression $script
+          $env:STOGAS_INSTALL_DIR = Join-Path $env:RUNNER_TEMP 'tagged'
+          $env:STOGAS_VERSION = $env:TAG
+          Invoke-Expression $script
+          foreach ($check in @(@('newest', $env:OFFERED), @('tagged', $env:TAG.TrimStart('v')))) {
+            $installed = & (Join-Path $env:RUNNER_TEMP "$($check[0])\stogas.exe") --version
+            if ($installed -ne "stogas $($check[1])") { throw "install.ps1 installed $installed, not stogas $($check[1])" }
+          }
+  # Since every wheel installs the CLI as a script, pipx and uv run it from PyPI.
+  pypi:
+    name: PyPI (${{ matrix.os }})
+    needs: offered
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-2025, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHON_VERSION: ${{ needs.offered.outputs.python }}
+    steps:
+      - name: Run the CLI with pipx
+        run: |
+          installed=$(pipx run --no-cache --spec "stogas==$PYTHON_VERSION" stogas --version)
+          if [ "$installed" != "stogas ${TAG#v}" ]; then
+            echo "::error::pipx ran $installed, not stogas ${TAG#v}"
+            exit 1
+          fi
+
   binstall:
     name: cargo-binstall (${{ matrix.os }})
     strategy:
@@ -185,7 +252,7 @@ jobs:
             exit 0
           fi
           gh attestation verify "oci://$image" --repo StogasAI/stogas \
-            --signer-workflow StogasAI/stogas/.github/workflows/publish.yml \
+            --signer-workflow StogasAI/stogas/.github/workflows/release.yml \
             --source-ref "refs/tags/$TAG" --deny-self-hosted-runners
           installed=$(docker run --rm "$image" --version)
           if [ "$installed" != "stogas $version" ]; then

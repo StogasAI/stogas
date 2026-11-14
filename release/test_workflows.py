@@ -44,7 +44,7 @@ class CiWorkflowTests(unittest.TestCase):
         pins = re.findall(r"maturin(?:==|-)([0-9]+\.[0-9]+\.[0-9]+)\b", (release / "Dockerfile").read_text() + (release / "apple-requirements.txt").read_text())
         self.assertEqual(len(pins), 2)
         ci = (WORKFLOWS / "ci.yml").read_text()
-        builds = re.findall(r"uses: PyO3/maturin-action@[0-9a-f]+\n        with:\n(?:          #.*\n)?          maturin-version: v(\S+)\n", ci)
+        builds = re.findall(r"uses: PyO3/maturin-action@[0-9a-f]+ # v\S+\n        with:\n(?:          #.*\n)?          maturin-version: v(\S+)\n", ci)
         self.assertEqual(len(builds), ci.count("PyO3/maturin-action@"))
         self.assertEqual(set(pins) | set(builds), {pins[0]})
 
@@ -61,7 +61,7 @@ class PublishWorkflowTests(unittest.TestCase):
     def test_publication_ends_by_installing_from_every_channel_without_credentials(self):
         self.assertIn("uses: $/.github/workflows/installs.yml\n", jobs("publish.yml")["installs"])
         installs = (WORKFLOWS / "installs.yml").read_text()
-        self.assertEqual(set(jobs("installs.yml")), {"offered", "homebrew", "scoop", "aur", "binstall", "container"})
+        self.assertEqual(set(jobs("installs.yml")), {"offered", "homebrew", "scoop", "aur", "script", "pypi", "binstall", "container"})
         for forbidden in (": write", "secrets.", "id-token"):
             self.assertNotIn(forbidden, installs)
 

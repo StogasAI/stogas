@@ -33,7 +33,7 @@ jobs:
     outputs:
       matrix: ${{ steps.targets.outputs.matrix }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Require a release tag whose commit passed CI
@@ -86,11 +86,11 @@ jobs:
     env:
       PLATFORM: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - if: runner.os == 'macOS'
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.14.7'
       - if: runner.os == 'macOS'
@@ -110,7 +110,7 @@ jobs:
           python3 -m pip install --require-hashes --only-binary=:all: -r release/apple-requirements.txt
       - name: Build production packages from an immutable source snapshot
         run: python3 -B release/release.py build --platform "$PLATFORM" --out "$RUNNER_TEMP/sdk-build" --archive "$RUNNER_TEMP/$PLATFORM.tar.gz"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sdk-build-${{ matrix.platform }}
           path: ${{ runner.temp }}/${{ matrix.platform }}.tar.gz
@@ -124,10 +124,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: sdk-build-*
           path: ${{ runner.temp }}/shards
@@ -137,7 +137,7 @@ jobs:
           python3 -B release/release.py collect "$RUNNER_TEMP"/shards/*.tar.gz --out "$RUNNER_TEMP/sdk-release" --complete
           python3 -B release/release.py package "$RUNNER_TEMP/sdk-release"
           python3 -B release/release.py gate "$RUNNER_TEMP/sdk-release/packages" --packages-only
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sdk-packages
           path: ${{ runner.temp }}/sdk-release/packages
@@ -178,16 +178,16 @@ jobs:
           - { name: darwin-arm64, platform: darwin-arm64, desktop: true, runner: macos-15 }
           - { name: ios-simulator-arm64, platform: ios-simulator-arm64, runner: macos-15 }
           # x86_64 system images under KVM. Google's native bridge in the API 35
-          # images runs ARM64 code; the API 33 image has none. A real ARM64
+          # images runs ARM64 code; the API 26 image has none. A real ARM64
           # phone runs the Android package with 4 KB pages.
           - {
               name: android-amd64-4k,
               platform: android-amd64,
               runner: ubuntu-24.04,
-              api: 33,
+              api: 26,
               tag: google_apis,
-              image: x86_64-33_r17.zip,
-              image-sha256: 0455f853dcaf23e89b44f810e4b6391e8ef356326ec0e6c25b7f3f9de9ff5659
+              image: x86_64-26_r16.zip,
+              image-sha256: cd19a220610518b107ba8bca5da16088bb07d5ffedb53106ca9caf9adda06a4d
             }
           - {
               name: android-amd64-16k,
@@ -258,14 +258,14 @@ jobs:
       attestations: write
       id-token: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: sdk-packages
           path: ${{ runner.temp }}/sdk-packages
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: sdk-report-*
           path: ${{ runner.temp }}/reports
@@ -296,22 +296,43 @@ jobs:
       # `gh attestation verify` works on any single file.
       - name: Create one build proof for every file
         id: attest
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: ${{ runner.temp }}/sdk-packages/*
+      # The registry serves the container image that the release holds, under the digest its
+      # index names, so `gh attestation verify oci://…` checks the image with this workflow's
+      # proof too. Publication pushes the image.
+      - name: Read the container image's digest
+        id: image
+        run: |
+          set -euo pipefail
+          digest=$(tar -xOf "$RUNNER_TEMP/sdk-packages/stogas-container-$GITHUB_REF_NAME.tar" index.json | jq -r '.manifests[0].digest')
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Create a build proof for the container image
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/stogasai/stogas
+          subject-digest: ${{ steps.image.outputs.digest }}
+          # GitHub's artifact inventory would need artifact-metadata: write; the proof needs none.
+          create-storage-record: false
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
           ATTESTATION_PATH: ${{ steps.attest.outputs.bundle-path }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
           PREVIEW: ${{ inputs.preview }}
         run: |
           set -euo pipefail
           cp "$ATTESTATION_PATH" "$RUNNER_TEMP/sdk-packages/github-attestation.jsonl"
           notes="Verify downloads: https://stogas.ai/docs/reproducible-builds#verify-an-sdk-download"
+          # shellcheck disable=SC2016 # Markdown code spans need literal backticks.
           if [ "$PREVIEW" = true ]; then
             verify="gh attestation verify <file> --repo $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release.yml --source-ref $GITHUB_REF --deny-self-hosted-runners"
-            notes=$(printf 'Pre-release without a Stogas signature. Check each download with its GitHub build attestation:\n\n```console\n%s\n```' "$verify")
+            notes=$(printf 'Check each download with its GitHub build attestation:\n\n```console\n%s\n```' "$verify")
           fi
+          # shellcheck disable=SC2016 # Markdown code spans need literal backticks.
+          notes=$(printf '%s\n\nContainer image: `ghcr.io/stogasai/stogas:%s@%s`' "$notes" "${GITHUB_REF_NAME#v}" "$IMAGE_DIGEST")
           prerelease=()
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/sdk-packages/"* \

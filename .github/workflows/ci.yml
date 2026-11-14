@@ -33,10 +33,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
             . -> target
@@ -75,6 +75,23 @@ jobs:
       - name: Test the release scripts
         if: ${{ !cancelled() }}
         run: python3 -B -m unittest discover -s release -p 'test_*.py' -v
+      # actionlint checks the workflows' syntax and expressions and runs ShellCheck on their
+      # scripts. Version 1.7.12 does not know workflow cache modes, concurrency queues or `$/`
+      # workflow calls yet. zizmor audits the workflows for security problems, and checks each
+      # pinned action commit against its repository and version comment.
+      - name: Check the workflows and install scripts
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          actionlint=rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+          status=0
+          docker run --rm -v "$PWD:/repo:ro" -w /repo "$actionlint" -ignore 'unexpected key "cache-mode"' -ignore 'unexpected key "queue"' -ignore 'reusable workflow call "\$/' || status=1
+          docker run --rm -e GH_TOKEN -v "$PWD:/repo:ro" -w /repo ghcr.io/zizmorcore/zizmor@sha256:3014cc8f68f663935f69b3c3e0e41f5ce102b268d97db13db0f62208747f860d --format github . || status=1
+          docker run --rm -v "$PWD:/repo:ro" -w /repo --entrypoint shellcheck "$actionlint" install.sh || status=1
+          # shellcheck disable=SC2016 # PowerShell expands its own variables.
+          pwsh -NoProfile -Command '$found = Invoke-ScriptAnalyzer -Path install.ps1; $found | Format-List; if ($found) { exit 1 }' || status=1
+          exit "$status"
 
   fuzz-regressions:
     name: Fuzz regressions
@@ -87,11 +104,11 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: nightly-2026-07-01
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: rustup install --no-self-update --profile minimal "$RUSTUP_TOOLCHAIN"
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: fuzz
       - run: cargo install cargo-fuzz --version =0.13.2 --locked
@@ -119,12 +136,12 @@ jobs:
       # The workspace's rust-version.
       RUSTUP_TOOLCHAIN: 1.94.1
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install Rust ${{ env.RUSTUP_TOOLCHAIN }}
         run: rustup install --no-self-update --profile minimal "$RUSTUP_TOOLCHAIN"
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Check every crate
         run: cargo check --locked --workspace --all-targets
       - name: Test the gateway feature set
@@ -135,7 +152,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # The flake builds the CLI from this source with the Rust that flake.lock's nixpkgs has,
@@ -152,10 +169,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: tests/security/probe
       - name: Install ProVerif and Valgrind
@@ -190,27 +207,27 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: sigstore/sigstore-conformance
           # sigstore-conformance v0.0.29
           ref: 21533cde107c734ebc153c3e3a24d75fc9811a36
           path: sigstore-conformance
           persist-credentials: false
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: sigstore/sigstore-go
           ref: 55aa6240784677449a564e66a0fca7a6a3605ecd
           path: sigstore-go
           persist-credentials: false
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version-file: sigstore-go/go.mod
           cache-dependency-path: sigstore-go/go.sum
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Compare the RustCrypto and native backends
         run: cargo test --locked --package stogas-sigstore --test native_differential
       - name: Run the official conformance cases
@@ -305,10 +322,10 @@ jobs:
       PLATFORM: ${{ matrix.platform }}
       GO_TARGET: ${{ matrix.go-target }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: 'Rust: workspace tests'
         run: cargo test --locked --workspace --all-targets
       - name: 'Rust: staging trust policy and transport'
@@ -319,11 +336,11 @@ jobs:
           CARGO_TARGET_DIR: target
         run: cargo test --locked --manifest-path examples/rust-openai/Cargo.toml
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.10'
       - name: 'Python: build the wheel'
-        uses: PyO3/maturin-action@36db84001d74475ad1b8e6613557ae4ee2dc3598
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           # The maturin that releases build with.
           maturin-version: v1.15.0
@@ -340,7 +357,7 @@ jobs:
           python -m pip install -r examples/python-openai/requirements.txt
           python -m unittest discover -s examples/python-openai -v
       - name: 'Python: build the staging wheel'
-        uses: PyO3/maturin-action@36db84001d74475ad1b8e6613557ae4ee2dc3598
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           maturin-version: v1.15.0
           manylinux: 'off'
@@ -370,14 +387,14 @@ jobs:
       - if: matrix.platform == 'linux-amd64'
         name: Release consumer tests, offline
         run: scripts/release-consumers.sh
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: '17'
-      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           dotnet-version: '10.0.x'
-      - uses: ruby/setup-ruby@e8944e80fb94b20106697132f8c20c665fab29e9
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
         with:
           ruby-version: '3.3'
       - name: 'Java: package and OpenAI client example'
@@ -412,7 +429,7 @@ jobs:
           swift@sha256:9bea530093ffff8cf6c259991715ee843fe4d0f932e612f7f4b79cca6e00db87
           swift test -j 4
 
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version-file: go/go.mod
           cache-dependency-path: |
@@ -465,7 +482,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Stage the C library in the language packages
@@ -477,11 +494,11 @@ jobs:
           mkdir -p go/native/linux-amd64
           objcopy --strip-debug --remove-section=.llvmbc --remove-section=.llvmcmd \
             target/debug/libstogas_ffi.a go/native/linux-amd64/libstogas_ffi.a
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.15'
       - name: 'Python 3.15: build the wheel'
-        uses: PyO3/maturin-action@36db84001d74475ad1b8e6613557ae4ee2dc3598
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           maturin-version: v1.15.0
           manylinux: 'off'
@@ -491,19 +508,19 @@ jobs:
           python -m pip install dist/*.whl -r bindings/python/tests/requirements.txt
           python -m unittest discover -s bindings/python/tests -v
           python -m mypy.stubtest stogas
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: '25'
       - name: 'Java 25: package'
         run: mvn -q -f bindings/java/pom.xml install
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: '27'
       - name: 'Java 27: package'
         run: mvn -q -f bindings/java/pom.xml install
-      - uses: ruby/setup-ruby@e8944e80fb94b20106697132f8c20c665fab29e9
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
         with:
           ruby-version: '4.0'
       - name: 'Ruby 4.0: platform gem'
@@ -513,7 +530,7 @@ jobs:
           gem -C bindings/ruby build stogas.gemspec --output "$RUNNER_TEMP/stogas.gem"
           gem install "$RUNNER_TEMP/stogas.gem" minitest:6.0.6 --no-document
           ruby bindings/ruby/test/transport_test.rb
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version: '1.27'
           cache: false
@@ -527,11 +544,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 26.13.0
           cache: npm
@@ -604,7 +621,7 @@ jobs:
       - name: 'Browsers: Chromium, Firefox and WebKit'
         run: npm run test:browser
       - name: Keep the failed browser tests' traces
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: browser-test-results-${{ github.run_attempt }}
@@ -639,7 +656,7 @@ jobs:
           npx --yes --package deno@2.9.6 deno test --allow-all --no-check exports.test.mjs
       - name: 'Cloudflare Workers: package in workerd'
         run: npm run test:worker
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 20.20.2
       - name: 'Node 20: minimum supported version'
@@ -677,63 +694,63 @@ jobs:
           - { language: php, name: PHP }
           - { language: zig, name: Zig }
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - if: matrix.language == 'python'
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
       - if: matrix.language == 'python'
-        uses: PyO3/maturin-action@36db84001d74475ad1b8e6613557ae4ee2dc3598
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           maturin-version: v1.15.0
           manylinux: 'off'
           args: --locked --out dist --manifest-path bindings/python/Cargo.toml
       - if: matrix.language == 'go'
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version-file: go/go.mod
           cache-dependency-path: examples/go-openai/go.sum
       - if: matrix.language == 'jvm'
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: '21'
       - if: matrix.language == 'dotnet'
-        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           dotnet-version: '10.0.x'
       - if: matrix.language == 'ruby'
-        uses: ruby/setup-ruby@e8944e80fb94b20106697132f8c20c665fab29e9
+        uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
         with:
           ruby-version: '3.3'
       - if: matrix.language == 'dart'
-        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d
+        uses: dart-lang/setup-dart@2286a0c042b44434fe26d292bbce8d34f7ec662b # v1.8.2
         with:
           sdk: '3.13.4'
       - if: matrix.language == 'beam'
-        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: '27.3.4.6'
           elixir-version: '1.18.3'
           rebar3-version: '3.26.0'
       - if: matrix.language == 'haskell'
-        uses: haskell-actions/setup@7fd2bb5ca789761088fbc831406b2910e47e56f1
+        uses: haskell-actions/setup@0f8e8c99d88aeb3fbfd523f1ef2c6f762d10d64d # v2.12.1
         with:
           ghc-version: '9.10.3'
           cabal-version: '3.12.1.0'
       - if: matrix.language == 'julia'
-        uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9
+        uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2.7.0
         with:
           version: '1.13.0'
       - if: matrix.language == 'ocaml'
-        uses: ocaml/setup-ocaml@93303b622b2522e4411e295f9e77411a24912ac7
+        uses: ocaml/setup-ocaml@ff66428f72b64472e749b22e0ad4dded4b2ddca6 # v3.9.1
         with:
           ocaml-compiler: '5.4.0'
       - if: matrix.language == 'zig'
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: '0.16.0'
       - name: Test the ${{ matrix.name }} examples
