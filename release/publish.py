@@ -4,10 +4,12 @@
 import argparse
 import base64
 import contextlib
+import getpass
 import hashlib
 import http.client
 import json
 import os
+import pty
 import re
 import shlex
 import shutil
@@ -174,21 +176,24 @@ def crate_upload(path, metadata, token):
         raise RuntimeError("crates.io returned errors or publication warnings; inspect the registry before continuing")
 
 
+def crate_handed_over(name):
+    """Whether crates.io has the crate and lets only its trusted publishers publish it, which it
+    shows publicly."""
+    document = download(f"https://crates.io/api/v1/crates/{name}")
+    return document is not None and json.loads(document)["crate"].get("trustpub_only") is True
+
+
 def crates_trust(token):
-    """Once every crate exists, let only publish.yml publish each one. The token needs the
-    publish-new, publish-update and trusted-publishing scopes. crates.io lets only a legacy
-    token revoke itself, and refuses a legacy token this handover, so its creator revokes it."""
+    """Let only publish.yml publish each crate. The token needs the trusted-publishing scope."""
     for name in CRATES:
         configs = crates_api("GET", f"trusted_publishing/github_configs?crate={name}", token)["github_configs"]
         if not any(all(config.get(key) == value for key, value in PUBLISHER.items()) for config in configs):
             crates_api("POST", "trusted_publishing/github_configs", token, {"github_config": {"crate": name, **PUBLISHER}})
         crates_api("PATCH", f"crates/{name}", token, {"crate": {"trustpub_only": True}})
-    print("crates: publish.yml is each crate's only publisher; revoke the one-time token on crates.io")
 
 
-def crates(packages, version, trust=False):
-    """Upload each crate in dependency order. With `trust`, a one-time token creates the crates,
-    finishing a partial first upload under a later version too, then hands them to publish.yml."""
+def crates(packages, version, token):
+    """Upload each crate in dependency order."""
     paths = [packages / f"{name}-{version}.crate" for name in CRATES]
     metadata = {path: crate_metadata(path) for path in paths}
     # A refusal after the first crate would leave the rest unpublished at this version.
@@ -199,7 +204,7 @@ def crates(packages, version, trust=False):
         url = f"https://static.crates.io/crates/{name}/{path.name}"
         check = lambda: exact_remote(path, url, STORAGE_ABSENT)
         if not check():
-            crate_upload(path, metadata[path], os.environ["CARGO_REGISTRY_TOKEN"])
+            crate_upload(path, metadata[path], token)
         wait_for(check, path.name)
         # A downloadable dependency also needs to be visible in the index before
         # crates.io accepts the next dependent package.
@@ -216,19 +221,20 @@ def crates(packages, version, trust=False):
                     return True
             return False
         wait_for(indexed, f"{name} {version} in the crates.io index")
-    if trust:
-        crates_trust(os.environ["CARGO_REGISTRY_TOKEN"])
 
 
 NPM_PACKAGES = (("@stogas/sev-snp", "stogas-sev-snp"), ("@stogas/sigstore", "stogas-sigstore"), ("stogas", "stogas"))
-# npm lists this version for a new package from when its first version is staged until approval.
-NPM_STAGE_PLACEHOLDER = "0.0.0-stage"
+
+
+def npm_document(name):
+    """npm's document for a package, or None while npm has no such package."""
+    data = download(f"https://registry.npmjs.org/{urllib.parse.quote(name, safe='')}")
+    return None if data is None else json.loads(data)
 
 
 def npm_tag(version):
     """The dist-tag for a new version. `latest` follows what the other package managers offer once
-    this version is public: the newest full release, or before the first one, the newest preview,
-    which also replaces the stub npm serves while a new package's first version awaits approval.
+    this version is public: the newest full release, or before the first one, the newest preview.
     Another preview goes to `next`, and an older line's release to `maintenance`, so neither moves
     `latest`. npm requires a pre-release to name its tag."""
     if channels.offered([*releases(), {"tag_name": f"v{version}", "draft": False}]) == version:
@@ -236,47 +242,24 @@ def npm_tag(version):
     return "next" if channels.preview(version) else "maintenance"
 
 
-def npm(packages, version, stage=False):
-    """With `stage`, upload each archive for a maintainer to approve with two-factor
-    authentication instead of publishing it. A token can create a package only this way once
-    npm stops tokens that bypass two-factor authentication from publishing."""
+def npm_served(name, path, version):
+    data = download(f"https://registry.npmjs.org/{urllib.parse.quote(name, safe='')}/{version}")
+    if data is None:
+        return False
+    metadata = json.loads(data)
+    if metadata["name"] != name or metadata["version"] != version:
+        raise ValueError("npm package identity differs from the approved release")
+    return exact_remote(path, metadata["dist"]["tarball"])
+
+
+def npm(packages, version):
+    """Publish each archive with trusted publishing, which adds provenance."""
     tag = ["--tag", npm_tag(version)]
     for name, filename in NPM_PACKAGES:
         path = packages / f"{filename}-{version}.tgz"
-        def check():
-            data = download(f"https://registry.npmjs.org/{urllib.parse.quote(name, safe='')}/{version}")
-            if data is None:
-                return False
-            metadata = json.loads(data)
-            if metadata["name"] != name or metadata["version"] != version:
-                raise ValueError("npm package identity differs from the approved release")
-            return exact_remote(path, metadata["dist"]["tarball"])
-        if check():
-            continue
-        if not stage:
+        if not npm_served(name, path, version):
             run(["npm", "publish", str(path), "--access", "public", *tag])
-            wait_for(check, f"{name}@{version}")
-            continue
-        # A rerun finds the upload that still awaits approval.
-        if not (staged := npm_staged(name, version)):
-            # package.json asks for provenance, which npm generates only in CI; a maintainer's
-            # machine stages without it, and publish.yml's later versions carry it.
-            run(["npm", "stage", "publish", str(path), "--access", "public", *tag, "--provenance=false"])
-            staged = npm_staged(name, version)
-        if not staged:
-            raise RuntimeError(f"npm lists no staged {name}@{version}")
-        for stage_id in staged:
-            with tempfile.TemporaryDirectory(prefix="stogas-npm-") as temporary:
-                run(["npm", "stage", "download", stage_id], cwd=temporary)
-                if [digest(file) for file in Path(temporary).iterdir()] != [digest(path)]:
-                    raise ValueError(f"npm staged different bytes as {name}@{version}; reject stage {stage_id}")
-        print(f"npm: {name}@{version} awaits approval on npmjs.com under Staged Packages")
-
-
-def npm_staged(name, version):
-    # npm writes notices to standard error, which would corrupt the JSON.
-    items = json.loads(run(["npm", "stage", "list", "--json"], stderr=subprocess.DEVNULL))
-    return [item["id"] for item in items if item["packageName"] == name and item["version"] == version]
+        wait_for(lambda: npm_served(name, path, version), f"{name}@{version}")
 
 
 def pypi(packages, version):
@@ -612,17 +595,10 @@ class Registry:
 
 
 def container(packages, version, image=channels.IMAGE, output=None):
-    """A multi-platform image of the static musl CLI in GitHub's container registry, tagged with the
-    version, and `latest` while it is the newest full release. Writes `digest=` for its build proof."""
-    manifest = json.loads((packages / "release-manifest.json").read_text())
-    binaries = {}
-    with tempfile.TemporaryDirectory(prefix="stogas-image-") as temporary:
-        for architecture in ("amd64", "arm64"):
-            name = f"stogas-v{version}-linux-musl-{architecture}"
-            unpack(packages / f"{name}.tar.gz", Path(temporary) / architecture)
-            binaries[architecture] = (Path(temporary) / architecture / name / "stogas").read_bytes()
-        license_text = (Path(temporary) / "amd64" / f"stogas-v{version}-linux-musl-amd64" / "LICENSE").read_bytes()
-    built = channels.image(manifest, binaries, license_text)
+    """The release's container image in GitHub's container registry, byte for byte as the release
+    holds it, tagged with the version, and `latest` while it is the newest full release. Writes
+    `digest=` for its build proof."""
+    built = channels.read_oci_archive((packages / channels.container_archive(version)).read_bytes())
     index_digest = "sha256:" + hashlib.sha256(built["index"]).hexdigest()
     registry = Registry(image, "pull,push", os.environ["GH_TOKEN"])
     tags = [version]
@@ -682,28 +658,139 @@ def preview(packages):
 
 
 def first_versions():
-    """Print which registries still wait for a one-time setup, as GitHub output lines. crates.io
-    and npm trust a workflow only for an existing package, and RubyGems only once a pending
-    publisher names it, so a registry waits until each of its packages exists. crates.io also
-    waits until each crate trusts only publish.yml, since its one-time token finishes a partial
-    first upload."""
-    def missing(urls):
-        return all(download(url) is None for url in urls)
-    def handed_over(name):
-        document = download(f"https://crates.io/api/v1/crates/{name}")
-        return document is not None and json.loads(document)["crate"].get("trustpub_only") is True
-    def unpublished(name):
-        # Staging a new package's first version reserves its name with a placeholder version,
-        # 0.0.0-stage, which publishes nothing; the package waits until a maintainer approves.
-        document = download(f"https://registry.npmjs.org/{urllib.parse.quote(name, safe='')}")
-        return document is None or not set(json.loads(document).get("versions", {})) - {NPM_STAGE_PLACEHOLDER}
+    """Print which registries still wait for the owner, as GitHub output lines: crates.io until
+    every crate trusts only publish.yml, npm until it has every package, and RubyGems until it has
+    the gem."""
     waiting = {
-        "crates": not all(handed_over(name) for name in CRATES),
-        "npm": any(unpublished(name) for name, _ in NPM_PACKAGES),
-        "ruby": missing(["https://rubygems.org/api/v1/gems/stogas.json"]),
+        "crates": not all(crate_handed_over(name) for name in CRATES),
+        "npm": any(npm_document(name) is None for name, _ in NPM_PACKAGES),
+        "ruby": download("https://rubygems.org/api/v1/gems/stogas.json") is None,
     }
     for registry, value in waiting.items():
         print(f"{registry}={'true' if value else 'false'}")
+
+
+def terminal(arguments):
+    """Run a tool on the owner's terminal, where npm can ask for two-factor authentication, and
+    return what it printed."""
+    printed = bytearray()
+
+    def read(descriptor):
+        data = os.read(descriptor, 1024)
+        printed.extend(data)
+        return data
+
+    code = os.waitstatus_to_exitcode(pty.spawn(arguments, read))
+    if code:
+        raise RuntimeError(f"{shlex.join(arguments[:3])} failed (exit {code})")
+    return printed.decode(errors="replace")
+
+
+def json_objects(text):
+    """Each JSON object in a tool's output, such as npm's one per trust configuration."""
+    decoder, found, start = json.JSONDecoder(), [], text.find("{")
+    while start >= 0:
+        try:
+            value, end = decoder.raw_decode(text, start)
+            found.append(value)
+        except ValueError:
+            end = start + 1
+        start = text.find("{", end)
+    return found
+
+
+def crates_owner(packages, version):
+    """Upload this version of every crate with a token that the owner makes for it, then make
+    publish.yml each crate's only publisher. A new crate can depend on this version of the others,
+    so the token publishes them too."""
+    if all(crate_handed_over(name) for name in CRATES):
+        return
+    print(
+        'crates.io: create a token named "stogas first release" at https://crates.io/settings/tokens/new, '
+        "expiring tomorrow, with the publish-new, publish-update and trusted-publishing scopes for crates stogas*."
+    )
+    token = getpass.getpass("Paste the token, or press Enter to skip crates.io: ").strip()
+    if not token:
+        raise RuntimeError("skipped")
+    for name in CRATES:
+        if crate_handed_over(name):
+            crates_api("PATCH", f"crates/{name}", token, {"crate": {"trustpub_only": False}})
+    crates(packages, version, token)
+    crates_trust(token)
+    # crates.io lets no scoped token revoke itself.
+    print("crates.io: publish.yml is each crate's only publisher. Revoke the token at https://crates.io/settings/tokens.")
+
+
+def npm_trusted(document):
+    """Whether a workflow has published a version with trusted publishing, which keeps npm's
+    configuration for it."""
+    return any("trustedPublisher" in (item.get("_npmUser") or {}) for item in document["versions"].values())
+
+
+def npm_owner(packages, version):
+    """From the owner's browser sign-in, publish each package that npm lacks and make publish.yml
+    the trusted publisher of each package that no workflow has published. npm discards a trusted
+    publisher that publishes nothing within 2 days, and makes provenance only in CI, so a package's
+    first version carries none."""
+    documents = {name: npm_document(name) for name, _ in NPM_PACKAGES}
+    untrusted = [name for name, document in documents.items() if document is None or not npm_trusted(document)]
+    if not untrusted:
+        return
+    print(f"npm: {', '.join(untrusted)} need the owner. Sign in to npm as stogas in your browser.")
+    with tempfile.TemporaryDirectory(prefix="stogas-npm-") as session:
+        # npm keeps the sign-in here, never in the owner's own npmrc.
+        os.environ["NPM_CONFIG_USERCONFIG"] = str(Path(session) / "npmrc")
+        try:
+            terminal(["npm", "login", "--auth-type=web"])
+            tag = npm_tag(version)
+            for name, filename in NPM_PACKAGES:
+                if documents[name] is None:
+                    path = packages / f"{filename}-{version}.tgz"
+                    terminal(["npm", "publish", str(path), "--access", "public", "--tag", tag, "--provenance=false"])
+                    wait_for(lambda: npm_served(name, path, version), f"{name}@{version}")
+            for name in untrusted:
+                # No workflow has published with these, and an expired one cannot be changed.
+                for config in json_objects(terminal(["npm", "trust", "list", name, "--json"])):
+                    terminal(["npm", "trust", "revoke", name, "--id", config["id"]])
+                terminal(["npm", "trust", "github", name, "--repo", "StogasAI/stogas", "--file", "publish.yml", "--env", "release", "--allow-publish", "--yes"])
+                # Require two-factor authentication and disallow tokens.
+                terminal(["npm", "access", "set", "mfa=publish", name])
+        finally:
+            with contextlib.suppress(RuntimeError):
+                terminal(["npm", "logout"])
+            del os.environ["NPM_CONFIG_USERCONFIG"]
+
+
+def ruby_owner():
+    if download("https://rubygems.org/api/v1/gems/stogas.json") is not None:
+        return
+    # A pending trusted publisher lasts 12 hours.
+    print(
+        "RubyGems: sign in as stogas and add a pending trusted publisher at https://rubygems.org/profile/oidc/pending_trusted_publishers "
+        "with gem name stogas, repository owner StogasAI, repository stogas, workflow publish.yml and environment release."
+    )
+    input("Press Enter once it exists, or to skip RubyGems. ")
+
+
+def owner(packages, version):
+    """The owner's part of a release that adds a package, run on the owner's terminal before
+    publish.yml. crates.io and npm trust a workflow only for a package that exists, and RubyGems
+    only through a pending trusted publisher, so a new package's first version needs the owner.
+    A registry whose packages all trust publish.yml needs nothing, and a failure holds up only its
+    own registry, which publish.yml then skips."""
+    waiting = []
+    for registry, setup in (
+        ("crates.io", lambda: crates_owner(packages, version)),
+        ("npm", lambda: npm_owner(packages, version)),
+        ("RubyGems", ruby_owner),
+    ):
+        try:
+            setup()
+        except (OSError, RuntimeError, ValueError) as error:
+            print(f"{registry}: {error}", file=sys.stderr)
+            waiting.append(registry)
+    if waiting:
+        print(f"{', '.join(waiting)} still wait for the owner; run this again once the cause above is fixed")
 
 
 if __name__ == "__main__":
@@ -714,17 +801,11 @@ if __name__ == "__main__":
         print(channels.offered(releases()))
         raise SystemExit
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("ecosystem", choices=["crates", "npm", "pypi", "ruby", "nuget", "maven", "go", "preview", "tap", "aur", "container"])
+    parser.add_argument("ecosystem", choices=["owner", "crates", "npm", "pypi", "ruby", "nuget", "maven", "go", "preview", "tap", "aur", "container"])
     parser.add_argument("packages", type=Path)
-    parser.add_argument("--stage", action="store_true", help="npm only: leave each new version for a maintainer to approve")
-    parser.add_argument("--trust", action="store_true", help="crates only: then let publish.yml alone publish each crate")
     parser.add_argument("--remote", help="tap and aur only: another Git remote, such as an HTTPS one for a manual run")
     parser.add_argument("--attestation", type=Path, help="ruby only, and required: the Sigstore bundle that proves where every gem was built")
     args = parser.parse_args()
-    if args.stage and args.ecosystem != "npm":
-        parser.error("only npm stages packages")
-    if args.trust and args.ecosystem != "crates":
-        parser.error("only crates hand over to trusted publishing here")
     if args.remote and args.ecosystem not in ("tap", "aur"):
         parser.error("only tap and aur take another remote")
     if (args.attestation is not None) != (args.ecosystem == "ruby"):
@@ -734,12 +815,13 @@ if __name__ == "__main__":
         preview(packages)
         raise SystemExit
     manifest = json.loads((packages / "release-manifest.json").read_text())
+    if args.ecosystem == "owner":
+        owner(packages, manifest["version"])
+        raise SystemExit
     if args.ecosystem == "go":
         go(packages, manifest["version"], manifest["source"])
-    elif args.ecosystem == "npm":
-        npm(packages, manifest["version"], args.stage)
     elif args.ecosystem == "crates":
-        crates(packages, manifest["version"], args.trust)
+        crates(packages, manifest["version"], os.environ["CARGO_REGISTRY_TOKEN"])
     elif args.ecosystem == "ruby":
         ruby(packages, args.attestation)
     elif args.ecosystem in ("tap", "aur"):
@@ -750,5 +832,4 @@ if __name__ == "__main__":
         raise SystemExit
     else:
         globals()[args.ecosystem](packages, manifest["version"])
-    if not args.stage:
-        print(f"{args.ecosystem}: published artifacts match the approved release")
+    print(f"{args.ecosystem}: published artifacts match the approved release")
