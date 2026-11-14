@@ -6,6 +6,7 @@ COPY --from=zig /usr/local/zig-x86_64-linux-0.16.0 /usr/local/zig-x86_64-linux-0
 COPY --from=zig /usr/local/cargo/bin/cargo-zigbuild /usr/local/cargo/bin/cargo-zigbuild
 RUN ln -s /usr/local/zig-x86_64-linux-0.16.0/zig /usr/local/bin/zig
 RUN rustup set auto-self-update disable && rustup toolchain install 1.97.1 --profile minimal --component llvm-tools-preview && rustup default 1.97.1
+RUN cargo install cargo-auditable --version 0.7.7 --locked
 RUN curl --fail --location --silent --show-error \
     https://files.pythonhosted.org/packages/fe/91/b495e19e2f5c503b540452b2039115e7b2363867e8c5ad4179eb752fa92c/maturin-1.15.0-py3-none-manylinux_2_12_x86_64.manylinux2010_x86_64.musllinux_1_1_x86_64.whl \
     --output /tmp/maturin.whl && \

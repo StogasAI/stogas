@@ -8,7 +8,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from artifacts import digest, function_names, tar_gz, without_names, write_json
+from artifacts import crate_list_root, digest, function_names, tar_gz, wasm_sections, without_names, write_json
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -18,7 +18,7 @@ def build(output, epoch):
     # stays immutable. The fixed destination also keeps compiler paths identical.
     work = Path("/build/portable")
     shutil.copytree(ROOT, work)
-    env = {key: value for key, value in os.environ.items() if not key.startswith(("CARGO_", "RUST", "PYO3_"))}
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("CARGO", "RUST", "PYO3_"))}
     env.update({
         "CARGO_INCREMENTAL": "0", "CARGO_BUILD_JOBS": "4",
         "CARGO_TARGET_DIR": "/build/target", "SOURCE_DATE_EPOCH": str(epoch),
@@ -31,7 +31,9 @@ def build(output, epoch):
 
     output.mkdir(parents=True, exist_ok=True)
     version = json.loads((work / "package.json").read_text())["version"]
-    run("cargo", "build", "--locked", "--profile", "wasm", "--target", "wasm32-unknown-unknown", "-p", "stogas-wasm", "-p", "stogas-sev-snp-wasm", "-p", "stogas-sigstore-wasm")
+    # cargo-auditable lists each module's crates in it, which `cargo audit bin` and
+    # `wasm-tools metadata show` read.
+    run("cargo", "auditable", "build", "--locked", "--profile", "wasm", "--target", "wasm32-unknown-unknown", "-p", "stogas-wasm", "-p", "stogas-sev-snp-wasm", "-p", "stogas-sigstore-wasm")
     # Web pages download the npm packages' WebAssembly, so it ships without function names, which
     # made it 83% larger. The debug archive holds the same modules with them, and symbol maps, as
     # the native packages keep their debug information in theirs. Removing the names afterwards
@@ -46,6 +48,9 @@ def build(output, epoch):
         run("wasm-bindgen", f"/build/target/wasm32-unknown-unknown/wasm/{crate}.wasm", "--target", "web", "--out-dir", destination, "--out-name", name)
         module = work / destination / f"{name}_bg.wasm"
         named = module.read_bytes()
+        crates = [named[start:end] for _, section, _, start, end in wasm_sections(named) if section == ".dep-v0"]
+        if len(crates) != 1 or crate_list_root(crates[0]) != crate.replace("_", "-"):
+            raise ValueError(f"{module.name} lacks the list of its crates")
         (debug / module.name).write_bytes(named)
         (debug / f"{module.name}.symbols").write_bytes(function_names(named))
         module.write_bytes(without_names(named))

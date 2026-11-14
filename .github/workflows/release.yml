@@ -94,7 +94,7 @@ jobs:
         with:
           python-version: '3.14.7'
       - if: runner.os == 'macOS'
-        name: Add the Apple targets to the repository's Rust toolchain
+        name: Add the Apple targets and cargo-auditable to the repository's Rust toolchain
         env:
           TRIPLES: ${{ matrix.triple }}
         run: |
@@ -102,6 +102,7 @@ jobs:
           IFS=, read -ra triples <<< "$TRIPLES"
           rustup target add "${triples[@]}"
           rustup component add llvm-tools-preview
+          cargo install cargo-auditable --version 0.7.7 --locked
       - if: runner.os == 'macOS'
         name: Select the reviewed Apple toolchain
         run: |

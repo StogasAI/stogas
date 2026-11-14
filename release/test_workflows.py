@@ -27,6 +27,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("permissions:", called)
         self.assertNotIn("id-token", called)
 
+    def test_apple_builds_use_the_cargo_auditable_of_the_release_image(self):
+        root = WORKFLOWS.parents[1]
+        pins = re.findall(r"cargo install cargo-auditable --version (\S+) --locked", (root / "release/Dockerfile").read_text() + (WORKFLOWS / "release.yml").read_text())
+        self.assertEqual(len(pins), 2)
+        self.assertEqual(len(set(pins)), 1)
+
     def test_a_version_is_attested_once_at_its_tagged_commit(self):
         job = jobs("release.yml")["release"]
         self.assertLess(job.index("name: Require the tag at this commit and no release for it"), job.index("uses: actions/attest@"))

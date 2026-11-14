@@ -10,6 +10,7 @@ import tarfile
 import tempfile
 import time
 import zipfile
+import zlib
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
@@ -309,6 +310,14 @@ def function_names(module):
                     raise ValueError("Malformed WebAssembly function names")
             offset = stop
     return "".join(lines).encode()
+
+
+def crate_list_root(section):
+    """The package whose crates a cargo-auditable `.dep-v0` section lists."""
+    roots = [package["name"] for package in json.loads(zlib.decompress(section))["packages"] if package.get("root")]
+    if len(roots) != 1:
+        raise ValueError("A crate list must have one root package")
+    return roots[0]
 
 
 def verify_inventory(directory, manifest, metadata=()):

@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 
 from apple_metadata import normalize_dsym, normalize_wheel
-from artifacts import digest, tar_gz, unpack, write_json, zip_archive
+from artifacts import crate_list_root, digest, tar_gz, unpack, write_json, zip_archive
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = json.loads((ROOT / "release/targets.json").read_text())["targets"]
@@ -21,7 +21,7 @@ def run(arguments, env):
     subprocess.run([str(arg) for arg in arguments], cwd=ROOT, env=env, check=True)
 
 
-def build(platform, output, epoch):
+def build(platform, output, epoch, tools):
     target = TARGETS[platform]
     windows = target["os"] == "windows"
     android = target["os"] == "android"
@@ -37,7 +37,7 @@ def build(platform, output, epoch):
     triple = target["triple"]
     zig_triple = triple + (".2.17" if target.get("libc") == "glibc" else "")
     # Never inherit caller features, compiler flags, wrappers or Cargo overrides.
-    compiler_options = ("CARGO_", "RUST", "PYO3_", "CC", "CXX", "CFLAGS", "CPPFLAGS", "LDFLAGS", "AR", "NASM", "CMAKE_", "MAKEFLAGS")
+    compiler_options = ("CARGO", "RUST", "PYO3_", "CC", "CXX", "CFLAGS", "CPPFLAGS", "LDFLAGS", "AR", "NASM", "CMAKE_", "MAKEFLAGS")
     sdk_options = {"SDKROOT", "MACOSX_DEPLOYMENT_TARGET", "IPHONEOS_DEPLOYMENT_TARGET", "TOOLCHAINS", "XCODE_XCCONFIG_FILE"}
     env = {key: value for key, value in os.environ.items() if not key.startswith(compiler_options) and key not in sdk_options}
     flags = f"--remap-path-prefix={ROOT}=/stogas -C debuginfo=line-tables-only"
@@ -48,6 +48,12 @@ def build(platform, output, epoch):
         "RUSTUP_HOME": os.environ.get("RUSTUP_HOME", str(Path.home() / ".rustup")) if apple else "/usr/local/rustup", "RUSTUP_TOOLCHAIN": "1.97.1",
         "RUSTFLAGS": flags, "TZ": "UTC", "LC_ALL": "C.UTF-8",
     })
+    # cargo-auditable lists each executable's and shared library's crates in it, which Trivy,
+    # Grype, Syft and `cargo audit bin` read. Maturin and the cross-compilers run Cargo
+    # themselves, so this `cargo` sends every Cargo command through it.
+    (tools / "cargo").write_text(f'#!/bin/sh\nexec "{shutil.which("cargo", path=env["PATH"])}" auditable "$@"\n')
+    (tools / "cargo").chmod(0o755)
+    env["PATH"] = f"{tools}{os.pathsep}{env['PATH']}"
     if windows:
         env["RUSTFLAGS"] += " -C target-feature=+crt-static -C link-arg=/Brepro -C link-arg=/PDBALTPATH:%_PDB%"
         env["RUSTFLAGS"] += f" -C linker={ROOT}/release/windows_link.py"
@@ -118,6 +124,8 @@ def build(platform, output, epoch):
         elif not apple:
             shared = "libstogas_ffi.so"
             split_debug(objcopy, built / shared, runtime / shared, symbols / (shared + ".debug"), env)
+        if target["os"] != "ios":
+            require_crate_list(objcopy, runtime / shared, "stogas-ffi", apple, env)
         if "cli" in target["packages"]:
             run([*base, "--package", "stogas-cli"], env)
             if windows:
@@ -127,6 +135,7 @@ def build(platform, output, epoch):
                 split_apple_debug(built / "stogas", runtime / "stogas", symbols / "stogas.dSYM", env)
             else:
                 split_debug(objcopy, built / "stogas", runtime / "stogas", symbols / "stogas.debug", env)
+            require_crate_list(objcopy, runtime / ("stogas.exe" if windows else "stogas"), "stogas-cli", apple, env)
         if windows:
             build_windows_go(target, runtime, symbols, objcopy, env)
         for directory in (runtime, symbols):
@@ -152,6 +161,10 @@ def build(platform, output, epoch):
             with tempfile.TemporaryDirectory(prefix="stogas-wheel-") as temporary:
                 tree = Path(temporary) / "wheel"
                 unpack(wheel, tree)
+                extensions = [path for path in (tree / "stogas").iterdir() if path.suffix in {".so", ".pyd"}]
+                if len(extensions) != 1:
+                    raise ValueError(f"{wheel.name} must hold one extension module")
+                require_crate_list(objcopy, extensions[0], "stogas-python", apple, env)
                 if apple:
                     normalize_wheel(tree, ROOT)
                 zip_archive(output / wheel.name, tree, epoch)
@@ -164,6 +177,15 @@ def build(platform, output, epoch):
         "schema": "stogas.sdk-build.v1", "platform": platform, "environment": "prod",
         "artifacts": [{"name": path.name, "size": path.stat().st_size, "sha256": digest(path)} for path in files],
     })
+
+
+def require_crate_list(objcopy, binary, package, apple, env):
+    """Refuse a binary that lacks the list of its package's crates."""
+    with tempfile.TemporaryDirectory(prefix="stogas-crates-") as temporary:
+        section = Path(temporary) / "crates"
+        run([objcopy, f"--dump-section={'__DATA,' if apple else ''}.dep-v0={section}", binary, Path(temporary) / "copy"], env)
+        if crate_list_root(section.read_bytes()) != package:
+            raise ValueError(f"{binary.name} lists the crates of another package than {package}")
 
 
 def split_debug(objcopy, source, binary, debug, env):
@@ -239,4 +261,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.epoch < 315532800 or args.epoch > 0xFFFFFFFF:
         parser.error("Source epoch must fit the ZIP/gzip timestamp range")
-    build(args.platform, args.out.resolve(), args.epoch)
+    with tempfile.TemporaryDirectory(prefix="stogas-tools-") as tools:
+        build(args.platform, args.out.resolve(), args.epoch, Path(tools))
