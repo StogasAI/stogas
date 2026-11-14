@@ -4,16 +4,20 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest as _, Sha256};
 use std::{
     fs::OpenOptions,
-    io::{Read as _, Write as _},
+    io::{self, IsTerminal as _, Read, Write as _},
     path::Path,
 };
 use zeroize::Zeroizing;
 
 fn read_private(path: &Path, maximum: usize) -> Result<Zeroizing<Vec<u8>>> {
+    let file =
+        std::fs::File::open(path).with_context(|| format!("could not read {}", path.display()))?;
+    read_limited(file, maximum).with_context(|| format!("could not read {}", path.display()))
+}
+
+fn read_limited(reader: impl Read, maximum: usize) -> Result<Zeroizing<Vec<u8>>> {
     let mut bytes = Zeroizing::new(Vec::new());
-    std::fs::File::open(path)
-        .and_then(|file| file.take((maximum + 1) as u64).read_to_end(&mut bytes))
-        .with_context(|| format!("could not read {}", path.display()))?;
+    reader.take((maximum + 1) as u64).read_to_end(&mut bytes)?;
     if bytes.len() > maximum {
         bail!("Input exceeds its size limit");
     }
@@ -198,8 +202,9 @@ fn seal(
     )
 }
 
-/// Reads the file to encrypt for the purpose.
-pub fn read_input(purpose: &str, input: &Path) -> Result<Zeroizing<Vec<u8>>> {
+/// Reads what to encrypt for the purpose: the file, or without one what is piped in. On a terminal
+/// an API key is typed without echo; a document has lines that a prompt cannot take.
+pub fn read_input(purpose: &str, input: Option<&Path>) -> Result<Zeroizing<Vec<u8>>> {
     // A document can be larger than the credential that it becomes: Google's key file, and a
     // file that Windows PowerShell saved in UTF-16.
     let maximum = match purpose {
@@ -207,16 +212,35 @@ pub fn read_input(purpose: &str, input: &Path) -> Result<Zeroizing<Vec<u8>>> {
         "byok/aws" | "byok/azure" | "byok/google-cloud" => 16_384,
         _ => 4096,
     };
-    read_private(input, maximum)
+    if let Some(path) = input {
+        return read_private(path, maximum);
+    }
+    if !io::stdin().is_terminal() {
+        return read_limited(io::stdin(), maximum);
+    }
+    let provider = match purpose {
+        "byok/anthropic" => "Anthropic",
+        "byok/chutes" => "Chutes",
+        "byok/openai" => "OpenAI",
+        _ => bail!("name the file to encrypt with --input, or pipe it in"),
+    };
+    let typed = Zeroizing::new(rpassword::prompt_password(format!(
+        "The {provider} API key (hidden): "
+    ))?);
+    if typed.len() > maximum {
+        bail!("Input exceeds its size limit");
+    }
+    Ok(Zeroizing::new(typed.as_bytes().to_vec()))
 }
 
-/// Encrypts what `read_input` read, and writes what the policy or dashboard takes to a new file.
+/// Encrypts what `read_input` read, and writes what the policy or dashboard takes to a new file,
+/// or without one prints it. It is ciphertext, with no more of a credential than its preview.
 pub fn encrypt(
     key: &OrganizationKey,
     organization: &str,
     purpose: &str,
     input: &[u8],
-    output: &Path,
+    output: Option<&Path>,
 ) -> Result<()> {
     let root = &key.root;
     let mut salt = [0_u8; 32];
@@ -227,7 +251,7 @@ pub fn encrypt(
         // What replaces the plugin's settings in the policy.
         let envelope = seal(root, organization, purpose, input, &salt, nonce)?;
         let value = serde_json::json!({ "encrypted": envelope });
-        return write_new(output, &serde_json::to_vec_pretty(&value)?);
+        return write_output(output, &serde_json::to_vec_pretty(&value)?);
     }
     // A credential prints what the dashboard registers: the envelope, a preview except for Azure,
     // and for AWS and Google Cloud the target that routing reads instead of the secret.
@@ -247,7 +271,17 @@ pub fn encrypt(
     if let Some(target) = registration.target {
         document["target"] = target;
     }
-    write_new(output, &serde_json::to_vec_pretty(&document)?)
+    write_output(output, &serde_json::to_vec_pretty(&document)?)
+}
+
+fn write_output(output: Option<&Path>, bytes: &[u8]) -> Result<()> {
+    if let Some(path) = output {
+        return write_new(path, bytes);
+    }
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(bytes)?;
+    stdout.write_all(b"\n")?;
+    Ok(stdout.flush()?)
 }
 
 #[cfg(test)]
