@@ -1,4 +1,5 @@
-//! Top-ups paid in cryptocurrency: a deposit address, then the payment's progress.
+//! Top-ups paid in cryptocurrency or by card: a deposit address or Stripe's payment page, then
+//! the payment's progress.
 
 use crate::{
     account::{read_line, signed_in},
@@ -12,18 +13,21 @@ use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
     io::{self, IsTerminal as _},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use stogas::network::Network;
 
 const CHECK_EVERY: Duration = Duration::from_secs(15);
+/// The dashboard's minute sweep records a payment made just before its page closed within two
+/// minutes.
+const CARD_SWEEP: Duration = Duration::from_mins(2);
 
 #[derive(clap::Args)]
 pub struct Args {
     /// Credit to add in US dollars, such as 25 or 12.50.
     #[arg(value_parser = parse_usd)]
     amount: String,
-    /// BTC, XMR, or a token such as USDT.
+    /// BTC, XMR, a token such as USDT, or card.
     currency: String,
     /// The token's network, such as ETH or TRX, when it has several.
     #[arg(long)]
@@ -33,11 +37,15 @@ pub struct Args {
     organization: Option<String>,
 }
 
-/// How the payments list names a payment to the deposit address.
+/// How the payments list names the payment: by its ID for a card, and otherwise as a new payment
+/// to the deposit address.
 pub struct Expected {
     provider: &'static str,
     currency: String,
     method: String,
+    id: Option<String>,
+    /// When to stop waiting for a payment that has not arrived.
+    until: Option<SystemTime>,
 }
 
 #[derive(Deserialize)]
@@ -66,17 +74,29 @@ struct Asset {
 struct Payment {
     id: String,
     amount: String,
-    attention: Option<String>,
+    card: Option<Card>,
     credit_status: String,
     credit_usd: Option<String>,
     currency: String,
     method: String,
     provider: String,
+    /// The processor holds the deposit until the payer contacts support.
+    provider_hold: bool,
 }
 
-pub async fn run(args: Args, network: &Network) -> Result<()> {
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Card {
+    canceled_reason: Option<String>,
+}
+
+pub async fn run(args: Args, network: &Network, onion: bool) -> Result<()> {
     let currency = args.currency.to_ascii_uppercase();
     let wallet_coin = matches!(currency.as_str(), "BTC" | "XMR");
+    let card = currency == "CARD";
+    if card && args.network.is_some() {
+        bail!("a card payment has no network; leave out --network");
+    }
     if wallet_coin && args.network.is_some() {
         bail!("{currency} has one network; leave out --network");
     }
@@ -91,7 +111,9 @@ pub async fn run(args: Args, network: &Network) -> Result<()> {
         .into_iter()
         .map(|payment| payment.id)
         .collect();
-    let expected = if wallet_coin {
+    let expected = if card {
+        self::card(&dashboard, &base, &args.amount, onion).await?
+    } else if wallet_coin {
         wallet(&dashboard, &base, currency, &args.amount).await?
     } else {
         ccpayment(
@@ -146,6 +168,65 @@ pub async fn wallet(
         provider: "wallet",
         currency: coin.clone(),
         method: coin,
+        id: None,
+        until: None,
+    })
+}
+
+/// Opens Stripe's payment page for the credit. The card number goes only into that page, so the
+/// link and its code are for a browser, which the payer chooses: over SSH, it is on another
+/// computer.
+pub async fn card(
+    dashboard: &Dashboard,
+    base: &str,
+    amount: &str,
+    onion: bool,
+) -> Result<Expected> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Checkout {
+        id: String,
+        url: String,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    }
+    let path = format!("{base}/card/checkout");
+    let body = json!({ "creditUsd": amount });
+    let checkout: Checkout =
+        with_location(dashboard, base, async || dashboard.post(&path, &body).await).await?;
+    // The link goes into a terminal escape sequence, so it must be Stripe's and plain text.
+    if !checkout.url.starts_with("https://checkout.stripe.com/")
+        || checkout
+            .url
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace())
+    {
+        bail!("the dashboard returned an unexpected payment page");
+    }
+    let closes = SystemTime::UNIX_EPOCH
+        + Duration::from_secs(u64::try_from(checkout.expires_at.timestamp()).unwrap_or_default());
+    if onion {
+        out!(
+            "You pay by card on Stripe's checkout page, which is outside the onion. Coin payments stay on the onion."
+        )?;
+    }
+    let minutes = closes
+        .duration_since(SystemTime::now())
+        .unwrap_or_default()
+        .as_secs()
+        / 60;
+    out!("Pay by card on this page within {minutes} minutes:")?;
+    if io::stdout().is_terminal() {
+        out!("\x1b]8;;{0}\x1b\\{0}\x1b]8;;\x1b\\", checkout.url)?;
+    } else {
+        out!("{}", checkout.url)?;
+    }
+    print_qr(&checkout.url)?;
+    Ok(Expected {
+        provider: "stripe",
+        currency: "USD".to_owned(),
+        method: "card".to_owned(),
+        id: Some(checkout.id),
+        until: Some(closes + CARD_SWEEP),
     })
 }
 
@@ -211,6 +292,8 @@ pub async fn ccpayment(
         provider: "ccpayment",
         currency: asset.symbol,
         method: asset.chain,
+        id: None,
+        until: None,
     })
 }
 
@@ -397,6 +480,13 @@ pub async fn wait(
     let mut reported = HashMap::new();
     loop {
         tokio::time::sleep(CHECK_EVERY).await;
+        if reported.is_empty()
+            && expected
+                .until
+                .is_some_and(|until| SystemTime::now() > until)
+        {
+            bail!("the payment page closed without a payment; run the command again to pay");
+        }
         let payments = match payments(dashboard, base).await {
             Ok(payments) => payments,
             Err(error) if transient(&error) => {
@@ -407,6 +497,7 @@ pub async fn wait(
         };
         for payment in payments.iter().filter(|payment| {
             !earlier.contains(&payment.id)
+                && expected.id.as_ref().is_none_or(|id| *id == payment.id)
                 && payment.provider == expected.provider
                 && payment.currency == expected.currency
                 && payment.method == expected.method
@@ -428,11 +519,18 @@ pub async fn wait(
 }
 
 fn describe(payment: &Payment) -> String {
-    let received = format!(
-        "Received {} {}",
-        printable(&payment.amount),
-        printable(&payment.currency)
-    );
+    let card = payment.card.as_ref();
+    if card.is_some_and(|card| card.canceled_reason.is_some()) {
+        return "The card payment was canceled, and your card wasn't charged.".to_owned();
+    }
+    let received = match card {
+        Some(_) => format!("Paid ${} by card", dollars(&payment.amount)),
+        None => format!(
+            "Received {} {}",
+            printable(&payment.amount),
+            printable(&payment.currency)
+        ),
+    };
     match payment.credit_status.as_str() {
         "credited" => format!(
             "{received}. Added ${} in credit.",
@@ -440,9 +538,10 @@ fn describe(payment: &Payment) -> String {
         ),
         "not_creditable" => format!("{received}. It cannot be credited."),
         "review_required" => format!("{received}. It needs a review before it is credited."),
-        _ if payment.attention.as_deref() == Some("provider_review") => format!(
+        _ if payment.provider_hold => format!(
             "{received}. The payment processor holds it for review. Contact billing@stogas.ai; another payment will not release it."
         ),
+        "waiting_settlement" if card.is_some() => format!("{received}. Adding the credit."),
         "waiting_settlement" => format!("{received}. Waiting for network confirmations."),
         _ => format!("{received}. Adding the credit."),
     }
@@ -606,6 +705,40 @@ mod tests {
         assert_eq!(
             unknown,
             "DOGE is not available; choose one of BTC, XMR, USDC, USDT"
+        );
+    }
+
+    #[test]
+    fn describes_payments_as_the_payments_list_returns_them() {
+        let payment = |record: Value| -> Payment { serde_json::from_value(record).unwrap() };
+        let card = |status: &str, canceled: Value| {
+            payment(json!({
+                "amount": "26.62", "card": { "brand": "visa", "last4": "4242", "canceledReason": canceled },
+                "creditStatus": status, "creditUsd": "25", "currency": "USD", "id": "a",
+                "method": "card", "provider": "stripe", "providerHold": false, "state": "credited",
+            }))
+        };
+        assert_eq!(
+            describe(&card("credited", Value::Null)),
+            "Paid $26.62 by card. Added $25.00 in credit."
+        );
+        assert_eq!(
+            describe(&card("waiting_settlement", Value::Null)),
+            "Paid $26.62 by card. Adding the credit."
+        );
+        assert_eq!(
+            describe(&card("not_creditable", json!("high_risk"))),
+            "The card payment was canceled, and your card wasn't charged."
+        );
+        let held = payment(json!({
+            "amount": "5.1", "card": null, "creditStatus": "settled_pending_credit",
+            "creditUsd": null, "currency": "USDT", "id": "b", "method": "TRX",
+            "provider": "ccpayment", "providerHold": true,
+        }));
+        assert!(
+            describe(&held).starts_with("Received 5.1 USDT. The payment processor holds it"),
+            "{}",
+            describe(&held)
         );
     }
 

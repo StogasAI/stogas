@@ -38,7 +38,7 @@ Other commands:
 ```console
 stogas register                      # create an account and save its access token in the keychain
 stogas login                         # approve this machine in your browser, or with --device-code
-stogas topup 20 BTC                  # add credit with a cryptocurrency payment
+stogas topup 20 BTC                  # add credit with BTC, XMR, a token, or card
 stogas api {org}/keys --paginate     # call the dashboard API with the saved token, as gh api does
 stogas policy edit key <key-id>      # edit a policy in $VISUAL or $EDITOR and save it on close
 stogas byok check <credential-id>    # check a provider credential, with your key if you encrypted it

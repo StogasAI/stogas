@@ -36,6 +36,8 @@ async fn signs_up_tops_up_and_signs_out() {
     topup::wallet(&dashboard, base, "BTC".into(), "5")
         .await
         .unwrap();
+    // A card payment opens Stripe's page, which the CLI checks before it shows the link.
+    topup::card(&dashboard, base, "5", false).await.unwrap();
 
     let assets: Value = dashboard
         .get(&format!("{base}/ccpayment/assets"))

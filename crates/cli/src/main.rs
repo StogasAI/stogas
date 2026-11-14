@@ -117,7 +117,7 @@ enum Command {
     Logout,
     /// Send a request to the dashboard API and print the response.
     Api(api::Args),
-    /// Add credit with a cryptocurrency payment.
+    /// Add credit with a cryptocurrency or card payment.
     Topup(topup::Args),
     /// Change a saved policy.
     Policy {
@@ -362,7 +362,7 @@ async fn run() -> Result<()> {
         }
         Command::Logout => account::logout(&dashboard()?).await?,
         Command::Api(args) => api::run(args, &dashboard()?).await?,
-        Command::Topup(args) => topup::run(args, &dashboard()?).await?,
+        Command::Topup(args) => topup::run(args, &dashboard()?, route.onion).await?,
         Command::Policy {
             command: PolicyCommand::Edit(args),
         } => policy::run(args, &dashboard()?).await?,
