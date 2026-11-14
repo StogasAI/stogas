@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 import uuid
@@ -34,8 +35,9 @@ def qualify(source, packages, version, platform, target, requested, device, devi
         api = int(shell("getprop", "ro.build.version.sdk"))
         if api < int(target["minimum"]):
             raise ValueError("Android device is below the SDK minimum")
-        # getconf needs Android 10. The first mapping in smaps, cat's own code, uses the kernel's page size.
-        page_size = 1024 * int(re.search(r"^KernelPageSize:\s+(\d+) kB$", shell("cat", "/proc/self/smaps"), re.MULTILINE)[1])
+        # The page size that programs see is AT_PAGESZ (6) in the auxiliary vector. An x86_64 16 KB
+        # image emulates it on a kernel with 4 KB pages, and getconf needs Android 10.
+        page_size = dict(struct.iter_unpack("<QQ", subprocess.check_output([*adb, "exec-out", "cat", "/proc/self/auxv"])))[6]
         # Every device runs the selected tests. A 16 KB page-size device
         # records them as its own case.
         cases = ("16k",) if page_size == 16384 else selected_cases
