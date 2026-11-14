@@ -68,6 +68,20 @@ pub enum Command {
         #[command(flatten)]
         name: Name,
     },
+    /// Print a key's identifier, which is what an organization registers.
+    ///
+    /// Name a saved key by its organization and label, or give the key's file.
+    Id {
+        /// The organization that registers the saved key.
+        #[arg(long, value_parser = parse_organization, requires = "label", conflicts_with = "key_file")]
+        organization: Option<String>,
+        /// The saved key's label in the organization's encryption keys.
+        #[arg(long, value_parser = parse_label, requires = "organization")]
+        label: Option<String>,
+        /// The file with the key, as `stogas encryption-key` wrote it.
+        #[arg(long, required_unless_present = "organization")]
+        key_file: Option<PathBuf>,
+    },
 }
 
 /// What `stogas encrypt` encrypts, with which key, for which organization.
@@ -255,6 +269,20 @@ pub async fn run(command: Command) -> Result<()> {
                 out!("{id}")?;
             }
         }
+        Command::Id {
+            organization,
+            label,
+            key_file,
+        } => {
+            let key = match (key_file, organization.zip(label)) {
+                (Some(path), _) => customer_encryption::read_key(&path)?,
+                (None, Some((organization, label))) => saved(&organization, &label).await?,
+                (None, None) => {
+                    bail!("name the key with --organization and --label, or --key-file")
+                }
+            };
+            out!("{}", key.id)?;
+        }
     }
     Ok(())
 }
@@ -287,8 +315,8 @@ async fn saved_id(organization: &str, label: &str) -> Result<Option<Option<Strin
 
 fn taken(label: &str) -> String {
     format!(
-        "a key is already saved as {label} for this organization; remove it first with `stogas \
-         encryption-key delete`"
+        "a key is already saved as {label} for this organization; print its identifier with \
+         `stogas encryption-key id`, or remove it with `stogas encryption-key delete`"
     )
 }
 
