@@ -31,7 +31,7 @@ def build(output, epoch):
 
     output.mkdir(parents=True, exist_ok=True)
     version = json.loads((work / "package.json").read_text())["version"]
-    run("cargo", "build", "--locked", "--profile", "wasm", "--target", "wasm32-unknown-unknown", "-p", "stogas-wasm", "-p", "stogas-sigstore-wasm")
+    run("cargo", "build", "--locked", "--profile", "wasm", "--target", "wasm32-unknown-unknown", "-p", "stogas-wasm", "-p", "stogas-sev-snp-wasm", "-p", "stogas-sigstore-wasm")
     # Web pages download the npm packages' WebAssembly, so it ships without function names, which
     # made it 83% larger. The debug archive holds the same modules with them, and symbol maps, as
     # the native packages keep their debug information in theirs. Removing the names afterwards
@@ -40,6 +40,7 @@ def build(output, epoch):
     debug.mkdir()
     for crate, destination, name in [
         ("stogas_wasm", "pkg/browser", "stogas"),
+        ("stogas_sev_snp_wasm", "packages/sev-snp/pkg/browser", "stogas_sev_snp"),
         ("stogas_sigstore_wasm", "packages/sigstore/pkg/browser", "stogas_sigstore"),
     ]:
         run("wasm-bindgen", f"/build/target/wasm32-unknown-unknown/wasm/{crate}.wasm", "--target", "web", "--out-dir", destination, "--out-name", name)
@@ -53,7 +54,7 @@ def build(output, epoch):
     run("node", "scripts/package-npm.mjs", "--pack-destination", output)
     # Cargo packages interdependent workspace members together, using an isolated
     # temporary registry for verification before any real registry publication.
-    run("cargo", "package", "--locked", "--registry", "crates-io", "-p", "stogas-sigstore", "-p", "stogas-core", "-p", "stogas", "-p", "stogas-cli")
+    run("cargo", "package", "--locked", "--registry", "crates-io", "-p", "stogas-sev-snp", "-p", "stogas-sigstore", "-p", "stogas-core", "-p", "stogas", "-p", "stogas-cli")
     for archive in Path("/build/target/package").glob("*.crate"):
         shutil.copyfile(archive, output / archive.name)
     files = sorted(path for path in output.iterdir() if path.is_file())

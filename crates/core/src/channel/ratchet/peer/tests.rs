@@ -1,7 +1,7 @@
 use super::*;
 use crate::channel::{cipher::SoftwareCipher, ratchet::SKIPPED_KEY_LIFETIME_MS};
 use core::ops::{Deref, Index, IndexMut};
-use sha2_v11::{Digest as _, Sha256};
+use sha2::{Digest as _, Sha256};
 
 fn random(seed: u8) -> impl FnMut(&mut [u8]) -> Result<(), Error> {
     let mut counter = 0u64;

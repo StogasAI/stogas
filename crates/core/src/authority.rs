@@ -479,7 +479,6 @@ impl VerifiedEvidence {
         &self.sigstore
     }
 
-    #[cfg(feature = "snp")]
     pub(crate) const fn rekor_v2(&self) -> Option<&RekorV2Scope> {
         self.rekor_v2.as_ref()
     }
@@ -513,9 +512,13 @@ impl VerifiedEvidence {
         Ok(verified)
     }
 
+    /// The hardware policy's groups as platform rules.
+    ///
     /// # Errors
     /// Rejects invalid hardware rules.
-    pub(crate) fn verify_hardware_policies(&self) -> Result<(), Error> {
+    pub(crate) fn verify_hardware_policies(
+        &self,
+    ) -> Result<Vec<stogas_sev_snp::PlatformRule>, Error> {
         crate::validate_hardware_policies(&self.document.hardware_policies)
             .map_err(|error| Error::Evidence(error.to_string()))
     }
@@ -544,7 +547,6 @@ pub struct Authority {
 
 impl Authority {
     /// Separate historical appraisal from all learned current decisions.
-    #[cfg(feature = "snp")]
     pub(crate) fn historical_authority(&self) -> Result<Self, Error> {
         Self::new(self.environment, self.root.clone())
     }

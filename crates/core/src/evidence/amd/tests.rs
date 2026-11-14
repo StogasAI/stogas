@@ -1,302 +1,213 @@
 use super::*;
-use base64::engine::general_purpose::STANDARD;
 
-fn fixture() -> Value {
-    serde_json::from_str(include_str!(
-        "../../../tests/fixtures/amd-crl-transition-vectors.json"
+/// 2026-11-14, when AMD's KDS CRLs are valid and the CRLs of 2026-09-22 have expired.
+const NOW: i64 = 1_794_614_400_000;
+const ALWAYS: Validity = Validity {
+    not_before_unix_ms: 0,
+    not_after_unix_ms: i64::MAX,
+};
+/// AMD revoked its first Genoa ASK in 2022 and issued the current one.
+const FIRST_GENOA_ASK: &[u8] = &[2, 0, 1];
+const GENOA_ASK: &[u8] = &[2, 0, 2];
+
+fn crl(path: &str) -> Vec<u8> {
+    std::fs::read(format!(
+        "{}/../../tests/fixtures/sev-snp/{path}",
+        env!("CARGO_MANIFEST_DIR")
     ))
     .unwrap()
 }
 
-fn der(value: &Value, field: &str) -> Vec<u8> {
-    STANDARD.decode(value[field].as_str().unwrap()).unwrap()
-}
-
-fn row(der: &[u8], kind: &str) -> Value {
-    serde_json::json!({"collateral_type":kind,"der_base64url":URL_SAFE_NO_PAD.encode(der)})
-}
-
-fn trusted_fixture() -> (Value, IssuerId, Revocations) {
-    let value = fixture();
-    let ark = der(&value, "ark");
-    let (_, certificate) = parse_x509_certificate(&ark).unwrap();
-    let id = Sha384::digest(certificate.public_key().raw).into();
-    let state = Revocations::default();
-    // Only this private test helper trusts the fixture CA. observe() cannot learn it from delivery.
-    state.issuers.lock().unwrap().insert(
-        id,
-        Issuer {
-            certificate: ark.into(),
-            latest: None,
-            conflicting: false,
-        },
-    );
-    (value, id, state)
-}
-
-#[test]
-fn forged_root_metadata_cannot_poison_later_authentic_crl_delivery() {
-    let fixture: Value = serde_json::from_str(include_str!(
-        "../../../../../tests/fixtures/hardware-session-v1.json"
-    ))
-    .unwrap();
-    let rows = fixture["evidence"]["document"]["vendor_collateral"]
-        .as_array()
-        .unwrap();
-    let original = rows
+fn document(crls: &[&[u8]]) -> Value {
+    let rows: Vec<_> = crls
         .iter()
-        .find(|row| row["collateral_type"] == "ark")
-        .unwrap();
-    let crl = rows
-        .iter()
-        .find(|row| row["collateral_type"] == "crl")
-        .unwrap();
-    let bytes = row_der(original).unwrap();
-    let mut forged_name = bytes.clone();
-    let name = b"ARK-Milan";
-    let offsets: Vec<_> = forged_name
-        .windows(name.len())
-        .enumerate()
-        .filter_map(|(offset, value)| (value == name).then_some(offset))
+        .map(|der| serde_json::json!({"collateral_type": "crl", "der_base64url": URL_SAFE_NO_PAD.encode(der)}))
         .collect();
-    assert_eq!(offsets.len(), 2); // Replace both issuer and subject; leave the pinned SPKI intact.
-    for offset in offsets {
-        forged_name[offset] = b'B';
-    }
-    let mut forged_signature = bytes;
-    *forged_signature.last_mut().unwrap() ^= 1;
-    for forged in [forged_name, forged_signature] {
-        let state = Revocations::default();
-        let now = fixture["verified_at_ms"].as_i64().unwrap();
-        state
-            .observe(
-                &serde_json::json!({"vendor_collateral":[row(&forged, "ark")]}),
-                now,
-            )
-            .unwrap();
-        assert!(
-            state.issuers.lock().unwrap().is_empty(),
-            "cached unauthenticated root metadata"
-        );
-        state
-            .observe(
-                &serde_json::json!({"vendor_collateral":[original, crl]}),
-                now,
-            )
-            .unwrap();
-        let issuers = state.issuers.lock().unwrap();
-        assert_eq!(issuers.len(), 1);
-        assert!(issuers.values().next().unwrap().latest.is_some());
-        drop(issuers);
-    }
+    serde_json::json!({ "vendor_collateral": rows })
 }
 
 #[test]
-fn authenticated_revocation_survives_expiry_and_stale_replica() {
-    let (value, id, state) = trusted_fixture();
-    let now = value["now"].as_i64().unwrap();
-    let validity = Validity {
-        not_before_unix_ms: 0,
-        not_after_unix_ms: i64::MAX,
-    };
-    let body = |name| serde_json::json!({"vendor_collateral":[row(&der(&value,name),"crl")]});
-    state.observe(&body("clean"), now).unwrap();
-    assert!(state.validity(&id, &[2, 0, 1], validity, now).is_ok());
-    state.observe(&body("revoked"), now).unwrap();
+fn amd_crls_advance_and_never_roll_back() {
+    let state = Revocations::default();
+    let older = crl("attestation-rs/genoa-2026-09-22.crl");
+    let newer = crl("amd-kds/genoa.crl");
+    state.observe(&document(&[&older]), NOW).unwrap();
+    assert_eq!(state.changes(), 1);
+    // The expired CRL still shows the revocation, and nothing else.
     assert!(matches!(
-        state.validity(&id, &[2, 0, 1], validity, now),
+        state.validity(Product::Genoa, FIRST_GENOA_ASK, ALWAYS, NOW),
         Err(Error::Revoked)
     ));
     assert!(matches!(
-        state.observe(&body("clean"), now),
-        Err(Error::CrlOrder)
-    ));
-    state.observe(&body("expired"), now).unwrap();
-    assert!(matches!(
-        state.validity(&id, &[2, 0, 1], validity, now),
-        Err(Error::Revoked)
-    ));
-    assert!(matches!(
-        state.validity(&id, &[2, 0, 9], validity, now),
+        state.validity(Product::Genoa, GENOA_ASK, ALWAYS, NOW),
         Err(Error::CollateralExpired)
     ));
-}
-
-#[test]
-fn same_number_conflict_blocks_the_scope_and_large_numbers_are_supported() {
-    let (value, id, state) = trusted_fixture();
-    let now = value["now"].as_i64().unwrap();
-    let body = |name| serde_json::json!({"vendor_collateral":[row(&der(&value,name),"crl")]});
-    state.observe(&body("revoked"), now).unwrap();
-    state.observe(&body("revoked"), now).unwrap();
+    state.observe(&document(&[&newer]), NOW).unwrap();
+    assert_eq!(state.changes(), 2);
+    assert_eq!(
+        state
+            .validity(Product::Genoa, GENOA_ASK, ALWAYS, NOW)
+            .unwrap(),
+        Validity {
+            not_before_unix_ms: 1_793_082_166_000,
+            not_after_unix_ms: 1_796_778_000_000,
+        }
+    );
+    // A repeat changes nothing, and the older CRL cannot replace the newer.
+    state.observe(&document(&[&newer]), NOW).unwrap();
     assert!(matches!(
-        state.observe(&body("conflict"), now),
+        state.observe(&document(&[&older]), NOW),
         Err(Error::CrlOrder)
     ));
+    assert_eq!(state.changes(), 2);
     assert!(matches!(
-        state.observe(&body("revoked"), now),
-        Err(Error::CrlOrder)
+        state.validity(Product::Milan, &[1, 0, 1], ALWAYS, NOW),
+        Err(Error::MissingCollateral)
     ));
-    state.observe(&body("large_number"), now).unwrap();
-    assert!(!state.issuers.lock().unwrap()[&id].conflicting);
-    assert_eq!(
-        state.issuers.lock().unwrap()[&id]
-            .latest
-            .as_ref()
-            .unwrap()
-            .number[0],
-        128
-    );
 }
 
 #[test]
-fn each_learned_crl_or_conflict_counts_as_a_change_and_repeats_do_not() {
-    let (value, _, state) = trusted_fixture();
-    let now = value["now"].as_i64().unwrap();
-    let observe = |name| {
-        let _ = state.observe(
-            &serde_json::json!({"vendor_collateral":[row(&der(&value,name),"crl")]}),
-            now,
-        );
-        state.changes()
-    };
-    assert_eq!(observe("clean"), 1);
-    assert_eq!(observe("clean"), 1);
-    assert_eq!(observe("revoked"), 2);
-    // An older CRL is refused without changing anything.
-    assert_eq!(observe("clean"), 2);
-    // A conflict changes the issuer although learning it fails.
-    assert_eq!(observe("conflict"), 3);
-    assert_eq!(observe("revoked"), 3);
-    assert_eq!(observe("large_number"), 4);
+fn a_crl_that_is_not_valid_yet_or_was_changed_teaches_nothing() {
+    let state = Revocations::default();
+    let milan = crl("amd-kds/milan.crl");
+    // KDS issued it at 1_793_082_435 seconds.
+    let earliest = 1_793_082_435_000 - crate::MAX_CLOCK_SKEW_MS;
+    assert!(state.observe(&document(&[&milan]), earliest - 1).is_err());
+    let mut changed = milan.clone();
+    *changed.last_mut().unwrap() ^= 1;
+    assert!(state.observe(&document(&[&changed]), NOW).is_err());
+    assert_eq!(state.changes(), 0);
+    state.observe(&document(&[&milan]), earliest).unwrap();
+    assert_eq!(state.changes(), 1);
 }
 
 #[test]
-fn forged_future_scoped_or_untrusted_crls_cannot_advance_state() {
-    let (value, id, state) = trusted_fixture();
-    let now = value["now"].as_i64().unwrap();
-    let body = |bytes: Vec<u8>| serde_json::json!({"vendor_collateral":[row(&bytes,"crl")]});
-    state.observe(&body(der(&value, "clean")), now).unwrap();
-    for kind in ["future", "scoped"] {
-        assert!(state.observe(&body(der(&value, kind)), now).is_err());
-    }
-    let mut forged = der(&value, "large_number");
-    *forged.last_mut().unwrap() ^= 1;
-    assert!(state.observe(&body(forged), now).is_err());
-    assert_eq!(
-        state.issuers.lock().unwrap()[&id]
-            .latest
-            .as_ref()
-            .unwrap()
-            .number[19],
-        1
-    );
-    let untrusted = Revocations::default();
-    assert!(untrusted.observe(&serde_json::json!({"vendor_collateral":[row(&der(&value,"ark"),"ark"),row(&der(&value,"revoked"),"crl")]}),now).is_err());
-    assert!(untrusted.issuers.lock().unwrap().is_empty());
-}
-
-#[test]
-fn malformed_neighbor_does_not_discard_authentic_revocation() {
-    let (value, id, state) = trusted_fixture();
-    let now = value["now"].as_i64().unwrap();
-    let invalid = serde_json::json!({"collateral_type":"crl","der_base64url":"bad"});
-    for rows in [
-        vec![invalid.clone(), row(&der(&value, "revoked"), "crl")],
-        vec![row(&der(&value, "revoked"), "crl"), invalid],
-    ] {
+fn a_malformed_row_does_not_hide_an_authentic_crl() {
+    let authentic = document(&[&crl("amd-kds/genoa.crl")])["vendor_collateral"][0].clone();
+    let invalid = serde_json::json!({"collateral_type": "crl", "der_base64url": "bad"});
+    for rows in [[invalid.clone(), authentic.clone()], [authentic, invalid]] {
+        let state = Revocations::default();
         assert!(
             state
-                .observe(&serde_json::json!({"vendor_collateral":rows}), now)
+                .observe(&serde_json::json!({ "vendor_collateral": rows }), NOW)
                 .is_err()
         );
         assert!(matches!(
-            state.validity(
-                &id,
-                &[2, 0, 1],
-                Validity {
-                    not_before_unix_ms: 0,
-                    not_after_unix_ms: i64::MAX
-                },
-                now
-            ),
+            state.validity(Product::Genoa, FIRST_GENOA_ASK, ALWAYS, NOW),
             Err(Error::Revoked)
         ));
     }
 }
 
-#[test]
-fn signed_crl_extensions_and_entries_enforce_the_supported_scope() {
-    let vectors = fixture()["extension_vectors"].clone();
-    let ark = der(&vectors, "ark");
-    let now = vectors["now"].as_i64().unwrap();
-    for case in vectors["cases"].as_array().unwrap() {
-        assert_eq!(
-            authenticate_crl(&ark, &der(case, "der"), now).is_ok(),
-            case["valid"].as_bool().unwrap(),
-            "{}",
-            case["name"]
-        );
-    }
-    let original = der(&vectors["cases"][0], "der");
-    let mut trailing = original.clone();
-    trailing.push(0);
-    assert!(authenticate_crl(&ark, &trailing, now).is_err());
-
-    let mut issuer = Issuer {
-        certificate: ark.clone().into(),
-        latest: None,
+/// A CRL with this number, last update and revoked serial numbers.
+fn latest(number: u8, not_before: i64, revoked: &[&[u8]]) -> Latest {
+    let mut digits = [0; 20];
+    digits[19] = number;
+    Latest {
+        revocation: Revocation {
+            number: digits,
+            validity: Validity {
+                not_before_unix_ms: not_before,
+                not_after_unix_ms: not_before + 1_000,
+            },
+            revoked: revoked.iter().map(|serial| serial.to_vec()).collect(),
+        },
+        der_sha256: [number; 32],
         conflicting: false,
-    };
-    issuer
-        .learn(authenticate_crl(&ark, &original, now).unwrap())
-        .unwrap();
-    // A new randomized signature over the same signed contents is not equivocation.
-    let resigned = der(&vectors, "resigned_same_contents");
-    assert_ne!(original, resigned);
-    issuer
-        .learn(authenticate_crl(&ark, &resigned, now).unwrap())
-        .unwrap();
-    assert!(matches!(
-        issuer.learn(authenticate_crl(&ark, &der(&vectors, "older_higher_number"), now).unwrap()),
-        Err(Error::CrlOrder)
-    ));
+    }
 }
 
-#[cfg(feature = "staging")]
 #[test]
-fn incomplete_evidence_cannot_hide_authenticated_negative_appraisal() {
-    use crate::{authority::Environment, evidence::Verifier};
-    let (value, id, state) = trusted_fixture();
-    let now = value["now"].as_i64().unwrap();
-    let roots: Value = serde_json::from_str(include_str!(
+fn only_a_newer_crl_replaces_the_latest_and_a_conflict_blocks_its_product() {
+    let mut state = latest(2, 10, &[]);
+    // Another signature over the same contents is the same CRL.
+    let mut resigned = latest(2, 10, &[]);
+    resigned.der_sha256 = [9; 32];
+    assert!(matches!(learn(&mut state, resigned), (false, Ok(()))));
+    assert!(matches!(
+        learn(&mut state, latest(1, 20, &[])),
+        (false, Err(Error::CrlOrder))
+    ));
+    // A higher number with an earlier last update is out of order too.
+    assert!(matches!(
+        learn(&mut state, latest(3, 5, &[])),
+        (false, Err(Error::CrlOrder))
+    ));
+    // The same number with other contents conflicts, which changes the state once.
+    assert!(matches!(
+        learn(&mut state, latest(2, 10, &[GENOA_ASK])),
+        (true, Err(Error::CrlOrder))
+    ));
+    assert!(matches!(
+        learn(&mut state, latest(2, 10, &[GENOA_ASK])),
+        (false, Err(Error::CrlOrder))
+    ));
+    assert!(matches!(
+        learn(&mut state, latest(2, 10, &[])),
+        (false, Err(Error::CrlOrder))
+    ));
+    let revocations = Revocations::default();
+    revocations.lock().unwrap().insert(
+        Product::Genoa,
+        Latest {
+            conflicting: true,
+            ..latest(2, 10, &[])
+        },
+    );
+    assert!(matches!(
+        revocations.validity(Product::Genoa, FIRST_GENOA_ASK, ALWAYS, 10),
+        Err(Error::CrlOrder)
+    ));
+    // A newer CRL settles the conflict, and numbers compare across all 20 bytes.
+    assert!(matches!(
+        learn(&mut state, latest(3, 10, &[])),
+        (true, Ok(()))
+    ));
+    assert!(!state.conflicting);
+    let mut large = latest(0, 10, &[]);
+    large.revocation.number[0] = 1;
+    assert!(matches!(learn(&mut state, large), (true, Ok(()))));
+}
+
+fn collateral() -> Vec<crate::AmdCollateral> {
+    let fixture: Value = serde_json::from_str(include_str!(
         "../../../../../tests/fixtures/hardware-session-v1.json"
     ))
     .unwrap();
-    let mut verifier = Verifier::new(
-        Environment::Staging,
-        serde_json::from_value(roots["root"].clone()).unwrap(),
-    )
-    .unwrap();
-    verifier.revocations = Arc::new(state);
-    let evidence =
-        serde_json::json!({"document":{"vendor_collateral":[row(&der(&value,"revoked"),"crl")]}});
-    assert!(
-        verifier
-            .refresh(&serde_json::to_vec(&evidence).unwrap(), now)
-            .is_err()
+    serde_json::from_value(fixture["evidence"]["document"]["vendor_collateral"].clone()).unwrap()
+}
+
+type Edit<'a> = &'a dyn Fn(&mut Vec<crate::AmdCollateral>);
+
+#[test]
+fn each_vcek_row_names_its_certificates_chip_tcb_and_product() {
+    let rows = collateral();
+    Store::verify(&rows, None, Arc::default()).unwrap();
+    let find = |kind| {
+        rows.iter()
+            .position(|row| row.collateral_type == kind)
+            .unwrap()
+    };
+    let (vcek, ark) = (
+        find(crate::AmdCollateralType::Vcek),
+        find(crate::AmdCollateralType::Ark),
     );
-    assert!(verifier.current().is_none());
-    assert!(matches!(
-        verifier.revocations.validity(
-            &id,
-            &[2, 0, 1],
-            Validity {
-                not_before_unix_ms: 0,
-                not_after_unix_ms: i64::MAX
-            },
-            now
-        ),
-        Err(Error::Revoked)
-    ));
+    let edits: [Edit; 5] = [
+        &|rows| rows[vcek].chip_id = Some("11".repeat(64)),
+        &|rows| rows[vcek].reported_tcb = Some("0400000000001ddf".into()),
+        &|rows| rows[vcek].product_name = Some("Genoa".into()),
+        // Another product's ARK.
+        &|rows| rows[ark].der_base64url = URL_SAFE_NO_PAD.encode(Product::Genoa.roots().ark),
+        &|rows| {
+            rows.retain(|row| row.collateral_type != crate::AmdCollateralType::Crl);
+        },
+    ];
+    for (index, edit) in edits.iter().enumerate() {
+        let mut changed = rows.clone();
+        edit(&mut changed);
+        assert!(
+            Store::verify(&changed, None, Arc::default()).is_err(),
+            "edit {index}"
+        );
+    }
 }

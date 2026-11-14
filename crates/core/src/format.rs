@@ -63,7 +63,6 @@ pub(crate) fn check(document: &Value, expected: &'static str) -> Result<(), Form
 }
 
 /// Whether `schema` names any version of `expected`'s format.
-#[cfg(feature = "snp")]
 pub(crate) fn same_format(schema: &str, expected: &str) -> bool {
     match (version(schema), version(expected)) {
         (Some((name, _)), Some((expected_name, _))) => name == expected_name,
@@ -134,7 +133,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "snp")]
     #[test]
     fn any_version_names_the_same_format() {
         assert!(same_format("stogas.evidence.v9", EXPECTED));

@@ -20,9 +20,9 @@ CASES = ("offline", "live")
 PREVIEW_CASES = ("offline",)
 NPM_RUNTIMES = ("node", "node-minimum", "bun", "deno", "worker", "chromium", "firefox", "webkit")
 # In dependency order, which crates.io requires for a first upload.
-CRATES = ("stogas-sigstore", "stogas-core", "stogas", "stogas-cli")
+CRATES = ("stogas-sev-snp", "stogas-sigstore", "stogas-core", "stogas", "stogas-cli")
 # Each npm package's archive name and the path of its WebAssembly inside the package.
-NPM_MODULES = (("stogas", "pkg/browser/stogas_bg.wasm"), ("stogas-sigstore", "pkg/browser/stogas_sigstore_bg.wasm"))
+NPM_MODULES = (("stogas", "pkg/browser/stogas_bg.wasm"), ("stogas-sev-snp", "pkg/browser/stogas_sev_snp_bg.wasm"), ("stogas-sigstore", "pkg/browser/stogas_sigstore_bg.wasm"))
 # crates.io reads a crate's keywords and categories from its archive's Cargo.toml, and its
 # publish.rs refuses more than 5 of either, a keyword over 20 bytes or of another form, and a
 # category missing from https://crates.io/api/v1/category_slugs, as listed on November 5, 2026.
@@ -179,7 +179,7 @@ def check_wasm_debug(directory, version):
 
 def check_artifact_families(names, targets, version):
     expected = {
-        f"stogas-{version}.tgz", f"stogas-sigstore-{version}.tgz", f"stogas-v{version}-wasm32-debug.tar.gz",
+        *[f"{package}-{version}.tgz" for package, _ in NPM_MODULES], f"stogas-v{version}-wasm32-debug.tar.gz",
         *[f"{crate}-{version}.crate" for crate in CRATES],
         f"stogas-go-v{version}.tar.gz", f"stogas-swift-v{version}.tar.gz",
         f"stogas-xcframework-v{version}.zip",

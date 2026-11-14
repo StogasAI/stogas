@@ -271,8 +271,8 @@ fn parse_certificate(der: Vec<u8>) -> Result<CertificateInfo, String> {
         .map_err(|error| format!("invalid Fulcio certificate: {error}"))?;
     let not_before = i64::try_from(
         certificate
-            .tbs_certificate
-            .validity
+            .tbs_certificate()
+            .validity()
             .not_before
             .to_unix_duration()
             .as_secs(),
@@ -280,22 +280,22 @@ fn parse_certificate(der: Vec<u8>) -> Result<CertificateInfo, String> {
     .map_err(|_| "Fulcio not-before is too large".to_owned())?;
     let not_after = i64::try_from(
         certificate
-            .tbs_certificate
-            .validity
+            .tbs_certificate()
+            .validity()
             .not_after
             .to_unix_duration()
             .as_secs(),
     )
     .map_err(|_| "Fulcio not-after is too large".to_owned())?;
     let spki = certificate
-        .tbs_certificate
-        .subject_public_key_info
+        .tbs_certificate()
+        .subject_public_key_info()
         .to_der()
         .map_err(|error| format!("could not encode Fulcio public key: {error}"))?;
 
     let (critical, names): (bool, SubjectAltName) = certificate
-        .tbs_certificate
-        .get()
+        .tbs_certificate()
+        .get_extension()
         .map_err(|error| format!("could not parse Fulcio SAN: {error}"))?
         .ok_or_else(|| "Fulcio certificate has no SAN".to_owned())?;
     let identities = names
@@ -311,9 +311,9 @@ fn parse_certificate(der: Vec<u8>) -> Result<CertificateInfo, String> {
     }
 
     let extensions = certificate
-        .tbs_certificate
-        .extensions
-        .iter()
+        .tbs_certificate()
+        .extensions()
+        .into_iter()
         .flatten()
         .map(|extension| (extension.extn_id, extension.extn_value.as_bytes().to_vec()))
         .collect::<Vec<_>>();

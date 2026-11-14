@@ -15,23 +15,16 @@ use crate::{
     format::FormatError,
 };
 
-#[cfg(feature = "snp")]
 pub mod boot;
 mod collateral;
-#[cfg(feature = "snp")]
 mod history;
-#[cfg(feature = "snp")]
 mod session;
-#[cfg(feature = "snp")]
 mod snp;
 
 pub use collateral::Validity;
-#[cfg(feature = "snp")]
 pub use history::MAX_ARCHIVE_BYTES;
-#[cfg(feature = "snp")]
 pub use session::VerifiedSession;
-#[cfg(feature = "snp")]
-pub use snp::{SnpHardwareFacts, VerifiedSnpReport};
+pub use snp::VerifiedSnpReport;
 
 /// Completed local work. Individual checks never imply that the candidate was accepted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -129,12 +122,13 @@ struct Cached<T> {
 /// with active users; each new connection still checks current authorization and vendor validity.
 #[derive(Debug)]
 pub struct Snapshot {
-    #[cfg(feature = "snp")]
     identity: Arc<()>,
     evidence: VerifiedEvidence,
     key_state: Arc<authority::KeyState>,
     gateways: BTreeMap<String, Cached<VerifiedRelease>>,
     catalogs: BTreeMap<String, Cached<VerifiedCatalogRelease>>,
+    /// The signed hardware policy's groups, as rules that reports must meet.
+    platforms: Vec<stogas_sev_snp::PlatformRule>,
     collateral: collateral::Store,
 }
 
@@ -217,41 +211,25 @@ impl Snapshot {
     ///
     /// # Errors
     /// Missing or expired material blocks only operations requiring that platform.
-    #[cfg_attr(
-        not(feature = "snp"),
-        expect(
-            clippy::missing_const_for_fn,
-            reason = "The SNP implementation reads shared revocation state."
-        )
-    )]
     pub fn collateral_validity(
         &self,
         chip_id: &str,
         reported_tcb: &str,
         now_unix_ms: i64,
     ) -> Result<Validity, Error> {
-        #[cfg(feature = "snp")]
-        {
-            let expires = self.evidence.valid_until(now_unix_ms)?;
-            let mut validity = self
-                .collateral
-                .validity(chip_id, reported_tcb, now_unix_ms)?;
-            validity.not_after_unix_ms = validity.not_after_unix_ms.min(expires);
-            Ok(validity)
-        }
-        #[cfg(not(feature = "snp"))]
-        {
-            let _ = (chip_id, reported_tcb, now_unix_ms);
-            Err(Error::MissingCollateral)
-        }
+        let expires = self.evidence.valid_until(now_unix_ms)?;
+        let mut validity = self
+            .collateral
+            .validity(chip_id, reported_tcb, now_unix_ms)?;
+        validity.not_after_unix_ms = validity.not_after_unix_ms.min(expires);
+        Ok(validity)
     }
 
-    /// The chip certificate's own interval, which only a newly fetched VCEK extends. CRL
-    /// freshness and the root authorization deadline renew separately.
+    /// When AMD's certificates for a chip at a reported TCB are all valid, which only new
+    /// certificates extend. CRL freshness and the root authorization deadline renew separately.
     ///
     /// # Errors
     /// Rejects a platform without verified collateral.
-    #[cfg(feature = "snp")]
     pub fn vcek_validity(&self, chip_id: &str, reported_tcb: &str) -> Result<Validity, Error> {
         self.collateral.vcek_validity(chip_id, reported_tcb)
     }
@@ -450,17 +428,12 @@ impl Verifier {
         }
         // Vendor revocation is an independent signed decision. Retain it even if a missing
         // release, altered signature or other malformed object prevents acceptance.
-        #[cfg(feature = "snp")]
         let vendor = self.revocations.observe(document, now_unix_ms);
-        #[cfg(not(feature = "snp"))]
-        let _ = now_unix_ms;
-        #[cfg(feature = "snp")]
         if keys.is_ok() && vendor.is_ok() {
             checked(VerificationStep::VendorRevocations, None, false);
         }
         // Process both independent authorities before returning either failure.
         let keys = keys?;
-        #[cfg(feature = "snp")]
         vendor?;
         Ok(keys)
     }
@@ -501,7 +474,7 @@ impl Verifier {
             checked(VerificationStep::CatalogRelease, Some(id.as_str()), reused);
             catalogs.insert(id, entry);
         }
-        evidence.verify_hardware_policies()?;
+        let platforms = evidence.verify_hardware_policies()?;
         checked(VerificationStep::HardwarePolicy, None, false);
         let collateral = collateral::Store::verify(
             &evidence.document().vendor_collateral,
@@ -514,12 +487,12 @@ impl Verifier {
             checked(VerificationStep::OnionServices, None, false);
         }
         Ok(Snapshot {
-            #[cfg(feature = "snp")]
             identity: Arc::new(()),
             evidence,
             key_state: self.authority.key_state(),
             gateways,
             catalogs,
+            platforms,
             collateral,
         })
     }

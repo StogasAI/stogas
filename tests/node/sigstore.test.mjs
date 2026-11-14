@@ -31,12 +31,7 @@ const policy = {
 		'https://github.com/StogasAI/gateway/.github/workflows/gateway-igvm-release.yml@refs/tags/v0.0.1'
 };
 
-const verified = verify_github_attestation(
-	attestation,
-	JSON.stringify(subjects),
-	JSON.stringify(policy),
-	trustedRoot
-);
+const verified = verify_github_attestation(attestation, subjects, policy, trustedRoot);
 assert.equal(verified.subjects.length, 2);
 assert.equal(
 	verified.predicate.buildDefinition.buildType,
@@ -49,19 +44,14 @@ const identity = {
 	certificate_oidc_issuer: 'https://token.actions.githubusercontent.com',
 	predicate_type: policy.predicate_type
 };
-const generic = verify_dsse_attestation(
-	attestation,
-	JSON.stringify(subjects),
-	JSON.stringify(identity),
-	trustedRoot
-);
+const generic = verify_dsse_attestation(attestation, subjects, identity, trustedRoot);
 assert.deepEqual(generic, verified);
 assert.throws(
 	() =>
 		verify_dsse_attestation(
 			attestation,
-			JSON.stringify(subjects),
-			JSON.stringify({ ...identity, certificate_oidc_issuer: 'https://accounts.google.com' }),
+			subjects,
+			{ ...identity, certificate_oidc_issuer: 'https://accounts.google.com' },
 			trustedRoot
 		),
 	/Sigstore cryptographic verification failed/
@@ -74,8 +64,8 @@ assert.throws(
 	() =>
 		verify_github_attestation(
 			new TextEncoder().encode(JSON.stringify(mutation)),
-			JSON.stringify(subjects),
-			JSON.stringify(policy),
+			subjects,
+			policy,
 			trustedRoot
 		),
 	/Sigstore cryptographic verification failed/
@@ -84,15 +74,35 @@ assert.throws(
 const withoutLogs = JSON.parse(trustedRoot);
 withoutLogs.tlogs = [];
 assert.throws(() =>
-	verify_github_attestation(
-		attestation,
-		JSON.stringify(subjects),
-		JSON.stringify(policy),
-		JSON.stringify(withoutLogs)
-	)
+	verify_github_attestation(attestation, subjects, policy, JSON.stringify(withoutLogs))
+);
+assert.throws(
+	() => verify_github_attestation(attestation, subjects, policy, '{}'),
+	/trusted root/i
+);
+// A misspelled requirement fails instead of going unchecked.
+const { source_commit, ...misspelled } = policy;
+assert.throws(
+	() =>
+		verify_github_attestation(
+			attestation,
+			subjects,
+			{ ...misspelled, source_comit: source_commit },
+			trustedRoot
+		),
+	/invalid policy: unknown field `source_comit`/
 );
 assert.throws(
 	() =>
-		verify_github_attestation(attestation, JSON.stringify(subjects), JSON.stringify(policy), '{}'),
-	/trusted root/i
+		verify_github_attestation(
+			attestation,
+			[{ ...subjects[0], digest: subjects[0].sha256 }],
+			policy,
+			trustedRoot
+		),
+	/invalid subjects/
+);
+assert.throws(
+	() => verify_github_attestation(attestation, JSON.stringify(subjects), policy, trustedRoot),
+	/invalid subjects/
 );

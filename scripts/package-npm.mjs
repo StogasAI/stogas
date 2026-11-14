@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
-import { cpSync, copyFileSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -26,13 +24,5 @@ function pack(directory) {
 	if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
-pack(repositoryRoot);
-
-const stagingRoot = mkdtempSync(join(tmpdir(), 'stogas-sigstore-'));
-try {
-	cpSync(resolve(repositoryRoot, 'packages/sigstore'), stagingRoot, { recursive: true });
-	copyFileSync(resolve(repositoryRoot, 'LICENSE'), resolve(stagingRoot, 'LICENSE'));
-	pack(stagingRoot);
-} finally {
-	rmSync(stagingRoot, { force: true, recursive: true });
-}
+for (const directory of ['.', 'packages/sev-snp', 'packages/sigstore'])
+	pack(resolve(repositoryRoot, directory));

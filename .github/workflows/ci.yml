@@ -51,16 +51,27 @@ jobs:
         run: |
           cargo clippy --locked --workspace --all-targets -- -D warnings
           cargo clippy --locked --package stogas --package stogas-cli --all-targets --features staging -- -D warnings
-          cargo clippy --locked --package stogas-core --all-targets --no-default-features -- -D warnings
+          cargo clippy --locked --package stogas-sev-snp --lib -- -D warnings
           cargo clippy --locked --package stogas-core --all-targets --features staging,gateway -- -D warnings
           cargo clippy --locked --package stogas-ffi --all-targets --no-default-features --features staging,gateway -- -D warnings
           cargo clippy --locked --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
-      - name: Audit the SDK and Rust example dependencies
+      # The SEV-SNP crate is no_std. These targets have no standard library, so a build fails
+      # when the crate or one of its dependencies needs it. Guest firmware, such as an SVSM,
+      # builds for x86_64-unknown-none.
+      - name: Build the SEV-SNP crate without the standard library
         if: ${{ !cancelled() }}
         run: |
-          cargo install cargo-audit --version 0.22.2 --locked
-          cargo audit
-          cargo audit --file examples/rust-openai/Cargo.lock
+          rustup target add thumbv7em-none-eabihf x86_64-unknown-none
+          cargo build --locked --package stogas-sev-snp --target thumbv7em-none-eabihf
+          cargo build --locked --package stogas-sev-snp --features serde --target thumbv7em-none-eabihf
+          cargo build --locked --package stogas-sev-snp --target x86_64-unknown-none
+      # deny.toml sets the advisories, licenses and sources that shipped crates may have.
+      - name: Check the SDK and Rust example dependencies
+        if: ${{ !cancelled() }}
+        run: |
+          cargo install cargo-deny --version 0.20.2 --locked
+          cargo deny --locked check
+          cargo deny --locked --manifest-path examples/rust-openai/Cargo.toml check advisories
       - name: Test the release scripts
         if: ${{ !cancelled() }}
         run: python3 -B -m unittest discover -s release -p 'test_*.py' -v
@@ -302,8 +313,6 @@ jobs:
         run: cargo test --locked --workspace --all-targets
       - name: 'Rust: staging trust policy and transport'
         run: cargo test --locked --package stogas-core --package stogas --package stogas-cli --all-targets --features staging
-      - name: 'Rust: verifier without SNP support'
-        run: cargo test --locked --package stogas-core --all-targets --no-default-features
       - name: 'Rust: OpenAI client example'
         env:
           # Reuses the dependencies the workspace tests built.
@@ -526,12 +535,12 @@ jobs:
         with:
           node-version: 26.13.0
           cache: npm
-      # stogas-sigstore builds alone, with no setup; stogas-core needs the application to select
-      # getrandom's WebAssembly backend, as stogas-wasm does.
+      # stogas-sev-snp and stogas-sigstore build alone, with no setup; stogas-core needs the
+      # application to select getrandom's WebAssembly backend, as stogas-wasm does.
       - name: Reject native cryptography in the WebAssembly builds
         run: |
           set -euo pipefail
-          for package in stogas-sigstore stogas-sigstore-wasm stogas-wasm; do
+          for package in stogas-sev-snp stogas-sev-snp-wasm stogas-sigstore stogas-sigstore-wasm stogas-wasm; do
             cargo tree --locked --package "$package" --target wasm32-unknown-unknown > "${package}-dependencies.txt"
             if grep -E '(^| )(aws-lc-rs|openssl|ring) v' "${package}-dependencies.txt"; then
               echo "$package contains a native cryptographic backend." >&2
@@ -543,19 +552,18 @@ jobs:
         run: |
           set -euo pipefail
           cargo install wasm-bindgen-cli --version =0.2.129 --locked
-          cargo build --locked --profile wasm --package stogas-sigstore-wasm --package stogas-wasm --target wasm32-unknown-unknown
-          wasm-bindgen target/wasm32-unknown-unknown/wasm/stogas_sigstore_wasm.wasm \
-            --target web --remove-name-section \
-            --out-dir target/sigstore-browser \
-            --out-name stogas_sigstore
+          cargo build --locked --profile wasm --package stogas-wasm --package stogas-sev-snp-wasm \
+            --package stogas-sigstore-wasm --target wasm32-unknown-unknown
           wasm-bindgen target/wasm32-unknown-unknown/wasm/stogas_wasm.wasm \
             --target web --remove-name-section \
             --out-dir pkg/browser \
             --out-name stogas
-          wasm-bindgen target/wasm32-unknown-unknown/wasm/stogas_sigstore_wasm.wasm \
-            --target web --remove-name-section \
-            --out-dir packages/sigstore/pkg/browser \
-            --out-name stogas_sigstore
+          for name in sev_snp sigstore; do
+            wasm-bindgen "target/wasm32-unknown-unknown/wasm/stogas_${name}_wasm.wasm" \
+              --target web --remove-name-section \
+              --out-dir "packages/${name/_/-}/pkg/browser" \
+              --out-name "stogas_${name}"
+          done
           cargo build --locked --profile wasm --package stogas-wasm --features staging \
             --target wasm32-unknown-unknown --target-dir target/wasm-staging
           wasm-bindgen target/wasm-staging/wasm32-unknown-unknown/wasm/stogas_wasm.wasm \
@@ -613,16 +621,15 @@ jobs:
           npx --yes --package bun@1.4.4 bun tests/clients/fetch-load.mjs
           npx --yes --package deno@2.9.6 deno test --allow-all --no-check tests/node/*.test.mjs
           npx --yes --package deno@2.9.6 deno run --allow-all tests/clients/fetch-load.mjs
-      - name: 'npm: both packages installed by name'
-        # It installs the two tarballs that this job packs, which have no dependencies and which a
+      - name: 'npm: every package installed by name'
+        # It installs the tarballs that this job packs, which have no dependencies and which a
         # lockfile cannot hold; the job holds no secrets and can write nothing.
         # zizmor: ignore[adhoc-packages]
         run: |
           set -euo pipefail
           consumer="$RUNNER_TEMP/npm-consumer"
           mkdir "$consumer"
-          npm pack --pack-destination "$consumer"
-          npm pack ./packages/sigstore --pack-destination "$consumer"
+          node scripts/package-npm.mjs --pack-destination "$consumer"
           cp tests/package/exports.test.mjs "$consumer"
           cd "$consumer"
           echo '{"name": "consumer", "private": true, "type": "module"}' > package.json

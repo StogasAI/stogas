@@ -31,6 +31,12 @@ fn fixture() -> (super::super::Verifier, Value, Vec<u8>, [u8; 32], i64) {
     )
 }
 
+/// Appraise with already authenticated evidence whose hardware policies a test changed.
+fn install(snapshot: &mut Snapshot, evidence: crate::authority::VerifiedEvidence) {
+    snapshot.platforms = evidence.verify_hardware_policies().unwrap();
+    snapshot.evidence = evidence;
+}
+
 #[test]
 fn genuine_registration_binds_csr_possession_to_the_quoted_key() {
     let (mut verifier, evidence, _, _, _) = fixture();
@@ -94,7 +100,11 @@ fn registered_facts_recheck_current_policy_collateral_and_release_membership() {
         .unwrap();
     snapshot.appraise_registered_boot(&facts, now).unwrap();
     let validity = snapshot
-        .collateral_validity(&facts.chip_id, &facts.hardware.reported_tcb(), now)
+        .collateral_validity(
+            &facts.chip_id,
+            &hex::encode(facts.hardware.reported_tcb.to_bytes()),
+            now,
+        )
         .unwrap();
     assert!(matches!(
         snapshot.appraise_registered_boot(&facts, validity.not_after_unix_ms),
@@ -117,16 +127,22 @@ fn registered_facts_recheck_current_policy_collateral_and_release_membership() {
     let mut snapshot = std::sync::Arc::try_unwrap(snapshot)
         .unwrap_or_else(|_| panic!("exclusive fixture snapshot"));
     let original = snapshot.evidence.clone();
-    snapshot.evidence = original.clone().edited(|document| {
-        document.hardware_policies[0].minimum_tcb.snp = 255;
-    });
+    install(
+        &mut snapshot,
+        original.clone().edited(|document| {
+            document.hardware_policies[0].minimum_tcb.snp = 255;
+        }),
+    );
     assert!(snapshot.appraise_registered_boot(&facts, now).is_err());
-    snapshot.evidence = original.clone().edited(|document| {
-        document.hardware_policies[0].required_current_mitigation_mask =
-            "0xffffffffffffffff".into();
-    });
+    install(
+        &mut snapshot,
+        original.clone().edited(|document| {
+            document.hardware_policies[0].required_current_mitigation_mask =
+                "0xffffffffffffffff".into();
+        }),
+    );
     assert!(snapshot.appraise_registered_boot(&facts, now).is_err());
-    snapshot.evidence = original;
+    install(&mut snapshot, original);
     snapshot.appraise_registered_boot(&facts, now).unwrap();
 }
 
@@ -150,17 +166,18 @@ fn hardware_alternatives_apply_to_quotes_registered_facts_and_fresh_sessions() {
     let mut snapshot = std::sync::Arc::try_unwrap(snapshot).ok().unwrap();
     let original = snapshot.evidence.clone();
     let alternatives = |policies: Vec<crate::AmdSevSnpPolicy>| {
-        let evidence = original.clone().edited(|document| {
+        original.clone().edited(|document| {
             document.hardware_policies = policies;
-        });
-        crate::validate_hardware_policies(&evidence.document().hardware_policies).unwrap();
-        evidence
+        })
     };
     let mut smt_on = original.document().hardware_policies[0].clone();
     smt_on.required_platform_info_mask = "0x0000000000000025".into();
     let mut smt_off = original.document().hardware_policies[0].clone();
     smt_off.forbidden_platform_info_mask = "0x0000000000000001".into();
-    snapshot.evidence = alternatives(vec![smt_on.clone(), smt_off.clone()]);
+    install(
+        &mut snapshot,
+        alternatives(vec![smt_on.clone(), smt_off.clone()]),
+    );
     snapshot
         .verify_registered_boot(document.as_bytes(), &digest, now)
         .unwrap();
@@ -172,7 +189,7 @@ fn hardware_alternatives_apply_to_quotes_registered_facts_and_fresh_sessions() {
     // Retiring the SMT-on alternative immediately rejects that configuration in
     // all three paths. Another chip's matching configuration grants no permission.
     smt_on.chip_ids = vec!["ff".repeat(64)];
-    snapshot.evidence = alternatives(vec![smt_off, smt_on]);
+    install(&mut snapshot, alternatives(vec![smt_off, smt_on]));
     assert!(
         snapshot
             .verify_registered_boot(document.as_bytes(), &digest, now)

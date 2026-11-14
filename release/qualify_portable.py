@@ -86,16 +86,16 @@ def qualify(source, packages, version, requested, cases):
             (work / "package.json").write_text(json.dumps({"name": "stogas-release-consumer", "private": True, "type": "module", "devDependencies": package["devDependencies"]}))
             shutil.copyfile(source / "package-lock.json", work / "package-lock.json")
             run(PLAYWRIGHT, ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"])
-            run(PLAYWRIGHT, ["npm", "install", "--no-save", "--ignore-scripts", "--no-audit", "--no-fund", f"/work/packages/stogas-{version}.tgz", f"/work/packages/stogas-sigstore-{version}.tgz"])
+            run(PLAYWRIGHT, ["npm", "install", "--no-save", "--ignore-scripts", "--no-audit", "--no-fund", f"/work/packages/stogas-{version}.tgz", f"/work/packages/stogas-sev-snp-{version}.tgz", f"/work/packages/stogas-sigstore-{version}.tgz"])
             # Existing adapter tests use repository-relative module paths. Their
             # inputs here come exclusively from npm's installed package bytes.
             installed = work / "node_modules/stogas"
             for name in ("bindings", "pkg"):
                 shutil.copytree(installed / name, work / name)
-            shutil.copytree(work / "node_modules/@stogas/sigstore", work / "packages/sigstore")
+            for name in ("sev-snp", "sigstore"):
+                shutil.copytree(work / f"node_modules/@stogas/{name}", work / f"packages/{name}")
             shutil.copytree(installed / "pkg/browser", work / "target/browser")
-            shutil.copytree(work / "node_modules/@stogas/sigstore/pkg/browser", work / "target/sigstore-browser")
-            tests = ["tests/node/" + path.name for path in sorted((work / "tests/node").glob("*.test.mjs")) if path.name != "fuzz-workflows.test.mjs"]
+            tests = ["tests/node/" + path.name for path in sorted((work / "tests/node").glob("*.test.mjs"))]
             # Resolves each entry point by package name from the installed packages.
             tests.append("tests/package/exports.test.mjs")
             (work / "tests/browser/release.config.mjs").write_text(RELEASE_CONFIG)
@@ -109,7 +109,7 @@ def qualify(source, packages, version, requested, cases):
                     ("node-minimum", NODE_MINIMUM, ["node", "--test", *tests]),
                     ("bun", BUN, ["bun", "test", *tests]),
                     ("deno", DENO, ["deno", "test", "--allow-all", "--no-check", *tests]),
-                    ("worker", PLAYWRIGHT, ["node", "--test", "tests/worker/transport.test.mjs"]),
+                    ("worker", PLAYWRIGHT, ["node", "--test", "tests/worker/transport.test.mjs", "tests/worker/packages.test.mjs"]),
                 ):
                     record("npm", f"{runtime}-{case}", image, attempt(f"npm/{runtime}-{case}", lambda: run(image, arguments, case)))
                 # Playwright fails when any test does; each engine's own results decide its outcome.
@@ -120,7 +120,7 @@ def qualify(source, packages, version, requested, cases):
                 for runtime in BROWSERS:
                     record("npm", f"{runtime}-{case}", PLAYWRIGHT, outcomes[runtime])
         if "rust" in selected:
-            crates = ("stogas-sigstore", "stogas-core", "stogas")
+            crates = ("stogas-sev-snp", "stogas-sigstore", "stogas-core", "stogas")
             for name in crates:
                 unpack(packages / f"{name}-{version}.crate", work / name)
             (work / "src").mkdir()
@@ -134,7 +134,7 @@ def qualify(source, packages, version, requested, cases):
             shutil.copyfile(work / paths["stogas"] / "Cargo.lock", work / "Cargo.lock")
             shutil.copyfile(source / "release/consumers/rust.rs", work / "src/main.rs")
             # Cargo retains the shipped lock's dependency versions, adding the
-            # consumer and local overrides for the three unpublished archives.
+            # consumer and local overrides for the four unpublished archives.
             run(RUST, ["cargo", "build", "--release"])
             for case in cases:
                 record("rust", case, RUST, attempt(f"rust/{case}", lambda: run(RUST, ["cargo", "run", "--release", "--locked", "--offline"], case)))

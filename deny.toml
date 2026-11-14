@@ -1,17 +1,28 @@
+# CI checks the shipped dependency graph with `cargo deny check` on every push: every feature,
+# without the dev-dependencies that only tests build. One of those is the `sev` crate, a test
+# oracle whose rsa 0.9 has RUSTSEC-2023-0071.
+[graph]
+all-features = true
+exclude-dev = true
+
 [advisories]
-ignore = [
-  { id = "RUSTSEC-2023-0071", reason = "Private-key timing leakage cannot affect the verifier's public-key-only RSA use." },
-]
 yanked = "deny"
+# Each waits for a dependency to release a version without the crate.
+ignore = [
+  { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 runs only at build time, in the hax-lib macros of libcrux's ML-DSA, and no libcrux release drops it." },
+  { id = "RUSTSEC-2026-0370", reason = "zbus 6 merged zvariant, but the CLI's Secret Service keyring store still uses zbus 5." },
+  { id = "RUSTSEC-2026-0371", reason = "zbus 6 merged zbus_names, but the CLI's Secret Service keyring store still uses zbus 5." },
+  { id = "RUSTSEC-2026-0372", reason = "zbus 6 merged zvariant_derive, but the CLI's Secret Service keyring store still uses zbus 5." },
+]
 
 [licenses]
 allow = [
   "Apache-2.0",
-  "BSD-2-Clause",
+  "Apache-2.0 WITH LLVM-exception",
   "BSD-3-Clause",
+  "CDLA-Permissive-2.0",
   "ISC",
   "MIT",
-  "MPL-2.0",
   "Unicode-3.0",
   "Zlib",
 ]
@@ -19,6 +30,8 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# The FFI and Python crates are not published, so their path dependencies need no version.
+allow-wildcard-paths = true
 
 [sources]
 unknown-git = "deny"

@@ -6,7 +6,7 @@ use hpke::Deserializable as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 
-use super::{Error, Snapshot, SnpHardwareFacts, VerifiedSnpReport};
+use super::{Error, Snapshot, VerifiedSnpReport};
 use crate::authority::Environment;
 
 pub const BOOT_SCHEMA: &str = "stogas.node-boot.v1";
@@ -119,7 +119,7 @@ pub struct RegisteredBootFacts {
     pub node_id: String,
     pub chip_id: String,
     pub gateway_release_id: String,
-    pub hardware: SnpHardwareFacts,
+    pub hardware: stogas_sev_snp::PlatformFacts,
 }
 
 /// Hardware and registration checks passed. The Control transaction must still consume its
@@ -163,13 +163,8 @@ impl VerifiedRegistration {
             .api_origin()
             .strip_prefix("https://")
             .ok_or_else(|| invalid("invalid compiled API origin"))?;
-        crate::verify_certificate_csr(
-            csr_der,
-            &self.record.report_data.tls_spki_sha256,
-            Some(hostname),
-            vec![hostname.into()],
-        )
-        .map_err(invalid)
+        crate::csr::verify(csr_der, &self.record.report_data.tls_spki_sha256, hostname)
+            .map_err(invalid)
     }
 
     /// Authenticated identity fields for bindings; registration still needs atomic consumption.
@@ -296,13 +291,23 @@ impl Snapshot {
             .ok_or(Error::Authority(crate::authority::Error::NotApproved(
                 "gateway",
             )))?;
-        crate::appraise_hardware(
-            &self.evidence.document().hardware_policies,
-            &facts.chip_id,
-            |profile| facts.hardware.appraise(profile, &facts.node_id),
+        let hardware = &facts.hardware;
+        let [family, model, _] = hardware
+            .cpuid
+            .ok_or_else(|| invalid("registered facts lack the processor's CPUID"))?;
+        let product = stogas_sev_snp::Product::from_cpuid(family, model).map_err(invalid)?;
+        stogas_sev_snp::PlatformRule::find(
+            &self.platforms,
+            product,
+            &lower_hex::<64>(&facts.chip_id)?,
+            hardware,
         )
-        .map_err(invalid)?;
-        self.collateral_validity(&facts.chip_id, &facts.hardware.reported_tcb(), now_unix_ms)?;
+        .map_err(|error| invalid(format!("{} {error}", facts.node_id)))?;
+        self.collateral_validity(
+            &facts.chip_id,
+            &hex::encode(hardware.reported_tcb.to_bytes()),
+            now_unix_ms,
+        )?;
         Ok(())
     }
 
@@ -456,12 +461,12 @@ fn lower_hex<const N: usize>(value: &str) -> Result<[u8; N], Error> {
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
-        return Err(invalid("noncanonical boot digest or challenge"));
+        return Err(invalid("noncanonical hexadecimal field"));
     }
     hex::decode(value)
         .map_err(invalid)?
         .try_into()
-        .map_err(|_| invalid("boot digest length"))
+        .map_err(|_| invalid("hexadecimal field length"))
 }
 
 fn decode(value: &str, size: usize) -> Result<Vec<u8>, Error> {

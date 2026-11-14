@@ -50,6 +50,15 @@ stogas verify-release ./release      # verify downloaded release assets
 
 Streamed content can arrive before final verification. Treat a response as complete only after verified completion. See the [CLI guide](https://stogas.ai/docs/cli) for sign-in, top-ups, policy editing, credential checks, customer encryption and proofs.
 
+## Standalone verifiers
+
+Two parts of the core also work without Stogas, as crates and as WebAssembly packages for browsers, Node, Bun, Deno and Workers:
+
+| Verifies | Rust | npm |
+|---|---|---|
+| AMD SEV-SNP attestation reports | [`stogas-sev-snp`](crates/sev-snp) | [`@stogas/sev-snp`](packages/sev-snp) |
+| GitHub and Sigstore in-toto attestations | [`stogas-sigstore`](crates/sigstore) | [`@stogas/sigstore`](packages/sigstore) |
+
 ## Pre-releases
 
 Package managers skip pre-releases, such as `0.1.0-alpha.1`, unless asked:

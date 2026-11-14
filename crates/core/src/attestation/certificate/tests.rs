@@ -133,8 +133,12 @@ fn certificate_boundary_rejects_missing_extensions_and_trailing_der() {
     // Keep the DER framing and key bytes unchanged while substituting the
     // ML-DSA parameter set. Native attestation accepts only ML-DSA-65.
     let oid65 = [0x60, 0x86, 0x48, 1, 0x65, 3, 4, 3, 0x12];
-    let (_, certificate) = parse_x509_certificate(&der).unwrap();
-    let spki = certificate.public_key().raw;
+    let spki = super::Certificate::from_der(&der)
+        .unwrap()
+        .tbs
+        .subject_public_key_info
+        .to_der()
+        .unwrap();
     let spki_at = der.windows(spki.len()).position(|v| v == spki).unwrap();
     let algorithm_at = spki.windows(oid65.len()).position(|v| v == oid65).unwrap();
     for other_parameter_set in [0x11, 0x13] {

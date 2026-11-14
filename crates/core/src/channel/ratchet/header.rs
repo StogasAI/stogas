@@ -11,7 +11,7 @@ use aes_gcm::{
     Aes256Gcm,
     aead::{AeadInOut as _, KeyInit as _},
 };
-use sha2_v11::{Digest as _, Sha256};
+use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 const FIELDS_BYTES: usize = PUBLIC_KEY_BYTES + CIPHERTEXT_BYTES + 16;

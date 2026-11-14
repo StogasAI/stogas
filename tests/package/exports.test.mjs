@@ -1,4 +1,4 @@
-// Run from a project that installed both npm packages: it resolves every entry point by package
+// Run from a project that installed every npm package: it resolves each entry point by package
 // name, as dependents do, under the conditions of both import and require.
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 
-for (const name of ['stogas', '@stogas/sigstore']) {
+for (const name of ['stogas', '@stogas/sev-snp', '@stogas/sigstore']) {
 	test(`${name} resolves every entry point by name`, () => {
 		const manifest = require(`${name}/package.json`);
 		assert.equal(manifest.name, name);

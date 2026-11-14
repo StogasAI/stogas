@@ -266,8 +266,10 @@ impl EvidenceClient {
                 },
             }
         }
+        // Between 4.5 and 5.5 seconds, so clients that failed together do not retry together.
+        let jitter = getrandom::u32().map_or(500, |value| value % 1001);
         acquisition.retry_after =
-            Some(Instant::now() + Duration::from_millis(rand::random_range(4500..=5500)));
+            Some(Instant::now() + Duration::from_millis(4500 + u64::from(jitter)));
         drop(acquisition);
         Err(failure)
     }

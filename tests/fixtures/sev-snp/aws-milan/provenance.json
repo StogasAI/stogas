@@ -1,0 +1,13 @@
+{
+  "source": "configfs-tsm on an AWS EC2 c6a.large instance in us-east-2, Amazon Linux 2023 with Linux 6.12",
+  "revision": "2026-11-13",
+  "license": "Apache-2.0",
+  "files": {
+    "certificates.bin": "1647b1df6846d0ab5c308d0b08b38c6c56a0054b459d559f5dc10ad7b054c92e",
+    "report-vmpl0.bin": "06df16526834057d7f1af5326e06f5ad7988024b585a85b1e7e9cfbce359302e",
+    "report-vmpl1.bin": "c663d43025e7a0d88643b773de49fe5cf06beed9c28ea1644850b5b8817d1013",
+    "report-vmpl2.bin": "ac1b09a3ceb173744cc2c89f64016a1e18259f8ae730f69ac67f9fcbf713bb53",
+    "report-vmpl3.bin": "1629fd52053f3a2190a7078905e7b6deca8b3f8f2542e364d1e4b5c32ca63284"
+  },
+  "scope": "Reports that VMPL 0 to 3 requested with REPORT_DATA 00 to 3f, signed with AWS's VLEK, and the certificate table that every VMPL received, which holds only the VLEK."
+}

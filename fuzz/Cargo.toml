@@ -11,7 +11,10 @@ cargo-fuzz = true
 base64 = "0.22.1"
 serde_json = "1"
 libfuzzer-sys = "0.4.13"
-sha2 = "0.10.9"
+# The most used Rust SEV-SNP crate, against whose report parser the sev_snp target compares.
+sev = { version = "=9.0.0", default-features = false, features = ["snp", "crypto_nossl"] }
+sha2 = "0.11.1"
+stogas-sev-snp = { path = "../crates/sev-snp", features = ["serde"] }
 stogas-sigstore = { path = "../crates/sigstore" }
 stogas-core = { path = "../crates/core", features = ["staging"] }
 stogas-ffi = { path = "../crates/ffi", features = ["gateway"] }
@@ -47,6 +50,13 @@ bench = false
 [[bin]]
 name = "encrypted_setup"
 path = "fuzz_targets/encrypted_setup.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sev_snp"
+path = "fuzz_targets/sev_snp.rs"
 test = false
 doc = false
 bench = false

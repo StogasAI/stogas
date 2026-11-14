@@ -15,26 +15,27 @@ repository.workspace = true
 [dependencies]
 base64.workspace = true
 chrono.workspace = true
-cms = { version = "0.2.3", default-features = false }
-const-oid = "0.9.6"
-der = { version = "0.7.10", features = ["derive"] }
+# The first cms release on der 0.8 is still a release candidate.
+cms = { version = "0.3.0-rc.2", default-features = false }
+const-oid = { version = "0.10.3", features = ["db"] }
+der = { version = "0.8.3", features = ["derive"] }
 ed25519-dalek = { workspace = true, features = ["digest"] }
 hex.workspace = true
 p256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "pkcs8"] }
 p384 = { version = "0.14.0", default-features = false, features = ["ecdsa", "pkcs8"] }
 pem = "3.0.5"
-rsa = { version = "0.9.10", default-features = false, features = ["sha2"] }
+rsa = { version = "0.10.0", default-features = false, features = ["encoding", "pkcs1v15"] }
 rustls-pki-types = { version = "1.15.0", default-features = false, features = ["alloc"] }
 rustls-webpki = { version = "0.103.13", default-features = false, features = ["alloc", "std"] }
 serde.workspace = true
 serde_json = { workspace = true, features = ["unbounded_depth"] }
 serde_json_canonicalizer.workspace = true
 sha2.workspace = true
-signature = "2.2.0"
-spki = "0.7.3"
+signature = "3.0.0"
+spki = "0.8.1"
 thiserror.workspace = true
 tls_codec = { version = "0.4.2", default-features = false, features = ["derive"] }
-x509-cert = { version = "0.2.5", default-features = false, features = ["sct"] }
+x509-cert = { version = "0.3.0", default-features = false, features = ["sct"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 sigstore-trust-root = { version = "=0.11.0", default-features = false }

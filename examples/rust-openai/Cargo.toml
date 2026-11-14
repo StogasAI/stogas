@@ -6,6 +6,10 @@ publish = false
 
 [workspace]
 
+# The same as the SDK workspace's, so that CI reuses the dependencies that its tests built.
+[profile.dev.package."*"]
+opt-level = 3
+
 [dependencies]
 anyhow = "1"
 async-openai = { version = "0.42", default-features = false, features = ["chat-completion", "middleware"] }

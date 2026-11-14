@@ -9,8 +9,11 @@ use sha2::{Digest as _, Sha256};
 use tls_codec::{SerializeBytes as _, TlsByteVecU16, TlsByteVecU24, TlsSerializeBytes, TlsSize};
 use x509_cert::{
     Certificate,
-    der::{Decode as _, Encode as _},
-    ext::pkix::{SignedCertificateTimestamp, SignedCertificateTimestampList, sct::Version},
+    der::{self, Any, Decode as _, Encode as _, Tag, TagNumber, Tagged as _},
+    ext::{
+        Extensions,
+        pkix::{SignedCertificateTimestamp, SignedCertificateTimestampList, sct::Version},
+    },
 };
 
 #[derive(PartialEq, Debug, TlsSerializeBytes, TlsSize)]
@@ -56,8 +59,8 @@ pub fn verify(
     let certificate = Certificate::from_der(certificate_der)
         .map_err(|error| format!("could not parse Fulcio certificate for SCT: {error}"))?;
     let list: SignedCertificateTimestampList = certificate
-        .tbs_certificate
-        .get()
+        .tbs_certificate()
+        .get_extension()
         .map_err(|error| format!("could not parse Fulcio SCT extension: {error}"))?
         .map(|(_, list)| list)
         .ok_or_else(|| "Fulcio certificate is missing its SCT".to_owned())?;
@@ -107,16 +110,7 @@ fn signed_data(
     sct: &SignedCertificateTimestamp,
     issuer_spki_der: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let mut precertificate = certificate.tbs_certificate.clone();
-    precertificate.extensions = precertificate.extensions.map(|extensions| {
-        extensions
-            .iter()
-            .filter(|extension| extension.extn_id != CT_PRECERT_SCTS)
-            .cloned()
-            .collect()
-    });
-    let tbs = precertificate
-        .to_der()
+    let tbs = precertificate_tbs(certificate)
         .map_err(|error| format!("could not reconstruct Fulcio precertificate: {error}"))?;
     let digitally_signed = DigitallySigned {
         version: match sct.version {
@@ -133,4 +127,25 @@ fn signed_data(
     digitally_signed
         .tls_serialize()
         .map_err(|error| format!("could not serialize Fulcio SCT input: {error}"))
+}
+
+/// RFC 6962 section 3.2: the certificate's `TBSCertificate` without its SCT extension. Every
+/// other field keeps the exact encoding that the log signed.
+fn precertificate_tbs(certificate: &Certificate) -> der::Result<Vec<u8>> {
+    let extensions_tag = Tag::ContextSpecific {
+        constructed: true,
+        number: TagNumber(3),
+    };
+    let mut fields = Vec::<Any>::from_der(&certificate.tbs_certificate().to_der()?)?;
+    for field in fields
+        .iter_mut()
+        .filter(|field| field.tag() == extensions_tag)
+    {
+        let extensions = Extensions::from_der(field.value())?
+            .into_iter()
+            .filter(|extension| extension.extn_id != CT_PRECERT_SCTS)
+            .collect::<Extensions>();
+        *field = Any::new(extensions_tag, extensions.to_der()?)?;
+    }
+    fields.to_der()
 }

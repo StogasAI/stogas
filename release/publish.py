@@ -220,7 +220,7 @@ def crates(packages, version, trust=False):
         crates_trust(os.environ["CARGO_REGISTRY_TOKEN"])
 
 
-NPM_PACKAGES = (("@stogas/sigstore", "stogas-sigstore"), ("stogas", "stogas"))
+NPM_PACKAGES = (("@stogas/sev-snp", "stogas-sev-snp"), ("@stogas/sigstore", "stogas-sigstore"), ("stogas", "stogas"))
 # npm lists this version for a new package from when its first version is staged until approval.
 NPM_STAGE_PLACEHOLDER = "0.0.0-stage"
 
@@ -668,8 +668,9 @@ def preview(packages):
 def first_versions():
     """Print which registries still wait for a one-time setup, as GitHub output lines. crates.io
     and npm trust a workflow only for an existing package, and RubyGems only once a pending
-    publisher names it. crates.io waits until every crate exists and trusts only publish.yml,
-    since its one-time token finishes a partial first upload."""
+    publisher names it, so a registry waits until each of its packages exists. crates.io also
+    waits until each crate trusts only publish.yml, since its one-time token finishes a partial
+    first upload."""
     def missing(urls):
         return all(download(url) is None for url in urls)
     def handed_over(name):
@@ -682,7 +683,7 @@ def first_versions():
         return document is None or not set(json.loads(document).get("versions", {})) - {NPM_STAGE_PLACEHOLDER}
     waiting = {
         "crates": not all(handed_over(name) for name in CRATES),
-        "npm": all(unpublished(name) for name, _ in NPM_PACKAGES),
+        "npm": any(unpublished(name) for name, _ in NPM_PACKAGES),
         "ruby": missing(["https://rubygems.org/api/v1/gems/stogas.json"]),
     }
     for registry, value in waiting.items():

@@ -3,7 +3,7 @@
 
 use super::{Direction, Error};
 use hkdf::Hkdf;
-use sha2_v11::Sha256;
+use sha2::Sha256;
 use zeroize::Zeroizing;
 
 const KEY_DOMAIN: &[u8] = b"stogas.e2ee.record.v1\0";

@@ -50,3 +50,19 @@ pub fn inspect_snp_report(report: &[u8]) -> Result<JsValue, JsError> {
     let output = inspect_report(report).map_err(|error| JsError::new(&error.to_string()))?;
     to_js_value(&output)
 }
+
+/// The path on AMD's Key Distribution Service of a chip's VCEK at a reported TCB.
+///
+/// # Errors
+/// Rejects an unsupported product, noncanonical hexadecimal and a chip or TCB that KDS does not
+/// serve.
+#[cfg(feature = "operator")]
+#[wasm_bindgen]
+pub fn amd_vcek_path(
+    product_name: &str,
+    chip_id: &str,
+    reported_tcb: &str,
+) -> Result<String, JsError> {
+    stogas_core::amd_vcek_path(product_name, chip_id, reported_tcb)
+        .map_err(|error| JsError::new(&error.to_string()))
+}

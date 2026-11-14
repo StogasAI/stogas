@@ -59,12 +59,14 @@ fn matches_the_independent_ietf_composite_vector() {
     );
     verify(&public, &message, &fresh).unwrap();
     let certificate = base64(&vector["x5c"]);
-    let (_, certificate) = x509_parser::parse_x509_certificate(&certificate).unwrap();
-    assert_eq!(certificate.public_key().raw, key.public_key_spki().unwrap());
-    assert_eq!(
-        public_key_from_spki(certificate.public_key().raw).unwrap(),
-        key.public_key()
-    );
+    let spki = <x509_cert::Certificate as der::Decode>::from_der(&certificate)
+        .unwrap()
+        .tbs_certificate()
+        .subject_public_key_info()
+        .to_der()
+        .unwrap();
+    assert_eq!(spki, key.public_key_spki().unwrap());
+    assert_eq!(public_key_from_spki(&spki).unwrap(), key.public_key());
 }
 
 #[test]

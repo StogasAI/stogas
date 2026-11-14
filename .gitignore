@@ -3,6 +3,7 @@
 /examples/*/target
 /examples/*/vendor
 /pkg
+/packages/sev-snp/pkg
 /packages/sigstore/pkg
 /fuzz/artifacts
 /fuzz/coverage

@@ -481,7 +481,9 @@ where
     Fut: std::future::Future<Output = Result<channel::ClientRequest, Response<Body>>> + Send,
 {
     let http = http();
-    let prefix = format!("/{}", hex::encode(rand::random::<[u8; 32]>()));
+    let mut capability = [0_u8; 32];
+    getrandom::fill(&mut capability).unwrap();
+    let prefix = format!("/{}", hex::encode(capability));
     let route = format!("{prefix}/{{*path}}");
     let app = Router::new().route(
         &route,

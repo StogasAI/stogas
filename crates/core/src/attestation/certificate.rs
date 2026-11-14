@@ -1,8 +1,12 @@
 //! Decode the bounded native-TLS certificate evidence. Parsing does not establish trust.
 
+use der::{
+    Decode as _, Encode as _, Sequence,
+    asn1::{AnyRef, BitStringRef, ObjectIdentifier, OctetStringRef},
+};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
-use x509_parser::parse_x509_certificate;
+use x509_cert::time::Validity;
 
 pub use super::evidence::MAX_EVIDENCE_BYTES;
 use super::{Binding, evidence::SessionEvidence};
@@ -10,7 +14,7 @@ use crate::authority::Environment;
 
 pub const MEDIA_TYPE: &[u8] = b"application/vnd.stogas.native-tls.v1";
 pub const MAX_CERTIFICATE_BYTES: usize = 64 * 1024 - 13;
-const CMW_OID: &str = "1.3.6.1.5.5.7.1.35";
+const CMW_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.1.35");
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -125,6 +129,41 @@ impl<'a> SessionEvidence<'a> {
     }
 }
 
+/// The fields of an RFC 5280 certificate that native evidence reads, borrowed from its DER. The
+/// TLS stack checks the certificate's signature.
+#[derive(Sequence)]
+struct Certificate<'a> {
+    tbs: TbsCertificate<'a>,
+    signature_algorithm: AnyRef<'a>,
+    signature: BitStringRef<'a>,
+}
+
+#[derive(Sequence)]
+struct TbsCertificate<'a> {
+    #[asn1(context_specific = "0", optional = "true")]
+    version: Option<AnyRef<'a>>,
+    serial_number: AnyRef<'a>,
+    signature: AnyRef<'a>,
+    issuer: AnyRef<'a>,
+    validity: Validity,
+    subject: AnyRef<'a>,
+    subject_public_key_info: AnyRef<'a>,
+    #[asn1(context_specific = "1", tag_mode = "IMPLICIT", optional = "true")]
+    issuer_unique_id: Option<BitStringRef<'a>>,
+    #[asn1(context_specific = "2", tag_mode = "IMPLICIT", optional = "true")]
+    subject_unique_id: Option<BitStringRef<'a>>,
+    #[asn1(context_specific = "3", optional = "true")]
+    extensions: Option<Vec<Extension<'a>>>,
+}
+
+#[derive(Sequence)]
+struct Extension<'a> {
+    id: ObjectIdentifier,
+    #[asn1(default = "Default::default")]
+    critical: bool,
+    value: &'a OctetStringRef,
+}
+
 #[derive(Debug)]
 pub struct ParsedNativeCertificate<'a> {
     pub evidence: SessionEvidence<'a>,
@@ -141,36 +180,33 @@ impl<'a> ParsedNativeCertificate<'a> {
         if der.len() > MAX_CERTIFICATE_BYTES {
             return Err(Error::TooLarge);
         }
-        let (remaining, certificate) =
-            parse_x509_certificate(der).map_err(|_| Error::Certificate)?;
-        if !remaining.is_empty() {
-            return Err(Error::Certificate);
-        }
-        let key = certificate.public_key();
-        crate::signing::mldsa::public_key_from_spki(key.raw).map_err(|_| Error::Certificate)?;
+        // DER decoding also rejects trailing data.
+        let certificate = Certificate::from_der(der)
+            .map_err(|_| Error::Certificate)?
+            .tbs;
+        // Strict decoding makes this encoding the exact bytes that the certificate holds.
+        let key = certificate
+            .subject_public_key_info
+            .to_der()
+            .map_err(|_| Error::Certificate)?;
+        crate::signing::mldsa::public_key_from_spki(&key).map_err(|_| Error::Certificate)?;
         let mut extensions = certificate
-            .extensions()
+            .extensions
             .iter()
-            .filter(|e| e.oid.to_id_string() == CMW_OID);
+            .flatten()
+            .filter(|extension| extension.id == CMW_OID);
         let extension = extensions.next().ok_or(Error::Extension)?;
         if extensions.next().is_some() {
             return Err(Error::Extension);
         }
+        let unix_ms = |time: x509_cert::time::Time| {
+            i64::try_from(time.to_unix_duration().as_millis()).map_err(|_| Error::Certificate)
+        };
         Ok(Self {
-            evidence: SessionEvidence::from_extension(extension.value)?,
-            signer_spki_sha256: Sha256::digest(key.raw).into(),
-            not_before_unix_ms: certificate
-                .validity()
-                .not_before
-                .timestamp()
-                .checked_mul(1000)
-                .ok_or(Error::Certificate)?,
-            not_after_unix_ms: certificate
-                .validity()
-                .not_after
-                .timestamp()
-                .checked_mul(1000)
-                .ok_or(Error::Certificate)?,
+            evidence: SessionEvidence::from_extension(extension.value.as_bytes())?,
+            signer_spki_sha256: Sha256::digest(&key).into(),
+            not_before_unix_ms: unix_ms(certificate.validity.not_before)?,
+            not_after_unix_ms: unix_ms(certificate.validity.not_after)?,
         })
     }
 

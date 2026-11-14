@@ -17,8 +17,15 @@ import { verify_github_attestation } from '@stogas/sigstore';
 
 const verified = verify_github_attestation(
 	attestationBytes,
-	JSON.stringify(subjects),
-	JSON.stringify(policy),
+	[{ name: 'gateway.igvm', sha256: '1b75d0ea…' }],
+	{
+		repository: 'https://github.com/StogasAI/gateway',
+		workflow_identity:
+			'https://github.com/StogasAI/gateway/.github/workflows/gateway-igvm-release.yml@refs/tags/v0.0.1',
+		source_ref: 'refs/tags/v0.0.1',
+		source_commit: '27eb4b954a372975c9e7c5dbc77fbf0d0ca53b3f',
+		predicate_type: 'https://slsa.dev/provenance/v1'
+	},
 	trustedRootJson
 );
 ```
@@ -27,7 +34,8 @@ It returns the authenticated log time, the subjects and the statement's predicat
 attestation the workflow writes the predicate, so the policy's repository, ref, commit and workflow
 come from the Fulcio certificate instead. `verify_dsse_attestation` takes the same arguments with
 any signer's identity, `{ certificate_identity, certificate_oidc_issuer, predicate_type }`, and
-leaves the predicate to your own policy.
+leaves the predicate to your own policy. Unknown fields in subjects and policies throw, so that a
+misspelled requirement cannot go unchecked.
 
-The default Node/Bun export initializes WebAssembly synchronously. Browser consumers initialize
+The default Node, Bun and Deno export initializes WebAssembly synchronously. Browser consumers initialize
 the `/browser` module once with its default initializer; compatible Workers use `/worker`.

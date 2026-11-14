@@ -7,8 +7,10 @@ import { extname, resolve } from 'node:path';
 const ROOT = resolve(import.meta.dirname, '../..');
 const GLUE = resolve(ROOT, 'target/browser/stogas.js');
 const WASM = resolve(ROOT, 'target/browser/stogas_bg.wasm');
-const SIGSTORE_GLUE = resolve(ROOT, 'target/sigstore-browser/stogas_sigstore.js');
-const SIGSTORE_WASM = resolve(ROOT, 'target/sigstore-browser/stogas_sigstore_bg.wasm');
+const SIGSTORE_GLUE = resolve(ROOT, 'packages/sigstore/pkg/browser/stogas_sigstore.js');
+const SIGSTORE_WASM = resolve(ROOT, 'packages/sigstore/pkg/browser/stogas_sigstore_bg.wasm');
+const SEV_SNP_GLUE = resolve(ROOT, 'packages/sev-snp/pkg/browser/stogas_sev_snp.js');
+const SEV_SNP_WASM = resolve(ROOT, 'packages/sev-snp/pkg/browser/stogas_sev_snp_bg.wasm');
 const FIXTURE = resolve(ROOT, 'tests/fixtures/gateway-v0.0.1-attestation.jsonl');
 const TRUSTED_ROOT = resolve(ROOT, 'tests/fixtures/sigstore-tuf/trusted_root.json');
 const SUBJECTS = [
@@ -212,7 +214,7 @@ function initializeSigstore(page: import('@playwright/test').Page) {
 
 // Release qualification runs the tests tagged @release against the installed packages' bytes.
 test(
-	'standalone lightweight package verifies GitHub evidence with networking disabled',
+	'standalone Sigstore package verifies GitHub evidence with networking disabled',
 	{ tag: '@release' },
 	async ({ page }) => {
 		const requests = await initializeSigstore(page);
@@ -222,26 +224,54 @@ test(
 			({ fixture, subjects, policy, trustedRoot }) => {
 				const api = (
 					globalThis as typeof globalThis & {
-						stogasSigstoreBindings: {
-							verify_github_attestation(
-								bundle: Uint8Array,
-								subjects: string,
-								policy: string,
-								trustedRoot: string
-							): { subjects: unknown[] };
-						};
+						stogasSigstoreBindings: typeof import('../../packages/sigstore/pkg/browser/stogas_sigstore.js');
 					}
 				).stogasSigstoreBindings;
 				return api.verify_github_attestation(
 					new TextEncoder().encode(fixture),
-					JSON.stringify(subjects),
-					JSON.stringify(policy),
+					subjects,
+					policy,
 					trustedRoot
 				);
 			},
 			{ fixture, subjects: SUBJECTS, policy: POLICY, trustedRoot }
 		);
 		expect(result.subjects).toHaveLength(2);
+		expect(requests).toEqual([]);
+	}
+);
+
+test(
+	'standalone SEV-SNP package verifies a report with networking disabled',
+	{ tag: '@release' },
+	async ({ page }) => {
+		const requests = await initializeModule(
+			page,
+			SEV_SNP_GLUE,
+			SEV_SNP_WASM,
+			'stogasSevSnpBindings'
+		);
+		const [report, table] = await Promise.all(
+			['report-vmpl0.bin', 'certificates.bin'].map(async (name) => [
+				...(await readFile(resolve(ROOT, 'tests/fixtures/sev-snp/gcp-milan', name)))
+			])
+		);
+		const result = await page.evaluate(
+			({ report, table }) => {
+				const api = (
+					globalThis as typeof globalThis & {
+						stogasSevSnpBindings: typeof import('../../packages/sev-snp/pkg/browser/stogas_sev_snp.js');
+					}
+				).stogasSevSnpBindings;
+				const bytes = Uint8Array.from(report);
+				const endorsements = api.certificate_table_endorsements(Uint8Array.from(table), bytes);
+				// 2026-11-14T00:00:00Z, when the VCEK is valid.
+				const verified = api.verify(bytes, endorsements, { vmpl: 0 }, 1_794_614_400);
+				return { product: verified.product, signingKey: verified.signing_key };
+			},
+			{ report, table }
+		);
+		expect(result).toEqual({ product: 'Milan', signingKey: 'vcek' });
 		expect(requests).toEqual([]);
 	}
 );

@@ -1,144 +1,6 @@
-use serde::{Deserialize, Serialize};
+use stogas_sev_snp::{GuestPolicyRule, PlatformFacts, PlatformRule, Policy, Report, SigningKey};
 
 use super::{Error, Snapshot, Validity};
-use crate::{AmdSevSnpPolicy, AmdTcb};
-
-/// Hardware facts retained by an authority after authenticating a boot. These are
-/// trusted database state, never a substitute for verifying caller-supplied evidence.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SnpHardwareFacts {
-    report_version: u32,
-    cpuid: [u8; 3],
-    current_tcb: AmdTcb,
-    reported_tcb: AmdTcb,
-    committed_tcb: AmdTcb,
-    launch_tcb: AmdTcb,
-    current_version: [u8; 3],
-    committed_version: [u8; 3],
-    #[serde(with = "hex_u64")]
-    platform_info: u64,
-    #[serde(with = "hex_u64")]
-    launch_mitigations: u64,
-    #[serde(with = "hex_u64")]
-    current_mitigations: u64,
-}
-
-impl SnpHardwareFacts {
-    pub(crate) fn from_report(report: &[u8]) -> Self {
-        let mask =
-            |offset| u64::from_le_bytes(report[offset..offset + 8].try_into().unwrap_or_default());
-        Self {
-            report_version: u32::from_le_bytes(report[0..4].try_into().unwrap_or_default()),
-            cpuid: [report[0x188], report[0x189], report[0x18a]],
-            current_tcb: crate::family19h_tcb(&report[0x38..0x40]),
-            reported_tcb: crate::family19h_tcb(&report[0x180..0x188]),
-            committed_tcb: crate::family19h_tcb(&report[0x1e0..0x1e8]),
-            launch_tcb: crate::family19h_tcb(&report[0x1f0..0x1f8]),
-            current_version: [report[0x1ea], report[0x1e9], report[0x1e8]],
-            committed_version: [report[0x1ee], report[0x1ed], report[0x1ec]],
-            platform_info: mask(0x40),
-            launch_mitigations: mask(0x1f8),
-            current_mitigations: mask(0x200),
-        }
-    }
-
-    pub(crate) fn reported_tcb(&self) -> String {
-        let tcb = self.reported_tcb;
-        hex::encode([tcb.bootloader, tcb.tee, 0, 0, 0, 0, tcb.snp, tcb.microcode])
-    }
-
-    pub(crate) fn appraise(
-        &self,
-        profile: &AmdSevSnpPolicy,
-        node_id: &str,
-    ) -> Result<(), crate::Error> {
-        let reject = |reason| crate::Error::Node(format!("{node_id} {reason}"));
-        if self.report_version != 5 {
-            return Err(reject("SNP report version is below hardware policy"));
-        }
-        if self.cpuid
-            != [
-                profile.cpuid_family,
-                profile.cpuid_model,
-                profile.cpuid_stepping,
-            ]
-        {
-            return Err(reject("CPUID differs from hardware policy"));
-        }
-        for (label, actual) in [
-            ("current", self.current_tcb),
-            ("reported", self.reported_tcb),
-            ("committed", self.committed_tcb),
-            ("launch", self.launch_tcb),
-        ] {
-            if !crate::tcb_at_least(actual, profile.minimum_tcb) {
-                return Err(crate::Error::Node(format!(
-                    "{node_id} SNP {label} TCB is below hardware policy"
-                )));
-            }
-        }
-        if !crate::tcb_at_least(self.committed_tcb, self.reported_tcb)
-            || !crate::tcb_at_least(self.current_tcb, self.committed_tcb)
-        {
-            return Err(reject("SNP TCB fields have an invalid downgrade order"));
-        }
-        if self.committed_version > self.current_version {
-            return Err(reject(
-                "SNP committed firmware version exceeds current version",
-            ));
-        }
-        let platform = self.platform_info;
-        let required = crate::parse_u64_hex(
-            &profile.required_platform_info_mask,
-            "required platform-info mask",
-        )?;
-        let forbidden = crate::parse_u64_hex(
-            &profile.forbidden_platform_info_mask,
-            "forbidden platform-info mask",
-        )?;
-        if platform & required != required || platform & forbidden != 0 {
-            return Err(reject("SNP platform information is below hardware policy"));
-        }
-        for (actual, required, reason) in [
-            (
-                self.launch_mitigations,
-                &profile.required_launch_mitigation_mask,
-                "SNP launch mitigations are below hardware policy",
-            ),
-            (
-                self.current_mitigations,
-                &profile.required_current_mitigation_mask,
-                "SNP current mitigations are below hardware policy",
-            ),
-        ] {
-            let required = crate::parse_u64_hex(required, "required mitigation mask")?;
-            if actual & required != required {
-                return Err(reject(reason));
-            }
-        }
-        Ok(())
-    }
-}
-
-// JSON numbers cannot carry every hardware mask through JavaScript without loss.
-// Keep masks numeric during appraisal and encode them only at the storage boundary.
-mod hex_u64 {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    #[allow(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "Serde requires a borrowed field for its serialize_with callback."
-    )]
-    pub fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&format!("0x{value:016x}"))
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
-        let value = String::deserialize(deserializer)?;
-        crate::parse_u64_hex(&value, "hardware mask").map_err(serde::de::Error::custom)
-    }
-}
 
 /// An SNP report appraised against this snapshot's approved release, hardware policy and
 /// current vendor revocation state. This result does not itself establish session freshness.
@@ -148,13 +10,14 @@ pub struct VerifiedSnpReport {
     report_id: [u8; 32],
     chip_id: String,
     reported_tcb: String,
-    facts: SnpHardwareFacts,
+    facts: PlatformFacts,
     validity: Validity,
 }
 
 impl VerifiedSnpReport {
+    /// The platform's firmware state, which an authority keeps to appraise the boot again.
     #[must_use]
-    pub const fn facts(&self) -> &SnpHardwareFacts {
+    pub const fn facts(&self) -> &PlatformFacts {
         &self.facts
     }
 
@@ -200,36 +63,34 @@ impl Snapshot {
         now_unix_ms: i64,
     ) -> Result<VerifiedSnpReport, Error> {
         self.require_current_keys()?;
-        if report.len() != 0x4a0 {
-            return Err(Error::Attestation("SNP report has the wrong size".into()));
-        }
         let release = self.gateway(release_id).ok_or(Error::Authority(
             crate::authority::Error::NotApproved("gateway"),
         ))?;
-        let report_id = report[0x140..0x160].try_into().map_err(attestation_error)?;
+        let report = Report::parse(report).map_err(attestation_error)?;
+        let report_id = *report.report_id();
         let node_id = crate::attestation::snp_node_id(&report_id);
-        let chip_id = hex::encode(&report[0x1a0..0x1e0]);
-        let reported_tcb = hex::encode(&report[0x180..0x188]);
-        let vcek = self.collateral.vcek(&chip_id, &reported_tcb)?;
-        let product =
-            crate::validate_report_product_binding(vcek, report).map_err(attestation_error)?;
-        let launch = crate::compatible_launch_policy(&release.launch_policies, product)
+        let rejected =
+            |error: stogas_sev_snp::Error| attestation_error(format!("{node_id} {error}"));
+        let chip_id = hex::encode(report.chip_id());
+        let reported_tcb = hex::encode(report.reported_tcb().to_bytes());
+        let verified = self
+            .collateral
+            .endorsement(&chip_id, &reported_tcb)?
+            .verify_report(report)
+            .map_err(rejected)?;
+        let launch = crate::compatible_launch_policy(&release.launch_policies, verified.product())
             .map_err(attestation_error)?;
-        crate::check_raw_report_bindings(
-            crate::ExpectedSnpReport {
-                node_id: &node_id,
-                chip_id: &chip_id,
-                reported_tcb: &reported_tcb,
-                report_data_sha512: &hex::encode(expected_report_data),
-            },
-            &release.measurement,
-            launch,
-            report,
-            Some(&self.evidence.document().hardware_policies),
+        launch_policy(&release.measurement, launch, expected_report_data)?
+            .check(&verified)
+            .map_err(rejected)?;
+        let facts = verified.facts();
+        PlatformRule::find(
+            &self.platforms,
+            verified.product(),
+            verified.report().chip_id(),
+            &facts,
         )
-        .map_err(attestation_error)?;
-        crate::verify_raw_snp_report_signature_with_vcek(report, vcek, &node_id)
-            .map_err(attestation_error)?;
+        .map_err(rejected)?;
         // Consult shared CRL state after crypto work. An old retained snapshot cannot hide
         // a revocation learned while another evidence candidate was being installed.
         let validity = self.collateral_validity(&chip_id, &reported_tcb, now_unix_ms)?;
@@ -238,10 +99,52 @@ impl Snapshot {
             report_id,
             chip_id,
             reported_tcb,
-            facts: SnpHardwareFacts::from_report(report),
+            facts,
             validity,
         })
     }
+}
+
+/// What a gateway's report must show: the release's measurement and launch values at VMPL 0,
+/// signed with a VCEK, and the report data that the protocol expects. The platform rules apply
+/// separately, so that a check does not copy them.
+fn launch_policy(
+    measurement: &str,
+    launch: &crate::LaunchValues,
+    report_data: &[u8; 64],
+) -> Result<Policy, Error> {
+    fn bytes<const N: usize>(value: &str, label: &str) -> Result<[u8; N], Error> {
+        hex::decode(value)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| attestation_error(format!("invalid {label}")))
+    }
+    let guest_policy = launch
+        .policy
+        .strip_prefix("0x")
+        .and_then(|policy| u64::from_str_radix(policy, 16).ok())
+        .ok_or_else(|| attestation_error("invalid launch policy value"))?;
+    Ok(Policy {
+        report_data: Some(*report_data),
+        measurements: vec![bytes(measurement, "measurement")?],
+        host_data: Some(bytes(&launch.host_data, "host data")?),
+        family_id: Some(bytes(&launch.family_id, "family id")?),
+        image_id: Some(bytes(&launch.image_id, "image id")?),
+        id_key_digests: vec![bytes(&launch.id_key_digest, "id key digest")?],
+        author_key_digests: vec![bytes(&launch.author_key_digest, "author key digest")?],
+        report_id: None,
+        report_id_ma: None,
+        vmpl: Some(u32::from(launch.vmpl)),
+        minimum_guest_svn: None,
+        guest_policy: GuestPolicyRule {
+            exact: Some(guest_policy),
+            ..GuestPolicyRule::default()
+        },
+        platforms: Vec::new(),
+        signers: vec![SigningKey::Vcek],
+        csp_ids: Vec::new(),
+        require_crl: false,
+    })
 }
 
 fn attestation_error(error: impl std::fmt::Display) -> Error {

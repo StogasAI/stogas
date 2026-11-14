@@ -2,7 +2,7 @@
 
 use const_oid::{ObjectIdentifier, db::rfc5912};
 use ed25519_dalek::{Signature as Ed25519Signature, VerifyingKey as Ed25519Key};
-use rsa::{RsaPublicKey, pkcs1::DecodeRsaPublicKey as _, traits::PublicKeyParts as _};
+use rsa::{PublicKey as RsaKey, pkcs1::DecodeRsaPublicKey as _, traits::PublicKeyParts as _};
 use rustls_pki_types::{
     AlgorithmIdentifier, InvalidSignature, SignatureVerificationAlgorithm, alg_id,
 };
@@ -265,9 +265,9 @@ fn verify_rsa(
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), String> {
-    let key = RsaPublicKey::from_pkcs1_der(public_key)
-        .map_err(|error| format!("invalid RSA key: {error}"))?;
-    if !(2048..=8192).contains(&key.n().bits()) {
+    let key =
+        RsaKey::from_pkcs1_der(public_key).map_err(|error| format!("invalid RSA key: {error}"))?;
+    if !(2048..=8192).contains(&key.n().bit_width()) {
         return Err("RSA key size is outside 2048..=8192 bits".into());
     }
     macro_rules! verify_pkcs1 {

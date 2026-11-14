@@ -5,7 +5,7 @@
 
 use super::Error;
 use hkdf::Hkdf;
-use sha2_v11::Sha512;
+use sha2::Sha512;
 use zeroize::Zeroizing;
 
 mod header;

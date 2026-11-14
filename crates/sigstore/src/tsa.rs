@@ -227,8 +227,8 @@ fn verify_cms(
         signer.signature_algorithm.oid,
     )?;
     let spki = certificate
-        .tbs_certificate
-        .subject_public_key_info
+        .tbs_certificate()
+        .subject_public_key_info()
         .to_der()
         .map_err(|error| format!("could not encode TSA signer key: {error}"))?;
     verify_spki(&spki, scheme, &attributes, signer.signature.as_bytes())
@@ -260,14 +260,13 @@ fn find_signer(id: &SignerIdentifier, certificates: &[Certificate]) -> Result<Ce
     let mut matches: Vec<&Certificate> = Vec::new();
     for certificate in certificates.iter().filter(|certificate| match id {
         SignerIdentifier::IssuerAndSerialNumber(issuer) => {
-            certificate.tbs_certificate.issuer == issuer.issuer
-                && certificate.tbs_certificate.serial_number == issuer.serial_number
+            certificate.tbs_certificate().issuer() == &issuer.issuer
+                && certificate.tbs_certificate().serial_number() == &issuer.serial_number
         }
         SignerIdentifier::SubjectKeyIdentifier(expected) => {
             certificate
-                .tbs_certificate
-                .extensions
-                .as_ref()
+                .tbs_certificate()
+                .extensions()
                 .into_iter()
                 .flat_map(|extensions| extensions.iter())
                 .find(|extension| extension.extn_id == db::rfc5280::ID_CE_SUBJECT_KEY_IDENTIFIER)
@@ -297,7 +296,6 @@ fn verify_single_attribute_digest(
     oid: ObjectIdentifier,
     expected: &[u8],
 ) -> Result<(), String> {
-    use der::asn1::OctetStringRef;
     let matches = attributes
         .iter()
         .filter(|attribute| attribute.oid == oid)
@@ -311,7 +309,7 @@ fn verify_single_attribute_digest(
         .ok_or_else(|| "RFC 3161 CMS message digest is absent".to_owned())?
         .to_der()
         .map_err(|error| format!("could not encode CMS message digest: {error}"))?;
-    let digest = OctetStringRef::from_der(&value)
+    let digest = <&der::asn1::OctetStringRef>::from_der(&value)
         .map_err(|error| format!("invalid CMS message digest: {error}"))?;
     if digest.as_bytes() != expected {
         return Err("RFC 3161 CMS message digest differs from TSTInfo".into());
@@ -355,7 +353,7 @@ fn scheme_for_signer(
     digest: ObjectIdentifier,
     signature: ObjectIdentifier,
 ) -> Result<Scheme, String> {
-    let spki = &certificate.tbs_certificate.subject_public_key_info;
+    let spki = certificate.tbs_certificate().subject_public_key_info();
     if spki.algorithm.oid == db::rfc5912::ID_EC_PUBLIC_KEY {
         let curve = spki
             .algorithm
@@ -394,8 +392,8 @@ fn scheme_for_signer(
 fn verify_tsa_profile(certificate: &Certificate) -> Result<(), String> {
     use x509_cert::ext::pkix::ExtendedKeyUsage;
     let (critical, usage): (bool, ExtendedKeyUsage) = certificate
-        .tbs_certificate
-        .get()
+        .tbs_certificate()
+        .get_extension()
         .map_err(|error| format!("could not parse TSA EKU: {error}"))?
         .ok_or_else(|| "TSA certificate has no EKU".to_owned())?;
     if !critical || usage.0.as_slice() != [OID_TIME_STAMPING] {

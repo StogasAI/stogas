@@ -217,31 +217,27 @@ mod staging {
         ));
     }
 
-    #[cfg(feature = "snp")]
     #[test]
     fn vendor_revocation_learned_since_a_delivery_repeats_its_complete_verification() {
         let (mut verifier, evidence, now) = fixture();
         let bytes = encode(&evidence);
         let first = verifier.refresh(&bytes, now).unwrap();
         assert!(Arc::ptr_eq(&first, &verifier.refresh(&bytes, now).unwrap()));
-        // Another product's genuine AMD root is a new revocation issuer, learned even though
-        // the document that carries it is incomplete.
-        let pem = include_str!("../../tests/fixtures/genoa-ark.pem");
-        let der = base64::engine::general_purpose::STANDARD
-            .decode(
-                pem.lines()
-                    .filter(|line| !line.starts_with("-----"))
-                    .collect::<String>(),
-            )
-            .unwrap();
+        // Another product's AMD CRL is learned even though the document that carries it is
+        // incomplete.
+        let crl = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/sev-snp/amd-kds/genoa.crl"
+        ))
+        .unwrap();
         let mut document = evidence["document"].clone();
         document["vendor_collateral"]
             .as_array_mut()
             .unwrap()
             .push(json!({
                 "ca_product_name": "Genoa",
-                "collateral_type": "ark",
-                "der_base64url": URL_SAFE_NO_PAD.encode(der)
+                "collateral_type": "crl",
+                "der_base64url": URL_SAFE_NO_PAD.encode(crl)
             }));
         let learned = verifier.revocations.changes();
         assert!(verifier.check_unsigned(&encode(&document), now).is_err());
@@ -252,7 +248,7 @@ mod staging {
             &second,
             &verifier.refresh(&bytes, now).unwrap()
         ));
-        // Observing the same root again changes nothing.
+        // Observing the same CRL again changes nothing.
         assert!(verifier.check_unsigned(&encode(&document), now).is_err());
         assert_eq!(verifier.revocations.changes(), learned + 1);
     }
@@ -551,7 +547,6 @@ mod staging {
         assert_eq!(selected(&snapshot), Some(oldest));
     }
 
-    #[cfg(feature = "snp")]
     fn registered_report() -> Vec<u8> {
         let registration: Value = serde_json::from_str(include_str!(
             "../../../../tests/fixtures/hardware-registration-v1.json"
@@ -562,7 +557,6 @@ mod staging {
             .unwrap()
     }
 
-    #[cfg(feature = "snp")]
     #[test]
     fn expired_collateral_remains_a_local_platform_failure_not_a_withdrawal() {
         let (mut verifier, evidence, now) = fixture();
@@ -610,7 +604,6 @@ mod staging {
         );
     }
 
-    #[cfg(feature = "snp")]
     #[test]
     fn genuine_snp_report_requires_current_evidence_binding_and_complete_hardware_appraisal() {
         let (mut verifier, evidence, now) = fixture();

@@ -127,7 +127,7 @@ fn authority() -> Authority {
     Authority::new(Environment::Production, root(1)).unwrap()
 }
 
-#[cfg(all(feature = "snp", feature = "staging"))]
+#[cfg(feature = "staging")]
 impl VerifiedEvidence {
     /// Appraisal tests vary already authenticated content without a signing authority.
     pub(crate) fn edited(mut self, edit: impl FnOnce(&mut EvidenceDocument)) -> Self {

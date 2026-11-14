@@ -15,7 +15,6 @@ use axum::{
     routing::any,
 };
 use futures_util::{StreamExt as _, stream};
-use rand::Rng as _;
 use serde::de::{Deserializer, IgnoredAny, MapAccess, Visitor};
 use std::{
     collections::HashSet,
@@ -62,8 +61,8 @@ impl ServeConfig {
             upstream,
             listen,
             expected_host: listen.to_string(),
-            control_capability: random_capability(),
-            client_capability: random_capability(),
+            control_capability: random_capability()?,
+            client_capability: random_capability()?,
             browser_origin: browser_origin.map(secure_browser_origin).transpose()?,
             encryption_keys: options.encryption_keys.member(),
         })
@@ -606,10 +605,10 @@ fn secure_browser_origin(value: &str) -> Result<String> {
     Ok(url.origin().ascii_serialization())
 }
 
-fn random_capability() -> String {
+fn random_capability() -> Result<String> {
     let mut bytes = [0_u8; 32];
-    rand::rng().fill(&mut bytes);
-    hex::encode(bytes)
+    getrandom::fill(&mut bytes).context("random number generation failed")?;
+    Ok(hex::encode(bytes))
 }
 
 fn browser_preflight(request: &Request) -> Result<Response<Body>, (StatusCode, &'static str)> {

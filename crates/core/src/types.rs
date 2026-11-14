@@ -19,6 +19,8 @@ pub struct ReleaseEvidence<T> {
     pub provenance: Value,
 }
 
+/// One group of the signed hardware policy: chips that share a processor and firmware
+/// requirements. Masks are `0x` and 16 lowercase hexadecimal digits.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AmdSevSnpPolicy {
@@ -27,19 +29,10 @@ pub struct AmdSevSnpPolicy {
     pub cpuid_model: u8,
     pub cpuid_stepping: u8,
     pub forbidden_platform_info_mask: String,
-    pub minimum_tcb: AmdTcb,
+    pub minimum_tcb: stogas_sev_snp::TcbVersion,
     pub required_current_mitigation_mask: String,
     pub required_launch_mitigation_mask: String,
     pub required_platform_info_mask: String,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AmdTcb {
-    pub bootloader: u8,
-    pub microcode: u8,
-    pub snp: u8,
-    pub tee: u8,
 }
 
 pub type AllowedCatalog = ReleaseEvidence<CatalogReleaseManifest>;

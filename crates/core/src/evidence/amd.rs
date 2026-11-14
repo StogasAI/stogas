@@ -1,42 +1,43 @@
 use std::{
+    cmp,
     collections::{BTreeMap, BTreeSet, btree_map::Entry},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicU64, Ordering},
     },
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::Value;
-use sha2::{Digest, Sha256, Sha384};
-use x509_parser::{extensions::ParsedExtension, parse_x509_certificate, parse_x509_crl};
+use sha2::{Digest, Sha256};
+use stogas_sev_snp::{Crl, Endorsement, Product, SigningKey};
 
 use super::{Error, Validity};
 
-type IssuerId = [u8; 48];
-
-#[derive(Debug)]
-struct Crl {
+/// What revocation state keeps of an authenticated AMD CRL.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Revocation {
     number: [u8; 20],
-    contents: [u8; 32],
-    der: Arc<[u8]>,
     validity: Validity,
     revoked: BTreeSet<Vec<u8>>,
 }
 
 #[derive(Debug)]
-struct Issuer {
-    certificate: Arc<[u8]>,
-    latest: Option<Crl>,
+struct Latest {
+    revocation: Revocation,
+    der_sha256: [u8; 32],
+    /// Another CRL with the same number but other contents arrived. AMD never issues two, so
+    /// the product's revocation state stays unknown until a newer CRL replaces both.
     conflicting: bool,
 }
 
-/// The supported AMD profile uses full, direct ARK CRLs. Issuer SPKI identifies that scope;
-/// scoped, indirect and delta CRLs cannot enter this store. There are only the pinned AMD roots.
+/// The newest AMD CRL of each product that this verifier has seen, which outlives any one
+/// evidence revision. Each pinned root signs one full, direct CRL for its product, so the
+/// product names the CRL's scope.
 #[derive(Debug, Default)]
 pub(in crate::evidence) struct Revocations {
-    issuers: Mutex<BTreeMap<IssuerId, Issuer>>,
-    /// Counts every change to `issuers`, so a verifier can tell whether anything was learned
+    latest: Mutex<BTreeMap<Product, Latest>>,
+    /// Counts every change to `latest`, so a verifier can tell whether anything was learned
     /// since it checked a delivery.
     changes: AtomicU64,
 }
@@ -53,55 +54,10 @@ impl Revocations {
         if rows.len() > crate::MAX_VENDOR_COLLATERAL {
             return Err(Error::TooLarge);
         }
-        // Missing or malformed unrelated objects cannot hide independently authenticated revocation.
-        for row in rows.iter().filter(|row| row["collateral_type"] == "ark") {
-            let Ok(der) = row_der(row) else { continue };
-            let Ok((remaining, cert)) = parse_x509_certificate(&der) else {
-                continue;
-            };
-            let id: IssuerId = Sha384::digest(cert.public_key().raw).into();
-            if !remaining.is_empty()
-                || cert.subject() != cert.issuer()
-                || cert.signature_algorithm != cert.tbs_certificate.signature
-                || !crate::AMD_PRODUCT_PROFILES
-                    .iter()
-                    .any(|profile| profile.root_spki_sha384 == hex::encode(id))
-            {
-                continue;
-            }
-            if self
-                .issuers
-                .lock()
-                .map_err(collateral_error)?
-                .contains_key(&id)
-            {
-                continue;
-            }
-            // The SPKI pin authenticates the key, not the delivered issuer name or
-            // extensions used to match CRLs. Authenticate those before retaining them.
-            // As with CRLs, expensive signature work must not hold the admission lock.
-            if crate::verify_amd_certificate_signature("AMD ARK", &cert, &cert).is_err() {
-                continue;
-            }
-            if let Entry::Vacant(entry) = self.issuers.lock().map_err(collateral_error)?.entry(id) {
-                entry.insert(Issuer {
-                    certificate: der.into(),
-                    latest: None,
-                    conflicting: false,
-                });
-                self.changes.fetch_add(1, Ordering::SeqCst);
-            }
-        }
+        // A malformed row cannot hide an authentic CRL in another.
         let mut failure = None;
         for row in rows.iter().filter(|row| row["collateral_type"] == "crl") {
-            let der = match row_der(row) {
-                Ok(der) => der,
-                Err(error) => {
-                    failure.get_or_insert(error);
-                    continue;
-                }
-            };
-            if let Err(error) = self.observe_crl(&der, now) {
+            if let Err(error) = row_der(row).and_then(|der| self.observe_crl(&der, now)) {
                 failure.get_or_insert(error);
             }
         }
@@ -109,231 +65,127 @@ impl Revocations {
     }
 
     fn observe_crl(&self, der: &[u8], now: i64) -> Result<(), Error> {
-        let issuers = self.issuers.lock().map_err(collateral_error)?;
-        for issuer in issuers.values() {
-            if issuer
-                .latest
-                .as_ref()
-                .is_some_and(|old| old.der.as_ref() == der)
-            {
-                return if issuer.conflicting {
-                    Err(Error::CrlOrder)
-                } else {
-                    Ok(())
-                };
-            }
+        let der_sha256: [u8; 32] = Sha256::digest(der).into();
+        if let Some(latest) = self
+            .lock()?
+            .values()
+            .find(|latest| latest.der_sha256 == der_sha256)
+        {
+            return if latest.conflicting {
+                Err(Error::CrlOrder)
+            } else {
+                Ok(())
+            };
         }
-        let roots: Vec<_> = issuers
-            .iter()
-            .map(|(id, issuer)| (*id, Arc::clone(&issuer.certificate)))
-            .collect();
-        drop(issuers);
-        // Signature verification does not hold the lock used by connection appraisal.
-        for (id, root) in roots {
-            if let Ok(crl) = authenticate_crl(&root, der, now) {
-                let mut issuers = self.issuers.lock().map_err(collateral_error)?;
-                let issuer = issuers.get_mut(&id).ok_or(Error::MissingCollateral)?;
-                let before = issuer.state();
-                let learned = issuer.learn(crl);
-                // A conflict changes the issuer even though learning fails.
-                let changed = issuer.state() != before;
-                drop(issuers);
-                if changed {
-                    self.changes.fetch_add(1, Ordering::SeqCst);
-                }
-                return learned;
+        // Signature verification does not hold the lock that connection appraisal takes.
+        let (product, revocation) = authenticate(der, now)?;
+        let latest = Latest {
+            revocation,
+            der_sha256,
+            conflicting: false,
+        };
+        let (changed, learned) = match self.lock()?.entry(product) {
+            Entry::Vacant(entry) => {
+                entry.insert(latest);
+                (true, Ok(()))
             }
+            Entry::Occupied(mut entry) => learn(entry.get_mut(), latest),
+        };
+        if changed {
+            self.changes.fetch_add(1, Ordering::SeqCst);
         }
-        Err(collateral_error("untrusted AMD CRL"))
+        learned
     }
 
     fn validity(
         &self,
-        issuer_id: &IssuerId,
+        product: Product,
         serial: &[u8],
         certificates: Validity,
         now: i64,
     ) -> Result<Validity, Error> {
-        let issuers = self.issuers.lock().map_err(collateral_error)?;
-        let issuer = issuers.get(issuer_id).ok_or(Error::MissingCollateral)?;
-        let crl = issuer.latest.as_ref().ok_or(Error::MissingCollateral)?;
-        if issuer.conflicting {
+        let (conflicting, revoked, crl) = self
+            .lock()?
+            .get(&product)
+            .map(|latest| {
+                let revocation = &latest.revocation;
+                (
+                    latest.conflicting,
+                    revocation.revoked.contains(serial),
+                    revocation.validity,
+                )
+            })
+            .ok_or(Error::MissingCollateral)?;
+        if conflicting {
             return Err(Error::CrlOrder);
         }
         // A known revocation cannot become a positive appraisal when the CRL later expires.
-        if crl.revoked.contains(serial) {
+        if revoked {
             return Err(Error::Revoked);
         }
-        let validity = crl.validity;
-        drop(issuers);
-        certificates.intersect(validity).at(now)
+        certificates.intersect(crl).at(now)
+    }
+
+    fn lock(&self) -> Result<MutexGuard<'_, BTreeMap<Product, Latest>>, Error> {
+        self.latest.lock().map_err(collateral_error)
     }
 }
 
-impl Issuer {
-    /// Everything `learn` can change. It replaces the latest CRL only with a higher number, so
-    /// the number identifies it.
-    fn state(&self) -> (Option<[u8; 20]>, bool) {
-        (self.latest.as_ref().map(|crl| crl.number), self.conflicting)
+/// Verify a CRL with the pinned root of its product.
+fn authenticate(der: &[u8], now: i64) -> Result<(Product, Revocation), Error> {
+    let crl = Crl::verify(der).map_err(collateral_error)?;
+    let validity = validity(crl.validity())?;
+    if validity.not_before_unix_ms > now.saturating_add(crate::MAX_CLOCK_SKEW_MS) {
+        return Err(collateral_error("the AMD CRL is not valid yet"));
     }
-
-    fn learn(&mut self, crl: Crl) -> Result<(), Error> {
-        if let Some(old) = &self.latest {
-            if crl.number < old.number {
-                return Err(Error::CrlOrder);
-            }
-            if crl.number == old.number {
-                if crl.contents != old.contents {
-                    self.conflicting = true;
-                }
-                return if self.conflicting {
-                    Err(Error::CrlOrder)
-                } else {
-                    Ok(())
-                };
-            }
-            if crl.validity.not_before_unix_ms < old.validity.not_before_unix_ms {
-                return Err(Error::CrlOrder);
-            }
-        }
-        self.latest = Some(crl);
-        self.conflicting = false;
-        Ok(())
-    }
+    Ok((
+        crl.product(),
+        Revocation {
+            number: crl.number(),
+            validity,
+            revoked: crl.revoked().map(<[u8]>::to_vec).collect(),
+        },
+    ))
 }
 
-fn authenticate_crl(ark_der: &[u8], der: &[u8], now: i64) -> Result<Crl, Error> {
-    let (remaining, ark) = parse_x509_certificate(ark_der).map_err(collateral_error)?;
-    if !remaining.is_empty() {
-        return Err(collateral_error("ARK trailing bytes"));
-    }
-    let (remaining, crl) = parse_x509_crl(der).map_err(collateral_error)?;
-    if !remaining.is_empty() || crl.issuer() != ark.subject() {
-        return Err(collateral_error("CRL issuer or framing"));
-    }
-    crate::verify_amd_crl_signature(&crl, &ark).map_err(collateral_error)?;
-    let validity = Validity {
-        not_before_unix_ms: crl
-            .last_update()
-            .timestamp()
-            .checked_mul(1000)
-            .ok_or_else(|| collateral_error("CRL date overflow"))?,
-        not_after_unix_ms: crl
-            .next_update()
-            .ok_or_else(|| collateral_error("CRL nextUpdate absent"))?
-            .timestamp()
-            .checked_mul(1000)
-            .ok_or_else(|| collateral_error("CRL date overflow"))?,
-    };
-    if validity.not_before_unix_ms > now.saturating_add(crate::MAX_CLOCK_SKEW_MS)
-        || validity.not_after_unix_ms <= validity.not_before_unix_ms
-    {
-        return Err(collateral_error("CRL validity interval"));
-    }
-    let number = crl_number_and_scope(&crl, &ark)?;
-    let mut revoked = BTreeSet::new();
-    for entry in crl.iter_revoked_certificates() {
-        let mut extensions = BTreeSet::new();
-        for extension in entry.extensions() {
-            let oid = extension.oid.to_id_string();
-            if !extensions.insert(oid.clone())
-                || extension.critical
-                || oid == "2.5.29.29"
-                || matches!(
-                    extension.parsed_extension(),
-                    ParsedExtension::ParseError { .. }
-                )
-            {
-                return Err(collateral_error(
-                    "unsupported revoked-certificate extension",
-                ));
-            }
+/// Replace the latest CRL with a newer one, and report whether the state changed. A conflict
+/// changes it although learning fails.
+fn learn(old: &mut Latest, new: Latest) -> (bool, Result<(), Error>) {
+    let (before, after) = (&old.revocation, &new.revocation);
+    match after.number.cmp(&before.number) {
+        cmp::Ordering::Less => (false, Err(Error::CrlOrder)),
+        // Another signature over the same contents is the same CRL.
+        cmp::Ordering::Equal if after == before => (
+            false,
+            if old.conflicting {
+                Err(Error::CrlOrder)
+            } else {
+                Ok(())
+            },
+        ),
+        cmp::Ordering::Equal => {
+            let changed = !old.conflicting;
+            old.conflicting = true;
+            (changed, Err(Error::CrlOrder))
         }
-        if !revoked.insert(serial_bytes(entry.raw_serial()).to_vec()) {
-            return Err(collateral_error("duplicate revoked certificate"));
+        cmp::Ordering::Greater
+            if after.validity.not_before_unix_ms < before.validity.not_before_unix_ms =>
+        {
+            (false, Err(Error::CrlOrder))
+        }
+        cmp::Ordering::Greater => {
+            *old = new;
+            (true, Ok(()))
         }
     }
-    Ok(Crl {
-        number,
-        contents: Sha256::digest(crl.tbs_cert_list.as_ref()).into(),
-        der: Arc::from(der),
-        validity,
-        revoked,
-    })
-}
-
-fn crl_number_and_scope(
-    crl: &x509_parser::revocation_list::CertificateRevocationList<'_>,
-    ark: &x509_parser::certificate::X509Certificate<'_>,
-) -> Result<[u8; 20], Error> {
-    let mut extensions = BTreeSet::new();
-    let mut authority_key_seen = false;
-    for extension in crl.extensions() {
-        let oid = extension.oid.to_id_string();
-        if !extensions.insert(oid.clone()) {
-            return Err(collateral_error("duplicate CRL extension"));
-        }
-        match extension.parsed_extension() {
-            ParsedExtension::AuthorityKeyIdentifier(authority) if !extension.critical => {
-                let key = authority
-                    .key_identifier
-                    .as_ref()
-                    .ok_or_else(|| collateral_error("CRL authority key absent"))?;
-                let matches = ark.extensions().iter().any(|extension| {
-                    matches!(extension.parsed_extension(), ParsedExtension::SubjectKeyIdentifier(subject) if subject.0 == key.0)
-                });
-                if !matches {
-                    return Err(collateral_error("CRL authority key differs"));
-                }
-                authority_key_seen = true;
-            }
-            ParsedExtension::CRLNumber(_) if !extension.critical => {
-                // Some ASN.1 unsigned-integer parsers also accept negative encodings.
-                // This profile permits the canonical nonnegative DER integer only.
-                let value = extension.value;
-                if value.len() < 3
-                    || value[0] != 2
-                    || usize::from(value[1]) != value.len() - 2
-                    || value[2] & 0x80 != 0
-                    || (value.len() > 3 && value[2] == 0 && value[3] & 0x80 == 0)
-                {
-                    return Err(collateral_error("noncanonical CRL number"));
-                }
-            }
-            ParsedExtension::ParseError { .. } => {
-                return Err(collateral_error("invalid CRL extension"));
-            }
-            _ if extension.critical || matches!(oid.as_str(), "2.5.29.27" | "2.5.29.28") => {
-                return Err(collateral_error(
-                    "unsupported CRL scope or critical extension",
-                ));
-            }
-            _ => {}
-        }
-    }
-    if !authority_key_seen {
-        return Err(collateral_error("CRL authority key absent"));
-    }
-    let encoded_number = crl
-        .crl_number()
-        .ok_or_else(|| collateral_error("CRL number absent"))?
-        .to_bytes_be();
-    if encoded_number.len() > 20 {
-        return Err(collateral_error("CRL number too large"));
-    }
-    let mut number = [0; 20];
-    number[20 - encoded_number.len()..].copy_from_slice(&encoded_number);
-    Ok(number)
 }
 
 #[derive(Debug)]
 struct Platform {
+    /// The SHA-256 digests of the ARK, ASK and VCEK that it was verified from.
     digest: String,
-    issuer: IssuerId,
-    ask_serial: Vec<u8>,
+    endorsement: Endorsement,
     certificates: Validity,
-    vcek_validity: Validity,
-    vcek: Arc<[u8]>,
 }
 
 #[derive(Debug)]
@@ -346,13 +198,8 @@ impl Store {
     pub(in crate::evidence) fn summary(&self, now: i64) -> Vec<Value> {
         self.platforms
             .iter()
-            .map(|(id, platform)| {
-                match self.revocations.validity(
-                    &platform.issuer,
-                    &platform.ask_serial,
-                    platform.certificates,
-                    now,
-                ) {
+            .map(
+                |(id, platform)| match self.platform_validity(platform, now) {
                     Ok(validity) => serde_json::json!({
                         "platform_id": id,
                         "not_before_unix_ms": validity.not_before_unix_ms,
@@ -360,8 +207,8 @@ impl Store {
                         "error": null
                     }),
                     Err(error) => serde_json::json!({"platform_id": id, "error": error.code()}),
-                }
-            })
+                },
+            )
             .collect()
     }
 
@@ -373,33 +220,32 @@ impl Store {
         if rows.len() > crate::MAX_VENDOR_COLLATERAL {
             return Err(Error::TooLarge);
         }
-        let (common, vceks) =
-            crate::parse_amd_collateral_entries(rows).map_err(collateral_error)?;
+        let (products, vceks) = parse_rows(rows)?;
         let mut used = BTreeSet::new();
         let mut platforms = BTreeMap::new();
-        for (id, vek) in vceks {
+        for (id, vcek) in vceks {
             let get = |kind| {
-                common
-                    .get(&(vek.ca_product_name.clone(), kind))
+                products
+                    .get(&(vcek.ca_product_name, kind))
                     .ok_or(Error::MissingCollateral)
             };
             let ark = get(crate::AmdCollateralType::Ark)?;
             let ask = get(crate::AmdCollateralType::Ask)?;
             let crl = get(crate::AmdCollateralType::Crl)?;
             used.extend([&ark.sha256, &ask.sha256, &crl.sha256]);
-            // CRL freshness and revocation are checked independently on every use.
-            let digest = format!("{}{}{}", ark.sha256, ask.sha256, vek.sha256);
+            // CRL freshness and revocation are checked on every use.
+            let digest = format!("{}{}{}", ark.sha256, ask.sha256, vcek.sha256);
             let cached = prior
                 .and_then(|store| store.platforms.get(&id))
-                .filter(|entry| entry.digest == digest);
+                .filter(|platform| platform.digest == digest);
             let platform = if let Some(cached) = cached {
                 Arc::clone(cached)
             } else {
-                Arc::new(verify_platform(ark, ask, &vek, digest)?)
+                Arc::new(verify_platform(ark, ask, &vcek, digest)?)
             };
             platforms.insert(id, platform);
         }
-        if used.len() != common.len() {
+        if used.len() != products.len() {
             return Err(collateral_error("unused product collateral"));
         }
         Ok(Self {
@@ -408,94 +254,181 @@ impl Store {
         })
     }
 
+    /// The VCEK of a chip at a reported TCB, verified up to AMD's pinned root.
+    pub(in crate::evidence) fn endorsement(
+        &self,
+        chip: &str,
+        tcb: &str,
+    ) -> Result<&Endorsement, Error> {
+        Ok(&self.platform(chip, tcb)?.endorsement)
+    }
+
     pub(in crate::evidence) fn validity(
         &self,
         chip: &str,
         tcb: &str,
         now: i64,
     ) -> Result<Validity, Error> {
-        let platform = self
-            .platforms
-            .get(&crate::amd_platform_key(chip, tcb))
-            .ok_or(Error::MissingCollateral)?;
-        self.revocations.validity(
-            &platform.issuer,
-            &platform.ask_serial,
-            platform.certificates,
-            now,
-        )
+        self.platform_validity(self.platform(chip, tcb)?, now)
     }
 
+    /// When the ARK, ASK and VCEK are all valid, which only new certificates extend.
     pub(in crate::evidence) fn vcek_validity(
         &self,
         chip: &str,
         tcb: &str,
     ) -> Result<Validity, Error> {
+        Ok(self.platform(chip, tcb)?.certificates)
+    }
+
+    fn platform(&self, chip: &str, tcb: &str) -> Result<&Platform, Error> {
         self.platforms
-            .get(&crate::amd_platform_key(chip, tcb))
-            .map(|platform| platform.vcek_validity)
+            .get(&platform_key(chip, tcb))
+            .map(AsRef::as_ref)
             .ok_or(Error::MissingCollateral)
     }
 
-    pub(in crate::evidence) fn vcek(&self, chip: &str, tcb: &str) -> Result<&[u8], Error> {
-        self.platforms
-            .get(&crate::amd_platform_key(chip, tcb))
-            .map(|platform| platform.vcek.as_ref())
-            .ok_or(Error::MissingCollateral)
+    fn platform_validity(&self, platform: &Platform, now: i64) -> Result<Validity, Error> {
+        self.revocations.validity(
+            platform.endorsement.product(),
+            platform.endorsement.intermediate_serial(),
+            platform.certificates,
+            now,
+        )
     }
 }
 
 fn verify_platform(
-    ark: &crate::AmdCollateralEntry,
-    ask: &crate::AmdCollateralEntry,
-    vek: &crate::AmdCollateralEntry,
+    ark: &Row<'_>,
+    ask: &Row<'_>,
+    vcek: &Row<'_>,
     digest: String,
 ) -> Result<Platform, Error> {
-    let vcek_validity = certificate_validity(&vek.der)?;
-    let validity = certificate_validity(&ark.der)?
-        .intersect(certificate_validity(&ask.der)?)
-        .intersect(vcek_validity);
-    validity.at(validity.not_before_unix_ms)?;
-    let stack = crate::AmdCollateralStack {
-        ark: ark.der.clone(),
-        ask: ask.der.clone(),
-        vek: vek.der.clone(),
-    };
-    crate::verify_amd_certificates(
-        &stack,
-        vek.chip_id.as_deref().ok_or(Error::MissingCollateral)?,
-        vek.reported_tcb
-            .as_deref()
-            .ok_or(Error::MissingCollateral)?,
-        validity.not_before_unix_ms,
-        validity.not_after_unix_ms,
-    )
-    .map_err(collateral_error)?;
-    let (_, root) = parse_x509_certificate(&ark.der).map_err(collateral_error)?;
-    let (_, issuer) = parse_x509_certificate(&ask.der).map_err(collateral_error)?;
+    let endorsement = Endorsement::verify(&vcek.der, Some(&ask.der)).map_err(collateral_error)?;
+    let product = endorsement.product();
+    if endorsement.signing_key() != SigningKey::Vcek {
+        return Err(collateral_error("the AMD VCEK is a VLEK"));
+    }
+    if ark.der != product.roots().ark {
+        return Err(collateral_error(format!(
+            "the ARK is not AMD's {product} ARK"
+        )));
+    }
+    if vcek.ca_product_name != product.name() || vcek.product_name != Some(product.name()) {
+        return Err(collateral_error(format!(
+            "the {product} VCEK is listed under another product"
+        )));
+    }
+    let chip_id = vcek.chip_id.and_then(lower_hex::<64>);
+    let tcb = vcek.reported_tcb.and_then(lower_hex::<8>);
+    if chip_id.as_ref() != endorsement.chip_id() || tcb != Some(endorsement.tcb().to_bytes()) {
+        return Err(collateral_error(
+            "the AMD VCEK is for another chip or TCB than its row names",
+        ));
+    }
+    let certificates = validity(endorsement.validity())?;
+    certificates.at(certificates.not_before_unix_ms)?;
     Ok(Platform {
         digest,
-        issuer: Sha384::digest(root.public_key().raw).into(),
-        ask_serial: serial_bytes(issuer.raw_serial()).to_vec(),
-        certificates: validity,
-        vcek_validity,
-        vcek: Arc::from(vek.der.as_slice()),
+        endorsement,
+        certificates,
     })
 }
 
-fn certificate_validity(der: &[u8]) -> Result<Validity, Error> {
-    let (remaining, cert) = parse_x509_certificate(der).map_err(collateral_error)?;
-    if !remaining.is_empty() {
-        return Err(collateral_error("certificate trailing bytes"));
+/// One collateral row, with its DER decoded.
+struct Row<'a> {
+    ca_product_name: &'a str,
+    der: Vec<u8>,
+    sha256: String,
+    product_name: Option<&'a str>,
+    chip_id: Option<&'a str>,
+    reported_tcb: Option<&'a str>,
+}
+
+type ProductRows<'a> = BTreeMap<(&'a str, crate::AmdCollateralType), Row<'a>>;
+
+/// Each product's ARK, ASK and CRL, and the VCEKs by platform.
+fn parse_rows(
+    rows: &[crate::AmdCollateral],
+) -> Result<(ProductRows<'_>, BTreeMap<String, Row<'_>>), Error> {
+    let mut products = ProductRows::new();
+    let mut vceks = BTreeMap::new();
+    let mut digests = BTreeSet::new();
+    for row in rows {
+        let der = URL_SAFE_NO_PAD
+            .decode(&row.der_base64url)
+            .map_err(|_| collateral_error("AMD collateral DER is not base64url"))?;
+        let sha256 = hex::encode(Sha256::digest(&der));
+        if !digests.insert(sha256.clone()) {
+            return Err(collateral_error("duplicate AMD collateral"));
+        }
+        let entry = Row {
+            ca_product_name: &row.ca_product_name,
+            der,
+            sha256,
+            product_name: row.product_name.as_deref(),
+            chip_id: row.chip_id.as_deref(),
+            reported_tcb: row.reported_tcb.as_deref(),
+        };
+        if row.collateral_type == crate::AmdCollateralType::Vcek {
+            let (Some(chip_id), Some(reported_tcb), Some(_)) =
+                (entry.chip_id, entry.reported_tcb, entry.product_name)
+            else {
+                return Err(collateral_error(
+                    "AMD VCEK lacks its product, chip id or reported TCB",
+                ));
+            };
+            if vceks
+                .insert(platform_key(chip_id, reported_tcb), entry)
+                .is_some()
+            {
+                return Err(collateral_error("duplicate AMD VCEK platform evidence"));
+            }
+        } else {
+            if entry.product_name.is_some()
+                || entry.chip_id.is_some()
+                || entry.reported_tcb.is_some()
+            {
+                return Err(collateral_error(
+                    "product-scoped AMD evidence has node identity",
+                ));
+            }
+            if products
+                .insert((entry.ca_product_name, row.collateral_type), entry)
+                .is_some()
+            {
+                return Err(collateral_error("duplicate product-scoped AMD evidence"));
+            }
+        }
     }
-    let unix_ms = |time: x509_parser::time::ASN1Time| {
-        time.timestamp()
-            .checked_mul(1000)
-            .ok_or_else(|| collateral_error("certificate date overflow"))
+    Ok((products, vceks))
+}
+
+fn platform_key(chip_id: &str, reported_tcb: &str) -> String {
+    format!(
+        "{}:{}",
+        chip_id.trim().to_lowercase(),
+        reported_tcb.trim().to_lowercase()
+    )
+}
+
+fn lower_hex<const N: usize>(value: &str) -> Option<[u8; N]> {
+    crate::is_lower_hex(value, N)
+        .then(|| hex::decode(value).ok()?.try_into().ok())
+        .flatten()
+}
+
+/// A validity interval in milliseconds, which excludes the instant of its end.
+fn validity(seconds: stogas_sev_snp::Validity) -> Result<Validity, Error> {
+    let milliseconds = |seconds: u64| {
+        i64::try_from(seconds)
+            .ok()
+            .and_then(|seconds| seconds.checked_mul(1000))
+            .ok_or_else(|| collateral_error("AMD collateral date overflow"))
     };
     Ok(Validity {
-        not_before_unix_ms: unix_ms(cert.validity().not_before)?,
-        not_after_unix_ms: unix_ms(cert.validity().not_after)?,
+        not_before_unix_ms: milliseconds(seconds.not_before)?,
+        not_after_unix_ms: milliseconds(seconds.not_after)?,
     })
 }
 
@@ -504,13 +437,6 @@ fn row_der(row: &Value) -> Result<Vec<u8>, Error> {
         .as_str()
         .ok_or_else(|| collateral_error("missing DER"))?;
     URL_SAFE_NO_PAD.decode(encoded).map_err(collateral_error)
-}
-
-fn serial_bytes(serial: &[u8]) -> &[u8] {
-    &serial[serial
-        .iter()
-        .position(|byte| *byte != 0)
-        .unwrap_or(serial.len())..]
 }
 
 fn collateral_error(error: impl std::fmt::Display) -> Error {

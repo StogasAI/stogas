@@ -212,7 +212,6 @@ impl PendingSetup {
     ///
     /// # Errors
     /// Preserves hardware and evidence failures and rejects another environment or incomplete setup.
-    #[cfg(feature = "snp")]
     pub fn complete_verified(
         &mut self,
         response: &[u8],
@@ -228,7 +227,6 @@ impl PendingSetup {
     ///
     /// # Errors
     /// Preserves binding, environment and appraisal failures for the asynchronous connector.
-    #[cfg(feature = "snp")]
     pub fn check_evidence(
         &self,
         response: &[u8],
@@ -239,7 +237,6 @@ impl PendingSetup {
             .map(|(_, verified)| verified)
     }
 
-    #[cfg(feature = "snp")]
     fn inspect_verified<'a>(
         &self,
         response: &'a [u8],

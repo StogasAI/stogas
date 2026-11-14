@@ -101,9 +101,7 @@ fn go_csrs_bind_possession_and_exact_service_identity() {
     ))
     .unwrap();
     let digest = vector["tls_spki_sha256"].as_str().unwrap();
-    let verify = |csr: &[u8], key: &str, hostname: &str| {
-        crate::verify_certificate_csr(csr, key, Some(hostname), vec![hostname.into()])
-    };
+    let verify = crate::csr::verify;
     for (name, hostname) in [
         ("prod", "api.stogas.ai"),
         ("staging", "api-staging.stogas.ai"),

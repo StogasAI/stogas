@@ -1,0 +1,10 @@
+{
+  "source": "https://kdsintf.amd.com/vcek/v1/{Milan,Genoa,Turin}/crl",
+  "revision": "2026-11-14",
+  "files": {
+    "genoa.crl": "d803150fadfa9dbd68e84c8306a3865b5fadee88b6020691aac2f6c76bb9b931",
+    "milan.crl": "c06e868462a1954b6cbf07e19b55e87a0305933a81ad837138934be1f8c23b27",
+    "turin.crl": "949c93ca3adad3846ed4ab713cf418b751290dfacdfd0e8b1c2bec5d8dc7bdd7"
+  },
+  "scope": "AMD's CRLs, valid from 2026-10-27 to 2026-12-09. The VLEK paths serve the same bytes. The Genoa CRL revokes the Genoa ASK with serial 020001."
+}

@@ -13,6 +13,7 @@ import tempfile
 import tomllib
 import unittest
 import urllib.error
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
@@ -111,7 +112,7 @@ class CrateManifestTests(unittest.TestCase):
         # An exact requirement makes every project that uses the crate take that one version.
         # The siblings release together, and signatures cover the canonicalizer's output; Cargo
         # refuses an exact sibling requirement that differs from the sibling's version.
-        exact = {"stogas", "stogas-core", "stogas-sigstore", "serde_json_canonicalizer"}
+        exact = {"stogas", "stogas-core", "stogas-sev-snp", "stogas-sigstore", "serde_json_canonicalizer"}
         for path, name, requirement, _ in published_dependencies():
             with self.subTest(crate=path.parent.name, dependency=name):
                 self.assertEqual(requirement.startswith("="), name in exact, requirement)
@@ -185,7 +186,7 @@ class NpmStageTests(unittest.TestCase):
         # A rerun finds the staged versions instead of staging them again.
         self.assertIn("@stogas/sigstore@1.2.3 awaits approval", self.stage())
         staged = [json.loads(item.read_text()) for item in self.queue.glob("*.json")]
-        self.assertCountEqual([item["packageName"] for item in staged], ["@stogas/sigstore", "stogas"])
+        self.assertCountEqual([item["packageName"] for item in staged], ["@stogas/sev-snp", "@stogas/sigstore", "stogas"])
 
     def test_stages_a_pre_release_under_next_and_leaves_latest_alone(self):
         self.assertIn("stogas@1.2.3-alpha.1 awaits approval", self.stage("1.2.3-alpha.1"))
@@ -214,7 +215,7 @@ class NpmStageTests(unittest.TestCase):
         self.stage()
         for archive in self.queue.glob("*.tgz"):
             archive.write_bytes(b"other")
-        with self.assertRaisesRegex(ValueError, "npm staged different bytes as @stogas/sigstore@1.2.3"):
+        with self.assertRaisesRegex(ValueError, "npm staged different bytes as @stogas/sev-snp@1.2.3"):
             self.stage()
 
 
@@ -387,11 +388,19 @@ class FirstVersionTests(unittest.TestCase):
         del documents["https://crates.io/api/v1/crates/stogas-cli"]
         self.assertIn("crates=true", self.first_versions(documents))
 
-    def test_npm_waits_while_its_versions_are_only_staged(self):
-        # As npm served both packages on November 3, 2026, between staging and approval.
+    def test_npm_waits_while_a_package_is_only_staged(self):
+        # As npm served the packages on November 3, 2026, between staging and approval.
         staged = json.dumps({"name": "stogas", "dist-tags": {"latest": "0.0.0-stage"}, "versions": {"0.0.0-stage": {}}}).encode()
         approved = json.dumps({"versions": {"0.0.0-stage": {}, "0.1.0-alpha.1": {}}}).encode()
-        for documents, waiting in (({"stogas": staged, "%40stogas%2Fsigstore": staged}, "npm=true"), ({"stogas": approved, "%40stogas%2Fsigstore": staged}, "npm=false")):
+        names = [urllib.parse.quote(name, safe="") for name, _ in publish.NPM_PACKAGES]
+        # A package added later waits for its own first version.
+        cases = [
+            ({name: staged for name in names}, "npm=true"),
+            ({name: approved for name in names} | {names[0]: staged}, "npm=true"),
+            ({name: approved for name in names[1:]}, "npm=true"),
+            ({name: approved for name in names}, "npm=false"),
+        ]
+        for documents, waiting in cases:
             def download(url):
                 return documents.get(url.removeprefix("https://registry.npmjs.org/"))
             with mock.patch.object(publish, "download", side_effect=download), contextlib.redirect_stdout(io.StringIO()) as output:
@@ -416,7 +425,7 @@ class CratesTrustTests(unittest.TestCase):
             publish.crates_trust("one-time")
         # A rerun keeps an existing configuration instead of adding a second one.
         created = [body["github_config"]["crate"] for method, _, body in calls if method == "POST"]
-        self.assertEqual(created, ["stogas-sigstore", "stogas", "stogas-cli"])
+        self.assertEqual(created, ["stogas-sev-snp", "stogas-sigstore", "stogas", "stogas-cli"])
         updated = [(path, body) for method, path, body in calls if method == "PATCH"]
         self.assertEqual(updated, [(f"crates/{name}", {"crate": {"trustpub_only": True}}) for name in publish.CRATES])
         # crates.io refuses a scoped token's request to revoke itself.
