@@ -596,13 +596,13 @@ class Registry:
 
 def container(packages, version, image=channels.IMAGE, output=None):
     """The release's container image in GitHub's container registry, byte for byte as the release
-    holds it, tagged with the version, and `latest` while it is the newest full release. Writes
+    holds it, tagged with the version, and `latest` while package managers offer it. Writes
     `digest=` for its build proof."""
     built = channels.read_oci_archive((packages / channels.container_archive(version)).read_bytes())
     index_digest = "sha256:" + hashlib.sha256(built["index"]).hexdigest()
     registry = Registry(image, "pull,push", os.environ["GH_TOKEN"])
     tags = [version]
-    if not channels.preview(version) and channels.offered(releases()) == version:
+    if channels.offered(releases()) == version:
         tags.append("latest")
     for tag in tags:
         existing = registry.manifest(tag, channels.OCI_INDEX)

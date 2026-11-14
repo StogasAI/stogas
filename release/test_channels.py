@@ -396,8 +396,8 @@ class PublisherTests(unittest.TestCase):
         built = built_image()
         index_digest = "sha256:" + hashlib.sha256(built["index"]).hexdigest()
         self.assertEqual(registry.manifests[VERSION], (channels.OCI_INDEX, built["index"]))
-        # A preview never becomes latest.
-        self.assertNotIn("latest", registry.manifests)
+        # Before the first full release, the newest preview is latest, as every channel offers it.
+        self.assertEqual(registry.manifests["latest"], registry.manifests[VERSION])
         self.assertEqual(set(registry.blobs), set(built["blobs"]))
         self.assertEqual({reference: data for reference, (_, data) in registry.manifests.items() if reference.startswith("sha256:")}, built["manifests"])
         self.assertEqual(outputs.read_text(), f"digest={index_digest}\n" * 2)
@@ -416,6 +416,13 @@ class PublisherTests(unittest.TestCase):
             publish.container(self.packages, "0.1.0")
         self.assertEqual(registry.manifests["latest"], registry.manifests["0.1.0"])
         self.assertNotIn("is private", output.getvalue())
+        # A later preview leaves latest at the full release.
+        write_release_image(self.packages, "0.2.0-alpha.1")
+        self.releases.append(release("v0.2.0-alpha.1"))
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "token"}), mock.patch("urllib.request.urlopen", registry), self.quiet():
+            publish.container(self.packages, "0.2.0-alpha.1")
+        self.assertIn("0.2.0-alpha.1", registry.manifests)
+        self.assertEqual(registry.manifests["latest"], registry.manifests["0.1.0"])
         self.releases.append(release("v0.2.0"))
         del registry.manifests["latest"]
         with mock.patch.dict(os.environ, {"GH_TOKEN": "token"}), mock.patch("urllib.request.urlopen", registry), self.quiet():

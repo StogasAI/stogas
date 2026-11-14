@@ -23,8 +23,9 @@ env:
   TAG: ${{ inputs.tag }}
 
 jobs:
-  # Homebrew, Scoop, the AUR and the install scripts follow the newest full release, or the
-  # newest preview before the first; PyPI, crates.io and the container registry keep every version.
+  # Homebrew, Scoop, the AUR, the install scripts and the container's latest tag follow the newest
+  # full release, or the newest preview before the first; PyPI, crates.io and the container
+  # registry keep every version.
   offered:
     name: Find the release that Homebrew, Scoop and the AUR offer
     runs-on: ubuntu-24.04
@@ -230,6 +231,7 @@ jobs:
 
   container:
     name: Container (${{ matrix.os }})
+    needs: offered
     strategy:
       fail-fast: false
       matrix:
@@ -242,6 +244,7 @@ jobs:
       - name: Check the image's build proof and run it
         env:
           GH_TOKEN: ${{ github.token }}
+          OFFERED: ${{ needs.offered.outputs.version }}
         run: |
           version="${TAG#v}"
           image="ghcr.io/stogasai/stogas:$version"
@@ -257,5 +260,10 @@ jobs:
           installed=$(docker run --rm "$image" --version)
           if [ "$installed" != "stogas $version" ]; then
             echo "::error::The image runs $installed, not stogas $version"
+            exit 1
+          fi
+          latest=$(docker run --rm --pull always ghcr.io/stogasai/stogas --version)
+          if [ "$latest" != "stogas $OFFERED" ]; then
+            echo "::error::ghcr.io/stogasai/stogas:latest runs $latest, not stogas $OFFERED"
             exit 1
           fi
