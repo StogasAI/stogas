@@ -14,7 +14,7 @@ sys.dont_write_bytecode = True
 if sys.version_info < (3, 11):
     raise SystemExit("Release tooling requires Python 3.11 or later")
 
-from artifacts import digest, inventory, release_source, source_digest, tar_gz, unpack, verify_inventory, wheel, write_json
+from artifacts import BUILD_PLATFORM, digest, inventory, release_source, source_digest, tar_gz, unpack, verify_inventory, wheel, write_json
 from gate import METADATA, check_release, combine_reports, read_document
 from package_bindings import package
 
@@ -84,7 +84,7 @@ def build(platforms, output, allow_dirty, archive=None):
             # BuildKit writes the immutable ID directly, avoiding a mutable tag
             # race with another local build.
             identity = output / f".{operating_system}-image"
-            subprocess.run(["docker", "build", "--target", operating_system, "--iidfile", str(identity), "--file", str(snapshot / "release/Dockerfile"), str(snapshot / "release")], check=True)
+            subprocess.run(["docker", "build", "--platform", BUILD_PLATFORM, "--target", operating_system, "--iidfile", str(identity), "--file", str(snapshot / "release/Dockerfile"), str(snapshot / "release")], check=True)
             images[operating_system] = identity.read_text().strip()
             identity.unlink()
         for platform in platforms:
@@ -94,7 +94,7 @@ def build(platforms, output, allow_dirty, archive=None):
                 subprocess.run(["python3", "-B", str(snapshot / "release/build_native.py"), "--platform", platform, "--out", str(destination), "--epoch", str(source["epoch"])], check=True)
                 continue
             subprocess.run([
-                "docker", "run", "--rm", "--init", "--memory", "8g", "--cpus", "4",
+                "docker", "run", "--rm", "--init", "--platform", BUILD_PLATFORM, "--memory", "8g", "--cpus", "4",
                 "--mount", f"type=bind,source={snapshot},target=/build/source,readonly",
                 "--mount", f"type=bind,source={destination},target=/out",
                 images[build_targets[platform]["os"]],

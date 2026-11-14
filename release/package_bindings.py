@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from artifacts import MANIFEST, digest, regular_files, source_digest, unpack, write_json
+from artifacts import BUILD_PLATFORM, MANIFEST, digest, regular_files, source_digest, unpack, write_json
 
 MAVEN = "maven:3.9.11-eclipse-temurin-17@sha256:e4a7ace3dc0d645ed97f8d9ad0b0d3f0b14fa8d150138f27f116d7105a639b82"
 DOTNET = "mcr.microsoft.com/dotnet/sdk:10.0@sha256:35d40304542c8689331f8cab17c65926cdf48fe711e289321d71924b230a7d29"
@@ -18,7 +18,7 @@ PACKER = "ghcr.io/rust-cross/cargo-xwin:0.23.1@sha256:9856b895265d4966f212228ba6
 
 def container(image, source, arguments, epoch, environment=()):
     subprocess.run([
-        "docker", "run", "--rm", "--init", "--memory", "4g", "--cpus", "4",
+        "docker", "run", "--rm", "--init", "--platform", BUILD_PLATFORM, "--memory", "4g", "--cpus", "4",
         "--user", f"{os.getuid()}:{os.getgid()}",
         "--mount", f"type=bind,source={source},target=/build", "--workdir", "/build",
         "--env", f"SOURCE_DATE_EPOCH={epoch}", "--env", "TZ=UTC", "--env", "HOME=/build",
@@ -117,7 +117,7 @@ def assemble(build_directory, output):
             shutil.copyfile(source / "bindings/java/pom.xml", claim(output, f"stogas-{version}.pom"))
         if "android" in packages:
             identity = work / ".android-image"
-            subprocess.run(["docker", "build", "--iidfile", str(identity), "--file", str(source / "release/android.Dockerfile"), str(source / "release")], check=True)
+            subprocess.run(["docker", "build", "--platform", BUILD_PLATFORM, "--iidfile", str(identity), "--file", str(source / "release/android.Dockerfile"), str(source / "release")], check=True)
             container(identity.read_text().strip(), work, ["gradle", "--no-daemon", "--project-dir", "bindings/android", "publishReleasePublicationToSdkRepository"], epoch)
             repository = work / "bindings/android/build/repository/ai/stogas/stogas-android" / version
             # Gradle normalizes its archives and publishes their exact digests in

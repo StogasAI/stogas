@@ -17,6 +17,9 @@ from pathlib import Path, PurePosixPath
 
 REPOSITORY = "https://github.com/StogasAI/stogas"
 MANIFEST = "release-manifest.json"
+# The build and packaging images run x86-64 compilers and tools, and their base images also come
+# in other architectures, so every build names this one. Docker emulates it on an ARM machine.
+BUILD_PLATFORM = "linux/amd64"
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,199}\Z")
 
 
