@@ -76,9 +76,10 @@ pip install --pre stogas
 gem install stogas --pre
 dotnet add package Stogas --prerelease
 cargo add stogas@<version>
+npm install stogas@<version>
 ```
 
-Maven and Swift take the exact version. On npm, `stogas@next` names a pre-release that is newer than the newest full release.
+Maven and Swift also take the exact version.
 
 ## Contributing
 
