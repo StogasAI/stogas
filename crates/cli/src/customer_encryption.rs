@@ -328,7 +328,7 @@ mod tests {
             ("plugins/redaction", b"[]"),
             (
                 "plugins/redaction",
-                br#"{"redaction":{"email_address":true}}"#,
+                br#"{"redaction":{"presets":["email_address"]}}"#,
             ),
             (
                 "plugins/export",
