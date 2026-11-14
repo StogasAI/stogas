@@ -297,15 +297,15 @@ async fn checks_plugin_settings_before_encrypting_them(dashboard: &Dashboard) {
         let check = |settings: &'static [u8]| {
             policy_check::check(dashboard, &gateway, &organization, "redaction", settings)
         };
-        check(br#"{"email_address":true,"literals":[{"values":["Falcon"]}]}"#)
+        check(br#"{"presets":["email_address"],"literals":[{"values":["Falcon"]}]}"#)
             .await
             .unwrap();
         assert_eq!(
-            check(br#"{"email_adress":true}"#)
+            check(br#"{"presets":["email_adress"]}"#)
                 .await
                 .unwrap_err()
                 .to_string(),
-            "Policy configuration is invalid: unknown redaction preset email_adress"
+            "Policy configuration is invalid: unknown redaction preset \"email_adress\""
         );
     }
 }

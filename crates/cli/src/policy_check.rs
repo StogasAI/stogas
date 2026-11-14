@@ -152,7 +152,7 @@ mod tests {
             json!({ "status": "valid", "uncheckedPlugins": [] }),
         );
         let settings =
-            b"{\n  \"email_address\": true,\n  \"literals\": [{ \"values\": [\"Falcon\"] }]\n}\n";
+            b"{\n  \"presets\": [\"email_address\"],\n  \"literals\": [{ \"values\": [\"Falcon\"] }]\n}\n";
         check(&api, &valid, ORGANIZATION, "redaction", settings)
             .await
             .unwrap();
@@ -163,7 +163,7 @@ mod tests {
                 "stogas_policy_check_v1.grant".to_owned(),
                 json!({ "policySources": [
                     { "scope": "organization", "config": { "plugins": { "redaction": {
-                        "email_address": true,
+                        "presets": ["email_address"],
                         "literals": [{ "values": ["Falcon"] }],
                     } } } },
                     { "scope": "key", "config": {} },
@@ -186,7 +186,7 @@ mod tests {
             StatusCode::BAD_REQUEST,
             json!({ "error": {
                 "code": "invalid_policy",
-                "message": "Policy configuration is invalid: unknown redaction preset email_adress\u{1b}[2J",
+                "message": "Policy configuration is invalid: unknown redaction preset \"email_adress\"\u{1b}[2J",
                 "type": "invalid_request_error",
             } }),
         );
@@ -197,12 +197,12 @@ mod tests {
                 &refused,
                 ORGANIZATION,
                 "redaction",
-                br#"{"email_adress":true}"#
+                br#"{"presets":["email_adress"]}"#
             )
             .await
             .unwrap_err()
             .to_string(),
-            "Policy configuration is invalid: unknown redaction preset email_adress\u{fffd}[2J"
+            "Policy configuration is invalid: unknown redaction preset \"email_adress\"\u{fffd}[2J"
         );
         let unexplained = gateway(StatusCode::BAD_GATEWAY, Value::Null);
         assert_eq!(
