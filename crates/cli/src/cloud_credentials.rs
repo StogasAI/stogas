@@ -31,10 +31,11 @@ pub fn prepare(purpose: &str, input: &[u8]) -> Result<Registration> {
         "byok/azure" => azure(&object(input)?),
         "byok/google-cloud" => google(&object(input)?),
         _ => {
-            let shown =
-                String::from_utf8_lossy(&input[input.len().saturating_sub(4)..]).into_owned();
+            // An editor ends a file with a newline, and `echo` a pipe, which no API key contains.
+            let key = input.trim_ascii();
+            let shown = String::from_utf8_lossy(&key[key.len().saturating_sub(4)..]).into_owned();
             Ok(Registration {
-                plaintext: Zeroizing::new(input.to_vec()),
+                plaintext: Zeroizing::new(key.to_vec()),
                 preview: Some(format!("•••• {shown}")),
                 target: None,
             })
@@ -374,6 +375,13 @@ mod tests {
         "secretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
         "workspaceId": "wrkspc_01Test"
     }"#;
+
+    #[test]
+    fn api_keys_drop_the_line_end_that_files_and_pipes_add() {
+        let registration = prepare("byok/openai", b"sk-test-1234\r\n").unwrap();
+        assert_eq!(registration.plaintext.as_slice(), b"sk-test-1234");
+        assert_eq!(registration.preview.as_deref(), Some("•••• 1234"));
+    }
 
     #[test]
     fn aws_documents_become_compact_with_their_target() {

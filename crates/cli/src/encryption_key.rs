@@ -91,13 +91,14 @@ pub struct EncryptArgs {
     purpose: String,
     /// The file to encrypt: the JSON object inside plugins.export or plugins.redaction, an API
     /// key, AWS or Google Cloud's credential document, or the Azure application that
-    /// `az ad sp create-for-rbac` prints.
+    /// `az ad sp create-for-rbac` prints. Without it, the CLI reads what is piped in, or asks for
+    /// an API key without showing it.
     #[arg(long)]
-    input: PathBuf,
+    input: Option<PathBuf>,
     /// A new file for what the policy or dashboard takes: the plugin's new value, or the
-    /// credential to register. The CLI never overwrites a file.
+    /// credential to register. Without it, the CLI prints that. The CLI never overwrites a file.
     #[arg(long)]
-    output: PathBuf,
+    output: Option<PathBuf>,
 }
 
 impl EncryptArgs {
@@ -116,13 +117,15 @@ pub async fn encrypt(
     network: &Network,
     gateway: TransportOptions,
 ) -> Result<()> {
-    customer_encryption::refuse_existing(&args.output)?;
+    if let Some(output) = &args.output {
+        customer_encryption::refuse_existing(output)?;
+    }
     let key = match (args.key_file, args.key) {
         (Some(path), _) => customer_encryption::read_key(&path)?,
         (None, Some(label)) => saved(&args.organization, &label).await?,
         (None, None) => bail!("name the key with --key or --key-file"),
     };
-    let input = customer_encryption::read_input(&args.purpose, &args.input)?;
+    let input = customer_encryption::read_input(&args.purpose, args.input.as_deref())?;
     if let Some(plugin) = customer_encryption::plugin(&args.purpose) {
         customer_encryption::check_settings(plugin, &input)?;
         policy_check::check(
@@ -139,7 +142,7 @@ pub async fn encrypt(
         &args.organization,
         &args.purpose,
         &input,
-        &args.output,
+        args.output.as_deref(),
     )
 }
 

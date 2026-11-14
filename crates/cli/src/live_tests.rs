@@ -203,9 +203,15 @@ async fn checks_an_encrypted_credential(dashboard: &Dashboard) {
     let generated = customer_encryption::generate().unwrap();
     customer_encryption::write_key(&key, &generated).unwrap();
     std::fs::write(&secret, format!("sk-stogas-live-{}", hex::encode(random))).unwrap();
-    let input = customer_encryption::read_input("byok/openai", &secret).unwrap();
-    customer_encryption::encrypt(&generated, &organization, "byok/openai", &input, &sealed)
-        .unwrap();
+    let input = customer_encryption::read_input("byok/openai", Some(&secret)).unwrap();
+    customer_encryption::encrypt(
+        &generated,
+        &organization,
+        "byok/openai",
+        &input,
+        Some(&sealed),
+    )
+    .unwrap();
     let registration: Value = serde_json::from_slice(&std::fs::read(&sealed).unwrap()).unwrap();
 
     let key_id = customer_encryption::read_key(&key).unwrap().id;
