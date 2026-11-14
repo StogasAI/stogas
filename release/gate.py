@@ -3,13 +3,16 @@
 A preview is a pre-release that passes every offline case, runs no live case and carries
 no Stogas signature. Every other release passes every case."""
 
+import gzip
 import json
 import re
 import sys
 import tarfile
 import tomllib
+import zipfile
 from pathlib import Path, PurePosixPath
 
+import channels
 from artifacts import canonical, function_names, release_source, verify_inventory, wheel, without_names, write_json
 
 METADATA = {"github-attestation.jsonl", "stogas-signature.json", "qualification.json"}
@@ -124,6 +127,9 @@ def check_release(directory, *, reports=True):
     check_artifact_families(names, targets, manifest["version"])
     check_crates(directory, manifest["version"])
     check_wasm_debug(directory, manifest["version"])
+    check_wheel_cli(directory, targets, manifest["version"])
+    if channels.IMAGE_TARGETS <= targets.keys():
+        check_container(directory, manifest)
     preview = reports and check_qualification(read_document(directory / "qualification.json"), manifest_sha256, targets, manifest["version"])
     return manifest, preview
 
@@ -177,6 +183,56 @@ def check_wasm_debug(directory, version):
                 raise ValueError(f"{prefix}.tar.gz holds a symbol map that differs from the names in {name}")
 
 
+def check_wheel_cli(directory, targets, version):
+    """Refuse a wheel whose `stogas` script is not the CLI in its platform's CLI archive, which
+    qualification runs, or that holds another script."""
+    names = {path.name for path in Path(directory).iterdir()}
+    for platform, target in targets.items():
+        if "python" not in target["packages"]:
+            continue
+        windows = target["os"] == "windows"
+        executable = "stogas.exe" if windows else "stogas"
+        prefix = f"stogas-cli-v{version}-{platform}"
+        if windows:
+            with zipfile.ZipFile(Path(directory) / f"{prefix}.zip") as archive:
+                cli = archive.read(f"{prefix}/{executable}")
+        else:
+            with tarfile.open(Path(directory) / f"{prefix}.tar.gz") as archive:
+                cli = read_member(archive, f"{prefix}/{executable}")
+        name = wheel(names, target)
+        with zipfile.ZipFile(Path(directory) / name) as archive:
+            scripts = [entry for entry in archive.namelist() if PurePosixPath(entry).parent.match("*.data/scripts")]
+            if [PurePosixPath(entry).name for entry in scripts] != [executable] or archive.read(scripts[0]) != cli:
+                raise ValueError(f"{name} must install exactly the CLI of {prefix} as its {executable} script")
+            if archive.getinfo(scripts[0]).external_attr >> 16 & 0o111 == 0:
+                raise ValueError(f"{name} installs a {executable} script that cannot run")
+
+
+def check_container(directory, manifest):
+    """Refuse a container image that is not the release's static musl CLIs in the image that
+    channels.py writes. Only the layers' compression depends on the zlib that wrote them, so the
+    check takes each from the archive once it expands to the expected layer."""
+    version, source = manifest["version"], manifest["source"]
+    name = channels.container_archive(version)
+    data = (Path(directory) / name).read_bytes()
+    try:
+        found = channels.read_oci_archive(data)
+        layers = {}
+        for item in json.loads(found["index"])["manifests"]:
+            architecture = item["platform"]["architecture"]
+            (layer,) = json.loads(found["manifests"][item["digest"]])["layers"]
+            compressed = found["blobs"][layer["digest"]]
+            tar = channels.layer(*channels.cli_files(directory, version, architecture), source["epoch"])
+            if gzip.decompress(compressed) != tar:
+                raise ValueError(f"the {architecture} layer holds other files")
+            layers[architecture] = (tar, compressed)
+        expected = channels.oci_archive(version, channels.image(version, source, layers), source["epoch"])
+    except (KeyError, IndexError, TypeError, ValueError, OSError, tarfile.TarError) as error:
+        raise ValueError(f"{name} is not the image of the release's musl CLIs: {error}") from None
+    if expected != data:
+        raise ValueError(f"{name} is not the image of the release's musl CLIs")
+
+
 def check_artifact_families(names, targets, version):
     expected = {
         *[f"{package}-{version}.tgz" for package, _ in NPM_MODULES], f"stogas-v{version}-wasm32-debug.tar.gz",
@@ -189,9 +245,13 @@ def check_artifact_families(names, targets, version):
         f"stogas-android-{version}.module",
         *[f"{name}-{version}-{classifier}.jar" for name in ("stogas", "stogas-android") for classifier in ("sources", "javadoc")],
     }
+    if channels.IMAGE_TARGETS <= targets.keys():
+        expected.add(channels.container_archive(version))
     for platform, target in targets.items():
         extension = "zip" if target["os"] == "windows" else "tar.gz"
         expected |= {f"stogas-v{version}-{platform}.{extension}", f"stogas-v{version}-{platform}-debug.{extension}"}
+        if "cli" in target["packages"]:
+            expected.add(f"stogas-cli-v{version}-{platform}.{extension}")
         if "ruby" in target:
             expected.add(f"stogas-{version.replace('-', '.')}-{target['ruby']}.gem")
     if missing := expected - names:

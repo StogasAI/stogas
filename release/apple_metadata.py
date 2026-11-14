@@ -1,12 +1,7 @@
 """Portable paths and stable ordering in Apple package metadata."""
 
-import base64
-import csv
-import hashlib
 import json
 import plistlib
-
-from artifacts import regular_files
 
 
 def normalize_dsym(bundle):
@@ -38,25 +33,6 @@ def normalize_wheel(tree, source):
     for path in tree.glob("*.dist-info/sboms/*.cyclonedx.json"):
         value = portable_refs(json.loads(path.read_text()))
         path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False) + "\n")
-    records = list(tree.glob("*.dist-info/RECORD"))
-    if len(records) != 1:
-        raise ValueError("Expected one wheel RECORD")
-    record = records[0]
-    with record.open(newline="") as stream:
-        rows = list(csv.reader(stream))
-    names = {path.relative_to(tree).as_posix() for path in regular_files(tree)}
-    if any(len(row) != 3 for row in rows) or len(rows) != len(names) or {row[0] for row in rows} != names:
-        raise ValueError("Wheel RECORD does not match its file inventory")
-    for row in rows:
-        path = tree / row[0]
-        if path == record:
-            row[1:] = ["", ""]
-        else:
-            with path.open("rb") as stream:
-                checksum = hashlib.file_digest(stream, "sha256").digest()
-            row[1:] = ["sha256=" + base64.urlsafe_b64encode(checksum).rstrip(b"=").decode(), str(path.stat().st_size)]
-    with record.open("w", newline="") as stream:
-        csv.writer(stream).writerows(rows)
 
 
 def normalize_xcframework(framework):

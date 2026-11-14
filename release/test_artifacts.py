@@ -8,7 +8,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from artifacts import MANIFEST, canonical, digest, function_names, inventory, source_digest, tar_gz, unpack, verify_inventory, verify_source, without_names, write_json, zip_archive
+from artifacts import MANIFEST, canonical, digest, function_names, inventory, source_digest, tar_gz, unpack, verify_inventory, verify_source, without_names, write_json, write_record, zip_archive
 
 
 def wasm_section(identifier, payload):
@@ -75,8 +75,7 @@ class WasmTests(unittest.TestCase):
 
 class ArtifactsTests(unittest.TestCase):
     def test_wheel_record_cannot_reference_files_outside_its_inventory(self):
-        from apple_metadata import normalize_wheel
-        for entries in ("../outside,,\n", "/outside,,\n", "module.py,,\nmodule.py,,\n", ""):
+        for entries in ("../outside,,\n", "/outside,,\n", "module.py,,\nmodule.py,,\n", "", "module.py,,\nsdk.data/data/extra,,\n"):
             with self.subTest(entries=entries), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 tree = root / "wheel"
@@ -86,7 +85,22 @@ class ArtifactsTests(unittest.TestCase):
                 (tree / "module.py").write_text("pass\n")
                 (info / "RECORD").write_text(entries + "sdk.dist-info/RECORD,,\n")
                 with self.assertRaises(ValueError):
-                    normalize_wheel(tree, root)
+                    write_record(tree)
+
+    def test_wheel_record_names_an_added_script_and_every_file_by_digest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary)
+            (tree / "sdk.dist-info").mkdir()
+            (tree / "sdk.data/scripts").mkdir(parents=True)
+            (tree / "module.py").write_text("pass\n")
+            (tree / "sdk.data/scripts/sdk").write_bytes(b"\x7fELF")
+            (tree / "sdk.dist-info/RECORD").write_text("module.py,sha256=old,1\nsdk.dist-info/RECORD,,\n")
+            write_record(tree)
+            self.assertEqual((tree / "sdk.dist-info/RECORD").read_text(), (
+                "module.py,sha256=n1bnYdeb_bNDBKASWGywTRa0Ne9hMAkal3AuVZJgovI,5\n"
+                "sdk.data/scripts/sdk,sha256=O9u0_oOXzSuEJDCznM_wGoZjx1GUXvXpoJ4mf7ix01k,4\n"
+                "sdk.dist-info/RECORD,,\n"
+            ))
 
     def test_source_digest_matches_the_shared_release_identity(self):
         with tempfile.TemporaryDirectory() as temporary:

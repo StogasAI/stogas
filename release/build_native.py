@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 
 from apple_metadata import normalize_dsym, normalize_wheel
-from artifacts import crate_list_root, digest, tar_gz, unpack, write_json, zip_archive
+from artifacts import crate_list_root, digest, tar_gz, unpack, write_json, write_record, zip_archive
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = json.loads((ROOT / "release/targets.json").read_text())["targets"]
@@ -126,49 +126,64 @@ def build(platform, output, epoch, tools):
             split_debug(objcopy, built / shared, runtime / shared, symbols / (shared + ".debug"), env)
         if target["os"] != "ios":
             require_crate_list(objcopy, runtime / shared, "stogas-ffi", apple, env)
+        # The CLI has its own archive, which package managers install without the library.
+        cli = temporary / "cli"
+        executable = "stogas.exe" if windows else "stogas"
         if "cli" in target["packages"]:
             run([*base, "--package", "stogas-cli"], env)
+            cli.mkdir()
             if windows:
-                shutil.copyfile(built / "stogas.exe", runtime / "stogas.exe")
+                shutil.copyfile(built / executable, cli / executable)
                 shutil.copyfile(built / "stogas.pdb", symbols / "stogas.pdb")
             elif apple:
-                split_apple_debug(built / "stogas", runtime / "stogas", symbols / "stogas.dSYM", env)
+                split_apple_debug(built / executable, cli / executable, symbols / "stogas.dSYM", env)
             else:
-                split_debug(objcopy, built / "stogas", runtime / "stogas", symbols / "stogas.debug", env)
-            require_crate_list(objcopy, runtime / ("stogas.exe" if windows else "stogas"), "stogas-cli", apple, env)
+                split_debug(objcopy, built / executable, cli / executable, symbols / "stogas.debug", env)
+            require_crate_list(objcopy, cli / executable, "stogas-cli", apple, env)
         if windows:
             build_windows_go(target, runtime, symbols, objcopy, env)
-        for directory in (runtime, symbols):
-            shutil.copyfile(ROOT / "LICENSE", directory / "LICENSE")
+        for directory in (runtime, symbols, cli):
+            if directory.is_dir():
+                shutil.copyfile(ROOT / "LICENSE", directory / "LICENSE")
         shutil.copyfile(ROOT / "include/stogas.h", runtime / "stogas.h")
         name = f"stogas-v{version}-{platform}"
         pack, extension = (zip_archive, "zip") if windows else (tar_gz, "tar.gz")
         pack(output / f"{name}.{extension}", runtime, epoch, name)
         pack(output / f"{name}-debug.{extension}", symbols, epoch, name + "-debug")
-    if "python" in target["packages"]:
-        wheels = output / "wheels"
-        wheels.mkdir()
-        compatibility = [] if windows or apple else ["--compatibility", "manylinux_2_17" if target["libc"] == "glibc" else "musllinux_1_2"]
-        run([
-            "maturin", "build", "--locked", "--profile", "dist", *([] if windows or apple else ["--zig"]),
-            "--target", triple, *compatibility, *(["--include-debuginfo"] if windows or apple else []),
-            "--manifest-path", "bindings/python/Cargo.toml", "--out", wheels,
-            *(["--", "-C", "strip=debuginfo"] if apple else []),
-        ], library_env)
-        # Maturin owns native dependency validation. Apple metadata additionally
-        # needs portable paths, with RECORD updated to bind those exact bytes.
-        for wheel in wheels.glob("*.whl"):
-            with tempfile.TemporaryDirectory(prefix="stogas-wheel-") as temporary:
-                tree = Path(temporary) / "wheel"
-                unpack(wheel, tree)
-                extensions = [path for path in (tree / "stogas").iterdir() if path.suffix in {".so", ".pyd"}]
-                if len(extensions) != 1:
-                    raise ValueError(f"{wheel.name} must hold one extension module")
-                require_crate_list(objcopy, extensions[0], "stogas-python", apple, env)
-                if apple:
-                    normalize_wheel(tree, ROOT)
-                zip_archive(output / wheel.name, tree, epoch)
-        shutil.rmtree(wheels)
+        if cli.is_dir():
+            pack(output / f"stogas-cli-v{version}-{platform}.{extension}", cli, epoch, f"stogas-cli-v{version}-{platform}")
+        if "python" in target["packages"]:
+            wheels = output / "wheels"
+            wheels.mkdir()
+            compatibility = [] if windows or apple else ["--compatibility", "manylinux_2_17" if target["libc"] == "glibc" else "musllinux_1_2"]
+            run([
+                "maturin", "build", "--locked", "--profile", "dist", *([] if windows or apple else ["--zig"]),
+                "--target", triple, *compatibility, *(["--include-debuginfo"] if windows or apple else []),
+                "--manifest-path", "bindings/python/Cargo.toml", "--out", wheels,
+                *(["--", "-C", "strip=debuginfo"] if apple else []),
+            ], library_env)
+            # Maturin owns native dependency validation. The wheel also installs the CLI as a
+            # script, so `pipx install stogas` and `uvx stogas` run it, and Apple metadata needs
+            # portable paths; RECORD then binds those exact bytes.
+            for wheel in wheels.glob("*.whl"):
+                with tempfile.TemporaryDirectory(prefix="stogas-wheel-") as unpacked:
+                    tree = Path(unpacked) / "wheel"
+                    unpack(wheel, tree)
+                    extensions = [path for path in (tree / "stogas").iterdir() if path.suffix in {".so", ".pyd"}]
+                    if len(extensions) != 1:
+                        raise ValueError(f"{wheel.name} must hold one extension module")
+                    require_crate_list(objcopy, extensions[0], "stogas-python", apple, env)
+                    if apple:
+                        normalize_wheel(tree, ROOT)
+                    if cli.is_dir():
+                        (dist_info,) = tree.glob("*.dist-info")
+                        scripts = tree / dist_info.name.replace(".dist-info", ".data") / "scripts"
+                        scripts.mkdir(parents=True)
+                        shutil.copyfile(cli / executable, scripts / executable)
+                        (scripts / executable).chmod(0o755)
+                    write_record(tree)
+                    zip_archive(output / wheel.name, tree, epoch)
+            shutil.rmtree(wheels)
     if apple:
         shutil.rmtree(env["CARGO_TARGET_DIR"])
         shutil.rmtree(env["CARGO_HOME"])

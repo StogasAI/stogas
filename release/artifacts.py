@@ -1,5 +1,7 @@
 """Deterministic release containers and strict artifact inventory checks."""
 
+import base64
+import csv
 import gzip
 import hashlib
 import json
@@ -165,6 +167,33 @@ def zip_archive(destination, root, epoch, prefix=""):
             entry.compress_type = zipfile.ZIP_DEFLATED
             entry.external_attr = (stat.S_IFREG | (0o755 if path.stat().st_mode & 0o111 else 0o644)) << 16
             archive.writestr(entry, path.read_bytes(), compresslevel=9)
+
+
+def write_record(tree):
+    """Rewrite an unpacked wheel's RECORD with the SHA-256 and size of every file it holds. The
+    wheel as built names each of them except an added script, and no other path."""
+    tree = Path(tree)
+    records = list(tree.glob("*.dist-info/RECORD"))
+    if len(records) != 1:
+        raise ValueError("Expected one wheel RECORD")
+    record = records[0]
+    with record.open(newline="") as stream:
+        listed = [row[0] for row in csv.reader(stream)]
+    names = [path.relative_to(tree).as_posix() for path in regular_files(tree)]
+    added = {name for name in names if PurePosixPath(name).parent.match("*.data/scripts")} - set(listed)
+    if len(listed) != len(set(listed)) or set(listed) | added != set(names):
+        raise ValueError("Wheel RECORD does not match its file inventory")
+    rows = []
+    for name in names:
+        path = tree / name
+        if path == record:
+            continue
+        with path.open("rb") as stream:
+            checksum = hashlib.file_digest(stream, "sha256").digest()
+        rows.append([name, "sha256=" + base64.urlsafe_b64encode(checksum).rstrip(b"=").decode(), str(path.stat().st_size)])
+    rows.append([record.relative_to(tree).as_posix(), "", ""])
+    with record.open("w", newline="") as stream:
+        csv.writer(stream, lineterminator="\n").writerows(rows)
 
 
 def unpack(source, destination, max_bytes=2 * 1024**3):

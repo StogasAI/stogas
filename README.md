@@ -2,7 +2,7 @@
 
 Verify Stogas confidential gateways before sending credentials or inference content. One Rust core powers native clients, WebAssembly, and offline verification.
 
-[Documentation](https://stogas.ai/docs/sdk-overview) · [Examples](examples/) · [Security](SECURITY.md)
+[Documentation](https://stogas.ai/docs/sdk-overview) · [Examples](https://github.com/StogasAI/stogas/tree/main/examples) · [Security](https://github.com/StogasAI/stogas/blob/main/SECURITY.md)
 
 ## What it does
 
@@ -15,17 +15,19 @@ Use the verifier transport with your language's OpenAI-compatible client or HTTP
 
 ## Get started
 
-Choose a [language guide](https://stogas.ai/docs/sdk-overview) or a runnable [example](examples/). Rust source builds require Rust 1.94.1 or later.
+Choose a [language guide](https://stogas.ai/docs/sdk-overview) or a runnable [example](https://github.com/StogasAI/stogas/tree/main/examples). Rust source builds require Rust 1.94.1 or later.
 
-The optional CLI provides a local verified endpoint for an existing client. Install it with a package manager, which installs a release archive and checks its SHA-256:
+The optional CLI provides a local verified endpoint for an existing client. These install a release archive after checking its SHA-256:
 
 ```console
-brew install stogasai/tap/stogas                                  # macOS and Linux
-scoop bucket add stogas https://github.com/StogasAI/homebrew-tap  # Windows
+curl -fsSL https://raw.githubusercontent.com/StogasAI/stogas/main/install.sh | sh   # macOS and Linux
+irm https://raw.githubusercontent.com/StogasAI/stogas/main/install.ps1 | iex       # Windows PowerShell
+brew install stogasai/tap/stogas                                                    # Homebrew
+scoop bucket add stogas https://github.com/StogasAI/homebrew-tap                    # Scoop
 scoop install stogas/stogas
 ```
 
-`cargo install stogas-cli --locked` and Nix, as `nix run github:StogasAI/stogas -- <command>`, build it from source instead, and each [release](https://github.com/StogasAI/stogas/releases) also has a native archive for every platform. Then run:
+`pipx install stogas` and `uvx stogas` run it from the Python package, `cargo binstall stogas-cli` installs the release archive for your platform, and `ghcr.io/stogasai/stogas` is its container image. `cargo install stogas-cli --locked` and Nix, as `nix run github:StogasAI/stogas -- <command>`, build it from source. Then run:
 
 ```console
 stogas serve --security tls
@@ -56,21 +58,27 @@ Two parts of the core also work without Stogas, as crates and as WebAssembly pac
 
 | Verifies | Rust | npm |
 |---|---|---|
-| AMD SEV-SNP attestation reports | [`stogas-sev-snp`](crates/sev-snp) | [`@stogas/sev-snp`](packages/sev-snp) |
-| GitHub and Sigstore in-toto attestations | [`stogas-sigstore`](crates/sigstore) | [`@stogas/sigstore`](packages/sigstore) |
+| AMD SEV-SNP attestation reports | [`stogas-sev-snp`](https://github.com/StogasAI/stogas/tree/main/crates/sev-snp) | [`@stogas/sev-snp`](https://github.com/StogasAI/stogas/tree/main/packages/sev-snp) |
+| GitHub and Sigstore in-toto attestations | [`stogas-sigstore`](https://github.com/StogasAI/stogas/tree/main/crates/sigstore) | [`@stogas/sigstore`](https://github.com/StogasAI/stogas/tree/main/packages/sigstore) |
 
-## Pre-releases
+## Releases
 
-Package managers skip pre-releases, such as `0.1.0-alpha.1`, unless asked:
+Every file of a [release](https://github.com/StogasAI/stogas/releases), and the container image as `oci://ghcr.io/stogasai/stogas:<version>`, has a GitHub build attestation:
+
+```console
+gh attestation verify <file> --repo StogasAI/stogas --signer-workflow StogasAI/stogas/.github/workflows/release.yml --source-ref refs/tags/v<version> --deny-self-hosted-runners
+```
+
+Some package managers install a pre-release only when asked:
 
 ```console
 pip install --pre stogas
-npm install stogas@next
+gem install stogas --pre
 dotnet add package Stogas --prerelease
-go get github.com/StogasAI/stogas/go@v0.1.0-alpha.1
+cargo add stogas@<version>
 ```
 
-Maven uses `ai.stogas:stogas:0.1.0-alpha.1`. Check any release download with `gh attestation verify <file> --repo StogasAI/stogas --signer-workflow StogasAI/stogas/.github/workflows/release.yml --source-ref refs/tags/v<version> --deny-self-hosted-runners`.
+Maven and Swift take the exact version. On npm, `stogas@next` names a pre-release that is newer than the newest full release.
 
 ## Contributing
 
@@ -78,8 +86,8 @@ Maven uses `ai.stogas:stogas:0.1.0-alpha.1`. Check any release download with `gh
 cargo test --locked --workspace --all-targets
 ```
 
-[CI](.github/workflows/ci.yml) covers the core, transports, and language bindings; [fuzzing](.github/workflows/fuzz.yml) covers parsers and verification boundaries. [`scripts/live-test.py`](scripts/live-test.py) runs every language's tests against the live gateway. Report vulnerabilities through the [security policy](SECURITY.md).
+[CI](https://github.com/StogasAI/stogas/blob/main/.github/workflows/ci.yml) covers the core, transports, and language bindings; [fuzzing](https://github.com/StogasAI/stogas/blob/main/.github/workflows/fuzz.yml) covers parsers and verification boundaries. [`scripts/live-test.py`](https://github.com/StogasAI/stogas/blob/main/scripts/live-test.py) runs every language's tests against the live gateway. Report vulnerabilities through the [security policy](https://github.com/StogasAI/stogas/blob/main/SECURITY.md).
 
 ## License
 
-[Apache-2.0](LICENSE).
+[Apache-2.0](https://github.com/StogasAI/stogas/blob/main/LICENSE).

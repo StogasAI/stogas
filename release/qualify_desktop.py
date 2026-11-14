@@ -62,13 +62,18 @@ def qualify(source, packages, version, platform, target, requested, cases):
                 consumers.append([native / "native-msvc.exe"])
             qualify_cases("native", runtime, *consumers, directory=native)
         if "cli" in selected:
-            executable = native / ("stogas.exe" if windows else "stogas")
+            cli = f"stogas-cli-v{version}-{platform}"
+            unpack(packages / f"{cli}.{extension}", work / "cli")
+            executable = work / "cli" / cli / ("stogas.exe" if windows else "stogas")
             qualify_cases("cli", runtime_of(executable, "--version"), [sys.executable, "-I", source / "release/consumers/cli.py", executable, version, work / "tests/fixtures"])
         if "python" in selected:
             name = wheel([path.name for path in packages.iterdir()], target)
             run([sys.executable, "-m", "venv", str(work / "python")])
             python = work / ("python/Scripts/python.exe" if windows else "python/bin/python")
             run([python, "-m", "pip", "install", "--no-index", "--no-deps", packages / name])
+            # The wheel installs the CLI as a script, which `pipx install stogas` and `uvx stogas` run.
+            if runtime_of(work / ("python/Scripts/stogas.exe" if windows else "python/bin/stogas"), "--version") != f"stogas {version}":
+                raise ValueError("The wheel's stogas script does not run the release's CLI")
             shutil.copytree(source / "bindings/python/tests", work / "bindings/python/tests")
             qualify_cases("python", runtime_of(python, "--version"), [python, "-m", "unittest", "discover", "-s", "bindings/python/tests", "-p", "test_package.py", "-v"])
         if "java" in selected:

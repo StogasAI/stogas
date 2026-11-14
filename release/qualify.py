@@ -128,12 +128,16 @@ def qualify_linux(source, packages, version, platform, target, requested, select
                 qualify_case("native", python_image, ["./native-consumer"], case, directory=relative_native, environment=["LD_LIBRARY_PATH=."])
         if "cli" in selected:
             shutil.copyfile(source / "release/consumers/cli.py", work / "cli.py")
+            cli = f"stogas-cli-v{version}-{platform}"
+            unpack(packages / f"{cli}.tar.gz", work / "cli")
             for case in selected_cases:
-                qualify_case("cli", python_image, ["/opt/python/cp310-cp310/bin/python", "-I", "/work/cli.py", relative_native + "/stogas", version, "/work/tests/fixtures"], case)
+                qualify_case("cli", python_image, ["/opt/python/cp310-cp310/bin/python", "-I", "/work/cli.py", f"/work/cli/{cli}/stogas", version, "/work/tests/fixtures"], case)
         if "python" in selected:
             python = "/opt/python/cp310-cp310/bin/python"
             name = wheel([path.name for path in packages.iterdir()], target)
             run(python_image, [python, "-m", "pip", "install", "--no-index", "--target", "/work/python", "/work/packages/" + name], case="offline")
+            # The wheel installs the CLI as a script, which `pipx install stogas` and `uvx stogas` run.
+            run(python_image, ["sh", "-c", 'test "$(/work/python/bin/stogas --version)" = "stogas $0"', version], case="offline")
             for case in selected_cases:
                 qualify_case("python", python_image, [python, "-m", "unittest", "discover", "-s", "bindings/python/tests", "-p", "test_package.py", "-v"], case, environment=["PYTHONPATH=/work/python"])
         if "java" in selected:

@@ -1,15 +1,20 @@
 """Release authorization rejects incomplete or misidentified qualification."""
 
 import copy
+import gzip
 import io
+import json
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
-from artifacts import function_names, without_names, write_json
-from gate import CASES, CRATES, NPM_MODULES, NPM_RUNTIMES, check_artifact_families, check_crates, check_qualification, check_wasm_debug, combine_reports, python_version, read_document
+import channels
+from artifacts import function_names, tar_gz, without_names, write_json
+from gate import CASES, CRATES, NPM_MODULES, NPM_RUNTIMES, check_artifact_families, check_container, check_crates, check_qualification, check_wasm_debug, check_wheel_cli, combine_reports, python_version, read_document
 from test_artifacts import named_wasm
+from test_channels import built_image, manifest as release_manifest, write_release_image
 
 TARGETS = {
     "linux-amd64": {"os": "linux", "packages": ["native"]},
@@ -178,8 +183,8 @@ class CombineReportsTests(unittest.TestCase):
 class ArtifactFamilyTests(unittest.TestCase):
     VERSION = "1.2.3-rc.1"
     TARGETS = {
-        "linux-musl-arm64": {"os": "linux", "arch": "arm64", "libc": "musl", "packages": ["native", "python", "ruby"], "ruby": "aarch64-linux-musl"},
-        "windows-amd64": {"os": "windows", "arch": "amd64", "packages": ["native", "python", "ruby"], "ruby": "x64-mingw-ucrt"},
+        "linux-musl-arm64": {"os": "linux", "arch": "arm64", "libc": "musl", "packages": ["native", "cli", "python", "ruby"], "ruby": "aarch64-linux-musl"},
+        "windows-amd64": {"os": "windows", "arch": "amd64", "packages": ["native", "cli", "python", "ruby"], "ruby": "x64-mingw-ucrt"},
         "android-arm64": {"os": "android", "arch": "arm64", "packages": ["native", "android"]},
     }
     NAMES = frozenset({
@@ -191,8 +196,10 @@ class ArtifactFamilyTests(unittest.TestCase):
         "stogas-android-1.2.3-rc.1.aar", "stogas-android-1.2.3-rc.1.pom", "stogas-android-1.2.3-rc.1.module",
         "stogas-android-1.2.3-rc.1-sources.jar", "stogas-android-1.2.3-rc.1-javadoc.jar",
         "stogas-v1.2.3-rc.1-linux-musl-arm64.tar.gz", "stogas-v1.2.3-rc.1-linux-musl-arm64-debug.tar.gz",
+        "stogas-cli-v1.2.3-rc.1-linux-musl-arm64.tar.gz",
         "stogas-1.2.3.rc.1-aarch64-linux-musl.gem", "stogas-1.2.3rc1-cp310-abi3-musllinux_1_2_aarch64.whl",
         "stogas-v1.2.3-rc.1-windows-amd64.zip", "stogas-v1.2.3-rc.1-windows-amd64-debug.zip",
+        "stogas-cli-v1.2.3-rc.1-windows-amd64.zip",
         "stogas-1.2.3.rc.1-x64-mingw-ucrt.gem", "stogas-1.2.3rc1-cp310-abi3-win_amd64.whl",
         "stogas-v1.2.3-rc.1-android-arm64.tar.gz", "stogas-v1.2.3-rc.1-android-arm64-debug.tar.gz",
     })
@@ -206,6 +213,17 @@ class ArtifactFamilyTests(unittest.TestCase):
             with self.subTest(extra=name), self.assertRaises(ValueError):
                 check_artifact_families(self.NAMES | {name}, self.TARGETS, self.VERSION)
 
+    def test_both_musl_targets_add_the_container_image(self):
+        targets = {**self.TARGETS, "linux-musl-amd64": {**self.TARGETS["linux-musl-arm64"], "arch": "amd64", "ruby": "x86_64-linux-musl"}}
+        names = self.NAMES | {
+            "stogas-v1.2.3-rc.1-linux-musl-amd64.tar.gz", "stogas-v1.2.3-rc.1-linux-musl-amd64-debug.tar.gz",
+            "stogas-cli-v1.2.3-rc.1-linux-musl-amd64.tar.gz", "stogas-1.2.3.rc.1-x86_64-linux-musl.gem",
+            "stogas-1.2.3rc1-cp310-abi3-musllinux_1_2_x86_64.whl",
+        }
+        with self.assertRaisesRegex(ValueError, "missing stogas-container-v1.2.3-rc.1.tar"):
+            check_artifact_families(names, targets, self.VERSION)
+        check_artifact_families(names | {"stogas-container-v1.2.3-rc.1.tar"}, targets, self.VERSION)
+
     def test_wheels_carry_the_release_version(self):
         # PyPI takes a release's version from its wheel names.
         renamed = self.NAMES - {"stogas-1.2.3rc1-cp310-abi3-win_amd64.whl"} | {"stogas-1.2.3-cp310-abi3-win_amd64.whl"}
@@ -215,6 +233,61 @@ class ArtifactFamilyTests(unittest.TestCase):
             self.assertEqual(python_version(version), expected)
         with self.assertRaises(ValueError):
             python_version("1.0.0-preview.1")
+
+
+class ShippedCliTests(unittest.TestCase):
+    """The wheels and the container image hold the CLI that qualification runs, byte for byte."""
+    VERSION = "0.1.0-alpha.1"
+
+    def setUp(self):
+        self.directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-gate-test-")))
+
+    def test_the_image_holds_the_release_musl_clis(self):
+        write_release_image(self.directory, self.VERSION)
+        check_container(self.directory, release_manifest())
+        # Another zlib compresses the same layers differently, which changes nothing else.
+        path = self.directory / channels.container_archive(self.VERSION)
+        built = built_image()
+        recompressed = {}
+        for digest, blob in built["blobs"].items():
+            if blob[:2] == b"\x1f\x8b":
+                recompressed[digest] = gzip.compress(gzip.decompress(blob), compresslevel=1, mtime=0)
+        layers = {}
+        for item in json.loads(built["index"])["manifests"]:
+            (layer,) = json.loads(built["manifests"][item["digest"]])["layers"]
+            compressed = recompressed[layer["digest"]]
+            layers[item["platform"]["architecture"]] = (gzip.decompress(compressed), compressed)
+        path.write_bytes(channels.oci_archive(self.VERSION, channels.image(self.VERSION, release_manifest()["source"], layers), 1793664000))
+        check_container(self.directory, release_manifest())
+        # An image of other CLIs, or an archive that differs in any other way, is refused.
+        path.write_bytes(channels.oci_archive(self.VERSION, built_image(clis=(b"other cli", b"arm64 cli")), 1793664000))
+        with self.assertRaisesRegex(ValueError, "the amd64 layer holds other files"):
+            check_container(self.directory, release_manifest())
+        path.write_bytes(channels.oci_archive(self.VERSION, built, 1793664001))
+        with self.assertRaisesRegex(ValueError, "is not the image of the release's musl CLIs$"):
+            check_container(self.directory, release_manifest())
+
+    def test_each_wheel_installs_its_platform_cli(self):
+        targets = {"linux-musl-amd64": {"os": "linux", "arch": "amd64", "libc": "musl", "packages": ["cli", "python"]}}
+        cli = self.directory / "cli"
+        cli.mkdir()
+        (cli / "stogas").write_bytes(b"cli")
+        (cli / "stogas").chmod(0o755)
+        tar_gz(self.directory / f"stogas-cli-v{self.VERSION}-linux-musl-amd64.tar.gz", cli, 1793664000, f"stogas-cli-v{self.VERSION}-linux-musl-amd64")
+        wheel = self.directory / "stogas-0.1.0a1-cp310-abi3-musllinux_1_2_x86_64.whl"
+        def write(scripts):
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr("stogas/__init__.py", "")
+                for name, content, mode in scripts:
+                    entry = zipfile.ZipInfo(f"stogas-0.1.0a1.data/scripts/{name}")
+                    entry.external_attr = mode << 16
+                    archive.writestr(entry, content)
+        write([("stogas", b"cli", 0o100755)])
+        check_wheel_cli(self.directory, targets, self.VERSION)
+        for scripts in ([("stogas", b"other", 0o100755)], [("stogas", b"cli", 0o100644)], [], [("stogas", b"cli", 0o100755), ("extra", b"", 0o100755)]):
+            write(scripts)
+            with self.subTest(scripts=scripts), self.assertRaises(ValueError):
+                check_wheel_cli(self.directory, targets, self.VERSION)
 
 
 if __name__ == "__main__":

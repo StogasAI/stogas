@@ -173,6 +173,8 @@ def rebuild(release, output):
     shards = {"apple": [f"stogas-xcframework-v{version}.zip"]}
     for platform in apple:
         shards[platform] = [f"stogas-v{version}-{platform}.tar.gz", f"stogas-v{version}-{platform}-debug.tar.gz"]
+        if "cli" in TARGETS[platform]["packages"]:
+            shards[platform].append(f"stogas-cli-v{version}-{platform}.tar.gz")
         if "python" in TARGETS[platform]["packages"]:
             shards[platform].append(wheel(names, TARGETS[platform]))
     for name, files in shards.items():

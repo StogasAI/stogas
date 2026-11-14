@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import channels
 from artifacts import BUILD_PLATFORM, MANIFEST, digest, regular_files, source_digest, unpack, write_json
 
 MAVEN = "maven:3.9.11-eclipse-temurin-17@sha256:e4a7ace3dc0d645ed97f8d9ad0b0d3f0b14fa8d150138f27f116d7105a639b82"
@@ -106,6 +107,14 @@ def assemble(build_directory, output):
                 gem = f"stogas-{version.replace('-', '.')}-{target['ruby']}.gem"
                 container(RUBY, work, ["gem", "-C", "bindings/ruby", "build", "stogas.gemspec", "--output", f"/build/{gem}"], epoch, [f"STOGAS_RUBY_PLATFORM={target['ruby']}"])
                 shutil.copyfile(work / gem, claim(output, gem))
+        if channels.IMAGE_TARGETS <= set(platforms):
+            # The container image holds the static musl CLIs, written in the pinned packer image
+            # like every other archive.
+            (work / "image").mkdir()
+            for platform in sorted(channels.IMAGE_TARGETS):
+                shutil.copyfile(output / f"stogas-cli-v{version}-{platform}.tar.gz", work / "image" / f"stogas-cli-v{version}-{platform}.tar.gz")
+            container(PACKER, work, ["python3", "release/channels.py", "image", "image/container.tar", "--version", version, "--commit", metadata["source"]["commit"], "--epoch", str(epoch)], epoch)
+            shutil.copyfile(work / "image/container.tar", claim(output, channels.container_archive(version)))
         packages = {kind for platform in platforms if platform != "portable" for kind in targets[platform]["packages"]}
         if "java" in packages:
             container(MAVEN, work, ["mvn", "-B", "-ntp", "-f", "bindings/java/pom.xml", f"-Dproject.build.outputTimestamp={epoch}", "-DskipTests", "package"], epoch)

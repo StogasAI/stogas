@@ -29,7 +29,7 @@ def manifest(version=VERSION, platforms=PLATFORMS):
         "version": version,
         "source": {"commit": "a" * 40, "dirty": False, "epoch": 1793664000, "sha256": "b" * 64},
         "artifacts": sorted((
-            {"name": f"stogas-v{version}-{platform}.{'zip' if platform.startswith('windows') else 'tar.gz'}", "sha256": hashlib.sha256(platform.encode()).hexdigest(), "size": 1}
+            {"name": f"stogas-cli-v{version}-{platform}.{'zip' if platform.startswith('windows') else 'tar.gz'}", "sha256": hashlib.sha256(platform.encode()).hexdigest(), "size": 1}
             for platform in platforms
         ), key=lambda artifact: artifact["name"]),
     }
@@ -133,7 +133,7 @@ class ManifestTests(unittest.TestCase):
         value = manifest()
         formula = channels.formula(value)
         for platform in ("darwin-amd64", "darwin-arm64", "linux-amd64", "linux-arm64"):
-            name = f"stogas-v{VERSION}-{platform}.tar.gz"
+            name = f"stogas-cli-v{VERSION}-{platform}.tar.gz"
             self.assertIn(f'url "https://github.com/StogasAI/stogas/releases/download/v{VERSION}/{name}"', formula)
             self.assertIn(f'sha256 "{hashlib.sha256(platform.encode()).hexdigest()}"', formula)
         # Homebrew reads the version from the archive names, and its audit refuses a repeat.
@@ -154,9 +154,9 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(value["bin"], "stogas.exe")
         for key, platform in (("64bit", "windows-amd64"), ("arm64", "windows-arm64")):
             self.assertEqual(value["architecture"][key], {
-                "url": f"https://github.com/StogasAI/stogas/releases/download/v{VERSION}/stogas-v{VERSION}-{platform}.zip",
+                "url": f"https://github.com/StogasAI/stogas/releases/download/v{VERSION}/stogas-cli-v{VERSION}-{platform}.zip",
                 "hash": hashlib.sha256(platform.encode()).hexdigest(),
-                "extract_dir": f"stogas-v{VERSION}-{platform}",
+                "extract_dir": f"stogas-cli-v{VERSION}-{platform}",
             })
 
     def test_aur_package_and_its_metadata_agree(self):
@@ -166,7 +166,7 @@ class ManifestTests(unittest.TestCase):
         self.assertIn("pkgver=0.1.0alpha.1\npkgrel=1\n", pkgbuild)
         self.assertIn("\tpkgver = 0.1.0alpha.1\n\tpkgrel = 1\n", srcinfo)
         for arch, platform in (("x86_64", "linux-amd64"), ("aarch64", "linux-arm64")):
-            url = f"https://github.com/StogasAI/stogas/releases/download/v{VERSION}/stogas-v{VERSION}-{platform}.tar.gz"
+            url = f"https://github.com/StogasAI/stogas/releases/download/v{VERSION}/stogas-cli-v{VERSION}-{platform}.tar.gz"
             sha256 = hashlib.sha256(platform.encode()).hexdigest()
             self.assertIn(f"source_{arch}=('{url}')\nsha256sums_{arch}=('{sha256}')\n", pkgbuild)
             self.assertIn(f"\tsource_{arch} = {url}\n\tsha256sums_{arch} = {sha256}\n", srcinfo)
@@ -182,20 +182,36 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(channels.pkgrel(channels.srcinfo(manifest("0.0.9"), 5), value), 1)
 
 
-class ImageTests(unittest.TestCase):
-    def build(self):
-        return channels.image(manifest(), {"amd64": b"amd64 cli", "arm64": b"arm64 cli"}, b"license")
+def built_image(version=VERSION, clis=(b"amd64 cli", b"arm64 cli")):
+    layers = {}
+    for (architecture, _), cli in zip(channels.ARCHITECTURES, clis):
+        tar = channels.layer(cli, b"license", manifest()["source"]["epoch"])
+        layers[architecture] = (tar, channels.compress(tar))
+    return channels.image(version, manifest()["source"], layers)
 
+
+def write_release_image(packages, version, clis=(b"amd64 cli", b"arm64 cli")):
+    """The CLI archives and the container image that a release holds for linux-musl."""
+    epoch = manifest()["source"]["epoch"]
+    with tempfile.TemporaryDirectory() as temporary:
+        for (architecture, _), cli in zip(channels.ARCHITECTURES, clis):
+            name = f"stogas-cli-v{version}-linux-musl-{architecture}"
+            root = Path(temporary) / architecture
+            root.mkdir()
+            (root / "stogas").write_bytes(cli)
+            (root / "stogas").chmod(0o755)
+            (root / "LICENSE").write_bytes(b"license")
+            tar_gz(Path(packages) / f"{name}.tar.gz", root, epoch, name)
+    (Path(packages) / channels.container_archive(version)).write_bytes(channels.oci_archive(version, built_image(version, clis), epoch))
+
+
+class ImageTests(unittest.TestCase):
     def test_image_is_the_same_every_time(self):
-        first, second = self.build(), self.build()
-        self.assertEqual(first, second)
-        self.assertNotEqual(
-            first["index"],
-            channels.image(manifest(), {"amd64": b"other cli", "arm64": b"arm64 cli"}, b"license")["index"],
-        )
+        self.assertEqual(built_image(), built_image())
+        self.assertNotEqual(built_image()["index"], built_image(clis=(b"other cli", b"arm64 cli"))["index"])
 
     def test_index_names_both_platforms_and_the_release(self):
-        built = self.build()
+        built = built_image()
         index = json.loads(built["index"])
         self.assertEqual(index["mediaType"], channels.OCI_INDEX)
         self.assertEqual(index["annotations"]["org.opencontainers.image.version"], VERSION)
@@ -224,6 +240,25 @@ class ImageTests(unittest.TestCase):
             self.assertEqual(entries["usr/local/bin/stogas"].mode, 0o755)
             self.assertEqual(entries["tmp"].mode, 0o1777)
             self.assertTrue(all(entry.mtime == 1793664000 and entry.uid == 0 for entry in entries.values()))
+
+    def test_layout_archive_holds_the_image_and_names_its_digest(self):
+        built = built_image()
+        data = channels.oci_archive(VERSION, built, 1793664000)
+        self.assertEqual(data, channels.oci_archive(VERSION, built, 1793664000))
+        self.assertEqual(channels.read_oci_archive(data), built)
+        with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+            self.assertEqual(json.loads(archive.extractfile("oci-layout").read()), {"imageLayoutVersion": "1.0.0"})
+            [top] = json.loads(archive.extractfile("index.json").read())["manifests"]
+            files = {entry.name for entry in archive if entry.isfile()}
+        self.assertEqual(top["digest"], "sha256:" + hashlib.sha256(built["index"]).hexdigest())
+        self.assertEqual(top["annotations"], {"io.containerd.image.name": f"ghcr.io/stogasai/stogas:{VERSION}", "org.opencontainers.image.ref.name": VERSION})
+        self.assertEqual(len(files), 2 + 1 + len(built["manifests"]) + len(built["blobs"]))
+        # A blob whose bytes differ from its digest is refused.
+        layer_digest = json.loads(built["manifests"][json.loads(built["index"])["manifests"][0]["digest"]])["layers"][0]["digest"]
+        original = built["blobs"][layer_digest]
+        tampered = data.replace(original, original[:-1] + bytes([original[-1] ^ 1]))
+        with self.assertRaisesRegex(ValueError, "lacks the application/vnd.oci.image.layer.v1.tar\\+gzip"):
+            channels.read_oci_archive(tampered)
 
 
 class FakeRegistry:
@@ -284,16 +319,8 @@ class PublisherTests(unittest.TestCase):
         self.work = Path(temporary.name)
         self.packages = self.work / "packages"
         self.packages.mkdir()
-        value = manifest()
-        for architecture in ("amd64", "arm64"):
-            name = f"stogas-v{VERSION}-linux-musl-{architecture}"
-            root = self.work / "inputs" / architecture
-            root.mkdir(parents=True)
-            (root / "stogas").write_bytes(f"{architecture} cli".encode())
-            (root / "stogas").chmod(0o755)
-            (root / "LICENSE").write_bytes(b"license")
-            tar_gz(self.packages / f"{name}.tar.gz", root, value["source"]["epoch"], name)
-        (self.packages / "release-manifest.json").write_text(json.dumps(value))
+        write_release_image(self.packages, VERSION)
+        (self.packages / "release-manifest.json").write_text(json.dumps(manifest()))
         self.releases = [release(f"v{VERSION}")]
         patcher = mock.patch.object(publish, "releases", lambda: self.releases)
         patcher.start()
@@ -366,12 +393,13 @@ class PublisherTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"GH_TOKEN": "token"}), mock.patch("urllib.request.urlopen", registry), self.quiet() as output:
             publish.container(self.packages, VERSION, output=outputs)
             publish.container(self.packages, VERSION, output=outputs)
-        built = channels.image(manifest(), {"amd64": b"amd64 cli", "arm64": b"arm64 cli"}, b"license")
+        built = built_image()
         index_digest = "sha256:" + hashlib.sha256(built["index"]).hexdigest()
         self.assertEqual(registry.manifests[VERSION], (channels.OCI_INDEX, built["index"]))
         # A preview never becomes latest.
         self.assertNotIn("latest", registry.manifests)
         self.assertEqual(set(registry.blobs), set(built["blobs"]))
+        self.assertEqual({reference: data for reference, (_, data) in registry.manifests.items() if reference.startswith("sha256:")}, built["manifests"])
         self.assertEqual(outputs.read_text(), f"digest={index_digest}\n" * 2)
         self.assertIn("is private", output.getvalue())
         registry.manifests[VERSION] = (channels.OCI_INDEX, b"{}")
@@ -380,18 +408,8 @@ class PublisherTests(unittest.TestCase):
                 publish.container(self.packages, VERSION)
 
     def test_a_full_release_becomes_latest_while_newest(self):
-        value = json.loads((self.packages / "release-manifest.json").read_text())
-        for architecture in ("amd64", "arm64"):
-            old = self.packages / f"stogas-v{VERSION}-linux-musl-{architecture}.tar.gz"
-            name = f"stogas-v0.1.0-linux-musl-{architecture}"
-            root = self.work / "full" / architecture
-            root.mkdir(parents=True)
-            (root / "stogas").write_bytes(f"{architecture} cli".encode())
-            (root / "LICENSE").write_bytes(b"license")
-            tar_gz(self.packages / f"{name}.tar.gz", root, value["source"]["epoch"], name)
-            old.unlink()
-        value["version"] = "0.1.0"
-        (self.packages / "release-manifest.json").write_text(json.dumps(value))
+        write_release_image(self.packages, "0.1.0")
+        (self.packages / "release-manifest.json").write_text(json.dumps(manifest("0.1.0")))
         self.releases[:] = [release("v0.1.0")]
         registry = FakeRegistry()
         with mock.patch.dict(os.environ, {"GH_TOKEN": "token"}), mock.patch("urllib.request.urlopen", registry), self.quiet() as output:
