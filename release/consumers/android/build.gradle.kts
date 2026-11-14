@@ -6,7 +6,7 @@ android {
     buildToolsVersion = "36.0.0"
     defaultConfig {
         applicationId = providers.gradleProperty("testApplicationId").get()
-        minSdk = 33
+        minSdk = 26
         targetSdk = 36
         versionCode = 1
         versionName = "1"

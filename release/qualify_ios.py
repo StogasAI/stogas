@@ -78,7 +78,7 @@ def run_on_iphones(project, work, selected, tests, platform, target, xcode, case
         subprocess.run(["ditto", "-c", "-k", "--keepParent", str(bundle), str(archive)], check=True)
         test = {"native": "InstalledNativeTests/testNativePackage", "swift": "InstalledSwiftTests/testSwiftPackage"}[package]
         phone = {}
-        outcome = attempt(package, lambda: phone.update(run_on_phone(project, platform="IOS", os_major=target["minimum"].split(".")[0], architecture="arm64", app=work / "Host.ipa", app_kind="IOS_APP", tests=archive, test_kind="XCTEST_TEST_PACKAGE", test_type="XCTEST", expected=[test])))
+        outcome = attempt(package, lambda: phone.update(run_on_phone(project, platform="IOS", minimum=int(target["minimum"].split(".")[0]), architecture="arm64", app=work / "Host.ipa", app_kind="IOS_APP", tests=archive, test_kind="XCTEST_TEST_PACKAGE", test_type="XCTEST", expected=[test])))
         # One test covers every case, so its outcome applies to each.
         checks.extend({"platform": platform, "package": package, "case": case, "runtime": json.dumps({"xcode": xcode, **phone}, sort_keys=True), "outcome": outcome} for case in cases)
     return checks

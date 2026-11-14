@@ -112,7 +112,7 @@
 			"triple": "aarch64-linux-android",
 			"os": "android",
 			"arch": "arm64",
-			"minimum": "33",
+			"minimum": "26",
 			"packages": ["native", "android"],
 			"android_abi": "arm64-v8a"
 		},
@@ -120,7 +120,7 @@
 			"triple": "x86_64-linux-android",
 			"os": "android",
 			"arch": "amd64",
-			"minimum": "33",
+			"minimum": "26",
 			"packages": ["native", "android"],
 			"android_abi": "x86_64"
 		}

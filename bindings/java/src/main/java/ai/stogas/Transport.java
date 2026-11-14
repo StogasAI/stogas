@@ -5,23 +5,25 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.jna.*;
 import com.sun.jna.ptr.PointerByReference;
 import java.io.IOException;
-import java.lang.ref.Cleaner;
-import java.lang.ref.Reference;
+import java.lang.ref.PhantomReference;
+import java.lang.ref.ReferenceQueue;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.Collections;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** Reusable confidential transport. Configure your HTTP/OpenAI client with baseUrl(); the caller owns retry policy. */
 public final class Transport implements AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final Cleaner CLEANER = Cleaner.create();
     private final State state;
-    private final Cleaner.Cleanable cleanable;
+    private final Owner owner;
     private final URI baseUrl;
 
-    public Transport() { this(Map.of()); }
+    public Transport() { this(Collections.emptyMap()); }
 
     /** Options use the native names: environment, security, max_connections, base_url, proxy, onion and encryption_keys. */
     public Transport(Map<String, ?> options) {
@@ -38,7 +40,7 @@ public final class Transport implements AutoCloseable {
             if (pointer == null) throw new IllegalStateException("Native transport returned no handle.");
             baseUrl = URI.create(value.required("base_url").asText());
             state = new State(pointer);
-            cleanable = CLEANER.register(this, state);
+            owner = new Owner(this, state);
         } catch (RuntimeException | Error error) {
             if (pointer != null) api.stogas_transport_free(pointer);
             throw error;
@@ -52,13 +54,13 @@ public final class Transport implements AutoCloseable {
                 if (state.pointer == null) throw new IllegalStateException("Transport is closed.");
                 return result(Loaded.API.stogas_transport_refresh(state.pointer)).booleanValue();
             }
-        } finally { Reference.reachabilityFence(this); }
+        } finally { Owner.reachable(this); }
     }
     /** Finish all HTTP clients first. Cleanup waits at most five seconds and is safe to repeat. */
     @Override public void close() {
         synchronized (state) {
             if (state.pointer != null) Loaded.API.stogas_transport_close(state.pointer);
-            cleanable.clean();
+            owner.clean();
         }
     }
 
@@ -79,15 +81,57 @@ public final class Transport implements AutoCloseable {
         finally { Loaded.API.stogas_string_free(pointer); }
     }
 
-    private static final class State implements Runnable {
+    private static final class State {
         private Pointer pointer;
         State(Pointer pointer) { this.pointer = pointer; }
-        @Override public synchronized void run() {
+        synchronized void free() {
             if (pointer != null) {
                 Pointer owned = pointer;
                 pointer = null;
                 Loaded.API.stogas_transport_free(owned);
             }
+        }
+    }
+
+    /**
+     * Frees a transport's native state once the transport is unreachable without close(). Android
+     * has java.lang.ref.Cleaner from API 33 and Reference.reachabilityFence from API 28, so this
+     * does their work on every supported version.
+     */
+    private static final class Owner extends PhantomReference<Transport> {
+        private static final ReferenceQueue<Transport> UNREACHABLE = new ReferenceQueue<>();
+        // Keeps each Owner reachable until it frees its state.
+        private static final Set<Owner> PENDING = ConcurrentHashMap.newKeySet();
+        private static volatile Object fence;
+        static {
+            Thread cleaner = new Thread(() -> {
+                while (true) {
+                    try { ((Owner) UNREACHABLE.remove()).clean(); }
+                    catch (InterruptedException ignored) { }
+                }
+            }, "stogas-transport-cleaner");
+            cleaner.setDaemon(true);
+            cleaner.start();
+        }
+
+        private final State state;
+        Owner(Transport transport, State state) {
+            super(transport, UNREACHABLE);
+            this.state = state;
+            PENDING.add(this);
+        }
+
+        void clean() {
+            if (PENDING.remove(this)) {
+                clear();
+                state.free();
+            }
+        }
+
+        /** Keeps an object reachable until this call, as a volatile write cannot be dropped. */
+        static void reachable(Object value) {
+            fence = value;
+            fence = null;
         }
     }
 
@@ -110,7 +154,7 @@ public final class Transport implements AutoCloseable {
                 // Android installs ABI-selected AAR libraries in its native search path.
                 if (Platform.isAndroid()) return Native.load("stogas_ffi", Api.class);
                 String resource = Platform.RESOURCE_PREFIX;
-                if (Platform.isLinux() && new String(Files.readAllBytes(Path.of("/proc/self/maps")), StandardCharsets.US_ASCII).contains("ld-musl-"))
+                if (Platform.isLinux() && new String(Files.readAllBytes(Paths.get("/proc/self/maps")), StandardCharsets.US_ASCII).contains("ld-musl-"))
                     resource = resource.replace("linux-", "linux-musl-");
                 var library = Native.extractFromResourcePath("/" + resource + "/" + System.mapLibraryName("stogas_ffi"), Transport.class.getClassLoader());
                 return Native.load(library.getAbsolutePath(), Api.class);

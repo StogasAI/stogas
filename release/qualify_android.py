@@ -34,7 +34,8 @@ def qualify(source, packages, version, platform, target, requested, device, devi
         api = int(shell("getprop", "ro.build.version.sdk"))
         if api < int(target["minimum"]):
             raise ValueError("Android device is below the SDK minimum")
-        page_size = int(shell("getconf", "PAGE_SIZE"))
+        # getconf needs Android 10. The first mapping in smaps, cat's own code, uses the kernel's page size.
+        page_size = 1024 * int(re.search(r"^KernelPageSize:\s+(\d+) kB$", shell("cat", "/proc/self/smaps"), re.MULTILINE)[1])
         # Every device runs the selected tests. A 16 KB page-size device
         # records them as its own case.
         cases = ("16k",) if page_size == 16384 else selected_cases
@@ -89,9 +90,9 @@ def qualify(source, packages, version, platform, target, requested, device, devi
             outputs = work / "app/build/outputs/apk"
             app, tests = outputs / "debug/stogas-release-consumer-debug.apk", outputs / "androidTest/debug/stogas-release-consumer-debug-androidTest.apk"
             if device_farm:
-                # Device Farm reports Android versions; API 33 is Android 13.
+                # Device Farm reports Android versions; API 26 is Android 8.
                 phone = run_on_phone(
-                    device_farm, platform="ANDROID", os_major={"33": "13"}[target["minimum"]], architecture=target["android_abi"],
+                    device_farm, platform="ANDROID", minimum={"26": 8}[target["minimum"]], architecture=target["android_abi"],
                     app=app, app_kind="ANDROID_APP", tests=tests, test_kind="INSTRUMENTATION_TEST_PACKAGE", test_type="INSTRUMENTATION",
                     expected=tests_expected,
                 )

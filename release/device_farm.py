@@ -48,17 +48,21 @@ def results(arn):
     return jobs, outcomes
 
 
-def run(project, *, platform, os_major, architecture, app, app_kind, tests, test_kind, test_type, expected):
-    """Run `tests` against `app` on one phone and require exactly `expected` to pass."""
+def run(project, *, platform, minimum, architecture, app, app_kind, tests, test_kind, test_type, expected):
+    """Run `tests` against `app` on one phone with the oldest major system version that Device Farm
+    offers from `minimum` on, and require exactly `expected` to pass."""
     filters = [
         {"attribute": "PLATFORM", "operator": "EQUALS", "values": [platform]},
         {"attribute": "FORM_FACTOR", "operator": "EQUALS", "values": ["PHONE"]},
         {"attribute": "AVAILABILITY", "operator": "EQUALS", "values": ["HIGHLY_AVAILABLE"]},
         {"attribute": "FLEET_TYPE", "operator": "EQUALS", "values": ["PUBLIC"]},
     ]
-    phones = [device["arn"] for device in aws("list-devices", "--filters", json.dumps(filters))["devices"] if device["os"].split(".")[0] == os_major and device["cpu"]["architecture"] == architecture]
-    if not phones:
-        raise ValueError(f"Device Farm has no available {platform} {os_major} {architecture} phone")
+    major = lambda device: int(device["os"].split(".")[0])
+    devices = [device for device in aws("list-devices", "--filters", json.dumps(filters))["devices"] if major(device) >= minimum and device["cpu"]["architecture"] == architecture]
+    if not devices:
+        raise ValueError(f"Device Farm has no available {platform} {minimum} or later {architecture} phone")
+    oldest = min(map(major, devices))
+    phones = [device["arn"] for device in devices if major(device) == oldest]
     scheduled = aws(
         "schedule-run", "--project-arn", project, "--name", tests.name,
         "--app-arn", upload(project, app, app_kind),
