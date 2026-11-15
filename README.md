@@ -56,9 +56,9 @@ Streamed content can arrive before final verification. Treat a response as compl
 
 Two parts of the core also work without Stogas, as crates and as WebAssembly packages for browsers, Node, Bun, Deno and Workers:
 
-| Verifies | Rust | npm |
-|---|---|---|
-| AMD SEV-SNP attestation reports | [`stogas-sev-snp`](https://github.com/StogasAI/stogas/tree/main/crates/sev-snp) | [`@stogas/sev-snp`](https://github.com/StogasAI/stogas/tree/main/packages/sev-snp) |
+| Verifies                                 | Rust                                                                              | npm                                                                                  |
+| ---------------------------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| AMD SEV-SNP attestation reports          | [`stogas-sev-snp`](https://github.com/StogasAI/stogas/tree/main/crates/sev-snp)   | [`@stogas/sev-snp`](https://github.com/StogasAI/stogas/tree/main/packages/sev-snp)   |
 | GitHub and Sigstore in-toto attestations | [`stogas-sigstore`](https://github.com/StogasAI/stogas/tree/main/crates/sigstore) | [`@stogas/sigstore`](https://github.com/StogasAI/stogas/tree/main/packages/sigstore) |
 
 ## Releases

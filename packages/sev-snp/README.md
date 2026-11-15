@@ -13,9 +13,7 @@ const verified = verify(report, endorsements, {
 	report_data: expectedReportData,
 	measurements: [expectedMeasurement],
 	vmpl: 0,
-	platforms: [
-		{ product: 'Milan', minimum_tcb: { bootloader: 4, tee: 0, snp: 29, microcode: 222 } }
-	]
+	platforms: [{ product: 'Milan', minimum_tcb: { bootloader: 4, tee: 0, snp: 29, microcode: 222 } }]
 });
 ```
 
