@@ -2481,7 +2481,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stogas"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -2515,7 +2515,7 @@ dependencies = [
 
 [[package]]
 name = "stogas-core"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2554,7 +2554,7 @@ dependencies = [
 
 [[package]]
 name = "stogas-ffi"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -2580,7 +2580,7 @@ dependencies = [
 
 [[package]]
 name = "stogas-sev-snp"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "const-oid 0.10.3",
  "der 0.8.3",
@@ -2593,7 +2593,7 @@ dependencies = [
 
 [[package]]
 name = "stogas-sigstore"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "base64",
  "chrono",
