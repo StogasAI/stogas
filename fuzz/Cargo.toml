@@ -89,5 +89,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "log_proofs"
+path = "fuzz_targets/log_proofs.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]
