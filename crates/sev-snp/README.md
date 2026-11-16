@@ -45,6 +45,8 @@ A host that returns no certificate table leaves you to fetch the VCEK: `kds::vce
 
 A `PlatformRule` names a product or CPUID, and optionally chips. Its TCB minimums apply to the reported, committed and current TCB, and its launch minimum to the launch TCB. It rejects firmware that the host updated but did not commit, which could roll back, unless `permit_provisional_firmware` is set. The guest policy rule forbids debugging and migration agents unless you change `forbid`.
 
+Platform information is the one field whose reserved bits a report may set: Turin firmware sets bit 6, which AMD's ABI reserves. Parsing keeps those bits, and a rule whose `forbidden_platform_info_mask` includes `!platform_info::KNOWN` refuses every bit that the crate does not name.
+
 ## Policies in JSON
 
 With the `serde` feature, `Policy`, `PlatformFacts` and `Validity` read and write JSON, and `Report` writes it. Byte fields are lowercase hexadecimal, and masks are `0x` followed by 16 lowercase digits, so that JavaScript keeps every bit.

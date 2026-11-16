@@ -2,7 +2,7 @@ use alloc::{format, string::String, vec::Vec};
 
 use crate::error::{Error, invalid_policy, policy as rejected};
 use crate::product::Product;
-use crate::report::{SigningKey, guest_policy, platform_info};
+use crate::report::{SigningKey, guest_policy};
 use crate::tcb::{FirmwareVersion, TcbVersion};
 use crate::verify::Verified;
 
@@ -251,9 +251,12 @@ pub struct PlatformRule {
     /// the committed version. Minimums still apply to the committed TCB and version.
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
     pub permit_provisional_firmware: bool,
-    /// Platform information bits that must be set. [`platform_info`] names them.
+    /// Platform information bits that must be set. [`platform_info`](crate::platform_info) names
+    /// them.
     #[cfg_attr(feature = "serde", serde(default, with = "crate::hex::serde::mask"))]
     pub required_platform_info_mask: u64,
+    /// Platform information bits that must be clear. Add `!platform_info::KNOWN` to refuse the
+    /// bits that this crate does not name.
     #[cfg_attr(feature = "serde", serde(default, with = "crate::hex::serde::mask"))]
     pub forbidden_platform_info_mask: u64,
     /// Mitigations that the platform applied when the guest launched. Requiring any needs a
@@ -481,8 +484,8 @@ impl PlatformRule {
     /// Check that the rule is coherent.
     ///
     /// # Errors
-    /// Rejects a TCB minimum without a product or in another product's layout, unknown or
-    /// contradictory platform information bits, and an incomplete CPUID.
+    /// Rejects a TCB minimum without a product or in another product's layout, platform
+    /// information bits that the rule both requires and forbids, and an incomplete CPUID.
     pub fn validate(&self) -> Result<(), Error> {
         if (self.cpuid_stepping.is_some() && self.cpuid_model.is_none())
             || (self.cpuid_model.is_some() && self.cpuid_family.is_none())
@@ -512,11 +515,9 @@ impl PlatformRule {
                 )));
             }
         }
-        let required = self.required_platform_info_mask;
-        let forbidden = self.forbidden_platform_info_mask;
-        if (required | forbidden) & !platform_info::KNOWN != 0 || required & forbidden != 0 {
+        if self.required_platform_info_mask & self.forbidden_platform_info_mask != 0 {
             return Err(invalid_policy(
-                "platform rule names unknown or contradictory platform information bits",
+                "platform rule requires and forbids the same platform information bits",
             ));
         }
         Ok(())

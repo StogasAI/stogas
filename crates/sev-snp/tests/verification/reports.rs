@@ -324,18 +324,17 @@ fn the_signature_algorithm_is_ecdsa_p384_with_sha384() {
 }
 
 #[test]
-fn platform_information_sets_only_known_bits() {
+fn platform_information_keeps_every_bit_that_firmware_sets() {
     for bit in 0..64 {
         let info = 1_u64 << bit;
         let report = with(GCP, |bytes| {
             bytes[0x40..0x48].copy_from_slice(&info.to_le_bytes());
         });
-        if bit <= 5 || bit == 7 {
-            assert_eq!(Report::parse(&report).unwrap().platform_info(), info);
-        } else {
-            assert_eq!(rejection(&report), ErrorKind::Report, "bit {bit}");
-        }
+        assert_eq!(Report::parse(&report).unwrap().platform_info(), info);
     }
+    // Turin firmware sets bit 6, which AMD's ABI reserves.
+    let turin = Report::parse(&read("oak/turin-report.bin")).unwrap();
+    assert_eq!(turin.platform_info() & !platform_info::KNOWN, 1 << 6);
 }
 
 #[test]

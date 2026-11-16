@@ -376,6 +376,20 @@ fn a_platform_rule_checks_firmware_platform_information_and_mitigations() {
 }
 
 #[test]
+fn a_platform_rule_can_refuse_bits_that_the_crate_does_not_name() {
+    let turin = verified("oak-turin");
+    assert_eq!(platforms(&turin, &[PlatformRule::default()]), Ok(()));
+    let strict = PlatformRule {
+        forbidden_platform_info_mask: !platform_info::KNOWN,
+        ..PlatformRule::default()
+    };
+    assert!(strict.validate().is_ok());
+    let rules = [strict];
+    assert_eq!(platforms(&turin, &rules), Err(ErrorKind::Policy));
+    assert_eq!(platforms(&verified("gcp-milan-vmpl0"), &rules), Ok(()));
+}
+
+#[test]
 fn uncommitted_firmware_needs_the_rules_permission() {
     // The host loaded microcode 206 and committed 115.
     let trustee = verified("trustee");
@@ -492,12 +506,8 @@ fn an_incoherent_platform_rule_is_invalid() {
             ..PlatformRule::default()
         },
         PlatformRule {
-            required_platform_info_mask: 1 << 6,
-            ..PlatformRule::default()
-        },
-        PlatformRule {
-            required_platform_info_mask: platform_info::SMT_EN,
-            forbidden_platform_info_mask: platform_info::SMT_EN,
+            required_platform_info_mask: platform_info::SMT_EN | 1 << 6,
+            forbidden_platform_info_mask: 1 << 6,
             ..PlatformRule::default()
         },
     ] {

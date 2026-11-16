@@ -116,12 +116,12 @@ fn a_vlek_names_its_cloud_provider() {
 }
 
 #[test]
-fn a_turin_vcek_names_the_chip_by_its_serial_number() {
+fn a_turin_vcek_names_the_first_8_bytes_of_the_chip_id() {
     let endorsement = Endorsement::verify(&read("virtee-sev/turin-vcek.der"), None).unwrap();
     assert_eq!(endorsement.product(), Product::Turin);
     assert_eq!(endorsement.signing_key(), SigningKey::Vcek);
-    // OpenSSL reads the serial number 1e550a8ee5cf9f4d and the SPLs FMC 0, bootloader 0, TEE 0,
-    // SNP 0 and microcode 9.
+    // OpenSSL reads the hardware ID extension 1e550a8ee5cf9f4d and the SPLs FMC 0, bootloader 0,
+    // TEE 0, SNP 0 and microcode 9.
     let mut chip_id = [0; 64];
     chip_id[..8].copy_from_slice(&unhex("1e550a8ee5cf9f4d"));
     assert_eq!(endorsement.chip_id(), Some(&chip_id));

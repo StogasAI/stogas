@@ -164,8 +164,9 @@ pub fn cases() -> Vec<Case> {
         report: report.into(),
         leaf: Leaf::File(leaf),
         crl: Some(match product {
+            Product::Milan => "amd-kds/milan.crl",
             Product::Genoa => "amd-kds/genoa.crl",
-            _ => "amd-kds/milan.crl",
+            Product::Turin => "amd-kds/turin.crl",
         }),
         time: NOW,
         product,
@@ -256,6 +257,15 @@ pub fn cases() -> Vec<Case> {
             3,
             MILAN,
             "04000000000018db",
+        ),
+        file(
+            "oak-turin",
+            "oak/turin-report.bin",
+            "oak/turin-vcek.der",
+            Product::Turin,
+            5,
+            Some([0x1a, 0x02, 0x01]),
+            "0001000200000047",
         ),
     ]);
     cases.push(Case {

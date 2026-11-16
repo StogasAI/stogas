@@ -46,6 +46,11 @@ pub mod guest_policy {
 }
 
 /// Bits of the platform information, which describes how the host configured the processor.
+///
+/// Firmware sets bits that AMD's ABI does not define: Turin firmware 1.55.61 sets bit 6, which
+/// revision 1.58 of the ABI reserves. Parsing therefore keeps every bit, and a
+/// [`PlatformRule`](crate::PlatformRule) that forbids `!KNOWN` refuses the ones this crate does
+/// not name.
 pub mod platform_info {
     /// Simultaneous multithreading (SMT) is enabled.
     pub const SMT_EN: u64 = 1 << 0;
@@ -61,7 +66,8 @@ pub mod platform_info {
     pub const ALIAS_CHECK_COMPLETE: u64 = 1 << 5;
     /// SEV Trusted I/O (TIO) is enabled.
     pub const TIO_EN: u64 = 1 << 7;
-    pub(crate) const KNOWN: u64 =
+    /// Every bit that this crate names.
+    pub const KNOWN: u64 =
         SMT_EN | TSME_EN | ECC_EN | RAPL_DIS | CIPHERTEXT_HIDING_EN | ALIAS_CHECK_COMPLETE | TIO_EN;
 }
 
@@ -85,7 +91,8 @@ pub enum SigningKey {
 ///
 /// Parsing rejects anything that AMD's ABI does not define: a wrong size, an unknown report
 /// version, processor or key, set reserved bits and bytes, and a TCB that breaks its product's
-/// layout. Every accessor reads a field that parsing checked.
+/// layout. The one exception is the platform information, which keeps every bit that firmware
+/// sets; [`platform_info`] explains why. Every accessor reads a field that parsing checked.
 #[derive(Clone, Eq, PartialEq)]
 pub struct Report {
     bytes: [u8; REPORT_SIZE],
@@ -140,12 +147,6 @@ impl Report {
         if algorithm != 1 {
             return Err(invalid(format!(
                 "signature algorithm {algorithm} is not ECDSA P-384 with SHA-384"
-            )));
-        }
-        let platform_info = u64_at(&bytes, 0x40);
-        if platform_info & !platform_info::KNOWN != 0 {
-            return Err(invalid(format!(
-                "platform information {platform_info:#018x} sets reserved bits"
             )));
         }
         let key_info = u32_at(&bytes, 0x48);
