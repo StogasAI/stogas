@@ -64,9 +64,11 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: scripts/fuzz-corpus.sh "fuzz/corpus/$TARGET" "$TARGET"
       - run: cargo install cargo-fuzz --version =0.13.2 --locked
+      # One libFuzzer process per core (-fork). Fork mode ignores timeouts and
+      # running out of memory unless told otherwise; both stay failures.
       - env:
           TARGET: ${{ matrix.target }}
-        run: cargo fuzz run "$TARGET" -- -max_total_time=1800 -timeout=15
+        run: cargo fuzz run "$TARGET" --jobs "$(nproc)" -- -max_total_time=1800 -timeout=15 -ignore_timeouts=0 -ignore_ooms=0
       # Merging keeps one input for each behavior the campaign reached, so the corpus
       # does not grow with each night. A failed campaign keeps its corpus whole.
       - name: Minimize the corpus
