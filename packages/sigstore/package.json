@@ -2,6 +2,14 @@
 	"name": "@stogas/sigstore",
 	"version": "0.1.0-alpha.2",
 	"description": "Lightweight networkless WASM verification for GitHub/Sigstore in-toto attestations",
+	"keywords": [
+		"attestation",
+		"in-toto",
+		"provenance",
+		"sigstore",
+		"slsa",
+		"webassembly"
+	],
 	"license": "Apache-2.0",
 	"repository": {
 		"type": "git",
