@@ -699,32 +699,55 @@ def json_objects(text):
     return found
 
 
-def crates_owner(packages, version):
-    """Upload this version of every crate with a token that the owner makes for it, then make
+def crates_owner(packages, version, token):
+    """Upload this version of every crate with the owner's token, or one pasted here, then make
     publish.yml each crate's only publisher. A new crate can depend on this version of the others,
     so the token publishes them too."""
     if all(crate_handed_over(name) for name in CRATES):
         return
-    print(
-        'crates.io: create a token named "stogas first release" at https://crates.io/settings/tokens/new, '
-        "expiring tomorrow, with the publish-new, publish-update and trusted-publishing scopes for crates stogas*."
-    )
-    token = getpass.getpass("Paste the token, or press Enter to skip crates.io: ").strip()
-    if not token:
-        raise RuntimeError("skipped")
+    pasted = not token
+    if pasted:
+        print(
+            "crates.io: create a token at https://crates.io/settings/tokens/new "
+            "with the publish-new, publish-update and trusted-publishing scopes for crates stogas*."
+        )
+        token = getpass.getpass("Paste the token, or press Enter to skip crates.io: ").strip()
+        if not token:
+            raise RuntimeError("skipped")
     for name in CRATES:
         if crate_handed_over(name):
             crates_api("PATCH", f"crates/{name}", token, {"crate": {"trustpub_only": False}})
     crates(packages, version, token)
     crates_trust(token)
-    # crates.io lets no scoped token revoke itself.
-    print("crates.io: publish.yml is each crate's only publisher. Revoke the token at https://crates.io/settings/tokens.")
+    print("crates.io: publish.yml is each crate's only publisher.")
+    if pasted:
+        # crates.io lets no scoped token revoke itself.
+        print("crates.io: revoke the pasted token at https://crates.io/settings/tokens.")
 
 
 def npm_trusted(document):
     """Whether a workflow has published a version with trusted publishing, which keeps npm's
     configuration for it."""
     return any("trustedPublisher" in (item.get("_npmUser") or {}) for item in document["versions"].values())
+
+
+# npm publishes this version to hold the name of a package whose first version is staged, and its
+# page calls it a temporary holding version awaiting review.
+NPM_PLACEHOLDER = "0.0.0-stage"
+
+
+def npm_tidy(name, document):
+    """Remove npm's staging placeholder, moving `latest` off it first, and a `next` tag that
+    `latest` has reached, so that npm offers what the other package managers offer."""
+    releases = [version for version in document["versions"] if version != NPM_PLACEHOLDER]
+    latest, upcoming = document["dist-tags"].get("latest"), document["dist-tags"].get("next")
+    if NPM_PLACEHOLDER in document["versions"] and releases:
+        if latest == NPM_PLACEHOLDER:
+            latest = max(releases, key=channels.precedence)
+            terminal(["npm", "dist-tag", "add", f"{name}@{latest}", "latest"])
+        terminal(["npm", "unpublish", f"{name}@{NPM_PLACEHOLDER}"])
+    if {latest, upcoming} <= set(releases) and channels.precedence(upcoming) <= channels.precedence(latest):
+        terminal(["npm", "dist-tag", "rm", name, "next"])
 
 
 def npm_owner(packages, version):
@@ -755,6 +778,13 @@ def npm_owner(packages, version):
                 terminal(["npm", "trust", "github", name, "--repo", "StogasAI/stogas", "--file", "publish.yml", "--env", "release", "--allow-publish", "--yes"])
                 # Require two-factor authentication and disallow tokens.
                 terminal(["npm", "access", "set", "mfa=publish", name])
+            for name, document in documents.items():
+                if document is not None:
+                    # Tags and placeholders hold up no publication.
+                    try:
+                        npm_tidy(name, document)
+                    except RuntimeError as error:
+                        print(f"npm: could not tidy {name}: {error}", file=sys.stderr)
         finally:
             with contextlib.suppress(RuntimeError):
                 terminal(["npm", "logout"])
@@ -777,10 +807,12 @@ def owner(packages, version):
     publish.yml. crates.io and npm trust a workflow only for a package that exists, and RubyGems
     only through a pending trusted publisher, so a new package's first version needs the owner.
     A registry whose packages all trust publish.yml needs nothing, and a failure holds up only its
-    own registry, which publish.yml then skips."""
+    own registry, which publish.yml then skips. The owner's lasting crates.io token may come in
+    CARGO_REGISTRY_TOKEN, which no tool that the step runs receives."""
+    cargo_token = os.environ.pop("CARGO_REGISTRY_TOKEN", None)
     waiting = []
     for registry, setup in (
-        ("crates.io", lambda: crates_owner(packages, version)),
+        ("crates.io", lambda: crates_owner(packages, version, cargo_token)),
         ("npm", lambda: npm_owner(packages, version)),
         ("RubyGems", ruby_owner),
     ):

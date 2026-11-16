@@ -162,7 +162,10 @@ class NpmTests(unittest.TestCase):
         self.enterContext(mock.patch.object(publish, "releases", side_effect=lambda: self.releases))
         self.enterContext(mock.patch.object(publish, "wait_for", side_effect=lambda check, what, minutes=5: None))
         # As npm served the packages after the first preview: none from a workflow yet.
-        self.documents = {name: {"versions": {"0.1.0-alpha.1": {"_npmUser": {"name": "stogas"}}}} for name, _ in publish.NPM_PACKAGES}
+        self.documents = {
+            name: {"dist-tags": {"latest": "0.1.0-alpha.1"}, "versions": {"0.1.0-alpha.1": {"_npmUser": {"name": "stogas"}}}}
+            for name, _ in publish.NPM_PACKAGES
+        }
         self.enterContext(mock.patch.object(publish, "npm_document", side_effect=lambda name: self.documents[name]))
 
     def owner(self, trust=None):
@@ -203,6 +206,30 @@ class NpmTests(unittest.TestCase):
             ["access", "set", "mfa=publish", "@stogas/sigstore"],
             ["logout"],
         ])
+
+    def test_owner_removes_the_staging_placeholder_and_a_next_tag_that_latest_reached(self):
+        # As the first preview left both packages that npm staged.
+        for name in ("stogas", "@stogas/sigstore"):
+            self.documents[name]["dist-tags"] = {"latest": "0.0.0-stage", "next": "0.1.0-alpha.1"}
+            self.documents[name]["versions"]["0.0.0-stage"] = {"_npmUser": {"name": "stogas"}}
+        self.owner()
+        tidied = [command for _, *command in self.commands() if command[0] in ("dist-tag", "unpublish")]
+        self.assertEqual(tidied, [
+            ["dist-tag", "add", "@stogas/sigstore@0.1.0-alpha.1", "latest"],
+            ["unpublish", "@stogas/sigstore@0.0.0-stage"],
+            ["dist-tag", "rm", "@stogas/sigstore", "next"],
+            ["dist-tag", "add", "stogas@0.1.0-alpha.1", "latest"],
+            ["unpublish", "stogas@0.0.0-stage"],
+            ["dist-tag", "rm", "stogas", "next"],
+        ])
+        self.assertEqual(self.commands()[-1][1:], ["logout"])
+
+    def test_a_next_tag_ahead_of_latest_stays(self):
+        document = self.documents["stogas"]
+        document["dist-tags"]["next"] = "0.2.0-alpha.1"
+        document["versions"]["0.2.0-alpha.1"] = {"_npmUser": {"name": "stogas"}}
+        self.owner()
+        self.assertFalse([command for _, *command in self.commands() if command[0] in ("dist-tag", "unpublish")])
 
     def test_owner_signs_out_after_a_failure(self):
         with mock.patch.dict(os.environ, {"FAKE_NPM_FAIL": "trust"}):
@@ -458,7 +485,7 @@ class CratesOwnerTests(unittest.TestCase):
             mock.patch.object(publish, "crates_trust", side_effect=lambda token: calls.append(("trust", token))),
             contextlib.redirect_stdout(io.StringIO()),
         ):
-            publish.crates_owner(Path("packages"), "1.2.3")
+            publish.crates_owner(Path("packages"), "1.2.3", None)
             # A new crate can depend on this version of a crate that only publish.yml publishes.
             self.assertEqual(calls, [
                 ("PATCH", "crates/stogas-sigstore", "owner-token", {"crate": {"trustpub_only": False}}),
@@ -466,8 +493,23 @@ class CratesOwnerTests(unittest.TestCase):
                 ("trust", "owner-token"),
             ])
             handed_over.update(publish.CRATES)
-            publish.crates_owner(Path("packages"), "1.2.3")
+            publish.crates_owner(Path("packages"), "1.2.3", None)
         self.assertEqual(len(calls), 3)
+
+    def test_the_owners_lasting_token_needs_no_prompt_and_reaches_no_other_tool(self):
+        tokens = []
+        with (
+            mock.patch.dict(os.environ, {"CARGO_REGISTRY_TOKEN": "lasting"}),
+            mock.patch.object(publish, "crate_handed_over", return_value=False),
+            mock.patch.object(publish.getpass, "getpass", side_effect=AssertionError("prompted")),
+            mock.patch.object(publish, "crates", side_effect=lambda packages, version, token: tokens.append(token)),
+            mock.patch.object(publish, "crates_trust", side_effect=lambda token: tokens.append(os.environ.get("CARGO_REGISTRY_TOKEN"))),
+            mock.patch.object(publish, "npm_owner"),
+            mock.patch.object(publish, "ruby_owner"),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            publish.owner(Path("packages"), "1.2.3")
+        self.assertEqual(tokens, ["lasting", None])
 
     def test_trusts_only_publish_yml(self):
         calls = []
