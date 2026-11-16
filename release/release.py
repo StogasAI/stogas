@@ -95,8 +95,9 @@ def build(platforms, output, allow_dirty, archive=None):
                 continue
             subprocess.run([
                 "docker", "run", "--rm", "--init", "--platform", BUILD_PLATFORM, "--memory", "8g", "--cpus", "4",
-                "--mount", f"type=bind,source={snapshot},target=/build/source,readonly",
-                "--mount", f"type=bind,source={destination},target=/out",
+                # Unlike --mount, --volume can relabel the files for SELinux hosts such as Fedora.
+                "--volume", f"{snapshot}:/build/source:ro,z",
+                "--volume", f"{destination}:/out:z",
                 images[build_targets[platform]["os"]],
                 *([] if platform == "portable" else ["--platform", platform]),
                 "--out", "/out", "--epoch", str(source["epoch"]),

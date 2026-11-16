@@ -21,7 +21,8 @@ def container(image, source, arguments, epoch, environment=()):
     subprocess.run([
         "docker", "run", "--rm", "--init", "--platform", BUILD_PLATFORM, "--memory", "4g", "--cpus", "4",
         "--user", f"{os.getuid()}:{os.getgid()}",
-        "--mount", f"type=bind,source={source},target=/build", "--workdir", "/build",
+        # Unlike --mount, --volume can relabel the files for SELinux hosts such as Fedora.
+        "--volume", f"{source}:/build:z", "--workdir", "/build",
         "--env", f"SOURCE_DATE_EPOCH={epoch}", "--env", "TZ=UTC", "--env", "HOME=/build",
         "--env", "MAVEN_OPTS=-Duser.home=/build", "--env", "MAVEN_CONFIG=/build/.m2",
         "--env", "DOTNET_CLI_HOME=/build/.dotnet", "--env", "GEM_HOME=/build/.gem",
