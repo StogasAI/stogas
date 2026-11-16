@@ -12,6 +12,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[package.metadata.docs.rs]
+# docs.rs documents the default features only; the JSON forms are part of the API.
+features = ["serde"]
+
 [features]
 # JSON forms of policies, reports and results, for bindings and stored policies.
 serde = ["dep:serde"]
