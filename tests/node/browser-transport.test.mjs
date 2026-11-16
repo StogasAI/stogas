@@ -228,8 +228,9 @@ test('a transport adds its encryption keys only to requests that send none', asy
 	const bytes = (text) => new TextEncoder().encode(text);
 	const compressed = async (text, coding) =>
 		new Uint8Array(
-			await new Response(new Blob([text]).stream().pipeThrough(new CompressionStream(coding)))
-				.arrayBuffer()
+			await new Response(
+				new Blob([text]).stream().pipeThrough(new CompressionStream(coding))
+			).arrayBuffer()
 		);
 	for (const [sent, forwarded] of [
 		// The rest of the body keeps its text, such as a number that a parser would round.

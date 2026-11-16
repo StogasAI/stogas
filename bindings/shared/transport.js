@@ -80,7 +80,10 @@ export async function withEncryptionKeys(bytes, coding, member) {
 
 // The decoded bytes, or null past the gateway's limit.
 async function decompressed(bytes, coding) {
-	const reader = new Blob([bytes]).stream().pipeThrough(new DecompressionStream(coding)).getReader();
+	const reader = new Blob([bytes])
+		.stream()
+		.pipeThrough(new DecompressionStream(coding))
+		.getReader();
 	const chunks = [];
 	let size = 0;
 	for (let read = await reader.read(); !read.done; read = await reader.read()) {
