@@ -296,14 +296,17 @@ async fn checks_plugin_settings_before_encrypting_them(dashboard: &Dashboard) {
             no_proxy: None,
             encryption_keys: stogas::EncryptionKeys::default(),
         });
-        let check = |settings: &'static [u8]| {
-            policy_check::check(dashboard, &gateway, &organization, "redaction", settings)
-        };
-        check(br#"{"presets":["email_address"],"literals":[{"values":["Falcon"]}]}"#)
+        let policy = |redaction| serde_json::json!({ "plugins": { "redaction": redaction } });
+        let valid = policy(serde_json::json!({
+            "presets": ["email_address"],
+            "literals": [{ "values": ["Falcon"] }]
+        }));
+        policy_check::check(dashboard, &gateway, &organization, &valid)
             .await
             .unwrap();
+        let misspelled = policy(serde_json::json!({ "presets": ["email_adress"] }));
         assert_eq!(
-            check(br#"{"presets":["email_adress"]}"#)
+            policy_check::check(dashboard, &gateway, &organization, &misspelled)
                 .await
                 .unwrap_err()
                 .to_string(),
