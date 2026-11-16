@@ -23,8 +23,10 @@ pub struct Registration {
 
 /// Prepares a provider credential for `byok/{provider}`. AWS and Google Cloud take a credential
 /// document, and Google Cloud also takes the key file it downloads. Azure takes the application's
-/// tenant ID, client ID and client secret, or what `az ad sp create-for-rbac` prints. Other
-/// providers take the key exactly as given.
+/// tenant ID, client ID and client secret, or what `az ad sp create-for-rbac` prints. A document
+/// that names a role, a workload identity pool provider or an application without a client secret
+/// holds no secret: the cloud trusts the organization's issuer. Other providers take the key
+/// exactly as given.
 pub fn prepare(purpose: &str, input: &[u8]) -> Result<Registration> {
     match purpose {
         "byok/aws" => aws(&object(input)?),
@@ -130,12 +132,78 @@ fn last4(value: &str) -> String {
     format!("•••• {}", &value[value.len().saturating_sub(4)..])
 }
 
+// What the dashboard shows of a credential without a secret: the last part of its name, in the
+// 64 characters that a preview holds.
+fn named(value: &str) -> String {
+    let name = value.rsplit('/').next().unwrap_or(value);
+    if name.chars().count() > 64 {
+        format!("{}…", name.chars().take(63).collect::<String>())
+    } else {
+        name.into()
+    }
+}
+
+// A role of the commercial partition, with its path.
+fn aws_role(value: &str) -> bool {
+    value
+        .strip_prefix("arn:aws:iam::")
+        .and_then(|rest| rest.split_once(":role/"))
+        .is_some_and(|(account, name)| {
+            account.len() == 12
+                && chars(account, |c| c.is_ascii_digit())
+                && (1..=576).contains(&name.len())
+                && chars(name, |c| {
+                    c.is_ascii_alphanumeric() || "+=,.@_/-".contains(c)
+                })
+        })
+}
+
+// A workload identity pool provider by its resource path, which names the project by number.
+fn google_provider(value: &str) -> bool {
+    let id = |part: &str| {
+        (4..=32).contains(&part.len())
+            && chars(part, |c| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'
+            })
+    };
+    let parts: Vec<&str> = value.split('/').collect();
+    matches!(
+        parts.as_slice(),
+        ["projects", number, "locations", "global", "workloadIdentityPools", pool, "providers", provider]
+            if (1..=20).contains(&number.len())
+                && chars(number, |c| c.is_ascii_digit())
+                && id(pool)
+                && id(provider)
+    )
+}
+
+fn service_account(email: &str) -> bool {
+    email.split_once('@').is_some_and(|(name, domain)| {
+        (1..=63).contains(&name.len())
+            && !name.starts_with('-')
+            && chars(name, |c| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'
+            })
+            && domain
+                .strip_suffix(".gserviceaccount.com")
+                .is_some_and(|host| {
+                    !host.is_empty()
+                        && host.len() <= 201
+                        && !host.starts_with(['.', '-'])
+                        && chars(host, |c| {
+                            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-'
+                        })
+                })
+    })
+}
+
 fn aws(map: &Map<String, Value>) -> Result<Registration> {
     only(
         map,
         &[
             "schema",
             "region",
+            "roleArn",
             "accessKeyId",
             "secretAccessKey",
             "apiKey",
@@ -156,8 +224,23 @@ fn aws(map: &Map<String, Value>) -> Result<Registration> {
     let mut document = Map::new();
     document.insert("schema".into(), AWS_SCHEMA.into());
     document.insert("region".into(), region.into());
-    let (hosting, shown) = match (field(map, "accessKeyId")?, field(map, "apiKey")?) {
-        (Some(key_id), None) => {
+    let keys = (field(map, "accessKeyId")?, field(map, "apiKey")?);
+    let (hosting, preview) = match (field(map, "roleArn")?, keys) {
+        (Some(role), (None, None)) if map.get("secretAccessKey").is_none() => {
+            if !aws_role(role) {
+                bail!(
+                    "roleArn must be the ARN of an IAM role, such as arn:aws:iam::123456789012:role/stogas"
+                );
+            }
+            document.insert("roleArn".into(), role.into());
+            let hosting = if workspace_id.is_some() {
+                vec!["amazon", "anthropic"]
+            } else {
+                vec!["amazon"]
+            };
+            (hosting, named(role))
+        }
+        (None, (Some(key_id), None)) => {
             let secret = required(map, "secretAccessKey")?;
             if key_id.len() != 20
                 || !key_id.starts_with("AKIA")
@@ -175,13 +258,13 @@ fn aws(map: &Map<String, Value>) -> Result<Registration> {
             document.insert("accessKeyId".into(), key_id.into());
             document.insert("secretAccessKey".into(), secret.into());
             let hosting = if workspace_id.is_some() {
-                vec!["anthropic", "aws"]
+                vec!["amazon", "anthropic"]
             } else {
-                vec!["aws"]
+                vec!["amazon"]
             };
-            (hosting, key_id)
+            (hosting, last4(key_id))
         }
-        (None, Some(api_key)) if map.get("secretAccessKey").is_none() => {
+        (None, (None, Some(api_key))) if map.get("secretAccessKey").is_none() => {
             if !printable(api_key) {
                 bail!("apiKey must be printable ASCII without spaces");
             }
@@ -190,19 +273,19 @@ fn aws(map: &Map<String, Value>) -> Result<Registration> {
                 vec![if workspace_id.is_some() {
                     "anthropic"
                 } else {
-                    "aws"
+                    "amazon"
                 }],
-                api_key,
+                last4(api_key),
             )
         }
-        _ => bail!("Give either accessKeyId with secretAccessKey, or apiKey"),
+        _ => bail!("Give one of roleArn, accessKeyId with secretAccessKey, or apiKey"),
     };
     if let Some(value) = workspace_id {
         document.insert("workspaceId".into(), value.into());
     }
     Ok(Registration {
         plaintext: Zeroizing::new(serde_json::to_vec(&document)?),
-        preview: Some(last4(shown)),
+        preview: Some(preview),
         target: Some(json!({ "hosting": hosting, "region": region })),
     })
 }
@@ -221,7 +304,7 @@ fn entra_id(value: &str) -> Option<String> {
 
 // The application that gateways sign in to Microsoft Entra ID as. The Azure CLI prints it as
 // `tenant`, `appId` and `password`, and the dashboard asks for it as tenant ID, client ID and
-// client secret.
+// client secret. An application with a federated credential has no client secret.
 fn azure(map: &Map<String, Value>) -> Result<Registration> {
     let [tenant, client, secret] = if map.contains_key("appId") {
         only(map, &["appId", "displayName", "password", "tenant"])?;
@@ -240,17 +323,18 @@ fn azure(map: &Map<String, Value>) -> Result<Registration> {
     let Some(client_id) = entra_id(required(map, client)?) else {
         bail!("{client} must be the application (client) ID");
     };
-    let client_secret = required(map, secret)?;
-    if !printable(client_secret) {
+    let client_secret = field(map, secret)?;
+    if client_secret.is_some_and(|value| !printable(value)) {
         bail!("{secret} must be the client secret, in printable ASCII without spaces");
     }
     // The keys in the order that Control writes them, so the same application encrypts alike.
-    let document = json!({
-        "clientId": client_id,
-        "clientSecret": client_secret,
-        "schema": AZURE_SCHEMA,
-        "tenantId": tenant_id,
-    });
+    let mut document = Map::new();
+    document.insert("clientId".into(), client_id.into());
+    if let Some(value) = client_secret {
+        document.insert("clientSecret".into(), value.into());
+    }
+    document.insert("schema".into(), AZURE_SCHEMA.into());
+    document.insert("tenantId".into(), tenant_id.into());
     Ok(Registration {
         plaintext: Zeroizing::new(serde_json::to_vec(&document)?),
         preview: None,
@@ -285,6 +369,8 @@ fn google(map: &Map<String, Value>) -> Result<Registration> {
         &[
             "schema",
             "projectId",
+            "workloadIdentityProvider",
+            "serviceAccountEmail",
             "clientEmail",
             "privateKeyId",
             "privateKey",
@@ -304,25 +390,51 @@ fn google(map: &Map<String, Value>) -> Result<Registration> {
     {
         bail!("projectId must be a Google Cloud project ID");
     }
+    let workspace_id = field(map, "workspaceId")?;
+    if workspace_id.is_some_and(|value| !workspace(value)) {
+        bail!("workspaceId must be the ID of an Anthropic workspace, such as wrkspc_01...");
+    }
+    let hosting = if workspace_id.is_some() {
+        vec!["anthropic", "google"]
+    } else {
+        vec!["google"]
+    };
+    let mut document = Map::new();
+    document.insert("schema".into(), GOOGLE_SCHEMA.into());
+    document.insert("projectId".into(), project.into());
+    if let Some(provider) = field(map, "workloadIdentityProvider")? {
+        if ["clientEmail", "privateKeyId", "privateKey"]
+            .iter()
+            .any(|name| map.contains_key(*name))
+        {
+            bail!("Give either workloadIdentityProvider, or the fields of a key file");
+        }
+        if !google_provider(provider) {
+            bail!(
+                "workloadIdentityProvider must be the provider's resource path, such as projects/123456789012/locations/global/workloadIdentityPools/stogas/providers/stogas"
+            );
+        }
+        document.insert("workloadIdentityProvider".into(), provider.into());
+        if let Some(email) = field(map, "serviceAccountEmail")? {
+            if !service_account(email) {
+                bail!("serviceAccountEmail must be a service account email");
+            }
+            document.insert("serviceAccountEmail".into(), email.into());
+        }
+        if let Some(value) = workspace_id {
+            document.insert("workspaceId".into(), value.into());
+        }
+        return Ok(Registration {
+            plaintext: Zeroizing::new(serde_json::to_vec(&document)?),
+            preview: Some(named(provider)),
+            target: Some(json!({ "hosting": hosting })),
+        });
+    }
+    if map.contains_key("serviceAccountEmail") {
+        bail!("serviceAccountEmail is a field of a workloadIdentityProvider credential");
+    }
     let email = required(map, "clientEmail")?;
-    let valid_email = email.split_once('@').is_some_and(|(name, domain)| {
-        (1..=63).contains(&name.len())
-            && !name.starts_with('-')
-            && chars(name, |c| {
-                c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'
-            })
-            && domain
-                .strip_suffix(".gserviceaccount.com")
-                .is_some_and(|host| {
-                    !host.is_empty()
-                        && host.len() <= 201
-                        && !host.starts_with(['.', '-'])
-                        && chars(host, |c| {
-                            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-'
-                        })
-                })
-    });
-    if !valid_email {
+    if !service_account(email) {
         bail!("clientEmail must be a service account email");
     }
     let key_id = required(map, "privateKeyId")?;
@@ -339,24 +451,12 @@ fn google(map: &Map<String, Value>) -> Result<Registration> {
         Ok(key) if key.public_modulus_len() >= 256 => {}
         _ => bail!("privateKey must be an RSA key of at least 2048 bits in PKCS #8 form"),
     }
-    let workspace_id = field(map, "workspaceId")?;
-    if workspace_id.is_some_and(|value| !workspace(value)) {
-        bail!("workspaceId must be the ID of an Anthropic workspace, such as wrkspc_01...");
-    }
-    let mut document = Map::new();
-    document.insert("schema".into(), GOOGLE_SCHEMA.into());
-    document.insert("projectId".into(), project.into());
     document.insert("clientEmail".into(), email.into());
     document.insert("privateKeyId".into(), key_id.into());
     document.insert("privateKey".into(), private_key.into());
     if let Some(value) = workspace_id {
         document.insert("workspaceId".into(), value.into());
     }
-    let hosting = if workspace_id.is_some() {
-        vec!["anthropic", "google"]
-    } else {
-        vec!["google"]
-    };
     Ok(Registration {
         plaintext: Zeroizing::new(serde_json::to_vec(&document)?),
         preview: Some(last4(key_id)),
@@ -383,24 +483,27 @@ mod tests {
         assert_eq!(registration.preview.as_deref(), Some("•••• 1234"));
     }
 
+    // The dashboard derives the same values from the same documents, and its tests read this file.
     #[test]
-    fn aws_documents_become_compact_with_their_target() {
-        let registration = prepare("byok/aws", IAM.as_bytes()).unwrap();
-        assert!(!registration.plaintext.iter().any(u8::is_ascii_whitespace));
-        assert_eq!(registration.preview.as_deref(), Some("•••• MPLE"));
-        assert_eq!(
-            registration.target.unwrap(),
-            json!({"hosting": ["anthropic", "aws"], "region": "us-east-1"})
-        );
-        let api = prepare(
-            "byok/aws",
-            br#"{"schema":"stogas.aws-byok.v1","region":"eu-west-1","apiKey":"bedrock-key"}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            api.target.unwrap(),
-            json!({"hosting": ["aws"], "region": "eu-west-1"})
-        );
+    fn documents_become_compact_with_their_preview_and_target() {
+        let vector: Value =
+            serde_json::from_str(include_str!("cloud_credentials_vector.json")).unwrap();
+        for case in vector["cases"].as_array().unwrap() {
+            let purpose = format!("byok/{}", case["provider"].as_str().unwrap());
+            let pretty = serde_json::to_string_pretty(&case["document"]).unwrap();
+            let registration = prepare(&purpose, pretty.as_bytes()).unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&registration.plaintext),
+                case["document"].to_string(),
+                "{pretty}"
+            );
+            assert_eq!(registration.preview.as_deref(), case["preview"].as_str());
+            assert_eq!(registration.target.as_ref(), Some(&case["target"]));
+        }
+    }
+
+    #[test]
+    fn aws_documents_that_gateways_refuse_are_refused() {
         for bad in [
             IAM.replace("us-east-1", "us-gov-west-1"),
             IAM.replace("AKIA", "ASIA"),
@@ -411,6 +514,48 @@ mod tests {
         ] {
             assert!(prepare("byok/aws", bad.as_bytes()).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn credentials_that_trust_the_issuer_take_no_secret() {
+        let role = br#"{"schema":"stogas.aws-byok.v1","region":"us-east-1","roleArn":"arn:aws:iam::123456789012:role/gateways/stogas"}"#;
+        let role = String::from_utf8_lossy(role);
+        for bad in [
+            role.replace("arn:aws:", "arn:aws-us-gov:"),
+            role.replace(":role/", ":user/"),
+            role.replace("123456789012", "12345"),
+            role.replace("\"roleArn\"", "\"apiKey\": \"x\", \"roleArn\""),
+            role.replace("\"roleArn\"", "\"secretAccessKey\": \"x\", \"roleArn\""),
+        ] {
+            assert!(prepare("byok/aws", bad.as_bytes()).is_err(), "{bad}");
+        }
+
+        let pool = br#"{"schema":"stogas.google-cloud-byok.v1","projectId":"stogas-test","workloadIdentityProvider":"projects/123456789012/locations/global/workloadIdentityPools/stogas/providers/stogas-staging","serviceAccountEmail":"runner@stogas-test.iam.gserviceaccount.com","workspaceId":"wrkspc_01Test"}"#;
+        let pool = String::from_utf8_lossy(pool);
+        for bad in [
+            pool.replace("projects/123456789012", "projects/stogas-test"),
+            pool.replace(
+                "runner@stogas-test.iam.gserviceaccount.com",
+                "person@example.com",
+            ),
+            pool.replace("\"serviceAccountEmail\"", "\"clientEmail\""),
+            pool.replace("\"workloadIdentityProvider\"", "\"privateKeyId\""),
+        ] {
+            assert!(
+                prepare("byok/google-cloud", bad.as_bytes()).is_err(),
+                "{bad}"
+            );
+        }
+
+        let app = prepare(
+            "byok/azure",
+            br#"{"tenantId":"0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0","clientId":"5a9d1c2e-7b3f-4e8a-9c1d-2e3f4a5b6c7d"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            app.plaintext.as_slice(),
+            br#"{"clientId":"5a9d1c2e-7b3f-4e8a-9c1d-2e3f4a5b6c7d","schema":"stogas.azure-byok.v6","tenantId":"0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0"}"#
+        );
     }
 
     #[test]
@@ -523,10 +668,6 @@ mod tests {
         assert_eq!(
             error(with(&az, "displayName", 7.into())),
             "displayName must be a string"
-        );
-        assert_eq!(
-            error(json!({ "tenantId": fields["tenantId"], "clientId": fields["clientId"] })),
-            "clientSecret is required"
         );
         for broken in [b"\xff\xfe\x00".as_slice(), b"\xff\xfe\x00\xd8", b"[]"] {
             assert_eq!(
