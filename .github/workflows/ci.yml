@@ -879,7 +879,6 @@ jobs:
               cargo build --locked --package stogas-ffi --features staging
               export LD_LIBRARY_PATH="${library%/*}"
               cd examples/haskell-http
-              cabal update
               cabal build all --enable-tests --extra-lib-dirs="$LD_LIBRARY_PATH"
               cabal test --enable-tests --extra-lib-dirs="$LD_LIBRARY_PATH"
               example=$(cabal list-bin exe:stogas-example)
