@@ -117,36 +117,23 @@ pub fn write_key(path: &Path, key: &OrganizationKey) -> Result<()> {
     write_new(path, key.encoded.as_bytes())
 }
 
-/// The plugin whose settings a purpose encrypts. Each opens only under its own purpose, so that
-/// its ciphertext cannot be moved to another plugin.
-pub fn plugin(purpose: &str) -> Option<&str> {
-    purpose
-        .strip_prefix("plugins/")
-        .filter(|name| matches!(*name, "export" | "redaction"))
-}
+/// The plugins whose values a customer key can encrypt: the whole plugin or any value inside it.
+const ENCRYPTABLE_PLUGINS: [&str; 2] = ["export", "redaction"];
 
-/// Checks what this machine can check of a plugin's settings: a JSON object that is the plugin's
-/// value, rather than an envelope or the plugins section around it. The gateway checks the rest.
-pub fn check_settings(plugin: &str, plaintext: &[u8]) -> Result<()> {
-    let value: serde_json::Value = serde_json::from_slice(plaintext)
-        .map_err(|_| anyhow::anyhow!("Plugin settings must contain JSON"))?;
-    let Some(settings) = value.as_object() else {
-        bail!("Plugin settings must contain a JSON object");
-    };
-    if settings.contains_key("encrypted") {
-        bail!("The file is already encrypted");
-    }
-    // A plugins section would open as settings that the plugin does not have.
-    if ["export", "redaction", "textExtraction"]
-        .iter()
-        .any(|name| settings.contains_key(*name))
-    {
-        bail!(
-            "Put only the settings inside plugins.{plugin} in the file, without the plugins section around them"
-        );
-    }
-    Ok(())
-}
+/// The purpose of a destination's headers, which the gateway opens only with the URL they go to:
+/// an encrypted header map beside a readable URL could be copied beside another URL.
+const EXPORT_HEADERS: &str = "plugins/export/destinations/headers";
+
+/// The largest policy file that the CLI reads: a policy holds at most 256 KiB of settings, and its
+/// file can add whitespace.
+const MAX_POLICY_FILE: usize = 1 << 20;
+
+/// The largest value that one encrypted part can hold, as the gateway opens it.
+const MAX_SEALED_PART: usize = 262_144;
+
+/// Encrypted parts are padded to a multiple of this many bytes, so that the ciphertext's length
+/// shows only roughly how long a URL, token or pattern is.
+const PAD_TO: usize = 256;
 
 fn seal(
     root: &[u8],
@@ -156,9 +143,12 @@ fn seal(
     salt: &[u8; 32],
     nonce: [u8; 12],
 ) -> Result<serde_json::Value> {
-    let plugin = plugin(purpose);
+    let part = ENCRYPTABLE_PLUGINS.iter().any(|plugin| {
+        let prefix = format!("plugins/{plugin}");
+        purpose == prefix || purpose.starts_with(&format!("{prefix}/"))
+    });
     let maximum = match purpose {
-        _ if plugin.is_some() => 262_144,
+        _ if part => MAX_SEALED_PART,
         "byok/openai" | "byok/anthropic" | "byok/chutes" | "byok/aws" | "byok/azure"
         | "byok/google-cloud" => 4096,
         _ => bail!("Unsupported encryption purpose"),
@@ -166,13 +156,15 @@ fn seal(
     if root.len() != 32
         || organization.is_empty()
         || organization.contains('\0')
+        || purpose.contains('\0')
         || plaintext.is_empty()
         || plaintext.len() > maximum
     {
         bail!("Invalid encryption input or size");
     }
-    if let Some(plugin) = plugin {
-        check_settings(plugin, plaintext)?;
+    if part {
+        serde_json::from_slice::<serde_json::Value>(plaintext)
+            .map_err(|_| anyhow::anyhow!("An encrypted part must hold JSON"))?;
     } else if plaintext.iter().any(|b| !(0x21..=0x7e).contains(b)) {
         bail!("Provider credentials must contain printable ASCII without whitespace");
     }
@@ -202,14 +194,244 @@ fn seal(
     )
 }
 
-/// Reads what to encrypt for the purpose: the file, or without one what is piped in. On a terminal
-/// an API key is typed without echo; a document has lines that a prompt cannot take.
-pub fn read_input(purpose: &str, input: Option<&Path>) -> Result<Zeroizing<Vec<u8>>> {
+/// Whether a value is encrypted in place of a setting: an object whose only member is `encrypted`.
+fn is_sealed(value: &serde_json::Value) -> bool {
+    value.as_object().is_some_and(|object| {
+        object.len() == 1
+            && object
+                .get("encrypted")
+                .is_some_and(serde_json::Value::is_object)
+    })
+}
+
+/// Whether a value holds an encrypted value anywhere inside it.
+fn holds_sealed(value: &serde_json::Value) -> bool {
+    is_sealed(value)
+        || match value {
+            serde_json::Value::Array(items) => items.iter().any(holds_sealed),
+            serde_json::Value::Object(members) => members.values().any(holds_sealed),
+            _ => false,
+        }
+}
+
+/// The tokens of a JSON Pointer (RFC 6901), such as `/plugins/export/destinations/0/url`.
+fn pointer_tokens(pointer: &str) -> Result<Vec<String>> {
+    if pointer.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(rest) = pointer.strip_prefix('/') else {
+        bail!("Write the path as a JSON Pointer that starts with /, such as /plugins/export");
+    };
+    Ok(rest
+        .split('/')
+        .map(|token| token.replace("~1", "/").replace("~0", "~"))
+        .collect())
+}
+
+fn pointer(tokens: &[String]) -> String {
+    tokens.iter().fold(String::new(), |mut pointer, token| {
+        pointer.push('/');
+        pointer.push_str(&token.replace('~', "~0").replace('/', "~1"));
+        pointer
+    })
+}
+
+/// One part of a policy to encrypt: where it is, the plugin that holds it, and the purpose that
+/// binds its ciphertext to that setting.
+#[derive(Debug)]
+pub struct PolicyPart {
+    pub pointer: String,
+    /// The tokens up to and including the plugin's name.
+    plugin: Vec<String>,
+    purpose: String,
+}
+
+/// The parts of the policy that the paths name. A path at or above a plugin names each export and
+/// redaction plugin under it, and no path names every one in the policy. A part inside another part
+/// is left to the outer one.
+pub fn policy_parts(policy: &serde_json::Value, paths: &[String]) -> Result<Vec<PolicyPart>> {
+    let all = [String::new()];
+    let mut parts: Vec<PolicyPart> = Vec::new();
+    for path in if paths.is_empty() { &all[..] } else { paths } {
+        let tokens = pointer_tokens(path)?;
+        if policy.pointer(path).is_none() {
+            bail!("The policy has nothing at {path}");
+        }
+        // The sections that hold plugins: the policy's own and each rule's.
+        let sections: Vec<Vec<String>> = match tokens.iter().map(String::as_str).collect::<Vec<_>>()
+            [..]
+        {
+            [] => std::iter::once(Vec::new())
+                .chain(rule_names(policy).map(|name| vec!["rules".into(), name]))
+                .collect(),
+            ["plugins"] => vec![Vec::new()],
+            ["rules"] => rule_names(policy)
+                .map(|name| vec!["rules".into(), name])
+                .collect(),
+            ["rules", name] | ["rules", name, "plugins"] => vec![vec!["rules".into(), name.into()]],
+            _ => Vec::new(),
+        };
+        let targets: Vec<Vec<String>> = if sections.is_empty() {
+            vec![tokens]
+        } else {
+            let mut plugins = Vec::new();
+            for section in sections {
+                for plugin in ENCRYPTABLE_PLUGINS {
+                    let mut target = section.clone();
+                    target.extend(["plugins".into(), plugin.into()]);
+                    if policy.pointer(&pointer(&target)).is_some() {
+                        plugins.push(target);
+                    }
+                }
+            }
+            if plugins.is_empty() {
+                bail!(
+                    "The policy has no export or redaction plugin at {}",
+                    if path.is_empty() { "/" } else { path }
+                );
+            }
+            plugins
+        };
+        for target in targets {
+            parts.push(policy_part(policy, &target)?);
+        }
+    }
+    parts.sort_by(|a, b| a.pointer.cmp(&b.pointer));
+    parts.dedup_by(|later, earlier| {
+        later.pointer == earlier.pointer
+            || later.pointer.starts_with(&format!("{}/", earlier.pointer))
+    });
+    Ok(parts)
+}
+
+fn rule_names(policy: &serde_json::Value) -> impl Iterator<Item = String> + '_ {
+    policy
+        .get("rules")
+        .and_then(serde_json::Value::as_object)
+        .into_iter()
+        .flat_map(|rules| rules.keys().cloned())
+}
+
+/// The part at tokens, which must lie in an export or redaction plugin.
+fn policy_part(policy: &serde_json::Value, tokens: &[String]) -> Result<PolicyPart> {
+    let at = pointer(tokens);
+    let start = match tokens.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        ["plugins", plugin, ..] if ENCRYPTABLE_PLUGINS.contains(&plugin) => 1,
+        ["rules", _, "plugins", plugin, ..] if ENCRYPTABLE_PLUGINS.contains(&plugin) => 3,
+        _ => bail!(
+            "Encrypt only an export or redaction plugin or a value inside one, such as /plugins/export or /rules/night/plugins/redaction, not {at}"
+        ),
+    };
+    let mut purpose = String::from("plugins");
+    let mut value = policy;
+    for (index, token) in tokens.iter().enumerate() {
+        if index >= start && !value.is_array() {
+            purpose.push('/');
+            purpose.push_str(token);
+        }
+        value = match value {
+            serde_json::Value::Array(items) => token
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| items.get(index)),
+            serde_json::Value::Object(members) => members.get(token),
+            _ => None,
+        }
+        .with_context(|| format!("The policy has nothing at {at}"))?;
+    }
+    if purpose == EXPORT_HEADERS || purpose.starts_with(&format!("{EXPORT_HEADERS}/")) {
+        let destination = tokens
+            .iter()
+            .position(|token| token == "headers")
+            .unwrap_or(tokens.len());
+        bail!(
+            "Encrypt a destination's headers together with its URL: use --path {}",
+            pointer(&tokens[..destination])
+        );
+    }
+    if is_sealed(value) {
+        bail!("{at} is already encrypted");
+    }
+    let plugin = tokens[..=start].to_vec();
+    if holds_sealed(policy.pointer(&pointer(&plugin)).unwrap_or(value)) {
+        bail!(
+            "{} holds values encrypted before: encrypt from the policy without them",
+            pointer(&plugin)
+        );
+    }
+    Ok(PolicyPart {
+        pointer: at,
+        plugin,
+        purpose,
+    })
+}
+
+/// The policy check that the gateway runs before the parts are encrypted: an organization policy
+/// with each plugin that holds a part, as the encrypted policy will hold it once opened.
+pub fn policy_check_source(policy: &serde_json::Value, parts: &[PolicyPart]) -> serde_json::Value {
+    let mut source = serde_json::json!({});
+    for part in parts {
+        let plugin = &part.plugin[part.plugin.len() - 1];
+        let settings = policy
+            .pointer(&pointer(&part.plugin))
+            .cloned()
+            .unwrap_or_default();
+        let section = if part.plugin.len() == 2 {
+            &mut source
+        } else {
+            &mut source["rules"][&part.plugin[1]]
+        };
+        section["plugins"][plugin] = settings;
+    }
+    source
+}
+
+/// Encrypts each part in place, padded with spaces to a multiple of 256 bytes.
+pub fn seal_policy(
+    key: &OrganizationKey,
+    organization: &str,
+    mut policy: serde_json::Value,
+    parts: &[PolicyPart],
+) -> Result<serde_json::Value> {
+    for part in parts {
+        let target = policy
+            .pointer_mut(&part.pointer)
+            .with_context(|| format!("The policy has nothing at {}", part.pointer))?;
+        let mut plaintext = Zeroizing::new(serde_json::to_vec(target)?);
+        let padded = plaintext.len().div_ceil(PAD_TO) * PAD_TO;
+        plaintext.resize(padded, b' ');
+        let mut salt = [0_u8; 32];
+        let mut nonce = [0_u8; 12];
+        getrandom::fill(&mut salt)?;
+        getrandom::fill(&mut nonce)?;
+        let envelope = seal(
+            &key.root,
+            organization,
+            &part.purpose,
+            &plaintext,
+            &salt,
+            nonce,
+        )
+        .with_context(|| format!("Cannot encrypt {}", part.pointer))?;
+        *target = serde_json::json!({ "encrypted": envelope });
+    }
+    Ok(policy)
+}
+
+/// Reads a policy file as JSON.
+pub fn read_policy(path: &Path) -> Result<serde_json::Value> {
+    let bytes = read_private(path, MAX_POLICY_FILE)?;
+    serde_json::from_slice(&bytes)
+        .with_context(|| format!("{} must hold a policy's JSON", path.display()))
+}
+
+/// Reads the credential to encrypt for the provider: the file, or without one what is piped in. On
+/// a terminal an API key is typed without echo; a document has lines that a prompt cannot take.
+pub fn read_credential(provider: &str, input: Option<&Path>) -> Result<Zeroizing<Vec<u8>>> {
     // A document can be larger than the credential that it becomes: Google's key file, and a
     // file that Windows PowerShell saved in UTF-16.
-    let maximum = match purpose {
-        _ if plugin(purpose).is_some() => 262_144,
-        "byok/aws" | "byok/azure" | "byok/google-cloud" => 16_384,
+    let maximum = match provider {
+        "aws" | "azure" | "google-cloud" => 16_384,
         _ => 4096,
     };
     if let Some(path) = input {
@@ -218,14 +440,14 @@ pub fn read_input(purpose: &str, input: Option<&Path>) -> Result<Zeroizing<Vec<u
     if !io::stdin().is_terminal() {
         return read_limited(io::stdin(), maximum);
     }
-    let provider = match purpose {
-        "byok/anthropic" => "Anthropic",
-        "byok/chutes" => "Chutes",
-        "byok/openai" => "OpenAI",
+    let name = match provider {
+        "anthropic" => "Anthropic",
+        "chutes" => "Chutes",
+        "openai" => "OpenAI",
         _ => bail!("name the file to encrypt with --input, or pipe it in"),
     };
     let typed = Zeroizing::new(rpassword::prompt_password(format!(
-        "The {provider} API key (hidden): "
+        "The {name} API key (hidden): "
     ))?);
     if typed.len() > maximum {
         bail!("Input exceeds its size limit");
@@ -233,33 +455,27 @@ pub fn read_input(purpose: &str, input: Option<&Path>) -> Result<Zeroizing<Vec<u
     Ok(Zeroizing::new(typed.as_bytes().to_vec()))
 }
 
-/// Encrypts what `read_input` read, and writes what the policy or dashboard takes to a new file,
-/// or without one prints it. It is ciphertext, with no more of a credential than its preview.
-pub fn encrypt(
+/// Encrypts a provider credential and writes what the dashboard registers to a new file, or
+/// without one prints it: the envelope, a preview except for Azure, and for AWS and Google Cloud
+/// the target that routing reads instead of the secret. It holds no more of the credential than
+/// its preview.
+pub fn encrypt_credential(
     key: &OrganizationKey,
     organization: &str,
-    purpose: &str,
+    provider: &str,
     input: &[u8],
     output: Option<&Path>,
 ) -> Result<()> {
-    let root = &key.root;
+    let purpose = format!("byok/{provider}");
     let mut salt = [0_u8; 32];
     let mut nonce = [0_u8; 12];
     getrandom::fill(&mut salt)?;
     getrandom::fill(&mut nonce)?;
-    if plugin(purpose).is_some() {
-        // What replaces the plugin's settings in the policy.
-        let envelope = seal(root, organization, purpose, input, &salt, nonce)?;
-        let value = serde_json::json!({ "encrypted": envelope });
-        return write_output(output, &serde_json::to_vec_pretty(&value)?);
-    }
-    // A credential prints what the dashboard registers: the envelope, a preview except for Azure,
-    // and for AWS and Google Cloud the target that routing reads instead of the secret.
-    let registration = crate::cloud_credentials::prepare(purpose, input)?;
+    let registration = crate::cloud_credentials::prepare(&purpose, input)?;
     let envelope = seal(
-        root,
+        &key.root,
         organization,
-        purpose,
+        &purpose,
         &registration.plaintext,
         &salt,
         nonce,
@@ -272,6 +488,11 @@ pub fn encrypt(
         document["target"] = target;
     }
     write_output(output, &serde_json::to_vec_pretty(&document)?)
+}
+
+/// Writes the policy with its parts encrypted to a new file, or without one prints it.
+pub fn write_policy(output: Option<&Path>, policy: &serde_json::Value) -> Result<()> {
+    write_output(output, &serde_json::to_vec_pretty(policy)?)
 }
 
 fn write_output(output: Option<&Path>, bytes: &[u8]) -> Result<()> {
@@ -325,16 +546,9 @@ mod tests {
             ("unknown", b"secret".as_slice()),
             ("plugins", br#"{"redaction":{}}"#),
             ("plugins/textExtraction", b"{}"),
-            ("plugins/redaction", b"[]"),
-            (
-                "plugins/redaction",
-                br#"{"redaction":{"presets":["email_address"]}}"#,
-            ),
-            (
-                "plugins/export",
-                br#"{"textExtraction":"always","export":{"destinations":[]}}"#,
-            ),
-            ("plugins/export", br#"{"encrypted":{"version":1}}"#),
+            ("plugins/exports", b"{}"),
+            ("plugins/redaction", b"not json"),
+            ("plugins/redaction", b""),
             ("byok/openai", b"secret\n"),
             ("byok/openai", b""),
         ] {
@@ -351,6 +565,127 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    fn policy() -> serde_json::Value {
+        serde_json::json!({
+            "routing": { "filter": "model.id != 'x'" },
+            "plugins": {
+                "textExtraction": { "text": "always" },
+                "export": { "destinations": [
+                    { "url": "https://logs.example.com/a", "headers": { "Authorization": "Bearer s" } },
+                    { "url": "https://audit.example.com/b?token=t", "content": false }
+                ] },
+                "redaction": { "presets": ["email_address"], "literals": [{ "values": ["Falcon"] }] }
+            },
+            "rules": { "eu/west": { "plugins": { "export": { "destinations": [] } } } }
+        })
+    }
+
+    fn named(policy: &serde_json::Value, paths: &[&str]) -> Result<Vec<(String, String)>> {
+        let paths: Vec<String> = paths.iter().map(|path| (*path).to_owned()).collect();
+        Ok(policy_parts(policy, &paths)?
+            .into_iter()
+            .map(|part| (part.pointer, part.purpose))
+            .collect())
+    }
+
+    #[test]
+    fn policy_paths_name_their_parts_and_purposes() {
+        let policy = policy();
+        let pairs = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter()
+                .map(|(a, b)| ((*a).into(), (*b).into()))
+                .collect()
+        };
+        // Without a path, every export and redaction plugin, in the policy and its rules.
+        assert_eq!(
+            named(&policy, &[]).unwrap(),
+            pairs(&[
+                ("/plugins/export", "plugins/export"),
+                ("/plugins/redaction", "plugins/redaction"),
+                ("/rules/eu~1west/plugins/export", "plugins/export"),
+            ])
+        );
+        // Purposes leave out array indexes, and a part inside another is left to the outer one.
+        assert_eq!(
+            named(
+                &policy,
+                &[
+                    "/plugins/export/destinations/1/url",
+                    "/plugins/redaction/literals/0",
+                    "/plugins/redaction/literals/0/values"
+                ]
+            )
+            .unwrap(),
+            pairs(&[
+                (
+                    "/plugins/export/destinations/1/url",
+                    "plugins/export/destinations/url"
+                ),
+                (
+                    "/plugins/redaction/literals/0",
+                    "plugins/redaction/literals"
+                ),
+            ])
+        );
+        assert_eq!(
+            named(&policy, &["/rules/eu~1west"]).unwrap(),
+            pairs(&[("/rules/eu~1west/plugins/export", "plugins/export")])
+        );
+        for (path, message) in [
+            ("/routing", "Encrypt only an export or redaction plugin"),
+            (
+                "/plugins/textExtraction",
+                "Encrypt only an export or redaction plugin",
+            ),
+            (
+                "/plugins/export/destinations/0/headers",
+                "use --path /plugins/export/destinations/0",
+            ),
+            (
+                "/plugins/export/destinations/0/headers/Authorization",
+                "use --path /plugins/export/destinations/0",
+            ),
+            ("/plugins/export/destinations/7", "nothing at"),
+            ("plugins/export", "JSON Pointer"),
+        ] {
+            let error = named(&policy, &[path]).unwrap_err().to_string();
+            assert!(error.contains(message), "{path}: {error}");
+        }
+    }
+
+    #[test]
+    fn sealed_parts_are_padded_bound_to_their_place_and_checked_as_plaintext() {
+        let key = generate().unwrap();
+        let policy = policy();
+        let parts = policy_parts(&policy, &["/plugins/export/destinations/1".into()]).unwrap();
+        // The check sees the whole export plugin in plaintext, and nothing else.
+        assert_eq!(
+            policy_check_source(&policy, &parts),
+            serde_json::json!({ "plugins": { "export": policy["plugins"]["export"].clone() } })
+        );
+        let sealed = seal_policy(&key, "org", policy.clone(), &parts).unwrap();
+        let envelope = &sealed["plugins"]["export"]["destinations"][1]["encrypted"];
+        assert_eq!(envelope["keyId"], key.id.as_str());
+        let blob = URL_SAFE_NO_PAD
+            .decode(envelope["blob"].as_str().unwrap())
+            .unwrap();
+        assert_eq!((blob.len() - 16) % PAD_TO, 0);
+        // Everything else stays as it was, in its order.
+        assert_eq!(
+            sealed["plugins"]["export"]["destinations"][0],
+            policy["plugins"]["export"]["destinations"][0]
+        );
+        assert_eq!(sealed["routing"], policy["routing"]);
+        // A plugin that holds values encrypted before is encrypted again only from its plaintext.
+        let error =
+            policy_parts(&sealed, &["/plugins/export/destinations/0/url".into()]).unwrap_err();
+        assert!(error.to_string().contains("holds values encrypted before"));
+        let error = policy_parts(&sealed, &["/plugins/export/destinations/1".into()]).unwrap_err();
+        assert!(error.to_string().contains("already encrypted"));
+        // The redaction plugin is still free to encrypt.
+        assert!(policy_parts(&sealed, &["/plugins/redaction".into()]).is_ok());
     }
 
     #[test]

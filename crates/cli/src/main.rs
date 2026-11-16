@@ -156,15 +156,15 @@ enum Command {
         #[arg(long)]
         timeout_ms: Option<u32>,
     },
-    /// Create organization encryption keys and keep them in this system's keychain.
+    /// Create organization encryption keys, and keep them in files or this system's keychain.
     EncryptionKey {
         #[command(subcommand)]
         command: encryption_key::Command,
     },
-    /// Encrypt a plugin's settings or a provider credential on this machine.
+    /// Encrypt parts of a policy, or a provider credential, on this machine.
     ///
-    /// A plugin's settings are encrypted only after the gateway checks them, which needs you
-    /// signed in. Only the gateway sees them, over a verified connection.
+    /// A policy's parts are encrypted only after the gateway checks the plugins that hold them,
+    /// which needs you signed in. Only the gateway sees them, over a verified connection.
     Encrypt(encryption_key::EncryptArgs),
     /// Verify saved evidence without network access.
     Verify(VerifyArgs),
@@ -319,7 +319,7 @@ async fn main() -> Result<()> {
 
 impl Command {
     /// Whether the command connects anywhere.
-    fn connects(&self) -> bool {
+    const fn connects(&self) -> bool {
         match self {
             Self::Encrypt(args) => args.checks(),
             Self::EncryptionKey { .. } | Self::Verify(_) => false,
@@ -956,14 +956,7 @@ mod tests {
         let encrypt = |key: &[&str]| {
             let mut arguments = vec!["stogas", "encrypt", "--organization", ORGANIZATION];
             arguments.extend_from_slice(key);
-            arguments.extend([
-                "--purpose",
-                "plugins/redaction",
-                "--input",
-                "in",
-                "--output",
-                "out",
-            ]);
+            arguments.extend(["--policy", "policy.json", "--output", "out"]);
             Cli::try_parse_from(arguments).is_ok()
         };
         assert!(encrypt(&["--key-file", "org.key"]));
@@ -1043,7 +1036,7 @@ mod tests {
                 &["stogas", "encryption-key", "create", "--output", "key"],
                 false,
             ),
-            // Only the gateway can check a plugin's settings before they are sealed.
+            // Only the gateway can check a policy's plugins before parts of them are encrypted.
             (
                 &[
                     "stogas",
@@ -1052,10 +1045,10 @@ mod tests {
                     "key",
                     "--organization",
                     "019a0000-0000-7000-8000-0000000000d1",
-                    "--purpose",
-                    "plugins/redaction",
-                    "--input",
-                    "settings.json",
+                    "--policy",
+                    "policy.json",
+                    "--path",
+                    "/plugins/redaction",
                     "--output",
                     "sealed.json",
                 ],
@@ -1069,8 +1062,8 @@ mod tests {
                     "key",
                     "--organization",
                     "019a0000-0000-7000-8000-0000000000d1",
-                    "--purpose",
-                    "byok/openai",
+                    "--credential",
+                    "openai",
                     "--input",
                     "secret",
                     "--output",

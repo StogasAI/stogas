@@ -1,6 +1,6 @@
-//! The gateway's check of a plugin's settings before `stogas encrypt` seals them. Once sealed, only a
-//! gateway can read the settings, so a mistake in them would show only when a request needs them.
-//! The CLI asks the gateway to check the exact bytes that it will seal, over a verified connection,
+//! The gateway's check of a policy's plugins before `stogas encrypt` encrypts parts of them. Once
+//! encrypted, only a gateway can read them, so a mistake would show only when a request needs them.
+//! The CLI asks the gateway to check the plugins as they will open, over a verified connection,
 //! with a grant from the dashboard that lets the gateway check policy text for you.
 
 use crate::dashboard::{Dashboard, gateway_refusal};
@@ -59,22 +59,20 @@ impl CheckGateway for Verified {
     }
 }
 
-/// Asks the gateway to check a plugin's settings as the organization's policy would hold them. The
-/// settings are the JSON object that `customer_encryption::check_settings` accepted, and the
-/// gateway sees them byte for byte. A refusal is an error that says what is wrong.
+/// Asks the gateway to check an organization policy that holds the plugins to encrypt, as they
+/// will open. A refusal is an error that says what is wrong.
 pub async fn check(
     api: &impl GrantApi,
     gateway: &impl CheckGateway,
     organization: &str,
-    plugin: &str,
-    settings: &[u8],
+    source: &serde_json::Value,
 ) -> Result<()> {
     #[derive(Deserialize)]
     struct Checked {
         status: String,
     }
     let grant = api.grant(organization).await?;
-    let body = body(plugin, settings);
+    let body = body(source)?;
     let response = gateway.check(&grant, body.to_vec()).await?;
     if response.status != StatusCode::OK {
         bail!("{}", gateway_refusal(response.status, &response.body));
@@ -88,16 +86,14 @@ pub async fn check(
     Ok(())
 }
 
-/// The organization's policy with only the plugin's settings, and a key's empty one: the sources
-/// that every check needs. The settings go in as they are, so the gateway checks what is sealed.
-fn body(plugin: &str, settings: &[u8]) -> Zeroizing<Vec<u8>> {
-    let mut body = Zeroizing::new(Vec::with_capacity(settings.len() + 128));
-    body.extend_from_slice(br#"{"policySources":[{"scope":"organization","config":{"plugins":{"#);
-    body.extend_from_slice(serde_json::to_string(plugin).unwrap_or_default().as_bytes());
-    body.push(b':');
-    body.extend_from_slice(settings);
-    body.extend_from_slice(br#"}}},{"scope":"key","config":{}}]}"#);
-    body
+/// The organization's policy with the plugins to check, and a key's empty one: the sources that
+/// every check needs.
+fn body(source: &serde_json::Value) -> Result<Zeroizing<Vec<u8>>> {
+    let body = serde_json::json!({ "policySources": [
+        { "scope": "organization", "config": source },
+        { "scope": "key", "config": {} }
+    ] });
+    Ok(Zeroizing::new(serde_json::to_vec(&body)?))
 }
 
 #[cfg(test)]
@@ -145,17 +141,17 @@ mod tests {
     const ORGANIZATION: &str = "019a0000-0000-7000-8000-0000000000c1";
 
     #[tokio::test]
-    async fn sends_the_settings_as_the_organization_policy_with_a_grant() {
+    async fn sends_the_plugins_as_the_organization_policy_with_a_grant() {
         let api = Api(Mutex::new(Vec::new()));
         let valid = gateway(
             StatusCode::OK,
             json!({ "status": "valid", "uncheckedPlugins": [] }),
         );
-        let settings =
-            b"{\n  \"presets\": [\"email_address\"],\n  \"literals\": [{ \"values\": [\"Falcon\"] }]\n}\n";
-        check(&api, &valid, ORGANIZATION, "redaction", settings)
-            .await
-            .unwrap();
+        let source = json!({ "plugins": { "redaction": {
+            "presets": ["email_address"],
+            "literals": [{ "values": ["Falcon"] }],
+        } } });
+        check(&api, &valid, ORGANIZATION, &source).await.unwrap();
         assert_eq!(*api.0.lock().unwrap(), [ORGANIZATION]);
         assert_eq!(
             *valid.sent.lock().unwrap(),
@@ -169,13 +165,6 @@ mod tests {
                     { "scope": "key", "config": {} },
                 ] })
             )]
-        );
-        // The gateway receives the file's own bytes, whitespace and all.
-        let body = body("redaction", settings);
-        let text = std::str::from_utf8(&body).unwrap();
-        assert!(
-            text.contains(std::str::from_utf8(settings).unwrap()),
-            "{text}"
         );
     }
 
@@ -196,8 +185,7 @@ mod tests {
                 &api,
                 &refused,
                 ORGANIZATION,
-                "redaction",
-                br#"{"presets":["email_adress"]}"#
+                &json!({ "plugins": { "redaction": { "presets": ["email_adress"] } } })
             )
             .await
             .unwrap_err()
@@ -206,7 +194,7 @@ mod tests {
         );
         let unexplained = gateway(StatusCode::BAD_GATEWAY, Value::Null);
         assert_eq!(
-            check(&api, &unexplained, ORGANIZATION, "export", b"{}")
+            check(&api, &unexplained, ORGANIZATION, &json!({}))
                 .await
                 .unwrap_err()
                 .to_string(),
@@ -218,8 +206,7 @@ mod tests {
                     &api,
                     &gateway(StatusCode::OK, body),
                     ORGANIZATION,
-                    "export",
-                    b"{}"
+                    &json!({})
                 )
                 .await
                 .unwrap_err()

@@ -1,5 +1,6 @@
-//! `stogas encryption-key`: organization keys, generated on this machine and kept in its keychain,
-//! each under its organization and the label that the organization registers it under.
+//! `stogas encryption-key`: organization keys, generated on this machine and kept in files or in
+//! its keychain, each under its organization and the label that the organization registers it
+//! under.
 
 use crate::{
     account, credentials,
@@ -19,8 +20,8 @@ use zeroize::Zeroizing;
 pub enum Command {
     /// Generate a key on this machine and print its public identifier.
     ///
-    /// Save the key in this system's keychain under the label that you will register it with,
-    /// write it to a new file, or both. Only the identifier is printed.
+    /// Write the key to a new file, save it in this system's keychain under the label that you
+    /// will register it with, or both. Only the identifier is printed.
     #[command(group(
         clap::ArgGroup::new("destination")
             .args(["label", "output"])
@@ -87,45 +88,52 @@ pub enum Command {
 /// What `stogas encrypt` encrypts, with which key, for which organization.
 #[derive(clap::Args)]
 #[command(group(clap::ArgGroup::new("key_source").args(["key_file", "key"]).required(true)))]
+#[command(group(clap::ArgGroup::new("content").args(["policy", "credential"]).required(true)))]
 pub struct EncryptArgs {
     /// The file with your organization key, as `stogas encryption-key` wrote it.
     #[arg(long)]
     key_file: Option<PathBuf>,
-    /// The label of the key that `stogas encryption-key` saved for the organization in this
-    /// system's keychain.
+    /// The label of a key that `stogas encryption-key` saved for the organization on this machine.
     #[arg(long, value_parser = parse_label)]
     key: Option<String>,
     /// The organization that registers the key. Only its requests can use the result.
     #[arg(long, value_parser = parse_organization)]
     organization: String,
-    /// What you encrypt: the settings of the plugin that follows plugins/, or a credential for
-    /// the provider that follows byok/. Each opens only as what you chose here. Before it encrypts
-    /// a plugin's settings, the CLI has the gateway check them, which needs you signed in.
-    #[arg(long, value_parser = ["plugins/export", "plugins/redaction", "byok/anthropic", "byok/aws", "byok/azure", "byok/chutes", "byok/google-cloud", "byok/openai"])]
-    purpose: String,
-    /// The file to encrypt: the JSON object inside plugins.export or plugins.redaction, an API
-    /// key, AWS or Google Cloud's credential document, or the Azure application that
-    /// `az ad sp create-for-rbac` prints. Without it, the CLI reads what is piped in, or asks for
-    /// an API key without showing it.
+    /// A policy file to encrypt parts of. The CLI writes the policy with each part encrypted in
+    /// place, after the gateway checks the plugins that hold them, which needs you signed in.
     #[arg(long)]
+    policy: Option<PathBuf>,
+    /// The JSON Pointer of a part of the policy to encrypt, such as /plugins/export or
+    /// /plugins/export/destinations/0/url. Repeat it for more parts. A path at or above a plugin
+    /// encrypts each export and redaction plugin under it, and without a path the CLI encrypts
+    /// every one in the policy.
+    #[arg(long, requires = "policy")]
+    path: Vec<String>,
+    /// The provider of a credential to encrypt.
+    #[arg(long, value_parser = ["anthropic", "aws", "azure", "chutes", "google-cloud", "openai"])]
+    credential: Option<String>,
+    /// The credential to encrypt: an API key, AWS or Google Cloud's credential document, or the
+    /// Azure application that `az ad sp create-for-rbac` prints. Without it, the CLI reads what is
+    /// piped in, or asks for an API key without showing it.
+    #[arg(long, requires = "credential")]
     input: Option<PathBuf>,
-    /// A new file for what the policy or dashboard takes: the plugin's new value, or the
-    /// credential to register. Without it, the CLI prints that. The CLI never overwrites a file.
+    /// A new file for the result: the policy with its parts encrypted, or the credential to
+    /// register. Without it, the CLI prints that. The CLI never overwrites a file.
     #[arg(long)]
     output: Option<PathBuf>,
 }
 
 impl EncryptArgs {
-    /// Whether the command asks the gateway to check what it encrypts: a plugin's settings, which
-    /// only a gateway can read once they are sealed.
-    pub fn checks(&self) -> bool {
-        customer_encryption::plugin(&self.purpose).is_some()
+    /// Whether the command asks the gateway to check what it encrypts: a policy's plugins, which
+    /// only a gateway can read once they are encrypted.
+    pub const fn checks(&self) -> bool {
+        self.policy.is_some()
     }
 }
 
-/// Encrypts with the key from its file, or with the key saved under its label. A plugin's settings
-/// are encrypted only after the gateway accepts them, so that a mistake shows now rather than when
-/// a request needs them.
+/// Encrypts with the key from its file, or with the key saved under its label. A policy's parts
+/// are encrypted only after the gateway accepts the plugins that hold them, so that a mistake
+/// shows now rather than when a request needs them.
 pub async fn encrypt(
     args: EncryptArgs,
     network: &Network,
@@ -139,25 +147,30 @@ pub async fn encrypt(
         (None, Some(label)) => saved(&args.organization, &label).await?,
         (None, None) => bail!("name the key with --key or --key-file"),
     };
-    let input = customer_encryption::read_input(&args.purpose, args.input.as_deref())?;
-    if let Some(plugin) = customer_encryption::plugin(&args.purpose) {
-        customer_encryption::check_settings(plugin, &input)?;
-        policy_check::check(
-            &account::signed_in(network).await?,
-            &policy_check::Verified(gateway),
+    if let Some(provider) = &args.credential {
+        let input = customer_encryption::read_credential(provider, args.input.as_deref())?;
+        return customer_encryption::encrypt_credential(
+            &key,
             &args.organization,
-            plugin,
+            provider,
             &input,
-        )
-        .await?;
+            args.output.as_deref(),
+        );
     }
-    customer_encryption::encrypt(
-        &key,
+    let Some(path) = &args.policy else {
+        bail!("name what to encrypt with --policy or --credential");
+    };
+    let policy = customer_encryption::read_policy(path)?;
+    let parts = customer_encryption::policy_parts(&policy, &args.path)?;
+    policy_check::check(
+        &account::signed_in(network).await?,
+        &policy_check::Verified(gateway),
         &args.organization,
-        &args.purpose,
-        &input,
-        args.output.as_deref(),
+        &customer_encryption::policy_check_source(&policy, &parts),
     )
+    .await?;
+    let sealed = customer_encryption::seal_policy(&key, &args.organization, policy, &parts)?;
+    customer_encryption::write_policy(args.output.as_deref(), &sealed)
 }
 
 /// A saved key's name: the organization, and the label that it registers the key under.
