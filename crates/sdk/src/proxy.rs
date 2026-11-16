@@ -10,7 +10,7 @@ use axum::{
     Router,
     body::{Body, Bytes, to_bytes},
     extract::{Request, State},
-    http::{HeaderName, HeaderValue, Method, StatusCode, header},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header},
     response::Response,
     routing::any,
 };
@@ -19,6 +19,7 @@ use serde::de::{Deserializer, IgnoredAny, MapAccess, Visitor};
 use std::{
     collections::HashSet,
     fmt,
+    io::Read as _,
     net::SocketAddr,
     sync::{Arc, Weak, mpsc::SyncSender},
     time::Duration,
@@ -32,6 +33,8 @@ use zeroize::Zeroizing;
 
 const REQUEST_BUDGET: Duration = Duration::from_hours(1);
 const CLOSE_BUDGET: Duration = Duration::from_secs(5);
+/// The largest request body that the proxy reads, and that it decodes: the most that the gateway
+/// decodes.
 const MAX_REQUEST_BYTES: usize = 128 * 1024 * 1024;
 
 pub struct ServeConfig {
@@ -469,7 +472,9 @@ async fn forward_request(
     })?;
     let body = match &state.config.encryption_keys {
         // Routing simulation takes labels and no keys.
-        Some(member) if path != "/v1/policies/simulate" => with_encryption_keys(body, member),
+        Some(member) if path != "/v1/policies/simulate" => {
+            with_encryption_keys(&mut parts.headers, body, member)
+        }
         _ => body,
     };
     let request = Request::from_parts(parts, body);
@@ -511,18 +516,37 @@ async fn forward_request(
     }));
     Ok(Response::from_parts(parts, body))
 }
-/// Adds the transport's `encryption_keys` to a JSON object that has none. It reads only the
-/// member names, so the rest of the body stays byte for byte what the client sent, and the gateway
-/// answers for a body that is no JSON object.
-fn with_encryption_keys(body: Bytes, member: &str) -> Bytes {
-    let Ok(members) = serde_json::from_slice::<Members>(&body) else {
+/// Adds the transport's `encryption_keys` to a JSON object that has none, after decoding a body
+/// that the client compressed in a way that the gateway accepts. A body that gains them goes
+/// uncompressed. Any other goes as the client sent it, so the gateway answers for a body that it
+/// cannot read or that is no JSON object.
+fn with_encryption_keys(headers: &mut HeaderMap, body: Bytes, member: &str) -> Bytes {
+    let mut codings = headers.get_all(header::CONTENT_ENCODING).iter();
+    let keyed = match (codings.next(), codings.next()) {
+        (None, _) => with_member(&body, member),
+        (Some(coding), None) => coding
+            .to_str()
+            .ok()
+            .and_then(|coding| decoded(&coding.trim().to_ascii_lowercase(), &body))
+            .and_then(|decoded| with_member(&decoded, member)),
+        // The gateway refuses more than one coding.
+        _ => None,
+    };
+    let Some(keyed) = keyed else {
         return body;
     };
-    let Some(open) = body.iter().position(|byte| *byte == b'{') else {
-        return body;
-    };
+    headers.remove(header::CONTENT_ENCODING);
+    keyed
+}
+
+/// The JSON object with `member` first, or `None` for a body that is no JSON object or that sends
+/// its own `encryption_keys`. It reads only the member names, so the rest of the body keeps the
+/// client's bytes.
+fn with_member(body: &[u8], member: &str) -> Option<Bytes> {
+    let members = serde_json::from_slice::<Members>(body).ok()?;
+    let open = body.iter().position(|byte| *byte == b'{')?;
     if members.keys {
-        return body;
+        return None;
     }
     let mut joined = Vec::with_capacity(body.len() + member.len() + 1);
     joined.extend_from_slice(&body[..=open]);
@@ -531,7 +555,59 @@ fn with_encryption_keys(body: Bytes, member: &str) -> Bytes {
         joined.push(b',');
     }
     joined.extend_from_slice(&body[open + 1..]);
-    joined.into()
+    Some(joined.into())
+}
+
+/// A body compressed with one of the codings that the gateway accepts, decoded up to the size
+/// that the gateway decodes, or `None` when it cannot be.
+fn decoded(coding: &str, body: &[u8]) -> Option<Vec<u8>> {
+    match coding {
+        // Concatenated gzip members decode as one body, as Go's reader decodes them.
+        "gzip" => read_limited(flate2::read::MultiGzDecoder::new(body)),
+        // HTTP's deflate is the zlib format.
+        "deflate" => read_limited(flate2::read::ZlibDecoder::new(body)),
+        "br" => read_limited(brotli_decompressor::Decompressor::new(body, 4096)),
+        "zstd" => zstd_frames(body),
+        _ => None,
+    }
+}
+
+fn read_limited(reader: impl std::io::Read) -> Option<Vec<u8>> {
+    let mut output = Vec::new();
+    reader
+        .take(MAX_REQUEST_BYTES as u64 + 1)
+        .read_to_end(&mut output)
+        .ok()?;
+    (output.len() <= MAX_REQUEST_BYTES).then_some(output)
+}
+
+/// Decodes every Zstandard frame in turn and skips skippable frames, as the gateway does.
+fn zstd_frames(mut input: &[u8]) -> Option<Vec<u8>> {
+    use ruzstd::decoding::{
+        FrameDecoder, StreamingDecoder,
+        errors::{FrameDecoderError, ReadFrameHeaderError},
+    };
+    let mut decoder = FrameDecoder::new();
+    let mut output = Vec::new();
+    while !input.is_empty() {
+        let frame = match StreamingDecoder::new_with_decoder(&mut input, &mut decoder) {
+            Ok(frame) => frame,
+            Err(FrameDecoderError::ReadFrameHeaderError(ReadFrameHeaderError::SkipFrame {
+                length,
+                ..
+            })) => {
+                input = input.get(usize::try_from(length).ok()?..)?;
+                continue;
+            }
+            Err(_) => return None,
+        };
+        let room = MAX_REQUEST_BYTES - output.len();
+        frame.take(room as u64 + 1).read_to_end(&mut output).ok()?;
+        if output.len() > MAX_REQUEST_BYTES {
+            return None;
+        }
+    }
+    Some(output)
 }
 
 /// What a JSON object's member names say: whether it has any, and whether one is

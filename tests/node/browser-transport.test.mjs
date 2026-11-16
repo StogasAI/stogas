@@ -223,8 +223,14 @@ test('disposal aborts acquisition and failed creation frees the compiled verifie
 	assert.equal(fixture.freed, 2);
 });
 
-test('a transport adds its encryption keys only to requests that send none', () => {
+test('a transport adds its encryption keys only to requests that send none', async () => {
 	const member = '"encryption_keys":{"providers":"key-one"}';
+	const bytes = (text) => new TextEncoder().encode(text);
+	const compressed = async (text, coding) =>
+		new Uint8Array(
+			await new Response(new Blob([text]).stream().pipeThrough(new CompressionStream(coding)))
+				.arrayBuffer()
+		);
 	for (const [sent, forwarded] of [
 		// The rest of the body keeps its text, such as a number that a parser would round.
 		[
@@ -233,11 +239,26 @@ test('a transport adds its encryption keys only to requests that send none', () 
 		],
 		['{}', `{${member}}`],
 		// A request's own keys stand, and so does a body that is no JSON object.
-		['{"encryption_keys":{"providers":"mine"},"model":"m"}', undefined],
-		['["model"]', undefined],
-		['{"model":', undefined]
+		['{"encryption_keys":{"providers":"mine"},"model":"m"}', null],
+		['["model"]', null],
+		['{"model":', null]
 	])
-		assert.equal(withEncryptionKeys(sent, member), forwarded ?? sent);
+		assert.equal(await withEncryptionKeys(bytes(sent), null, member), forwarded);
+	// A gzip or deflate body gains the keys decoded, and any other body stays as it was sent.
+	const body = '{"model":"m"}';
+	for (const coding of ['gzip', ' Deflate '])
+		assert.equal(
+			await withEncryptionKeys(await compressed(body, coding.trim().toLowerCase()), coding, member),
+			`{${member},"model":"m"}`
+		);
+	for (const [sent, coding] of [
+		[await compressed(body, 'gzip'), 'br'],
+		[await compressed(body, 'gzip'), 'gzip, gzip'],
+		[bytes(body), 'gzip'],
+		[bytes(body), ''],
+		[new Uint8Array([0x7b, 0x22, 0xff, 0x22, 0x3a, 0x31, 0x7d]), null]
+	])
+		assert.equal(await withEncryptionKeys(sent, coding, member), null);
 	const { Transport } = binding();
 	for (const encryptionKeys of [[], 'key', { providers: '' }, { providers: 1 }])
 		assert.throws(() => new Transport({ encryptionKeys }), TypeError);

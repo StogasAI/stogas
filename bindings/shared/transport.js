@@ -39,14 +39,32 @@ function baseURL(value) {
 	return `${url.origin}/v1`;
 }
 
-// Adds `member`, a transport's `encryption_keys`, to a JSON object that has none. The rest of the
-// body keeps its text, and the gateway answers for a body that is no JSON object.
-export function withEncryptionKeys(text, member) {
+// The most that a request body holds, and that the gateway decodes.
+const MAX_REQUEST_BYTES = 128 * 1024 * 1024;
+
+// The body to send with `member`, a transport's `encryption_keys`, which a JSON object that has
+// none gains after decoding from the gzip or deflate that `coding` names, if any. Every runtime's
+// DecompressionStream reads those two. Such a body goes uncompressed and keeps the rest of its
+// text. Any other body is null and goes unchanged, so the gateway answers for a body that it
+// cannot read or that is no JSON object.
+export async function withEncryptionKeys(bytes, coding, member) {
+	let text;
+	try {
+		if (coding !== null) {
+			const name = coding.trim().toLowerCase();
+			if (name !== 'gzip' && name !== 'deflate') return null;
+			bytes = await decompressed(bytes, name);
+			if (bytes === null) return null;
+		}
+		text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+	} catch {
+		return null;
+	}
 	let parsed;
 	try {
 		parsed = JSON.parse(text);
 	} catch {
-		return text;
+		return null;
 	}
 	if (
 		parsed === null ||
@@ -54,10 +72,26 @@ export function withEncryptionKeys(text, member) {
 		Array.isArray(parsed) ||
 		Object.hasOwn(parsed, 'encryption_keys')
 	)
-		return text;
+		return null;
 	const open = text.indexOf('{') + 1;
 	const comma = Object.keys(parsed).length ? ',' : '';
 	return `${text.slice(0, open)}${member}${comma}${text.slice(open)}`;
+}
+
+// The decoded bytes, or null past the gateway's limit.
+async function decompressed(bytes, coding) {
+	const reader = new Blob([bytes]).stream().pipeThrough(new DecompressionStream(coding)).getReader();
+	const chunks = [];
+	let size = 0;
+	for (let read = await reader.read(); !read.done; read = await reader.read()) {
+		size += read.value.byteLength;
+		if (size > MAX_REQUEST_BYTES) {
+			await reader.cancel();
+			return null;
+		}
+		chunks.push(read.value);
+	}
+	return new Uint8Array(await new Blob(chunks).arrayBuffer());
 }
 
 // The same Fetch adapter runs in browsers, Node and Workers. All cryptographic
@@ -247,12 +281,19 @@ export function createTransportClass({
 		}
 
 		async #withEncryptionKeys(request) {
+			const bytes = new Uint8Array(await request.arrayBuffer());
+			const keyed = await withEncryptionKeys(
+				bytes,
+				request.headers.get('content-encoding'),
+				this.#encryptionKeys
+			);
 			const headers = new Headers(request.headers);
 			headers.delete('content-length');
+			if (keyed !== null) headers.delete('content-encoding');
 			return new Request(request.url, {
 				method: 'POST',
 				headers,
-				body: withEncryptionKeys(await request.text(), this.#encryptionKeys),
+				body: keyed ?? bytes,
 				signal: request.signal
 			});
 		}

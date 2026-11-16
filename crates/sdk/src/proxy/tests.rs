@@ -293,7 +293,7 @@ fn a_transport_with_encryption_keys_adds_them_only_to_requests_that_send_none() 
             forwarded
         };
         assert_eq!(
-            with_encryption_keys(Bytes::from(sent), member),
+            with_encryption_keys(&mut HeaderMap::new(), Bytes::from(sent), member),
             Bytes::from(expected)
         );
     }
@@ -303,4 +303,76 @@ fn a_transport_with_encryption_keys_adds_them_only_to_requests_that_send_none() 
         ..TransportOptions::default()
     };
     assert!(empty.validate().is_err());
+}
+
+#[test]
+fn a_compressed_body_gains_the_keys_and_goes_uncompressed() {
+    use std::io::Write as _;
+    let member = r#""encryption_keys":{"providers":"key"}"#;
+    let sent = br#"{"model":"m","input":"hi"}"#;
+    let keyed = format!(r#"{{{member},"model":"m","input":"hi"}}"#);
+    let gzip = |part: &[u8]| {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(part).unwrap();
+        encoder.finish().unwrap()
+    };
+    let mut zlib = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    zlib.write_all(sent).unwrap();
+    let mut br = Vec::new();
+    brotli::BrotliCompress(
+        &mut &sent[..],
+        &mut br,
+        &brotli::enc::BrotliEncoderParams::default(),
+    )
+    .unwrap();
+    // Two frames with a skippable frame between them, from the reference zstd encoder.
+    let zstd = hex::decode(concat!(
+        "28b52ffd200d6900007b226d6f64656c223a226d222c502a4d18030000006162",
+        "6328b52ffd200d69000022696e707574223a226869227d"
+    ))
+    .unwrap();
+    for (coding, body) in [
+        ("gzip", [gzip(&sent[..13]), gzip(&sent[13..])].concat()),
+        (" Deflate ", zlib.finish().unwrap()),
+        ("br", br),
+        ("zstd", zstd),
+    ] {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_ENCODING,
+            HeaderValue::from_str(coding).unwrap(),
+        );
+        let forwarded = with_encryption_keys(&mut headers, Bytes::from(body), member);
+        assert_eq!(forwarded, Bytes::from(keyed.clone()), "{coding}");
+        assert!(headers.get(header::CONTENT_ENCODING).is_none(), "{coding}");
+    }
+    // What the proxy cannot read, or need not change, goes as the client sent it.
+    let own = gzip(br#"{"encryption_keys":{"providers":"mine"}}"#);
+    for (codings, body) in [
+        (&["gzip"][..], own),
+        (&["gzip"], b"not gzip".to_vec()),
+        (&["compress"], gzip(sent)),
+        (&["gzip", "gzip"], gzip(sent)),
+    ] {
+        let mut headers = HeaderMap::new();
+        for coding in codings {
+            headers.append(header::CONTENT_ENCODING, HeaderValue::from_static(coding));
+        }
+        let forwarded = with_encryption_keys(&mut headers, Bytes::from(body.clone()), member);
+        assert_eq!(forwarded, Bytes::from(body), "{codings:?}");
+        assert_eq!(
+            headers.get_all(header::CONTENT_ENCODING).iter().count(),
+            codings.len()
+        );
+    }
+    // A body that decodes past the gateway's limit goes compressed, for the gateway to refuse.
+    let mut large = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    large.write_all(b"{\"input\":\"").unwrap();
+    let zeros = vec![b'0'; 1 << 20];
+    for _ in 0..=MAX_REQUEST_BYTES >> 20 {
+        large.write_all(&zeros).unwrap();
+    }
+    large.write_all(b"\"}").unwrap();
+    let bomb = large.finish().unwrap();
+    assert!(decoded("gzip", &bomb).is_none());
 }
