@@ -13,6 +13,9 @@ use url::Url;
 use zeroize::Zeroizing;
 
 pub const ORIGIN: &str = "https://app.stogas.ai";
+/// The dashboard API version whose requests and responses the CLI reads and writes.
+/// `stogas api -H "Stogas-Version: <version>"` replaces it.
+pub const API_VERSION: &str = "2026-11-16";
 // Far above any API request or response; the CLI holds a whole body in memory.
 pub const MAX_BODY_BYTES: usize = 32 << 20;
 const REQUEST_BUDGET: Duration = Duration::from_mins(1);
@@ -181,6 +184,7 @@ impl Dashboard {
             header::USER_AGENT,
             HeaderValue::from_static(concat!("stogas-cli/", env!("CARGO_PKG_VERSION"))),
         );
+        headers.insert("stogas-version", HeaderValue::from_static(API_VERSION));
         for name in extra.keys() {
             if PROTECTED_HEADERS.contains(name) {
                 bail!("the CLI sets the {name} header itself");
