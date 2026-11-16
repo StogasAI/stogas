@@ -86,6 +86,7 @@ fn boot() -> Boot {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "too slow under Miri; CI runs it under Valgrind")]
 fn boot_requests_and_receipts_sign_under_the_logged_boot_key() {
     let boot = boot();
     let node = b"amber-anchor-00";
@@ -135,6 +136,7 @@ fn boot_requests_and_receipts_sign_under_the_logged_boot_key() {
 
 // The shared vectors' rows hash to their leaves, and their batch signs under this boot's key.
 #[test]
+#[cfg_attr(miri, ignore = "too slow under Miri; CI runs it under Valgrind")]
 fn log_batches_seal_the_shared_vectors_under_the_boot_key() {
     let boot = boot();
     let vectors: serde_json::Value =
@@ -219,6 +221,7 @@ fn log_batches_seal_the_shared_vectors_under_the_boot_key() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "too slow under Miri; CI runs it under Valgrind")]
 fn provisioning_opens_once_into_an_erasable_buffer_for_its_boot() {
     let boot = boot();
     let sealed =
@@ -327,6 +330,7 @@ fn quote_batches_frame_each_proof_for_session_evidence() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "too slow under Miri; CI runs it under Valgrind")]
 fn native_tls_keys_sign_only_through_a_live_owner() {
     let (mut key, mut public) = (ptr::null_mut(), [0; mldsa::PUBLIC_KEY_BYTES]);
     let mut signature = [0; mldsa::SIGNATURE_BYTES];

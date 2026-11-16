@@ -116,6 +116,7 @@ fn compiled_authorities_never_substitute_another_environment() {
 
 #[cfg(feature = "staging")]
 #[test]
+#[cfg_attr(miri, ignore = "too slow under Miri; CI runs it under Valgrind")]
 #[expect(
     clippy::too_many_lines,
     reason = "Keep one ABI ownership lifecycle and its matching frees together."

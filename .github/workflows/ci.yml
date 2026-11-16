@@ -128,6 +128,26 @@ jobs:
             cargo fuzz run "$target" "fuzz/corpus/$target" -- -runs=0 -timeout=15
           done
 
+  miri:
+    name: Undefined behavior in the C interface
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-07-01
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install --no-self-update --profile minimal --component=miri,rust-src "$RUSTUP_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # All of the SDK's unsafe code is in the C interface. Miri runs its tests for s390x because
+      # libcrux reads x86-64 CPU features with inline assembly, which Miri cannot run. On s390x
+      # every library takes its portable code, and the big-endian target checks byte order too.
+      # Tests whose cryptography takes too long under Miri, and the transport, which links
+      # aws-lc's C code, run under Valgrind in the linux-amd64 package job instead.
+      - name: Run the C interface tests under Miri
+        run: cargo miri test --locked --target s390x-unknown-linux-gnu --package stogas-ffi --no-default-features --features staging,gateway
+
   minimum-rust:
     name: Minimum supported Rust
     runs-on: ubuntu-24.04
@@ -382,11 +402,23 @@ jobs:
             target/debug/stogas_ffi.dll target/debug/stogas_ffi.dll.lib "$consumer/"
           python -I release/msvc.py "$consumer" amd64
           "$consumer/native-msvc.exe"
+      - if: matrix.platform == 'linux-amd64'
+        name: Install Valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends valgrind libc6-dbg
+      # Valgrind fails a test on an invalid memory access or a leaked allocation, including in the
+      # tests and the transport that the Miri job leaves out.
+      - if: matrix.platform == 'linux-amd64'
+        name: 'C interface: tests under Valgrind'
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: valgrind --quiet --error-exitcode=99 --leak-check=full --show-leak-kinds=definite --errors-for-leak-kinds=definite
+        run: cargo test --locked --package stogas-ffi --features staging,gateway
       # A release runs these on every platform's packages; one platform here catches a change
       # that would break them before a release does.
       - if: matrix.platform == 'linux-amd64'
         name: Release consumer tests, offline
-        run: scripts/release-consumers.sh
+        run: VALGRIND=1 scripts/release-consumers.sh
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin

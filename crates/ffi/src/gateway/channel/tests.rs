@@ -113,6 +113,7 @@ fn setup_abi_rejects_bad_inputs_without_publishing_owners() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "too slow under Miri; CI runs it under Valgrind")]
 #[allow(
     clippy::too_many_lines,
     reason = "One ABI ownership lifecycle, including failure, replay and child handles outliving their session"
@@ -242,6 +243,7 @@ fn binary_abi_authentication_ownership_and_fail_closed_boundaries() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "too slow under Miri; CI runs it under Valgrind")]
 fn invalid_binary_arguments_close_record_owners_and_panics_have_a_distinct_status() {
     assert_eq!(status(|| panic!("contained boundary panic")), 255);
     for kind in [0, 5, 255] {
