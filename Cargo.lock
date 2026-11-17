@@ -3983,6 +3983,7 @@ version = "0.1.0-alpha.3"
 name = "stogas-cli"
 version = "0.1.0-alpha.3"
 dependencies = [
+ "anstyle-query",
  "anyhow",
  "apple-native-keyring-store",
  "aws-lc-rs",

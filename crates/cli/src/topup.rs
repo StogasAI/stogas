@@ -215,7 +215,7 @@ pub async fn card(
         .as_secs()
         / 60;
     out!("Pay by card on this page within {minutes} minutes:")?;
-    if io::stdout().is_terminal() {
+    if escapes() {
         out!("\x1b]8;;{0}\x1b\\{0}\x1b]8;;\x1b\\", checkout.url)?;
     } else {
         out!("{}", checkout.url)?;
@@ -445,17 +445,32 @@ fn print_instructions(
     Ok(())
 }
 
-/// Draws the code only on a terminal, which is assumed to have a dark background.
+/// Whether stdout takes escape sequences: a terminal whose `TERM` allows them, where Windows
+/// accepted them first.
+fn escapes() -> bool {
+    io::stdout().is_terminal()
+        && anstyle_query::term_supports_color()
+        && anstyle_query::windows::enable_ansi_colors() != Some(false)
+}
+
+/// Draws the code only on a terminal: black on white where colors are allowed, because some
+/// scanners, such as some wallets', cannot read a code drawn light on dark, and otherwise light on
+/// the dark background that most terminals have.
 fn print_qr(text: &str) -> Result<()> {
-    if io::stdout().is_terminal() {
-        let code = QrCode::new(text)?;
-        out!(
-            "{}",
-            code.render::<Dense1x2>()
-                .dark_color(Dense1x2::Light)
-                .light_color(Dense1x2::Dark)
-                .build()
-        )?;
+    if !io::stdout().is_terminal() {
+        return Ok(());
+    }
+    let code = QrCode::new(text)?;
+    let mut drawing = code.render::<Dense1x2>();
+    if escapes() && !anstyle_query::no_color() {
+        for line in drawing.build().lines() {
+            out!("\x1b[30;107m{line}\x1b[0m")?;
+        }
+    } else {
+        drawing
+            .dark_color(Dense1x2::Light)
+            .light_color(Dense1x2::Dark);
+        out!("{}", drawing.build())?;
     }
     Ok(())
 }
