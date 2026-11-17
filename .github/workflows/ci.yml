@@ -167,6 +167,32 @@ jobs:
       - name: Test the gateway feature set
         run: cargo test --locked --tests --package stogas-core --package stogas-ffi --no-default-features --features staging,stogas-ffi/gateway
 
+  # Coverage shows which lines the tests run, not what they check, so it has no threshold. It
+  # measures the two Rust runs of the platform jobs.
+  coverage:
+    name: Rust coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_TEST_OPT_LEVEL: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Measure the Rust tests' coverage
+        run: |
+          rustup component add llvm-tools
+          cargo install cargo-llvm-cov --version 0.9.1 --locked
+          cargo llvm-cov --locked --workspace --all-targets --no-report
+          cargo llvm-cov --locked --package stogas-core --package stogas --package stogas-cli \
+            --all-targets --features staging --no-report
+          cargo llvm-cov report --summary-only
+          cargo llvm-cov report --summary-only --json --output-path "$RUNNER_TEMP/coverage.json"
+          jq -r '.data[0].totals | "| Lines | Functions | Regions |", "| --- | --- | --- |",
+            "| \(.lines.percent | floor)% | \(.functions.percent | floor)% | \(.regions.percent | floor)% |"' \
+            "$RUNNER_TEMP/coverage.json" >> "$GITHUB_STEP_SUMMARY"
+
   nix:
     name: Nix flake
     runs-on: ubuntu-24.04
