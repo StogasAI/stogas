@@ -416,7 +416,7 @@ def go(packages, version, source):
             if path.is_file() and path.stat().st_size > 100 * 1024**2:
                 raise ValueError("Go archive exceeds GitHub's per-file limit")
         run(["git", "add", "--force", "go"], cwd=repo)
-        environment = {**os.environ, "GIT_AUTHOR_NAME": "Stogas Release", "GIT_COMMITTER_NAME": "Stogas Release", "GIT_AUTHOR_EMAIL": "release@stogas.ai", "GIT_COMMITTER_EMAIL": "release@stogas.ai", "GIT_AUTHOR_DATE": f"@{source['epoch']} +0000", "GIT_COMMITTER_DATE": f"@{source['epoch']} +0000"}
+        environment = {**os.environ, **release_author(), "GIT_AUTHOR_DATE": f"@{source['epoch']} +0000", "GIT_COMMITTER_DATE": f"@{source['epoch']} +0000"}
         run(["git", "commit", "--quiet", "-m", f"Publish approved Go SDK {version}"], cwd=repo, env=environment)
         run(["git", "tag", tag], cwd=repo)
         credential = base64.b64encode(("x-access-token:" + os.environ["GH_TOKEN"]).encode()).decode()
@@ -434,7 +434,17 @@ GITHUB_HOST_KEY = "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0Sd
 AUR_HOST_KEY = "aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN"
 TAP = "git@github.com:StogasAI/homebrew-tap.git"
 AUR = "ssh://aur@aur.archlinux.org/stogas-bin.git"
-RELEASE_AUTHOR = {"GIT_AUTHOR_NAME": "Stogas Release", "GIT_COMMITTER_NAME": "Stogas Release", "GIT_AUTHOR_EMAIL": "release@stogas.ai", "GIT_COMMITTER_EMAIL": "release@stogas.ai"}
+
+
+def release_author():
+    """The commits that a release makes in the tap, the AUR and the Go module's tag carry the
+    GitHub identity of the person who started it, so those repositories list no other author. A
+    manual run outside Actions commits as Git's own configuration does."""
+    actor, actor_id = os.environ.get("GITHUB_ACTOR"), os.environ.get("GITHUB_ACTOR_ID")
+    if not (actor and actor_id):
+        return {}
+    email = f"{actor_id}+{actor}@users.noreply.github.com"
+    return {"GIT_AUTHOR_NAME": actor, "GIT_COMMITTER_NAME": actor, "GIT_AUTHOR_EMAIL": email, "GIT_COMMITTER_EMAIL": email}
 
 
 def releases():
@@ -460,7 +470,7 @@ def checkout(remote, branch, key_variable, host_key):
     the variable, it uses the ambient credentials, for a manual run."""
     with tempfile.TemporaryDirectory(prefix="stogas-channel-") as temporary:
         work = Path(temporary)
-        environment = {**os.environ, **RELEASE_AUTHOR}
+        environment = {**os.environ, **release_author()}
         if os.environ.get(key_variable):
             key = work / "key"
             key.write_text(os.environ[key_variable].strip() + "\n")
