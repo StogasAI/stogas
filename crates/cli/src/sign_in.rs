@@ -93,13 +93,24 @@ impl fmt::Display for Refusal {
 impl std::error::Error for Refusal {}
 
 /// Whether a browser can open on this computer: not over SSH, where it would open on the far
-/// machine or not at all, and on Linux and BSD only with a display or a named browser.
+/// machine or not at all, and on Linux and BSD only with a display or a named browser. GitHub
+/// Codespaces, Google Cloud Shell and Gitpod open a browser on your own computer, which cannot
+/// reach this machine's loopback address.
 pub fn browser_available() -> bool {
     browser_available_with(|name| env::var_os(name).is_some_and(|value| !value.is_empty()))
 }
 
 fn browser_available_with(set: impl Fn(&str) -> bool) -> bool {
-    if set("SSH_CONNECTION") || set("SSH_TTY") {
+    if [
+        "SSH_CONNECTION",
+        "SSH_TTY",
+        "CODESPACES",
+        "CLOUD_SHELL",
+        "GITPOD_WORKSPACE_ID",
+    ]
+    .into_iter()
+    .any(&set)
+    {
         return false;
     }
     cfg!(any(target_os = "macos", target_os = "windows"))
@@ -651,6 +662,9 @@ mod tests {
             |names: &'static [&'static str]| browser_available_with(|name| names.contains(&name));
         assert!(!with(&["SSH_CONNECTION", "DISPLAY"]));
         assert!(!with(&["SSH_TTY", "BROWSER"]));
+        assert!(!with(&["CODESPACES", "BROWSER"]));
+        assert!(!with(&["CLOUD_SHELL", "BROWSER"]));
+        assert!(!with(&["GITPOD_WORKSPACE_ID", "BROWSER"]));
         if cfg!(any(target_os = "macos", target_os = "windows")) {
             assert!(with(&[]));
         } else {
