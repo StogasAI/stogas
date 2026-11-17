@@ -76,7 +76,11 @@ jobs:
     needs: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 150
-    environment: release
+    # The environment guards the publishing credentials. The job deploys nothing, so it records
+    # no deployment, which would only fill the repository's Deployments list.
+    environment:
+      name: release
+      deployment: false
     permissions:
       attestations: write
       contents: write
