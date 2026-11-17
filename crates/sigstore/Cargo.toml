@@ -14,7 +14,6 @@ repository.workspace = true
 
 [dependencies]
 base64.workspace = true
-chrono.workspace = true
 # The first cms release on der 0.8 is still a release candidate.
 cms = { version = "0.3.0-rc.2", default-features = false }
 const-oid = { version = "0.10.3", features = ["db"] }

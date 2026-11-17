@@ -1,7 +1,6 @@
 //! Sigstore trusted roots with deterministic time selection.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use std::collections::HashSet;
@@ -322,9 +321,9 @@ fn decode(value: &str, label: &str) -> Result<Vec<u8>, String> {
 }
 
 fn parse_time(value: &str) -> Result<i64, String> {
-    DateTime::parse_from_rfc3339(value)
-        .map(|time| time.with_timezone(&Utc).timestamp())
-        .map_err(|error| format!("invalid trusted-root time {value:?}: {error}"))
+    crate::rfc3339::unix_time(value)
+        .and_then(|time| i64::try_from(time.as_secs()).ok())
+        .ok_or_else(|| format!("invalid trusted-root time {value:?}"))
 }
 
 #[cfg(test)]

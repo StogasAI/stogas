@@ -631,16 +631,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chrono"
-version = "0.4.45"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
-dependencies = [
- "num-traits",
- "serde",
-]
-
-[[package]]
 name = "cipher"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3988,7 +3978,6 @@ dependencies = [
  "apple-native-keyring-store",
  "aws-lc-rs",
  "base64 0.22.1",
- "chrono",
  "clap",
  "futures-util",
  "gethostname",
@@ -4018,7 +4007,6 @@ dependencies = [
  "aes",
  "aes-gcm",
  "base64 0.22.1",
- "chrono",
  "const-oid 0.10.3",
  "der 0.8.3",
  "ed25519-dalek",
@@ -4113,7 +4101,6 @@ name = "stogas-sigstore"
 version = "0.1.0-alpha.3"
 dependencies = [
  "base64 0.22.1",
- "chrono",
  "cms 0.3.0-rc.2",
  "const-oid 0.10.3",
  "der 0.8.3",

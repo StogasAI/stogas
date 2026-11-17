@@ -11,7 +11,6 @@ use std::{
     sync::LazyLock,
 };
 
-use chrono::DateTime;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256, Sha512};
 
@@ -252,9 +251,9 @@ impl Metadata {
             .ok_or_else(|| invalid("invalid version"))?;
         let expires = signed["expires"]
             .as_str()
-            .and_then(|time| DateTime::parse_from_rfc3339(time).ok())
-            .ok_or_else(|| invalid("invalid expiry"))?
-            .timestamp();
+            .and_then(crate::rfc3339::unix_time)
+            .and_then(|time| i64::try_from(time.as_secs()).ok())
+            .ok_or_else(|| invalid("invalid expiry"))?;
         let mut signatures = HashMap::new();
         for entry in value["signatures"]
             .as_array()

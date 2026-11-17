@@ -27,7 +27,6 @@ repository = "https://github.com/StogasAI/stogas"
 anyhow = "1.0.99"
 aws-lc-rs = "1.17.1"
 base64 = "0.22.1"
-chrono = { version = "0.4.41", default-features = false, features = ["serde", "std"] }
 ed25519-dalek = { version = "3.0.0", default-features = false, features = ["alloc", "pkcs8", "zeroize"] }
 getrandom = "0.4.3"
 hex = "0.4.3"

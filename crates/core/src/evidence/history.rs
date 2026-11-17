@@ -101,13 +101,13 @@ mod tests {
     #[test]
     fn archived_evidence_outlives_its_key_authorization() {
         let (mut verifier, _, evidence, _) = fixture();
-        let expired = chrono::DateTime::parse_from_rfc3339(
+        let expired = crate::rfc3339::unix_time(
             evidence["document"]["keys"]["document"]["expires_at"]
                 .as_str()
                 .unwrap(),
         )
-        .unwrap()
-        .timestamp_millis();
+        .map(|time| i64::try_from(time.as_millis()).unwrap())
+        .unwrap();
         // Live use ends with the key authorization; the record that the key signed does not.
         assert!(verifier.refresh(&bytes(&evidence), expired).is_err());
         let summary = verifier

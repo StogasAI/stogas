@@ -15,10 +15,10 @@
 //! and the 64-byte root.
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha512};
+use std::time::Duration;
 
 use crate::evidence::boot::VerifiedBoot;
 use crate::receipt::canonical;
@@ -229,15 +229,25 @@ pub fn message(
 /// A batch time as logs write theirs: UTC with milliseconds.
 #[must_use]
 pub fn timestamp(unix_ms: i64) -> Option<String> {
-    DateTime::<Utc>::from_timestamp_millis(unix_ms)
-        .map(|time| time.to_rfc3339_opts(SecondsFormat::Millis, true))
+    let unix_ms = u64::try_from(unix_ms).ok()?;
+    let time = der::DateTime::from_unix_duration(Duration::from_millis(unix_ms)).ok()?;
+    Some(format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        time.year(),
+        time.month(),
+        time.day(),
+        time.hour(),
+        time.minutes(),
+        time.seconds(),
+        unix_ms % 1000
+    ))
 }
 
 /// Read a batch time, accepting only the exact form that `timestamp` writes.
 fn unix_ms(value: &str) -> Result<i64, Error> {
-    let ms = DateTime::parse_from_rfc3339(value)
-        .map_err(|_| Error::Invalid)?
-        .timestamp_millis();
+    let ms = crate::rfc3339::unix_time(value)
+        .and_then(|time| i64::try_from(time.as_millis()).ok())
+        .ok_or(Error::Invalid)?;
     (timestamp(ms).as_deref() == Some(value))
         .then_some(ms)
         .ok_or(Error::Invalid)

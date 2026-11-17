@@ -8,7 +8,6 @@ use crate::{
     topup::uuid,
 };
 use anyhow::{Context as _, Result, bail};
-use chrono::{DateTime, Utc};
 use http::Method;
 use serde::Deserialize;
 use serde_json::json;
@@ -18,6 +17,7 @@ use std::{
     time::SystemTime,
 };
 use stogas::network::Network;
+use stogas_sigstore::rfc3339;
 use zeroize::Zeroizing;
 
 /// The dashboard client with this machine's access token.
@@ -166,10 +166,9 @@ pub async fn register(dashboard: &Dashboard, machine_name: &str) -> Result<Regis
 
 /// Seconds from now until an RFC 3339 time, or zero when it has passed.
 fn seconds_until(time: &str) -> Result<u64> {
-    let time = DateTime::parse_from_rfc3339(time)
-        .context("the dashboard sent an unexpected expiry date")?;
-    let left = time.signed_duration_since(DateTime::<Utc>::from(SystemTime::now()));
-    Ok(u64::try_from(left.num_seconds()).unwrap_or_default())
+    let time = rfc3339::unix_time(time).context("the dashboard sent an unexpected expiry date")?;
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?;
+    Ok(time.saturating_sub(now).as_secs())
 }
 
 /// How long a token works, in whole days as the dashboard offers them, or hours under a day.
@@ -243,8 +242,14 @@ mod tests {
 
     #[test]
     fn counts_the_time_left_until_an_expiry() {
-        let later = DateTime::<Utc>::from(SystemTime::now()) + chrono::TimeDelta::days(7);
-        let left = seconds_until(&later.to_rfc3339()).unwrap();
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap();
+        let later = stogas_core::log_batch::timestamp(
+            i64::try_from(now.as_millis()).unwrap() + 7 * 86_400_000,
+        )
+        .unwrap();
+        let left = seconds_until(&later).unwrap();
         assert!((7 * 86_400 - 5..=7 * 86_400).contains(&left), "{left}");
         assert_eq!(seconds_until("2020-01-01T00:00:00.000Z").unwrap(), 0);
         assert!(seconds_until("next week").is_err());

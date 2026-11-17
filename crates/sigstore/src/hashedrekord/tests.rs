@@ -455,9 +455,7 @@ fn rekor_v2_bodies_hash_to_the_leaves_rekor_tiles_logs() {
 
 #[test]
 fn proves_rekor_v2_publication_at_the_timestamp_authority_time() {
-    let time = chrono::DateTime::parse_from_rfc3339(TIMESTAMPED)
-        .unwrap()
-        .timestamp();
+    let time = i64::try_from(crate::rfc3339::unix_time(TIMESTAMPED).unwrap().as_secs()).unwrap();
     let entry = |index: usize| crate::DocumentEntry {
         time,
         v2: Some(crate::LogPosition {

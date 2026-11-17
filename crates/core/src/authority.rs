@@ -185,15 +185,12 @@ impl KeyManifest {
 
 /// Unix milliseconds of an RFC 3339 time in whole UTC seconds, such as `2026-10-31T00:00:00Z`.
 fn utc_seconds(value: &str, label: &str) -> Result<i64, Error> {
-    let time = chrono::DateTime::parse_from_rfc3339(value)
+    // `DateTime` reads exactly this form and checks each field and the calendar.
+    value
+        .parse::<der::DateTime>()
         .ok()
-        .filter(|time| {
-            value.len() == 20
-                && time.timestamp_subsec_nanos() == 0
-                && time.format("%Y-%m-%dT%H:%M:%SZ").to_string() == value
-        })
-        .ok_or_else(|| invalid(format!("{label} must use whole UTC seconds")))?;
-    Ok(time.timestamp_millis())
+        .and_then(|time| i64::try_from(time.unix_duration().as_millis()).ok())
+        .ok_or_else(|| invalid(format!("{label} must use whole UTC seconds")))
 }
 
 pub type SignedKeyManifest = crate::LoggedDocument<KeyManifest>;

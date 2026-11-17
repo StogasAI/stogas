@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
 
-pub(crate) use stogas_sigstore::strict_json;
+pub(crate) use stogas_sigstore::{rfc3339, strict_json};
 mod kem;
 mod types;
 

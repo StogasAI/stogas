@@ -5,7 +5,7 @@ use crate::{
     account::{read_line, signed_in},
     dashboard::{ApiError, Dashboard, printable},
 };
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use http::StatusCode;
 use qrcode::{QrCode, render::unicode::Dense1x2};
 use serde::Deserialize;
@@ -16,6 +16,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 use stogas::network::Network;
+use stogas_sigstore::rfc3339;
 
 const CHECK_EVERY: Duration = Duration::from_secs(15);
 /// The dashboard's minute sweep records a payment made just before its page closed within two
@@ -187,7 +188,7 @@ pub async fn card(
     struct Checkout {
         id: String,
         url: String,
-        expires_at: chrono::DateTime<chrono::Utc>,
+        expires_at: String,
     }
     let path = format!("{base}/card/checkout");
     let body = json!({ "creditUsd": amount });
@@ -202,8 +203,9 @@ pub async fn card(
     {
         bail!("the dashboard returned an unexpected payment page");
     }
-    let closes = SystemTime::UNIX_EPOCH
-        + Duration::from_secs(u64::try_from(checkout.expires_at.timestamp()).unwrap_or_default());
+    let closes = rfc3339::unix_time(&checkout.expires_at)
+        .map(|time| SystemTime::UNIX_EPOCH + time)
+        .context("the dashboard sent an unexpected expiry date")?;
     if onion {
         out!(
             "You pay by card on Stripe's checkout page, which is outside the onion. Coin payments stay on the onion."
