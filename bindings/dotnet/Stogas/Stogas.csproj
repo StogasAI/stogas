@@ -4,7 +4,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Version>0.1.0-alpha.4</Version>
+    <Version>0.1.0-alpha.5</Version>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageId>Stogas</PackageId>
     <Description>Verified confidential HTTP transport backed by the Stogas Rust verifier.</Description>
