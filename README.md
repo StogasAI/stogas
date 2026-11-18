@@ -44,10 +44,10 @@ Maven and Swift also take the exact version.
 
 Two parts of the core also work without Stogas, as crates and as WebAssembly packages for browsers, Node, Bun, Deno, and Workers:
 
-| Verifies                                 | Rust                                                                              | npm                                                                                  |
-| ---------------------------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| AMD SEV-SNP attestation reports          | [`stogas-sev-snp`](https://github.com/StogasAI/stogas/tree/main/crates/sev-snp)   | [`@stogas/sev-snp`](https://github.com/StogasAI/stogas/tree/main/packages/sev-snp)   |
-| GitHub and Sigstore in-toto attestations | [`stogas-sigstore`](https://github.com/StogasAI/stogas/tree/main/crates/sigstore) | [`@stogas/sigstore`](https://github.com/StogasAI/stogas/tree/main/packages/sigstore) |
+| Verifies                             | Rust                                                                              | npm                                                                                  |
+| ------------------------------------ | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| AMD SEV-SNP attestation reports      | [`stogas-sev-snp`](https://github.com/StogasAI/stogas/tree/main/crates/sev-snp)   | [`@stogas/sev-snp`](https://github.com/StogasAI/stogas/tree/main/packages/sev-snp)   |
+| GitHub and GitLab build attestations | [`stogas-sigstore`](https://github.com/StogasAI/stogas/tree/main/crates/sigstore) | [`@stogas/sigstore`](https://github.com/StogasAI/stogas/tree/main/packages/sigstore) |
 
 ## Verify a release
 
@@ -55,6 +55,12 @@ Every file of a [release](https://github.com/StogasAI/stogas/releases) has a Git
 
 ```console
 gh attestation verify <file> --repo StogasAI/stogas --signer-workflow StogasAI/stogas/.github/workflows/release.yml --source-ref refs/tags/v<version> --deny-self-hosted-runners
+```
+
+From 0.1.0-alpha.6 on, GitLab.com's hosted runners also rebuild each release from the same tag, and `gitlab-attestation.jsonl` covers every file they built. Only Apple hardware runs Xcode, so GitLab packages the macOS and iOS compiler outputs of GitHub's build:
+
+```console
+cosign verify-blob-attestation <file> --bundle gitlab-attestation.jsonl --type https://slsa.dev/provenance/v1 --certificate-oidc-issuer https://gitlab.com --certificate-identity https://gitlab.com/stogasai/stogas//.gitlab-ci.yml@refs/tags/v<version>
 ```
 
 ## Develop

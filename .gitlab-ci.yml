@@ -8,43 +8,30 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/
 
 rebuild:
-  image: docker:29.9.2-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb
-  services:
-    - name: docker:29.9.2-dind@sha256:9e79b879b177fbd72c34376a3dd3d91747da5db49e1f560f76aea59561471977
-      alias: docker
-  # The build containers each take 4 CPUs and 8 GB.
+  # release/gitlab.sh starts its own Docker daemon instead of a GitLab service, so the daemon
+  # also runs with only the variables named below.
+  image:
+    name: docker:29.9.2-dind@sha256:9e79b879b177fbd72c34376a3dd3d91747da5db49e1f560f76aea59561471977
+    entrypoint: ['']
+  # 4 CPUs and 16 GB on every GitLab tier.
   tags: [saas-linux-medium-amd64]
+  # The ID token expires with the job's timeout, so cosign can still sign after the build.
   timeout: 3h
   id_tokens:
     SIGSTORE_ID_TOKEN:
       aud: sigstore
   variables:
-    DOCKER_HOST: tcp://docker:2376
-    DOCKER_TLS_CERTDIR: /certs
-    DOCKER_TLS_VERIFY: '1'
-    DOCKER_CERT_PATH: /certs/client
     GIT_DEPTH: '1'
-    # The Docker service shares only /builds with this job, so every file that a build container
-    # mounts lives there.
-    TMPDIR: /builds/tmp
-    COSIGN_URL: https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64
-    COSIGN_SHA256: 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa
   script:
-    - apk add --no-cache curl git python3
-    - test "$(git rev-parse HEAD)" = "$CI_COMMIT_SHA"
-    - mkdir "$TMPDIR" /builds/apple
+    # GitLab adds the project's and the pipeline's CI/CD variables to every job, where they could
+    # change the build without a change to this file, so the rebuild gets only these.
     - >-
-      curl --fail --location --silent --show-error --header "JOB-TOKEN: $CI_JOB_TOKEN"
-      --output /builds/apple.tar
-      "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/inputs/${CI_COMMIT_TAG#v}/apple.tar"
-    - tar -xf /builds/apple.tar -C /builds/apple
-    - python3 -B release/release.py rebuild /builds/apple --out /builds/rebuild
-    - python3 -B release/provenance.py /builds/rebuild/release/packages /builds/apple > /builds/statement.json
-    - curl --fail --location --silent --show-error --output /usr/local/bin/cosign "$COSIGN_URL"
-    - echo "$COSIGN_SHA256  /usr/local/bin/cosign" | sha256sum -c
-    - chmod 755 /usr/local/bin/cosign
-    # Cosign signs with a Fulcio certificate for SIGSTORE_ID_TOKEN and logs the proof in Rekor.
-    - cosign attest-blob --statement /builds/statement.json --bundle gitlab-attestation.jsonl --yes
+      env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root
+      CI_API_V4_URL="$CI_API_V4_URL" CI_COMMIT_SHA="$CI_COMMIT_SHA" CI_COMMIT_TAG="$CI_COMMIT_TAG"
+      CI_JOB_STARTED_AT="$CI_JOB_STARTED_AT" CI_JOB_TOKEN="$CI_JOB_TOKEN" CI_JOB_URL="$CI_JOB_URL"
+      CI_PROJECT_ID="$CI_PROJECT_ID" CI_PROJECT_URL="$CI_PROJECT_URL"
+      CI_RUNNER_DESCRIPTION="$CI_RUNNER_DESCRIPTION" CI_RUNNER_ID="$CI_RUNNER_ID"
+      SIGSTORE_ID_TOKEN="$SIGSTORE_ID_TOKEN" sh -eu release/gitlab.sh
   artifacts:
     paths: [gitlab-attestation.jsonl]
     expire_in: 90 days
