@@ -53,8 +53,9 @@ jobs:
           test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = false
           mkdir "$RUNNER_TEMP/approved"
           gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/approved"
-      # Stogas signs a release only after rebuilding it, so a draft made public without
-      # that check publishes nothing. The CLI comes from the tagged source, not the release.
+      # Stogas signs a release only after GitLab's rebuild matches GitHub's build, so a draft
+      # made public without that check publishes nothing. The CLI comes from the tagged source,
+      # not the release.
       # Stogas does not sign a preview: its gate and GitHub's build proof stand alone, and
       # only a pre-release can be one.
       - name: Require the Stogas signature on every file, or a preview's build proof
