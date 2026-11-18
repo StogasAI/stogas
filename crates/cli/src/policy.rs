@@ -646,199 +646,36 @@ pub mod tests {
         assert!(parse_id("../keys").is_err());
     }
 
-    /// The dashboard's editor merges with `rebasePolicySource`; these are its cases, so that both
-    /// editors combine the same edits the same way.
+    /// The dashboard's editor merges with `rebasePolicySource`, and both read these cases, so that
+    /// both editors combine the same edits the same way.
     #[test]
-    #[allow(clippy::too_many_lines)]
     fn merges_a_draft_as_the_dashboard_does() {
-        let envelope = |label: &str| {
-            json!({
-                "version": 1,
-                "keyId": "a".repeat(64),
-                "salt": format!("{}A", label.repeat(42)),
-                "nonce": label.repeat(16),
-                "blob": label.repeat(24)
-            })
+        let vectors: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/policy-rebase-v1.json"
+        ))
+        .unwrap();
+        let labels = |value: &Value| {
+            value
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|label| label.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
         };
-        let mixed = |label: &str, field: &str| {
-            let mut mixed = envelope(label);
-            mixed[field] = envelope("a")[field].clone();
-            mixed
+        let sorted = |mut labels: Vec<String>| {
+            labels.sort();
+            labels
         };
-        let night = json!({ "when": "a", "mode": "default" });
-        let readable = json!({ "redaction": { "emails": true } });
-        let changed = json!({ "redaction": { "emails": true, "phones": true } });
-        let encrypted = json!({ "redaction": { "encrypted": envelope("a") } });
-        let timeouts = json!({ "timeouts": { "totalSeconds": 60 } });
-        let cases = [
-            // Changes to different settings and rules combine.
-            (
-                json!({ "routing": { "retries": 1 }, "rules": { "night": night } }),
-                json!({
-                    "routing": { "retries": 1 },
-                    "rules": { "night": night, "eu": { "when": "b", "routing": { "retries": 2 } } },
-                    "timeouts": { "totalSeconds": 60 }
-                }),
-                json!({
-                    "routing": { "retries": 1, "sort": ["price"] },
-                    "rules": {
-                        "night": night,
-                        "large": { "when": "c", "timeouts": { "totalSeconds": 30 } }
-                    }
-                }),
-                json!({
-                    "routing": { "retries": 1, "sort": ["price"] },
-                    "timeouts": { "totalSeconds": 60 },
-                    "rules": {
-                        "night": night,
-                        "eu": { "when": "b", "routing": { "retries": 2 } },
-                        "large": { "when": "c", "timeouts": { "totalSeconds": 30 } }
-                    }
-                }),
-                &[][..],
-                &["rules.eu", "timeouts.totalSeconds"][..],
-            ),
-            // Where both changed a setting, the draft's value stays.
-            (
-                json!({ "routing": { "retries": 1 }, "timeouts": { "totalSeconds": 60 } }),
-                json!({ "routing": { "retries": 2 }, "timeouts": { "totalSeconds": 60 } }),
-                json!({ "routing": { "retries": 3 }, "timeouts": { "totalSeconds": 30 } }),
-                json!({ "routing": { "retries": 3 }, "timeouts": { "totalSeconds": 30 } }),
-                &["routing.retries"],
-                &[],
-            ),
-            // A section that one version removed and the other edited.
-            (
-                json!({ "timeouts": { "totalSeconds": 60 }, "input": { "asciiOnly": true } }),
-                json!({ "input": { "asciiOnly": true } }),
-                json!({ "timeouts": { "totalSeconds": 30 }, "input": { "asciiOnly": true } }),
-                json!({ "timeouts": { "totalSeconds": 30 }, "input": { "asciiOnly": true } }),
-                &["timeouts.totalSeconds"],
-                &[],
-            ),
-            (
-                json!({ "timeouts": { "totalSeconds": 60 }, "input": { "asciiOnly": true } }),
-                json!({ "timeouts": { "totalSeconds": 30 }, "input": { "asciiOnly": true } }),
-                json!({ "input": { "asciiOnly": true } }),
-                json!({ "input": { "asciiOnly": true } }),
-                &["timeouts.totalSeconds"],
-                &[],
-            ),
-            // The fields of an encrypted envelope or a rule never mix.
-            (
-                json!({
-                    "plugins": { "redaction": { "encrypted": envelope("a") } },
-                    "rules": { "night": { "when": "a", "routing": { "retries": 1 } } }
-                }),
-                json!({
-                    "plugins": { "redaction": { "encrypted": mixed("b", "blob") } },
-                    "rules": { "night": { "when": "b", "routing": { "retries": 1 } } }
-                }),
-                json!({
-                    "plugins": { "redaction": { "encrypted": mixed("c", "salt") } },
-                    "rules": { "night": { "when": "a", "routing": { "retries": 2 } } }
-                }),
-                json!({
-                    "plugins": { "redaction": { "encrypted": mixed("c", "salt") } },
-                    "rules": { "night": { "when": "a", "routing": { "retries": 2 } } }
-                }),
-                &["plugins.redaction", "rules.night"],
-                &[],
-            ),
-            // Each plugin merges on its own, encrypted or not.
-            (
-                json!({ "plugins": readable }),
-                json!({ "plugins": encrypted }),
-                json!({ "plugins": { "redaction": { "emails": true }, "textExtraction": "always" } }),
-                json!({
-                    "plugins": { "redaction": { "encrypted": envelope("a") }, "textExtraction": "always" }
-                }),
-                &[],
-                &["plugins.redaction"],
-            ),
-            (
-                json!({ "plugins": readable }),
-                json!({ "plugins": encrypted }),
-                json!({ "plugins": changed }),
-                json!({ "plugins": changed }),
-                &["plugins.redaction"],
-                &[],
-            ),
-            (
-                json!({ "plugins": readable }),
-                json!({ "plugins": changed }),
-                json!({ "plugins": encrypted }),
-                json!({ "plugins": encrypted }),
-                &["plugins.redaction"],
-                &[],
-            ),
-            // Only the settings that the newer version alone changed are its own.
-            (
-                json!({ "routing": { "retries": 1 }, "timeouts": { "totalSeconds": 60 } }),
-                json!({ "routing": { "retries": 2 }, "timeouts": { "totalSeconds": 30 } }),
-                json!({
-                    "routing": { "retries": 1 },
-                    "timeouts": { "totalSeconds": 30 },
-                    "input": { "asciiOnly": true }
-                }),
-                json!({
-                    "routing": { "retries": 2 },
-                    "timeouts": { "totalSeconds": 30 },
-                    "input": { "asciiOnly": true }
-                }),
-                &[],
-                &["routing.retries"],
-            ),
-            // Cleared policies, and sections left without settings. Clearing changed the setting
-            // that the draft kept.
-            (
-                timeouts.clone(),
-                Value::Null,
-                timeouts.clone(),
-                Value::Null,
-                &[],
-                &["timeouts.totalSeconds"],
-            ),
-            (
-                Value::Null,
-                Value::Null,
-                timeouts.clone(),
-                timeouts.clone(),
-                &[],
-                &[],
-            ),
-            (
-                timeouts.clone(),
-                Value::Null,
-                json!({ "timeouts": { "totalSeconds": 60 }, "input": { "asciiOnly": true } }),
-                json!({ "input": { "asciiOnly": true } }),
-                &[],
-                &["timeouts.totalSeconds"],
-            ),
-            (
-                json!({ "timeouts": { "totalSeconds": 60, "outputIdleSeconds": 30 } }),
-                timeouts,
-                json!({ "timeouts": { "outputIdleSeconds": 30 } }),
-                Value::Null,
-                &[],
-                &["timeouts.outputIdleSeconds"],
-            ),
-            // A whole list is one setting.
-            (
-                json!({ "routing": { "sort": ["price"] } }),
-                json!({ "routing": { "sort": ["latency"] } }),
-                json!({ "routing": { "sort": ["throughput", "price"] } }),
-                json!({ "routing": { "sort": ["throughput", "price"] } }),
-                &["routing.sort"],
-                &[],
-            ),
-        ];
-        for (base, latest, draft, expected, conflicts, newer) in cases {
-            let rebased = rebase(&base, &latest, &draft);
-            let context = format!("{base} | {latest} | {draft}");
-            assert_eq!(rebased.config, expected, "{context}");
-            assert_eq!(rebased.conflicts, conflicts, "{context}");
-            assert_eq!(rebased.newer, newer, "{context}");
+        for case in vectors["cases"].as_array().unwrap() {
+            let rebased = rebase(&case["base"], &case["latest"], &case["draft"]);
+            let name = &case["name"];
+            assert_eq!(rebased.config, case["policy"], "{name}");
+            assert_eq!(
+                sorted(rebased.conflicts),
+                labels(&case["conflicts"]),
+                "{name}"
+            );
+            assert_eq!(sorted(rebased.newer), labels(&case["newer"]), "{name}");
         }
 
         // A newer version that already has the draft's changes comes back as it is, in its order.
