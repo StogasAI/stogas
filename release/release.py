@@ -27,6 +27,17 @@ def git(*args):
     return subprocess.check_output(["git", "-C", str(ROOT), *args])
 
 
+def require_executable_bits(directory):
+    # Packages record which files are executable, and a rebuild otherwise fails only at the end.
+    with tempfile.NamedTemporaryFile(dir=directory) as probe:
+        bits = []
+        for mode in (0o644, 0o755):
+            os.chmod(probe.name, mode)
+            bits.append(os.stat(probe.name).st_mode & 0o111)
+    if bits != [0, 0o111]:
+        raise ValueError(f"{directory} doesn't keep files' executable bits. Use a directory on a Linux or macOS file system, such as your home directory in WSL on Windows.")
+
+
 def capture(destination, allow_dirty):
     dirty = bool(git("status", "--porcelain", "--untracked-files=all").strip())
     if dirty and not allow_dirty:
@@ -64,6 +75,7 @@ def build(platforms, output, allow_dirty, archive=None):
     if output.is_relative_to(ROOT):
         raise ValueError("Build output must be outside the source checkout")
     output.mkdir(parents=True)
+    require_executable_bits(output)
     snapshot = output / "source"
     source = capture(snapshot, allow_dirty)
     build_targets = {**json.loads((snapshot / "release/targets.json").read_text())["targets"], "portable": {"os": "portable"}}
@@ -116,6 +128,7 @@ def collect(builds, output, complete):
     if output.exists():
         raise ValueError("Collected output must be a new directory")
     output.parent.mkdir(parents=True, exist_ok=True)
+    require_executable_bits(output.parent)
     with tempfile.TemporaryDirectory(prefix="stogas-builds-", dir=output.parent) as temporary:
         directories = []
         for index, build in enumerate(builds):
