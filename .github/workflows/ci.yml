@@ -223,8 +223,7 @@ jobs:
           workspaces: tests/security/probe
       - name: Install ProVerif and Valgrind
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ocaml valgrind libc6-dbg
+          scripts/apt-install.sh ocaml valgrind libc6-dbg
           curl --fail --location https://bblanche.gitlabpages.inria.fr/proverif/proverif2.05.tar.gz -o "$RUNNER_TEMP/proverif.tar.gz"
           echo "4871f53c32ab4a04669a060c4886ba5d9080496963fb980a9a62d2c429ceabc4  $RUNNER_TEMP/proverif.tar.gz" | sha256sum --check
           mkdir "$RUNNER_TEMP/proverif"
@@ -430,9 +429,7 @@ jobs:
           "$consumer/native-msvc.exe"
       - if: matrix.platform == 'linux-amd64'
         name: Install Valgrind
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends valgrind libc6-dbg
+        run: scripts/apt-install.sh valgrind libc6-dbg
       # Valgrind fails a test on an invalid memory access or a leaked allocation, including in the
       # tests and the transport that the Miri job leaves out.
       - if: matrix.platform == 'linux-amd64'
@@ -690,6 +687,7 @@ jobs:
       - name: Install the test browsers
         run: |
           npm ci --ignore-scripts --workspaces=false
+          scripts/apt-install.sh
           npx --no-install playwright install --with-deps chromium firefox webkit
       - name: 'TypeScript: browser tests'
         run: npm run typecheck
@@ -848,10 +846,6 @@ jobs:
         run: |
           set -euo pipefail
           check() { python3 "$GITHUB_WORKSPACE/examples/check_http_client.py" "$@"; }
-          apt_install() {
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends "$@"
-          }
           library="$GITHUB_WORKSPACE/target/debug/libstogas_ffi.so"
           case "$LANGUAGE" in
             rust)
@@ -876,7 +870,7 @@ jobs:
               check "$RUNNER_TEMP/stogas-go-example"
               ;;
             c)
-              apt_install libcurl4-openssl-dev libjson-c-dev
+              scripts/apt-install.sh libcurl4-openssl-dev libjson-c-dev
               cargo build --locked --package stogas-ffi
               # shellcheck disable=SC2046 # pkg-config prints separate flags.
               cc -std=c11 -Wall -Wextra -Werror -Iinclude examples/c-http/main.c target/debug/libstogas_ffi.a \
@@ -981,7 +975,7 @@ jobs:
               check --cancel julia --project=examples/julia-openai examples/julia-openai/main.jl
               ;;
             luajit)
-              apt_install luajit libluajit-5.1-dev lua-cjson luarocks libcurl4-openssl-dev
+              scripts/apt-install.sh luajit libluajit-5.1-dev lua-cjson luarocks libcurl4-openssl-dev
               sudo luarocks --lua-version=5.1 install Lua-cURL 0.3.13-1 LUA_INCDIR=/usr/include/luajit-2.1 \
                 CURL_INCDIR="$(pkg-config --variable=includedir libcurl)" CURL_LIBDIR="$(pkg-config --variable=libdir libcurl)"
               cargo build --locked --package stogas-ffi --features staging
@@ -991,7 +985,7 @@ jobs:
               check --cancel luajit examples/luajit-http/main.lua
               ;;
             ocaml)
-              apt_install libcurl4-openssl-dev
+              scripts/apt-install.sh libcurl4-openssl-dev
               cargo build --locked --package stogas-ffi --features staging
               cd examples/ocaml-http
               opam install . --deps-only --yes
@@ -1002,14 +996,14 @@ jobs:
               opam exec -- python3 ../check_http_client.py --cancel _build/default/main.exe
               ;;
             php)
-              apt_install php-cli php-curl php-xml php-mbstring composer
+              scripts/apt-install.sh php-cli php-curl php-xml php-mbstring composer
               cargo build --locked --package stogas-ffi --features staging
               composer install --no-interaction --no-plugins --no-scripts --working-dir=examples/php-openai
               php -d ffi.enable=true examples/php-openai/test_transport.php "$library"
               check php examples/php-openai/main.php
               ;;
             zig)
-              apt_install libcurl4-openssl-dev
+              scripts/apt-install.sh libcurl4-openssl-dev
               cargo build --locked --package stogas-ffi --features staging
               export LD_LIBRARY_PATH="${library%/*}"
               zig test examples/zig-http/test_native.zig -Iinclude -L"$LD_LIBRARY_PATH" -lstogas_ffi -lcurl -lc
