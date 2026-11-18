@@ -43,10 +43,6 @@ python3 -B -c 'import sys, tarfile; tarfile.open(sys.argv[1]).extractall(sys.arg
 python3 -B release/release.py rebuild /builds/apple --out /builds/rebuild --builds native/*.tar.gz
 python3 -B release/provenance.py /builds/rebuild/release/packages /builds/apple > /builds/statement.json
 
-curl --fail --location --silent --show-error --output /usr/local/bin/cosign \
-	https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64
-echo '424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa  /usr/local/bin/cosign' |
-	sha256sum -c
-chmod 755 /usr/local/bin/cosign
+sh release/install-cosign.sh /usr/local/bin
 # Cosign signs with a Fulcio certificate for the job's ID token and logs the proof in Rekor.
 cosign attest-blob --statement /builds/statement.json --bundle gitlab-attestation.jsonl --yes
