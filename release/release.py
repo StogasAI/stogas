@@ -177,19 +177,23 @@ def apple(release, output):
         shutil.copyfile(release / file, output / file)
 
 
-def rebuild(inputs, output):
+def rebuild(inputs, output, builds):
     """Build every platform except Apple again from HEAD and package every release file.
 
     Xcode runs only on Apple hardware, so the Apple compiler outputs come from the inputs: a
     release, or the files that `apple` copied from one. Packaging repacks each Apple archive with
-    the pinned packer, which reproduces the released bytes."""
+    the pinned packer, which reproduces the released bytes. The other platforms can come from
+    builds on other machines instead, since one disk may not hold every compiler image."""
     if output.exists():
         raise ValueError("Rebuild output must be a new directory")
     version = json.loads((ROOT / "package.json").read_text())["version"]
     shards = apple_files([path.name for path in inputs.iterdir()], version)
     platforms = sorted(set(shards) - {"apple"})
     native = output / "native"
-    build(sorted(set(BUILD_TARGETS) - set(platforms)), native, False)
+    if builds:
+        collect(builds, native, complete=False)
+    else:
+        build(sorted(set(BUILD_TARGETS) - set(platforms)), native, False)
     metadata = json.loads((native / "build.json").read_text())
     imported = output / "apple"
     imported.mkdir()
@@ -242,6 +246,7 @@ if __name__ == "__main__":
     rebuild_parser = commands.add_parser("rebuild", help="Build every platform except Apple again from HEAD and package every release file")
     rebuild_parser.add_argument("inputs", type=Path, help="A release, or the files that apple copied from one")
     rebuild_parser.add_argument("--out", type=Path, required=True)
+    rebuild_parser.add_argument("--builds", type=Path, nargs="+", default=[], help="Builds, or the archives that build --archive wrote, of every platform except Apple, instead of building here")
     package_parser = commands.add_parser("package", help="Assemble language packages from a captured build")
     package_parser.add_argument("build", type=Path)
     qualify_parser = commands.add_parser("qualify", help="Run the release's own offline and live tests on its installed packages")
@@ -269,7 +274,7 @@ if __name__ == "__main__":
     elif args.command == "apple":
         apple(args.release.resolve(), args.out.resolve())
     elif args.command == "rebuild":
-        rebuild(args.inputs.resolve(), args.out.resolve())
+        rebuild(args.inputs.resolve(), args.out.resolve(), [build.resolve() for build in args.builds])
         print(f"Packaged every release file in {args.out.resolve() / 'release/packages'}")
     elif args.command == "gate":
         _, preview = check_release(args.directory.resolve(), reports=not args.packages_only)

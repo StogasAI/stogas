@@ -28,7 +28,6 @@ def statement(packages, apple, environment):
             "buildDefinition": {
                 "buildType": "https://stogas.ai/docs/reproducible-builds#rebuild-an-sdk-release",
                 "externalParameters": {"source": project, "ref": f"refs/tags/{tag}", "configuration": ".gitlab-ci.yml"},
-                "internalParameters": {"runner": environment["CI_RUNNER_DESCRIPTION"]},
                 "resolvedDependencies": [
                     {"uri": f"git+{project}@refs/tags/{tag}", "digest": {"gitCommit": environment["CI_COMMIT_SHA"]}},
                     *({"name": path.name, "digest": {"sha256": digest(path)}} for path in sorted(apple.iterdir())),
@@ -37,8 +36,9 @@ def statement(packages, apple, environment):
             "runDetails": {
                 "builder": {"id": f"{project}/-/runners/{environment['CI_RUNNER_ID']}"},
                 "metadata": {
-                    "invocationId": environment["CI_JOB_URL"],
-                    "startedOn": environment["CI_JOB_STARTED_AT"],
+                    # Several jobs of one pipeline build the files.
+                    "invocationId": environment["CI_PIPELINE_URL"],
+                    "startedOn": environment["CI_PIPELINE_CREATED_AT"],
                     "finishedOn": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 },
             },
