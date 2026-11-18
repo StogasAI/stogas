@@ -119,6 +119,14 @@ def main():
             def log_message(self, *_):
                 pass
 
+            def client_closed(self):
+                self.connection.settimeout(10)
+                try:
+                    return not self.rfile.read(1)
+                except ConnectionResetError:
+                    # A client that closes with response bytes still unread resets the connection.
+                    return True
+
             def do_POST(self):
                 if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
                     body = bytearray()
@@ -135,8 +143,7 @@ def main():
                 calls.append((self.path, self.headers["Authorization"], json.loads(body)))
                 if scenario == "cancelled_before_headers":
                     started.set()
-                    self.connection.settimeout(10)
-                    if not self.rfile.read(1):
+                    if self.client_closed():
                         closed.set()
                     self.close_connection = True
                     return
@@ -193,8 +200,7 @@ def main():
                     self.wfile.flush()
                     if scenario == "cancelled":
                         started.set()
-                        self.connection.settimeout(10)
-                        if not self.rfile.read(1):
+                        if self.client_closed():
                             closed.set()
                 except BrokenPipeError:
                     pass
