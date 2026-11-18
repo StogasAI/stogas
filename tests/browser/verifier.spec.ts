@@ -227,7 +227,7 @@ test(
 						stogasSigstoreBindings: typeof import('../../packages/sigstore/pkg/browser/stogas_sigstore.js');
 					}
 				).stogasSigstoreBindings;
-				return api.verify_github_attestation(
+				return api.verify_build_attestation(
 					new TextEncoder().encode(fixture),
 					subjects,
 					policy,

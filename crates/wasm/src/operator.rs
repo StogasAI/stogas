@@ -19,26 +19,62 @@ pub fn verifier_supports_staging_provenance() -> bool {
     cfg!(feature = "staging")
 }
 
-/// Verify a production SDK release's GitHub build proof and root-authorized Stogas signature
-/// with Sigstore's keys from the given TUF files.
+/// Verify a production SDK release's build proofs from GitHub and GitLab and its root-authorized
+/// Stogas signature with Sigstore's keys from the given TUF files. Releases before GitLab rebuilt
+/// them have no GitLab proof.
 ///
 /// # Errors
 /// Rejects invalid Sigstore files, release identity, build provenance, signing authority or
 /// publication time.
 #[wasm_bindgen]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "wasm-bindgen takes an optional byte array only by value"
+)]
 pub fn verify_sdk_release(
     manifest: &[u8],
     github_attestation: &[u8],
     qualification: &[u8],
     signature: &[u8],
     sigstore_files_json: &str,
+    gitlab_attestation: Option<Vec<u8>>,
 ) -> Result<(), JsError> {
     let sigstore = verified_sigstore(sigstore_files_json)?;
     stogas_core::sdk_release::verify(
         manifest,
         github_attestation,
+        gitlab_attestation.as_deref(),
         qualification,
         signature,
+        &sigstore,
+    )
+    .map(drop)
+    .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Verify a production SDK release's build proofs from GitHub and GitLab with Sigstore's keys
+/// from the given TUF files, as Stogas does before it signs the release.
+///
+/// # Errors
+/// Rejects invalid Sigstore files, release identity or build provenance.
+#[wasm_bindgen]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "wasm-bindgen takes an optional byte array only by value"
+)]
+pub fn verify_sdk_builds(
+    manifest: &[u8],
+    github_attestation: &[u8],
+    qualification: &[u8],
+    sigstore_files_json: &str,
+    gitlab_attestation: Option<Vec<u8>>,
+) -> Result<(), JsError> {
+    let sigstore = verified_sigstore(sigstore_files_json)?;
+    stogas_core::sdk_release::verify_builds(
+        manifest,
+        github_attestation,
+        gitlab_attestation.as_deref(),
+        qualification,
         &sigstore,
     )
     .map(drop)

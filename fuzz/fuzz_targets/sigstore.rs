@@ -2,7 +2,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use std::sync::LazyLock;
-use stogas_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};
+use stogas_sigstore::{BuildPolicy, Subject, TrustedRoot, verify_build_attestation};
 
 static TRUST: LazyLock<TrustedRoot> = LazyLock::new(|| {
     TrustedRoot::from_json(include_str!(
@@ -51,7 +51,7 @@ fuzz_target!(|data: &[u8]| {
             sha256: "8cc8926592b179283c8cab267a27dfb3df4d1086dff2504e51df5fa12b8ff008",
         },
     ];
-    let policy = GithubPolicy {
+    let policy = BuildPolicy {
         repository: "https://github.com/StogasAI/gateway".into(),
         workflow_identity: "https://github.com/StogasAI/gateway/.github/workflows/gateway-igvm-release.yml@refs/tags/v0.0.1".into(),
         source_ref: "refs/tags/v0.0.1".into(),
@@ -59,7 +59,7 @@ fuzz_target!(|data: &[u8]| {
         predicate_type: "https://slsa.dev/provenance/v1".into(),
     };
     let trust = &*TRUST;
-    let _ = verify_github_attestation(trust, &candidate, &subjects, &policy);
+    let _ = verify_build_attestation(trust, &candidate, &subjects, &policy);
     let _ = stogas_sigstore::verify_rekor_document_inclusion(trust, &candidate, data, &DOCUMENT.2);
 });
 

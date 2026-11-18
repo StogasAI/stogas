@@ -1,16 +1,16 @@
 # stogas-sigstore
 
-Networkless verification of Sigstore v0.3 bundles in the profile that GitHub artifact attestations use: a DSSE envelope over an in-toto statement, signed with a Fulcio certificate and logged in Rekor v1 or v2. It checks the certificate chain, SCTs, Rekor inclusion proofs and checkpoints, RFC 3161 timestamps, the signature, and the exact subjects and signer identity. It makes no network requests, never reads the system clock, needs no random numbers, and builds for `wasm32-unknown-unknown` without setup. Other bundle versions and profiles fail closed.
+Networkless verification of Sigstore v0.3 bundles in the profile of CI build attestations from GitHub Actions and GitLab.com: a DSSE envelope over an in-toto statement, signed with a Fulcio certificate and logged in Rekor v1 or v2. It checks the certificate chain, SCTs, Rekor inclusion proofs and checkpoints, RFC 3161 timestamps, the signature, and the exact subjects and signer identity. It makes no network requests, never reads the system clock, needs no random numbers, and builds for `wasm32-unknown-unknown` without setup. Other bundle versions and profiles fail closed.
 
-## Verify a GitHub artifact attestation
+## Verify a build attestation
 
 ```rust,no_run
-use stogas_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};
+use stogas_sigstore::{BuildPolicy, Subject, TrustedRoot, verify_build_attestation};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = TrustedRoot::from_json(&std::fs::read_to_string("trusted_root.json")?)?;
     let bundles = std::fs::read("app.tar.gz.jsonl")?;
-    let policy = GithubPolicy {
+    let policy = BuildPolicy {
         repository: "https://github.com/OWNER/REPO".into(),
         workflow_identity: "https://github.com/OWNER/REPO/.github/workflows/release.yml@refs/tags/v1.2.3".into(),
         source_ref: "refs/tags/v1.2.3".into(),
@@ -18,13 +18,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         predicate_type: "https://slsa.dev/provenance/v1".into(),
     };
     let subjects = [Subject { name: "app.tar.gz", sha256: "<the file's lowercase SHA-256>" }];
-    let verified = verify_github_attestation(&root, &bundles, &subjects, &policy)?;
+    let verified = verify_build_attestation(&root, &bundles, &subjects, &policy)?;
     println!("logged at {}", verified.integrated_time);
     Ok(())
 }
 ```
 
-`gh attestation download app.tar.gz --repo OWNER/REPO` saves a file's bundles as JSON Lines. Pass one bundle or the whole file; exactly one bundle must match. The repository, ref, commit and GitHub-hosted runner come from the Fulcio certificate, as `gh attestation verify` checks them, because the workflow writes the provenance predicate itself.
+`gh attestation download app.tar.gz --repo OWNER/REPO` saves a file's bundles as JSON Lines. Pass one bundle or the whole file; exactly one bundle must match. The repository's host selects the provider: a GitLab.com project such as `https://gitlab.com/GROUP/PROJECT` takes the identity `https://gitlab.com/GROUP/PROJECT//.gitlab-ci.yml@refs/tags/v1.2.3`. The repository, ref, commit and the provider's own hosted runner come from the Fulcio certificate, as `gh attestation verify` checks them, because the job writes the provenance predicate itself.
 
 `verify_dsse_attestation` takes any signer's exact certificate identity and OIDC issuer instead. Both return the statement's predicate, as its signer wrote it, for your own policy. `verify_rekor_document_inclusion` checks that a given Ed25519 key logged exact document bytes as a Rekor hashedrekord entry signed with Ed25519ph over SHA-512.
 

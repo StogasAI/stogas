@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use stogas_sigstore::{
-    Error, GithubPolicy, IdentityPolicy, Subject, TrustedRoot, VerifiedAttestation,
-    verify_dsse_attestation as verify_dsse, verify_github_attestation as verify_github,
+    BuildPolicy, Error, IdentityPolicy, Subject, TrustedRoot, VerifiedAttestation,
+    verify_build_attestation as verify_build, verify_dsse_attestation as verify_dsse,
 };
 use wasm_bindgen::prelude::*;
 
@@ -14,8 +14,11 @@ export interface Subject {
 	name: string;
 	sha256: string;
 }
-/** The repository, workflow, ref and commit whose GitHub Actions run made the attestation. */
-export interface GithubPolicy {
+/**
+ * The repository, workflow or pipeline file, ref and commit whose GitHub Actions or GitLab.com CI
+ * job made the attestation. The repository's host selects the provider.
+ */
+export interface BuildPolicy {
 	repository: string;
 	workflow_identity: string;
 	source_ref: string;
@@ -62,7 +65,8 @@ fn from_js<T: DeserializeOwned>(value: &JsValue, label: &str) -> Result<T, JsErr
     serde_json::from_str(&json).map_err(|error| JsError::new(&format!("invalid {label}: {error}")))
 }
 
-/// Verify a GitHub/Sigstore attestation against Sigstore's `trusted_root.json`.
+/// Verify a build attestation from a GitHub Actions or GitLab.com hosted runner against
+/// Sigstore's `trusted_root.json`.
 ///
 /// The caller vouches for the trusted root. Signed log and timestamp times decide validity, so
 /// the result does not depend on the platform clock.
@@ -71,15 +75,15 @@ fn from_js<T: DeserializeOwned>(value: &JsValue, label: &str) -> Result<T, JsErr
 ///
 /// Returns a JavaScript error for a malformed trusted root or policy, or untrusted evidence.
 #[wasm_bindgen(unchecked_return_type = "VerifiedAttestation")]
-pub fn verify_github_attestation(
+pub fn verify_build_attestation(
     bundle: &[u8],
     #[wasm_bindgen(unchecked_param_type = "Subject[]")] subjects: &JsValue,
-    #[wasm_bindgen(unchecked_param_type = "GithubPolicy")] policy: &JsValue,
+    #[wasm_bindgen(unchecked_param_type = "BuildPolicy")] policy: &JsValue,
     trusted_root_json: &str,
 ) -> Result<JsValue, JsError> {
-    let policy: GithubPolicy = from_js(policy, "policy")?;
+    let policy: BuildPolicy = from_js(policy, "policy")?;
     verify(subjects, trusted_root_json, |trust, subjects| {
-        verify_github(trust, bundle, subjects, &policy)
+        verify_build(trust, bundle, subjects, &policy)
     })
 }
 

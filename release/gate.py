@@ -15,7 +15,7 @@ from pathlib import Path, PurePosixPath
 import channels
 from artifacts import canonical, function_names, release_source, verify_inventory, wheel, without_names, write_json
 
-METADATA = {"github-attestation.jsonl", "stogas-signature.json", "qualification.json"}
+METADATA = {"github-attestation.jsonl", "gitlab-attestation.jsonl", "stogas-signature.json", "qualification.json"}
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 # Offline cases test installed bytes without a network. Live cases send
 # requests through production attested TLS and E2EE and verify its evidence.

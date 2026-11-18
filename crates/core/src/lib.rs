@@ -30,7 +30,7 @@ use sha2::{Digest, Sha256};
 #[cfg(feature = "staging")]
 use std::collections::BTreeMap;
 use stogas_sev_snp::{PlatformRule, Product, guest_policy};
-use stogas_sigstore::{GithubPolicy, Subject, TrustedRoot, verify_github_attestation};
+use stogas_sigstore::{BuildPolicy, Subject, TrustedRoot, verify_build_attestation};
 use thiserror::Error;
 
 /// Maximum serialized evidence accepted by public adapters.
@@ -584,7 +584,7 @@ fn verify_catalog_provenance(
                 sha256: &manifest.artifacts.root.sha256,
             },
         ],
-        &GithubPolicy {
+        &BuildPolicy {
             repository: manifest.source.repository.clone(),
             workflow_identity,
             source_ref: format!("refs/tags/{}", manifest.source.tag),
@@ -658,7 +658,7 @@ fn verify_release_provenance(
                 sha256: &manifest.artifacts.gateway_igvm.sha256,
             },
         ],
-        &GithubPolicy {
+        &BuildPolicy {
             repository: manifest.source.repository.clone(),
             workflow_identity,
             source_ref: format!("refs/tags/{}", manifest.source.tag),
@@ -673,10 +673,10 @@ fn verify_github_provenance(
     trust: &TrustedRoot,
     attestation_bytes: &[u8],
     expected_subjects: &[Subject<'_>],
-    policy: &GithubPolicy,
+    policy: &BuildPolicy,
     context: &str,
 ) -> Result<(Option<i64>, ReleaseProvenance), Error> {
-    let verified = verify_github_attestation(trust, attestation_bytes, expected_subjects, policy)
+    let verified = verify_build_attestation(trust, attestation_bytes, expected_subjects, policy)
         .map_err(|error| Error::Release(format!("{context}: {error}")))?;
     let integrated_time = verified
         .integrated_time

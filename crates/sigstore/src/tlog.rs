@@ -22,7 +22,7 @@ pub fn verify(
     root: &TrustedRoot,
 ) -> Result<i64, String> {
     if entry.kind_version.kind != "dsse" || entry.kind_version.version != "0.0.1" {
-        return Err("only Rekor DSSE v0.0.1 is supported for GitHub attestations".into());
+        return Err("only Rekor DSSE v0.0.1 is supported for build attestations".into());
     }
     let integrated_time = integrated_time(entry)?;
     if integrated_time <= 0
@@ -121,7 +121,7 @@ fn verify_set(entry: &TransparencyLogEntry, log_id: &[u8; 32], key: &[u8]) -> Re
     let promise = entry
         .inclusion_promise
         .as_ref()
-        .ok_or_else(|| "GitHub Sigstore profile requires a Rekor SET".to_owned())?;
+        .ok_or_else(|| "the build profile requires a Rekor SET".to_owned())?;
     let signature = STANDARD
         .decode(&promise.signed_entry_timestamp)
         .map_err(|error| format!("invalid Rekor SET encoding: {error}"))?;
@@ -141,7 +141,7 @@ fn verify_inclusion(entry: &TransparencyLogEntry, log: &LogKey) -> Result<(), St
     let proof = entry
         .inclusion_proof
         .as_ref()
-        .ok_or_else(|| "GitHub Sigstore profile requires a Rekor inclusion proof".to_owned())?;
+        .ok_or_else(|| "the build profile requires a Rekor inclusion proof".to_owned())?;
     if proof.hashes.len() > MAX_PROOF_HASHES {
         return Err("Rekor proof exceeds resource limits".into());
     }

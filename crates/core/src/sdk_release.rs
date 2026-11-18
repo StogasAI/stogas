@@ -1,9 +1,11 @@
 //! SDK release signatures under the normal Stogas root hierarchy.
 
+use std::cmp::Ordering;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
-use stogas_sigstore::{GithubPolicy, Subject, verify_github_attestation};
+use stogas_sigstore::{BuildPolicy, Subject, verify_build_attestation};
 
 use crate::{
     MAX_INPUT_BYTES, StogasSignature,
@@ -12,13 +14,24 @@ use crate::{
 };
 
 const REPOSITORY: &str = "https://github.com/StogasAI/stogas";
+/// The GitLab.com mirror whose hosted runners rebuild each release.
+const GITLAB_REPOSITORY: &str = "https://gitlab.com/stogasai/stogas";
+/// The first release that GitLab rebuilt: it and every later release must carry GitLab's proof.
+const FIRST_GITLAB_VERSION: &str = "0.1.0-alpha.6";
 pub const SCHEMA: &str = "stogas.sdk-release.v1";
 pub const MANIFEST: &str = "release-manifest.json";
 pub const ATTESTATION: &str = "github-attestation.jsonl";
+pub const GITLAB_ATTESTATION: &str = "gitlab-attestation.jsonl";
 pub const SIGNATURE: &str = "stogas-signature.json";
 pub const QUALIFICATION: &str = "qualification.json";
 /// The release files besides its artifacts; no artifact may share these names.
-pub const METADATA: [&str; 4] = [MANIFEST, ATTESTATION, SIGNATURE, QUALIFICATION];
+pub const METADATA: [&str; 5] = [
+    MANIFEST,
+    ATTESTATION,
+    GITLAB_ATTESTATION,
+    SIGNATURE,
+    QUALIFICATION,
+];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -49,7 +62,9 @@ pub struct Manifest {
 }
 
 /// The online key's signature over GitHub's unchanged manifest, logged in Rekor.
-/// Stogas signs only after its own build matched GitHub's bytes and every test passed.
+///
+/// Stogas signs only after every test passed and GitLab's rebuild matched GitHub's bytes; before
+/// GitLab rebuilt releases, Stogas rebuilt them itself.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Signature {
@@ -58,40 +73,35 @@ pub struct Signature {
     pub inclusion: Value,
 }
 
-/// Verify GitHub's build proof and the Stogas signature of a production SDK release.
+/// Verify the Stogas signature and both build proofs of a production SDK release, as
+/// [`verify_builds`] does.
 ///
-/// GitHub's one proof names every artifact, the manifest and the test report, so it exists
-/// only for files that passed every test in the same workflow run. This authenticates
-/// historical publication, without granting current gateway authority. The caller must also
-/// compare artifact bytes with the returned manifest. Sigstore keeps a replaced key with its
-/// validity ended, so current Sigstore keys also verify older releases.
+/// This authenticates historical publication, without granting current gateway authority. The
+/// caller must also compare artifact bytes with the returned manifest. Sigstore keeps a replaced key
+/// with its validity ended, so current Sigstore keys also verify older releases.
 ///
 /// # Errors
-/// Rejects unsigned, altered, staging or dirty releases, and signing keys that a key manifest
-/// had not yet authorized, or no longer authorized, when Rekor logged the signature. A later
-/// key expiry does not invalidate old software.
+/// Rejects what [`verify_builds`] rejects, unsigned releases, and signing keys that a key manifest
+/// had not yet authorized, or no longer authorized, when Rekor logged the signature. A later key
+/// expiry does not invalidate old software.
 pub fn verify(
     manifest_bytes: &[u8],
     github_attestation: &[u8],
+    gitlab_attestation: Option<&[u8]>,
     qualification: &[u8],
     signature_bytes: &[u8],
     sigstore: &VerifiedSigstore,
 ) -> Result<Manifest, authority::Error> {
-    if [
-        manifest_bytes.len(),
-        github_attestation.len(),
-        qualification.len(),
-        signature_bytes.len(),
-    ]
-    .into_iter()
-    .any(|length| length > MAX_INPUT_BYTES)
-    {
+    if signature_bytes.len() > MAX_INPUT_BYTES {
         return Err(authority::Error::TooLarge);
     }
-    let manifest = strict_json::from_slice(manifest_bytes).map_err(invalid)?;
-    format::check(&manifest, SCHEMA)?;
-    let manifest: Manifest = serde_json::from_value(manifest).map_err(invalid)?;
-    validate_manifest(&manifest)?;
+    let manifest = verify_builds(
+        manifest_bytes,
+        github_attestation,
+        gitlab_attestation,
+        qualification,
+        sigstore,
+    )?;
     let signed: Signature =
         serde_json::from_value(strict_json::from_slice(signature_bytes).map_err(invalid)?)
             .map_err(invalid)?;
@@ -121,41 +131,150 @@ pub fn verify(
         &keys.active_key.key_id,
         &keys.active_key.public_key,
     )?;
+    Ok(manifest)
+}
+
+/// Verify the build proofs of GitHub and GitLab for a production SDK release, which Stogas does
+/// before it signs one.
+///
+/// GitHub's one proof names every artifact, the manifest and the test report, so it exists only
+/// for files that passed every test in the same workflow run. GitLab's proof names every artifact
+/// and the manifest again: GitLab's hosted runners rebuilt them from the same commit and made the
+/// same bytes, with only the Apple compiler outputs taken from GitHub's build, as its predicate
+/// lists. Releases before [`FIRST_GITLAB_VERSION`] have no GitLab proof.
+///
+/// # Errors
+/// Rejects altered, staging or dirty releases, a proof from another builder, repository, commit or
+/// tag, and a release from 0.1.0-alpha.6 on without GitLab's proof.
+pub fn verify_builds(
+    manifest_bytes: &[u8],
+    github_attestation: &[u8],
+    gitlab_attestation: Option<&[u8]>,
+    qualification: &[u8],
+    sigstore: &VerifiedSigstore,
+) -> Result<Manifest, authority::Error> {
+    if [
+        manifest_bytes.len(),
+        github_attestation.len(),
+        gitlab_attestation.map_or(0, <[u8]>::len),
+        qualification.len(),
+    ]
+    .into_iter()
+    .any(|length| length > MAX_INPUT_BYTES)
+    {
+        return Err(authority::Error::TooLarge);
+    }
+    let manifest = strict_json::from_slice(manifest_bytes).map_err(invalid)?;
+    format::check(&manifest, SCHEMA)?;
+    let manifest: Manifest = serde_json::from_value(manifest).map_err(invalid)?;
+    validate_manifest(&manifest)?;
+    let trust = sigstore.trusted_root();
     let reference = format!("refs/tags/v{}", manifest.version);
     let manifest_sha256 = hex::encode(Sha256::digest(manifest_bytes));
     let qualification_sha256 = hex::encode(Sha256::digest(qualification));
-    let subjects: Vec<_> = manifest
+    // GitLab builds and tests nothing else, so its proof names the files without the test report.
+    let mut subjects: Vec<_> = manifest
         .artifacts
         .iter()
         .map(|artifact| Subject {
             name: &artifact.name,
             sha256: &artifact.sha256,
         })
-        .chain([
-            Subject {
-                name: MANIFEST,
-                sha256: &manifest_sha256,
-            },
-            Subject {
-                name: QUALIFICATION,
-                sha256: &qualification_sha256,
-            },
-        ])
+        .chain([Subject {
+            name: MANIFEST,
+            sha256: &manifest_sha256,
+        }])
         .collect();
-    verify_github_attestation(
+    let built = |repository: &str, workflow_identity: String| BuildPolicy {
+        repository: repository.into(),
+        workflow_identity,
+        source_ref: reference.clone(),
+        source_commit: manifest.source.commit.clone(),
+        predicate_type: "https://slsa.dev/provenance/v1".into(),
+    };
+    match gitlab_attestation {
+        Some(bundle) => {
+            verify_build_attestation(
+                trust,
+                bundle,
+                &subjects,
+                &built(
+                    GITLAB_REPOSITORY,
+                    format!("{GITLAB_REPOSITORY}//.gitlab-ci.yml@{reference}"),
+                ),
+            )
+            .map_err(invalid)?;
+        }
+        None if gitlab_required(&manifest.version) => {
+            return Err(invalid(format!(
+                "SDK {} has no GitLab build proof",
+                manifest.version
+            )));
+        }
+        None => {}
+    }
+    subjects.push(Subject {
+        name: QUALIFICATION,
+        sha256: &qualification_sha256,
+    });
+    verify_build_attestation(
         trust,
         github_attestation,
         &subjects,
-        &GithubPolicy {
-            repository: REPOSITORY.into(),
-            workflow_identity: format!("{REPOSITORY}/.github/workflows/release.yml@{reference}"),
-            source_ref: reference,
-            source_commit: manifest.source.commit.clone(),
-            predicate_type: "https://slsa.dev/provenance/v1".into(),
-        },
+        &built(
+            REPOSITORY,
+            format!("{REPOSITORY}/.github/workflows/release.yml@{reference}"),
+        ),
     )
     .map_err(invalid)?;
     Ok(manifest)
+}
+
+/// Whether a release must carry GitLab's proof: every version from [`FIRST_GITLAB_VERSION`] on,
+/// and any version that is not Semantic Versioning, which the release gate never produces.
+fn gitlab_required(version: &str) -> bool {
+    precedence(version, FIRST_GITLAB_VERSION).is_none_or(Ordering::is_ge)
+}
+
+/// Semantic Versioning 2.0 precedence: build metadata is ignored, a pre-release precedes its
+/// release, and numeric identifiers compare as numbers and precede alphanumeric ones.
+fn precedence(left: &str, right: &str) -> Option<Ordering> {
+    fn parts(version: &str) -> Option<([u64; 3], Vec<&str>)> {
+        let version = version.split('+').next()?;
+        let (core, pre) = match version.split_once('-') {
+            Some((core, pre)) => (core, pre.split('.').collect()),
+            None => (version, Vec::new()),
+        };
+        let mut numbers = core.split('.').map(|number| {
+            (!number.is_empty() && (number == "0" || !number.starts_with('0')))
+                .then(|| number.parse::<u64>().ok())
+                .flatten()
+        });
+        let core = [numbers.next()??, numbers.next()??, numbers.next()??];
+        (numbers.next().is_none() && pre.iter().all(|part| !part.is_empty())).then_some((core, pre))
+    }
+    let (left_core, left_pre) = parts(left)?;
+    let (right_core, right_pre) = parts(right)?;
+    Some(left_core.cmp(&right_core).then_with(|| {
+        match (left_pre.is_empty(), right_pre.is_empty()) {
+            (true, true) => Ordering::Equal,
+            (true, false) => Ordering::Greater,
+            (false, true) => Ordering::Less,
+            (false, false) => left_pre
+                .iter()
+                .zip(&right_pre)
+                .map(
+                    |(left, right)| match (left.parse::<u64>(), right.parse::<u64>()) {
+                        (Ok(left), Ok(right)) => left.cmp(&right),
+                        (Ok(_), Err(_)) => Ordering::Less,
+                        (Err(_), Ok(_)) => Ordering::Greater,
+                        (Err(_), Err(_)) => left.cmp(right),
+                    },
+                )
+                .find(|order| order.is_ne())
+                .unwrap_or_else(|| left_pre.len().cmp(&right_pre.len())),
+        }
+    }))
 }
 
 fn validate_manifest(manifest: &Manifest) -> Result<(), authority::Error> {
@@ -253,6 +372,7 @@ mod tests {
         let error = verify(
             &serde_json::to_vec(&newer).unwrap(),
             b"",
+            None,
             b"",
             b"",
             sigstore,
@@ -302,13 +422,21 @@ mod tests {
         let sigstore = &authority::sigstore_fixture().1;
         let oversized = vec![b' '; MAX_INPUT_BYTES + 1];
         for inputs in [
-            [oversized.as_slice(), b"", b"", b""],
-            [b"", oversized.as_slice(), b"", b""],
-            [b"", b"", oversized.as_slice(), b""],
-            [b"", b"", b"", oversized.as_slice()],
+            [oversized.as_slice(), b"", b"", b"", b""],
+            [b"", oversized.as_slice(), b"", b"", b""],
+            [b"", b"", oversized.as_slice(), b"", b""],
+            [b"", b"", b"", oversized.as_slice(), b""],
+            [b"", b"", b"", b"", oversized.as_slice()],
         ] {
             assert!(matches!(
-                verify(inputs[0], inputs[1], inputs[2], inputs[3], sigstore),
+                verify(
+                    inputs[0],
+                    inputs[1],
+                    Some(inputs[2]),
+                    inputs[3],
+                    inputs[4],
+                    sigstore
+                ),
                 Err(authority::Error::TooLarge)
             ));
         }
@@ -319,9 +447,69 @@ mod tests {
         for value in [unknown, staging] {
             let bytes = serde_json::to_vec(&value).unwrap();
             assert!(matches!(
-                verify(&bytes, b"", b"", b"{}", sigstore),
+                verify(&bytes, b"", None, b"", b"{}", sigstore),
                 Err(authority::Error::Invalid(_))
             ));
+        }
+    }
+
+    #[test]
+    fn orders_versions_by_semantic_versioning_precedence() {
+        // The order that Semantic Versioning 2.0 gives as its example, and numeric fields.
+        let ordered = [
+            "0.1.0-alpha.5",
+            "0.1.0-alpha.6",
+            "0.1.0-alpha.10",
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.beta",
+            "1.0.0-beta",
+            "1.0.0-beta.2",
+            "1.0.0-beta.11",
+            "1.0.0-rc.1",
+            "1.0.0",
+            "1.0.1",
+            "1.2.0",
+            "1.10.0",
+            "10.0.0",
+        ];
+        for (index, left) in ordered.iter().enumerate() {
+            for (other, right) in ordered.iter().enumerate() {
+                assert_eq!(
+                    precedence(left, right),
+                    Some(index.cmp(&other)),
+                    "{left} against {right}"
+                );
+            }
+        }
+        assert_eq!(precedence("1.0.0+build.1", "1.0.0"), Some(Ordering::Equal));
+        for invalid in [
+            "1.0",
+            "1.0.0.0",
+            "01.0.0",
+            "1.0.0-",
+            "1.0.0-alpha..1",
+            "v1.0.0",
+            "",
+        ] {
+            assert_eq!(precedence(invalid, "1.0.0"), None, "{invalid}");
+        }
+    }
+
+    #[test]
+    fn requires_gitlab_from_its_first_release_and_for_unknown_versions() {
+        for version in ["0.1.0-alpha.1", "0.1.0-alpha.5"] {
+            assert!(!gitlab_required(version), "{version}");
+        }
+        for version in [
+            "0.1.0-alpha.6",
+            "0.1.0-alpha.10",
+            "0.1.0-beta",
+            "0.1.0",
+            "1.0.0",
+            "1.0",
+        ] {
+            assert!(gitlab_required(version), "{version}");
         }
     }
 }

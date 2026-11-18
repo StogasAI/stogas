@@ -1,6 +1,6 @@
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use stogas_sigstore::{GithubPolicy, Subject, verify_github_attestation};
+use stogas_sigstore::{BuildPolicy, Subject, verify_build_attestation};
 
 const IGVM_DIGEST: &str = "1b75d0ea7f94bc5f5a21080dd30e21370e14278a5b90eb19858c90dcc83a1bc6";
 const POLICY_DIGEST: &str = "8cc8926592b179283c8cab267a27dfb3df4d1086dff2504e51df5fa12b8ff008";
@@ -16,8 +16,8 @@ fn production() -> &'static stogas_sigstore::TrustedRoot {
     &ROOT
 }
 
-fn policy() -> GithubPolicy {
-    GithubPolicy {
+fn policy() -> BuildPolicy {
+    BuildPolicy {
         repository: "https://github.com/StogasAI/gateway".into(),
         workflow_identity: "https://github.com/StogasAI/gateway/.github/workflows/gateway-igvm-release.yml@refs/tags/v0.0.1".into(),
         source_ref: "refs/tags/v0.0.1".into(),
@@ -63,7 +63,7 @@ fn verifies_real_gateway_release_attestation() {
     let artifact = include_bytes!("../../../tests/fixtures/gateway-v0.0.1-launch-policy.json");
     assert_eq!(hex::encode(Sha256::digest(artifact)), POLICY_DIGEST);
     let bundle = include_bytes!("../../../tests/fixtures/gateway-v0.0.1-attestation.jsonl");
-    let result = verify_github_attestation(production(), bundle, &subjects(), &policy()).unwrap();
+    let result = verify_build_attestation(production(), bundle, &subjects(), &policy()).unwrap();
     assert_eq!(result.subjects.len(), 2);
     assert_eq!(
         result.predicate["buildDefinition"]["buildType"],
@@ -90,7 +90,7 @@ fn rejects_every_mutated_sigstore_trust_boundary() {
         flip_string(&mut value, pointer);
         let bytes = serde_json::to_vec(&value).unwrap();
         assert!(
-            verify_github_attestation(production(), &bytes, &subjects(), &policy()).is_err(),
+            verify_build_attestation(production(), &bytes, &subjects(), &policy()).is_err(),
             "mutation at {pointer} was accepted"
         );
     }
@@ -114,7 +114,7 @@ fn rejects_a_moved_log_entry_or_a_missing_signed_timestamp() {
             Value::String(replacement.into());
         let bytes = serde_json::to_vec(&value).unwrap();
         assert!(
-            verify_github_attestation(production(), &bytes, &subjects(), &policy()).is_err(),
+            verify_build_attestation(production(), &bytes, &subjects(), &policy()).is_err(),
             "{field} {replacement} was accepted"
         );
     }
@@ -125,7 +125,7 @@ fn rejects_a_moved_log_entry_or_a_missing_signed_timestamp() {
         .unwrap()
         .remove("inclusionPromise");
     let bytes = serde_json::to_vec(&value).unwrap();
-    assert!(verify_github_attestation(production(), &bytes, &subjects(), &policy()).is_err());
+    assert!(verify_build_attestation(production(), &bytes, &subjects(), &policy()).is_err());
 }
 
 #[test]
@@ -142,32 +142,32 @@ fn rejects_invalid_merkle_path_without_relying_on_the_set() {
     );
 
     let bytes = serde_json::to_vec(&value).unwrap();
-    assert!(verify_github_attestation(production(), &bytes, &subjects(), &policy()).is_err());
+    assert!(verify_build_attestation(production(), &bytes, &subjects(), &policy()).is_err());
 }
 
 #[test]
 fn rejects_each_github_identity_and_provenance_mismatch() {
     let bytes = include_bytes!("../../../tests/fixtures/gateway-v0.0.1-attestation.jsonl");
     let policies = [
-        GithubPolicy {
+        BuildPolicy {
             repository: "https://github.com/StogasAI/not-gateway".into(),
             ..policy()
         },
-        GithubPolicy {
+        BuildPolicy {
             workflow_identity:
                 "https://github.com/StogasAI/gateway/.github/workflows/other.yml@refs/tags/v0.0.1"
                     .into(),
             ..policy()
         },
-        GithubPolicy {
+        BuildPolicy {
             source_ref: "refs/heads/main".into(),
             ..policy()
         },
-        GithubPolicy {
+        BuildPolicy {
             source_commit: "0000000000000000000000000000000000000000".into(),
             ..policy()
         },
-        GithubPolicy {
+        BuildPolicy {
             predicate_type: "https://example.invalid/predicate".into(),
             ..policy()
         },
@@ -175,7 +175,7 @@ fn rejects_each_github_identity_and_provenance_mismatch() {
 
     for changed_policy in policies {
         assert!(
-            verify_github_attestation(production(), bytes, &subjects(), &changed_policy).is_err()
+            verify_build_attestation(production(), bytes, &subjects(), &changed_policy).is_err()
         );
     }
 }

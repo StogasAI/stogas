@@ -1,0 +1,50 @@
+# GitLab's hosted runners rebuild each release and sign a build proof for every release file: a
+# second proof beside GitHub's, from a builder that neither GitHub nor Stogas runs. Stogas pushes
+# the release tag to gitlab.com/stogasai/stogas, uploads the Apple compiler outputs of GitHub's
+# build, which only Apple hardware builds, and starts this pipeline. The release is published only
+# when this build's files equal GitHub's byte for byte.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/
+
+rebuild:
+  image: docker:29.9.2-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb
+  services:
+    - name: docker:29.9.2-dind@sha256:9e79b879b177fbd72c34376a3dd3d91747da5db49e1f560f76aea59561471977
+      alias: docker
+  # The build containers each take 4 CPUs and 8 GB.
+  tags: [saas-linux-medium-amd64]
+  timeout: 3h
+  id_tokens:
+    SIGSTORE_ID_TOKEN:
+      aud: sigstore
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: /certs
+    DOCKER_TLS_VERIFY: '1'
+    DOCKER_CERT_PATH: /certs/client
+    GIT_DEPTH: '1'
+    # The Docker service shares only /builds with this job, so every file that a build container
+    # mounts lives there.
+    TMPDIR: /builds/tmp
+    COSIGN_URL: https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64
+    COSIGN_SHA256: 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa
+  script:
+    - apk add --no-cache curl git python3
+    - test "$(git rev-parse HEAD)" = "$CI_COMMIT_SHA"
+    - mkdir "$TMPDIR" /builds/apple
+    - >-
+      curl --fail --location --silent --show-error --header "JOB-TOKEN: $CI_JOB_TOKEN"
+      --output /builds/apple.tar
+      "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/inputs/${CI_COMMIT_TAG#v}/apple.tar"
+    - tar -xf /builds/apple.tar -C /builds/apple
+    - python3 -B release/release.py rebuild /builds/apple --out /builds/rebuild
+    - python3 -B release/provenance.py /builds/rebuild/release/packages /builds/apple > /builds/statement.json
+    - curl --fail --location --silent --show-error --output /usr/local/bin/cosign "$COSIGN_URL"
+    - echo "$COSIGN_SHA256  /usr/local/bin/cosign" | sha256sum -c
+    - chmod 755 /usr/local/bin/cosign
+    # Cosign signs with a Fulcio certificate for SIGSTORE_ID_TOKEN and logs the proof in Rekor.
+    - cosign attest-blob --statement /builds/statement.json --bundle gitlab-attestation.jsonl --yes
+  artifacts:
+    paths: [gitlab-attestation.jsonl]
+    expire_in: 90 days

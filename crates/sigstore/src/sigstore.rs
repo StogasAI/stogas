@@ -1,4 +1,4 @@
-//! Pure-Rust verification of the Sigstore v0.3 GitHub Actions profile.
+//! Pure-Rust verification of the Sigstore v0.3 profile of CI build attestations.
 
 use crate::{
     crypto::{Scheme, WEBPKI_ALGORITHMS, verify_spki},
@@ -168,7 +168,7 @@ pub fn verify(
         || !bundle.dsse_envelope.signatures[0].keyid.is_empty()
         || bundle.verification_material.tlog_entries.len() != 1
     {
-        return Err("unsupported or ambiguous GitHub Sigstore bundle".into());
+        return Err("unsupported or ambiguous Sigstore build bundle".into());
     }
     let certificate_der = STANDARD
         .decode(&bundle.verification_material.certificate.raw_bytes)

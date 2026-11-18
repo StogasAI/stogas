@@ -151,42 +151,57 @@ def combine(builds, output, complete):
     write_json(output / "build.json", {**first, "platforms": sorted(platforms), "bundles": sorted(bundles)})
 
 
-def rebuild(release, output):
-    """Build every platform except Apple again from HEAD and require the release's exact bytes.
+def apple_files(names, version):
+    """The Apple compiler outputs of a release, by build shard. Xcode runs only on Apple
+    hardware, so a rebuild elsewhere takes these files from the release."""
+    shards = {"apple": [f"stogas-xcframework-v{version}.zip"]}
+    for platform, target in TARGETS.items():
+        if target["os"] not in {"macos", "ios"}:
+            continue
+        shards[platform] = [f"stogas-v{version}-{platform}.tar.gz", f"stogas-v{version}-{platform}-debug.tar.gz"]
+        if "cli" in target["packages"]:
+            shards[platform].append(f"stogas-cli-v{version}-{platform}.tar.gz")
+        if "python" in target["packages"]:
+            shards[platform].append(wheel(names, target))
+    return shards
 
-    Xcode runs only on Apple hardware, so the Apple compiler outputs come from
-    the release. Packaging repacks each Apple archive with the pinned packer,
-    which reproduces the released bytes."""
-    manifest, _ = check_release(release, reports=False)
+
+def apple(release, output):
+    """Copy a release's Apple compiler outputs into a new directory, for a rebuild elsewhere."""
+    if output.exists():
+        raise ValueError("Apple output must be a new directory")
+    version = json.loads((ROOT / "package.json").read_text())["version"]
+    files = [file for files in apple_files([path.name for path in release.iterdir()], version).values() for file in files]
+    output.mkdir(parents=True)
+    for file in files:
+        shutil.copyfile(release / file, output / file)
+
+
+def rebuild(inputs, output):
+    """Build every platform except Apple again from HEAD and package every release file.
+
+    Xcode runs only on Apple hardware, so the Apple compiler outputs come from the inputs: a
+    release, or the files that `apple` copied from one. Packaging repacks each Apple archive with
+    the pinned packer, which reproduces the released bytes."""
     if output.exists():
         raise ValueError("Rebuild output must be a new directory")
-    apple = sorted(name for name, target in TARGETS.items() if target["os"] in {"macos", "ios"})
+    version = json.loads((ROOT / "package.json").read_text())["version"]
+    shards = apple_files([path.name for path in inputs.iterdir()], version)
+    platforms = sorted(set(shards) - {"apple"})
     native = output / "native"
-    build(sorted(set(BUILD_TARGETS) - set(apple)), native, False)
+    build(sorted(set(BUILD_TARGETS) - set(platforms)), native, False)
     metadata = json.loads((native / "build.json").read_text())
-    if metadata["source"] != manifest["source"]:
-        raise ValueError("HEAD differs from the release source")
     imported = output / "apple"
     imported.mkdir()
     shutil.copytree(native / "source", imported / "source")
-    names = [artifact["name"] for artifact in manifest["artifacts"]]
-    version = manifest["version"]
-    shards = {"apple": [f"stogas-xcframework-v{version}.zip"]}
-    for platform in apple:
-        shards[platform] = [f"stogas-v{version}-{platform}.tar.gz", f"stogas-v{version}-{platform}-debug.tar.gz"]
-        if "cli" in TARGETS[platform]["packages"]:
-            shards[platform].append(f"stogas-cli-v{version}-{platform}.tar.gz")
-        if "python" in TARGETS[platform]["packages"]:
-            shards[platform].append(wheel(names, TARGETS[platform]))
     for name, files in shards.items():
         (imported / name).mkdir()
         for file in files:
-            shutil.copyfile(release / file, imported / name / file)
+            shutil.copyfile(inputs / file, imported / name / file)
         write_json(imported / name / f"{name}.json", {"schema": "stogas.sdk-build.v1", "platform": name, "environment": "prod", "artifacts": inventory(imported / name, files)})
-    write_json(imported / "build.json", {**metadata, "platforms": apple, "bundles": ["apple"]})
+    write_json(imported / "build.json", {**metadata, "platforms": platforms, "bundles": ["apple"]})
     collect([native, imported], output / "release", complete=True)
     subprocess.run([sys.executable, "-B", str(output / "release/source/release/release.py"), "package", str(output / "release")], check=True)
-    compare(release, output / "release/packages")
 
 
 def compare(first, second):
@@ -221,8 +236,11 @@ if __name__ == "__main__":
     collect_parser.add_argument("builds", type=Path, nargs="+")
     collect_parser.add_argument("--out", type=Path, required=True)
     collect_parser.add_argument("--complete", action="store_true")
-    rebuild_parser = commands.add_parser("rebuild", help="Build every platform except Apple again from HEAD and require the release's exact packages")
-    rebuild_parser.add_argument("release", type=Path)
+    apple_parser = commands.add_parser("apple", help="Copy a release's Apple compiler outputs, which only Apple hardware builds, for a rebuild elsewhere")
+    apple_parser.add_argument("release", type=Path)
+    apple_parser.add_argument("--out", type=Path, required=True)
+    rebuild_parser = commands.add_parser("rebuild", help="Build every platform except Apple again from HEAD and package every release file")
+    rebuild_parser.add_argument("inputs", type=Path, help="A release, or the files that apple copied from one")
     rebuild_parser.add_argument("--out", type=Path, required=True)
     package_parser = commands.add_parser("package", help="Assemble language packages from a captured build")
     package_parser.add_argument("build", type=Path)
@@ -248,9 +266,11 @@ if __name__ == "__main__":
         print("Package directories contain identical release artifacts")
     elif args.command == "collect":
         collect([directory.resolve() for directory in args.builds], args.out.resolve(), args.complete)
+    elif args.command == "apple":
+        apple(args.release.resolve(), args.out.resolve())
     elif args.command == "rebuild":
-        rebuild(args.release.resolve(), args.out.resolve())
-        print("The rebuild reproduces every release artifact")
+        rebuild(args.inputs.resolve(), args.out.resolve())
+        print(f"Packaged every release file in {args.out.resolve() / 'release/packages'}")
     elif args.command == "gate":
         _, preview = check_release(args.directory.resolve(), reports=not args.packages_only)
         print("Preview release gate passed: every offline case, no live case" if preview else "Complete production release gate passed")

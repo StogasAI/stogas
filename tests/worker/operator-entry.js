@@ -7,7 +7,7 @@ import {
 	rekor_public_key_from_seed,
 	prepare_rekor_submission_with_seed
 } from '../../target/operator/stogas.js';
-import { verify_github_attestation } from '../../packages/sigstore/bindings/worker/worker.js';
+import { verify_build_attestation } from '../../packages/sigstore/bindings/worker/worker.js';
 import fixtures from './operator-fixtures.js';
 
 initSync({ module: wasmModule });
@@ -57,7 +57,7 @@ export default {
 		proof.hashes[0] = `${proof.hashes[0].startsWith('A') ? 'B' : 'A'}${proof.hashes[0].slice(1)}`;
 		const sigstoreFiles = JSON.stringify(sigstore);
 		const attested = (bundle) =>
-			verify_github_attestation(
+			verify_build_attestation(
 				new TextEncoder().encode(bundle),
 				attestation.subjects,
 				attestation.policy,

@@ -1,4 +1,4 @@
-use std::{path::Path, time::Duration};
+use std::{fmt::Write as _, path::Path, time::Duration};
 
 use anyhow::{Context as _, Result, bail};
 use http::{HeaderMap, StatusCode};
@@ -7,7 +7,9 @@ use stogas::{https::HttpsClient, network::Network};
 use stogas_core::{
     MAX_INPUT_BYTES,
     authority::{Environment, SigstoreFiles, VerifiedSigstore},
-    sdk_release::{self, ATTESTATION, MANIFEST, METADATA, QUALIFICATION, SIGNATURE},
+    sdk_release::{
+        self, ATTESTATION, GITLAB_ATTESTATION, MANIFEST, METADATA, QUALIFICATION, SIGNATURE,
+    },
 };
 use tokio::time::timeout;
 use url::Url;
@@ -76,11 +78,17 @@ pub async fn verify_directory(
         bail!("{}", preview_check(directory, &version));
     }
     let signature = read(directory, SIGNATURE).await?;
+    // Releases before GitLab rebuilt them have no GitLab proof, which the check then allows.
+    let gitlab_attestation = match std::fs::symlink_metadata(directory.join(GITLAB_ATTESTATION)) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        _ => Some(read(directory, GITLAB_ATTESTATION).await?),
+    };
     // An incomplete release fails before any request.
     let sigstore = sigstore(evidence, network).await?;
     let manifest = sdk_release::verify(
         &manifest_bytes,
         &attestation,
+        gitlab_attestation.as_deref(),
         &qualification,
         &signature,
         &sigstore,
@@ -88,8 +96,13 @@ pub async fn verify_directory(
     let mut verified = verify_artifacts(directory, &manifest).await?;
     verified.sort();
     out!(
-        "Verified SDK {} with GitHub provenance and the Stogas signature: {} of {} artifacts",
+        "Verified SDK {} with {} and the Stogas signature: {} of {} artifacts",
         manifest.version,
+        if gitlab_attestation.is_some() {
+            "build provenance from GitHub and GitLab"
+        } else {
+            "GitHub provenance"
+        },
         verified.len(),
         manifest.artifacts.len()
     )?;
@@ -109,15 +122,27 @@ fn unsigned_preview(directory: &Path, manifest: &[u8]) -> Option<String> {
     manifest.version.contains('-').then_some(manifest.version)
 }
 
-/// How to check a preview's files, which only their GitHub build attestation covers.
+/// How to check a preview's files, which only their build attestations cover.
 fn preview_check(directory: &Path, version: &str) -> String {
-    format!(
+    let mut check = format!(
         "SDK {version} is a pre-release without a Stogas signature. Check each file's GitHub \
          build attestation instead: gh attestation verify <file> --repo StogasAI/stogas \
          --bundle {} --signer-workflow StogasAI/stogas/.github/workflows/release.yml \
          --source-ref refs/tags/v{version} --deny-self-hosted-runners",
         directory.join(ATTESTATION).display()
-    )
+    );
+    let gitlab = directory.join(GITLAB_ATTESTATION);
+    if gitlab.exists() {
+        let _ = write!(
+            check,
+            ". Check its GitLab build attestation too: cosign verify-blob-attestation <file> \
+             --bundle {} --type https://slsa.dev/provenance/v1 \
+             --certificate-oidc-issuer https://gitlab.com --certificate-identity \
+             https://gitlab.com/stogasai/stogas//.gitlab-ci.yml@refs/tags/v{version}",
+            gitlab.display()
+        );
+    }
+    check
 }
 
 /// Check every file other than the release metadata against the manifest.
@@ -197,6 +222,15 @@ mod tests {
                     " --signer-workflow StogasAI/stogas/.github/workflows/release.yml \
                      --source-ref refs/tags/v0.1.0-alpha.1 --deny-self-hosted-runners"
                 ),
+            "{check}"
+        );
+        std::fs::write(directory.join(super::GITLAB_ATTESTATION), b"{}").unwrap();
+        let check = super::preview_check(&directory, "0.1.0-alpha.6");
+        assert!(
+            check.ends_with(
+                " --certificate-identity \
+                 https://gitlab.com/stogasai/stogas//.gitlab-ci.yml@refs/tags/v0.1.0-alpha.6"
+            ),
             "{check}"
         );
         std::fs::write(directory.join(super::SIGNATURE), b"{}").unwrap();

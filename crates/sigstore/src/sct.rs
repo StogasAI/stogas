@@ -68,7 +68,7 @@ pub fn verify(
         .parse_timestamps()
         .map_err(|error| format!("could not parse Fulcio SCT list: {error:?}"))?;
     let [entry] = entries.as_slice() else {
-        return Err("GitHub Fulcio profile requires exactly one SCT".into());
+        return Err("the build profile requires exactly one SCT".into());
     };
     let sct = entry
         .parse_timestamp()

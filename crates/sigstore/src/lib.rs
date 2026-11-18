@@ -31,10 +31,19 @@ const MAX_SUBJECTS: usize = 1024;
 const MAX_BUNDLES: usize = 16;
 const DSSE_PAYLOAD_TYPE: &str = "application/vnd.in-toto+json";
 const SIGSTORE_BUNDLE_MEDIA_TYPE: &str = "application/vnd.dev.sigstore.bundle.v0.3+json";
-const GITHUB_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.com";
-// Fulcio copies these claims from GitHub's OIDC token into the certificate. The workflow writes
-// the provenance predicate itself, so a workflow at a moved tag or on a self-hosted runner could
-// put anything there; the certificate is the only place GitHub vouches for them.
+// Each CI provider whose hosted runners build releases: the repository URL prefix, the OIDC
+// issuer that Fulcio names, and the runner environment of its own hosted runners.
+const BUILD_PROVIDERS: [(&str, &str, &str); 2] = [
+    (
+        "https://github.com/",
+        "https://token.actions.githubusercontent.com",
+        "github-hosted",
+    ),
+    ("https://gitlab.com/", "https://gitlab.com", "gitlab-hosted"),
+];
+// Fulcio copies these claims from the CI provider's OIDC token into the certificate. The job
+// writes the provenance predicate itself, so a job at a moved tag or on a self-hosted runner
+// could put anything there; the certificate is the only place the provider vouches for them.
 const RUNNER_ENVIRONMENT: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.57264.1.11");
 const SOURCE_REPOSITORY_URI: ObjectIdentifier =
     ObjectIdentifier::new_unwrap("1.3.6.1.4.1.57264.1.12");
@@ -43,13 +52,16 @@ const SOURCE_REPOSITORY_DIGEST: ObjectIdentifier =
 const SOURCE_REPOSITORY_REF: ObjectIdentifier =
     ObjectIdentifier::new_unwrap("1.3.6.1.4.1.57264.1.14");
 
-/// Policy for one build attestation from a GitHub-hosted Actions runner.
+/// Policy for one build attestation from a hosted runner of GitHub Actions or GitLab.com CI.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct GithubPolicy {
-    /// Repository URI, for example `https://github.com/StogasAI/gateway`.
+pub struct BuildPolicy {
+    /// Repository URI, for example `https://github.com/StogasAI/gateway` or
+    /// `https://gitlab.com/stogasai/gateway`. Its host selects the OIDC issuer and the hosted
+    /// runner environment that the certificate must name.
     pub repository: String,
-    /// Workflow identity URI pinned to a workflow path and ref.
+    /// Identity URI pinned to the workflow or pipeline file and ref, for example
+    /// `https://gitlab.com/stogasai/gateway//.gitlab-ci.yml@refs/tags/v1.0.0`.
     pub workflow_identity: String,
     /// Git ref which invoked the workflow.
     pub source_ref: String,
@@ -90,8 +102,8 @@ pub struct VerifiedAttestation {
     pub predicate_type: String,
     /// Subject names and SHA-256 digests from the verified statement.
     pub subjects: Vec<(String, String)>,
-    /// The statement's predicate, as its signer wrote it, for the caller's own policy. In a GitHub
-    /// attestation the workflow writes it, so only the certificate's claims are GitHub's.
+    /// The statement's predicate, as its signer wrote it, for the caller's own policy. In a build
+    /// attestation the job writes it, so only the certificate's claims are the CI provider's.
     pub predicate: Value,
 }
 
@@ -166,26 +178,33 @@ pub enum Error {
 ///
 /// Validates Fulcio, Rekor, SCT, inclusion material, authenticated signing time and the artifact
 /// signature, then requires the exact predicate type and artifact subjects. The repository, commit,
-/// ref and GitHub-hosted runner come from the certificate, never from the workflow's predicate.
+/// ref and hosted runner come from the certificate, never from the job's predicate.
 ///
 /// # Errors
 ///
-/// Returns an error if parsing, cryptographic verification, or any pinned policy check fails.
-pub fn verify_github_attestation(
+/// Returns an error if parsing, cryptographic verification, or any pinned policy check fails, or
+/// if the repository is on neither GitHub nor GitLab.com.
+pub fn verify_build_attestation(
     trust: &TrustedRoot,
     bundle_bytes: &[u8],
     expected_subjects: &[Subject<'_>],
-    policy: &GithubPolicy,
+    policy: &BuildPolicy,
 ) -> Result<VerifiedAttestation, Error> {
+    let (_, issuer, runner) = BUILD_PROVIDERS
+        .into_iter()
+        .find(|(prefix, _, _)| policy.repository.starts_with(prefix))
+        .ok_or_else(|| {
+            Error::Policy("the repository is on neither GitHub nor GitLab.com".into())
+        })?;
     verify_single_attestation(bundle_bytes, |value| {
-        verify_github_attestation_value(trust, value, expected_subjects, policy)
+        verify_build_attestation_value(trust, value, expected_subjects, policy, issuer, runner)
     })
 }
 
 /// Verify the supported Sigstore v0.3 DSSE profile with exact identity and subjects.
 ///
-/// It applies no policy to the predicate, which the result returns for the caller's. GitHub
-/// build claims belong in [`verify_github_attestation`], which reads them from the certificate.
+/// It applies no policy to the predicate, which the result returns for the caller's. CI build
+/// claims belong in [`verify_build_attestation`], which reads them from the certificate.
 ///
 /// # Errors
 ///
@@ -246,11 +265,13 @@ fn verify_dsse_attestation_value(
     )
 }
 
-fn verify_github_attestation_value(
+fn verify_build_attestation_value(
     trust: &TrustedRoot,
     value: &Value,
     expected_subjects: &[Subject<'_>],
-    policy: &GithubPolicy,
+    policy: &BuildPolicy,
+    issuer: &str,
+    runner: &str,
 ) -> Result<VerifiedAttestation, Error> {
     verify_statement(
         trust,
@@ -259,12 +280,12 @@ fn verify_github_attestation_value(
         &policy.predicate_type,
         &CertificatePolicy {
             identity: &policy.workflow_identity,
-            issuer: GITHUB_OIDC_ISSUER,
+            issuer,
             extensions: &[
                 (SOURCE_REPOSITORY_URI, &policy.repository),
                 (SOURCE_REPOSITORY_DIGEST, &policy.source_commit),
                 (SOURCE_REPOSITORY_REF, &policy.source_ref),
-                (RUNNER_ENVIRONMENT, "github-hosted"),
+                (RUNNER_ENVIRONMENT, runner),
             ],
         },
     )
@@ -364,7 +385,7 @@ fn check_bundle_shape(value: &Value) -> Result<(), Error> {
         .ok_or_else(|| Error::InvalidBundle("missing DSSE signatures".into()))?;
     if signatures.len() != 1 {
         return Err(Error::InvalidBundle(
-            "GitHub profile requires exactly one DSSE signature".into(),
+            "the build profile requires exactly one DSSE signature".into(),
         ));
     }
     if signatures[0]
@@ -381,7 +402,7 @@ fn check_bundle_shape(value: &Value) -> Result<(), Error> {
         .ok_or_else(|| Error::InvalidBundle("missing Rekor entry".into()))?;
     if log_entries.len() != 1 {
         return Err(Error::InvalidBundle(
-            "GitHub profile requires exactly one Rekor entry".into(),
+            "the build profile requires exactly one Rekor entry".into(),
         ));
     }
     Ok(())
@@ -463,8 +484,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn policy() -> GithubPolicy {
-        GithubPolicy {
+    fn policy() -> BuildPolicy {
+        BuildPolicy {
             repository: "https://github.com/StogasAI/gateway".into(),
             workflow_identity: "https://github.com/StogasAI/gateway/.github/workflows/gateway-igvm-release.yml@refs/tags/v0.0.1".into(),
             source_ref: "refs/tags/v0.0.1".into(),
@@ -495,9 +516,28 @@ mod tests {
     fn rejects_oversized_input_before_parsing() {
         let bytes = vec![b' '; MAX_BUNDLE_BYTES + 1];
         assert!(matches!(
-            verify_github_attestation(TrustedRoot::production(), &bytes, &[], &policy()),
+            verify_build_attestation(TrustedRoot::production(), &bytes, &[], &policy()),
             Err(Error::TooLarge)
         ));
+    }
+
+    #[test]
+    fn rejects_repositories_outside_the_hosted_ci_providers() {
+        for repository in [
+            "https://codeberg.org/stogas/gateway",
+            "https://github.com.evil.example/StogasAI/gateway",
+            "http://github.com/StogasAI/gateway",
+            "github.com/StogasAI/gateway",
+        ] {
+            let policy = BuildPolicy {
+                repository: repository.into(),
+                ..policy()
+            };
+            assert!(matches!(
+                verify_build_attestation(TrustedRoot::production(), b"{}", &[], &policy),
+                Err(Error::Policy(message)) if message.contains("neither GitHub nor GitLab.com")
+            ));
+        }
     }
 
     #[test]
