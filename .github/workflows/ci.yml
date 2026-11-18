@@ -78,8 +78,9 @@ jobs:
       # actionlint checks the workflows' syntax and expressions and runs ShellCheck on their
       # scripts. Version 1.7.12 does not know workflow cache modes, concurrency queues or `$/`
       # workflow calls yet. zizmor audits the workflows for security problems, and checks each
-      # pinned action commit against its repository and version comment.
-      - name: Check the workflows and install scripts
+      # pinned action commit against its repository and version comment. ShellCheck and
+      # PSScriptAnalyzer check the repository's own shell and PowerShell scripts.
+      - name: Check the workflows and scripts
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -88,7 +89,8 @@ jobs:
           status=0
           docker run --rm -v "$PWD:/repo:ro" -w /repo "$actionlint" -ignore 'unexpected key "cache-mode"' -ignore 'unexpected key "queue"' -ignore 'reusable workflow call "\$/' || status=1
           docker run --rm -e GH_TOKEN -v "$PWD:/repo:ro" -w /repo ghcr.io/zizmorcore/zizmor@sha256:3014cc8f68f663935f69b3c3e0e41f5ce102b268d97db13db0f62208747f860d --format github . || status=1
-          docker run --rm -v "$PWD:/repo:ro" -w /repo --entrypoint shellcheck "$actionlint" install.sh || status=1
+          mapfile -t scripts < <(git ls-files '*.sh')
+          docker run --rm -v "$PWD:/repo:ro" -w /repo --entrypoint shellcheck "$actionlint" "${scripts[@]}" || status=1
           # shellcheck disable=SC2016 # PowerShell expands its own variables.
           pwsh -NoProfile -Command '$found = Invoke-ScriptAnalyzer -Path install.ps1; $found | Format-List; if ($found) { exit 1 }' || status=1
           exit "$status"

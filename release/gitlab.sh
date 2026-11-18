@@ -1,3 +1,4 @@
+#!/bin/sh
 # GitLab's rebuild of a release tag, which .gitlab-ci.yml runs with only the variables it names:
 # `build <os>` builds the platforms of one operating system, and `attest` packages every release
 # file with the Apple compiler outputs of GitHub's build and signs a build proof for every file.
