@@ -669,6 +669,53 @@ fn verify_release_provenance(
     )
 }
 
+/// The GitLab project whose hosted runners rebuild each gateway release.
+const GATEWAY_GITLAB_REPOSITORY: &str = "https://gitlab.com/stogasai/gateway";
+
+/// Verify GitLab's build proof of a gateway release: GitLab's hosted runners built the tag that the
+/// manifest names and made the same manifest and image that GitHub's proof names.
+///
+/// # Errors
+/// Rejects an invalid or oversized manifest, and a proof from another builder, project, tag or
+/// commit, or for other bytes.
+pub fn verify_gateway_gitlab_build(
+    manifest_bytes: &[u8],
+    attestation: &[u8],
+    trust: &TrustedRoot,
+) -> Result<(), Error> {
+    if manifest_bytes.len().max(attestation.len()) > MAX_INPUT_BYTES {
+        return Err(Error::Release("gateway release input is too large".into()));
+    }
+    let manifest: GatewayReleaseManifest = strict_json::from_slice(manifest_bytes)
+        .and_then(serde_json::from_value)
+        .map_err(|error| Error::Release(format!("invalid gateway release manifest: {error}")))?;
+    validate_gateway_release_manifest(&manifest)?;
+    let reference = format!("refs/tags/{}", manifest.source.tag);
+    verify_build_attestation(
+        trust,
+        attestation,
+        &[
+            Subject {
+                name: "release-manifest.json",
+                sha256: &hex::encode(Sha256::digest(manifest_bytes)),
+            },
+            Subject {
+                name: "gateway.igvm",
+                sha256: &manifest.artifacts.gateway_igvm.sha256,
+            },
+        ],
+        &BuildPolicy {
+            repository: GATEWAY_GITLAB_REPOSITORY.into(),
+            workflow_identity: format!("{GATEWAY_GITLAB_REPOSITORY}//.gitlab-ci.yml@{reference}"),
+            source_ref: reference,
+            source_commit: manifest.source.commit.clone(),
+            predicate_type: "https://slsa.dev/provenance/v1".into(),
+        },
+    )
+    .map(drop)
+    .map_err(|error| Error::Release(format!("gateway GitLab provenance: {error}")))
+}
+
 fn verify_github_provenance(
     trust: &TrustedRoot,
     attestation_bytes: &[u8],
