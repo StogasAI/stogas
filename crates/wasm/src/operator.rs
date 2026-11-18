@@ -81,21 +81,31 @@ pub fn verify_sdk_builds(
     .map_err(|error| JsError::new(&error.to_string()))
 }
 
-/// Verify GitLab's build proof of a gateway release with Sigstore's keys from the given TUF files,
-/// as Stogas does before it publishes the release.
+/// Verify GitLab's build proof of a gateway release's files with Sigstore's keys from the given TUF
+/// files, as Stogas does before it publishes the release.
 ///
 /// # Errors
 /// Rejects invalid Sigstore files, an invalid manifest, or a proof that does not name its tag,
-/// commit and bytes.
+/// commit and files.
 #[wasm_bindgen]
 pub fn verify_gateway_gitlab_build(
     manifest: &[u8],
+    license: &[u8],
+    notice: &[u8],
+    sbom: &[u8],
     attestation: &[u8],
     sigstore_files_json: &str,
 ) -> Result<(), JsError> {
     let sigstore = verified_sigstore(sigstore_files_json)?;
-    stogas_core::verify_gateway_gitlab_build(manifest, attestation, sigstore.trusted_root())
-        .map_err(|error| JsError::new(&error.to_string()))
+    stogas_core::verify_gateway_gitlab_build(
+        manifest,
+        license,
+        notice,
+        sbom,
+        attestation,
+        sigstore.trusted_root(),
+    )
+    .map_err(|error| JsError::new(&error.to_string()))
 }
 
 /// Seal one boot's provisioning envelope to its attested X-Wing public key.

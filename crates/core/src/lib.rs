@@ -672,18 +672,26 @@ fn verify_release_provenance(
 /// The GitLab project whose hosted runners rebuild each gateway release.
 const GATEWAY_GITLAB_REPOSITORY: &str = "https://gitlab.com/stogasai/gateway";
 
-/// Verify GitLab's build proof of a gateway release: GitLab's hosted runners built the tag that the
-/// manifest names and made the same manifest and image that GitHub's proof names.
+/// Verify GitLab's build proof of a gateway release.
+///
+/// GitLab's hosted runners must have built the tag that the manifest names and written the same
+/// release files: the manifest, the image, `LICENSE`, `NOTICE` and the bill of materials.
 ///
 /// # Errors
-/// Rejects an invalid or oversized manifest, and a proof from another builder, project, tag or
+/// Rejects an invalid or oversized input, and a proof from another builder, project, tag or
 /// commit, or for other bytes.
 pub fn verify_gateway_gitlab_build(
     manifest_bytes: &[u8],
+    license: &[u8],
+    notice: &[u8],
+    sbom: &[u8],
     attestation: &[u8],
     trust: &TrustedRoot,
 ) -> Result<(), Error> {
-    if manifest_bytes.len().max(attestation.len()) > MAX_INPUT_BYTES {
+    if [manifest_bytes, license, notice, sbom, attestation]
+        .iter()
+        .any(|input| input.len() > MAX_INPUT_BYTES)
+    {
         return Err(Error::Release("gateway release input is too large".into()));
     }
     let manifest: GatewayReleaseManifest = strict_json::from_slice(manifest_bytes)
@@ -702,6 +710,18 @@ pub fn verify_gateway_gitlab_build(
             Subject {
                 name: "gateway.igvm",
                 sha256: &manifest.artifacts.gateway_igvm.sha256,
+            },
+            Subject {
+                name: "LICENSE",
+                sha256: &hex::encode(Sha256::digest(license)),
+            },
+            Subject {
+                name: "NOTICE",
+                sha256: &hex::encode(Sha256::digest(notice)),
+            },
+            Subject {
+                name: "sbom.cdx.json",
+                sha256: &hex::encode(Sha256::digest(sbom)),
             },
         ],
         &BuildPolicy {
