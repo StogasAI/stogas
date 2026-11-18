@@ -76,10 +76,7 @@ withoutLogs.tlogs = [];
 assert.throws(() =>
 	verify_build_attestation(attestation, subjects, policy, JSON.stringify(withoutLogs))
 );
-assert.throws(
-	() => verify_build_attestation(attestation, subjects, policy, '{}'),
-	/trusted root/i
-);
+assert.throws(() => verify_build_attestation(attestation, subjects, policy, '{}'), /trusted root/i);
 // A misspelled requirement fails instead of going unchecked.
 const { source_commit, ...misspelled } = policy;
 assert.throws(
