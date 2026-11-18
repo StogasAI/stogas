@@ -8,7 +8,11 @@ test "$(git rev-parse HEAD)" = "$CI_COMMIT_SHA"
 # The attest job's checkout also holds the build jobs' archives.
 test -z "$(git status --porcelain --untracked-files=no)"
 
-dockerd-entrypoint.sh dockerd --host=unix:///var/run/docker.sock > /builds/dockerd.log 2>&1 &
+# GitLab's hosted runners share IP addresses, which can use up Docker Hub's limit for anonymous
+# pulls, so Docker asks Google's copy of Docker Hub first. The digests in release/Dockerfile decide
+# which images it accepts.
+dockerd-entrypoint.sh dockerd --host=unix:///var/run/docker.sock --registry-mirror=https://mirror.gcr.io \
+	> /builds/dockerd.log 2>&1 &
 for _ in $(seq 60); do
 	docker info > /dev/null 2>&1 && break
 	sleep 1
