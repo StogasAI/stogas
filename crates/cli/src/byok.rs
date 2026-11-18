@@ -21,12 +21,17 @@ use std::{
     time::Duration,
 };
 use stogas::{TransportOptions, gateway_request::GatewayResponse, network::Network};
+use tokio::time::Instant;
 use zeroize::Zeroizing;
 
 pub const CHECK_PATH: &str = "/v1/byok/check";
 // Evidence, a new verified connection, and the check: a provider's answer within 8 seconds, or
 // an Azure sign-in and discovery within 25.
 const CHECK_BUDGET: Duration = Duration::from_secs(45);
+// A grant lasts five minutes, and reading its key can wait for a person, at the terminal or at the
+// system keychain's prompt. A check whose key took longer than this asks for a new grant, so the
+// connection to the gateway has most of five minutes.
+const GRANT_FRESH_FOR: Duration = Duration::from_mins(1);
 
 #[derive(clap::Args)]
 pub struct CheckArgs {
@@ -337,8 +342,16 @@ pub async fn check(
             &api.page(),
         );
     }
-    let grant = api.grant().await?;
-    let key = keys.for_grant(&grant, &name).await?;
+    let mut asked = Instant::now();
+    let mut grant = api.grant().await?;
+    let key = loop {
+        let key = keys.for_grant(&grant, &name).await?;
+        if asked.elapsed() < GRANT_FRESH_FOR {
+            break key;
+        }
+        asked = Instant::now();
+        grant = api.grant().await?;
+    };
     let body = Zeroizing::new(serde_json::to_vec(
         &json!({ "encryption_keys": { grant.key_label.as_str(): key.as_str() } }),
     )?);
@@ -627,6 +640,60 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "You do not manage this credential.\u{fffd}"
+        );
+    }
+
+    /// The dashboard of a person who enters the key two minutes after the first grant.
+    struct Slow(Fake, Mutex<Duration>);
+
+    impl CheckApi for Slow {
+        async fn find(&self) -> Result<Option<Credential>> {
+            self.0.find().await
+        }
+
+        async fn check_stored(&self) -> Result<Credential> {
+            self.0.check_stored().await
+        }
+
+        async fn grant(&self) -> Result<CheckGrant> {
+            let grant = self.0.grant().await;
+            let wait = std::mem::take(&mut *self.1.lock().unwrap());
+            tokio::time::advance(wait).await;
+            grant
+        }
+
+        fn page(&self) -> String {
+            self.0.page()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn asks_for_a_new_grant_after_a_slow_key() {
+        let directory = Directory::new();
+        let (path, encoded, id) = key_file(directory.path(), 7);
+        let api = Slow(
+            Fake {
+                credential: Some(credential("encrypted")),
+                stored_error: None,
+                key_id: id,
+                calls: Mutex::new(Vec::new()),
+            },
+            Mutex::new(Duration::from_mins(2)),
+        );
+        let accepted = gateway(
+            StatusCode::OK,
+            json!({ "checkedAt": "2026-11-03T12:00:00Z", "checkError": null }),
+        );
+        check(&api, &accepted, &Keys::new(KeySource::File(path)))
+            .await
+            .unwrap();
+        assert_eq!(*api.0.calls.lock().unwrap(), ["find", "grant", "grant"]);
+        assert_eq!(
+            *accepted.sent.lock().unwrap(),
+            [(
+                "stogas_byok_check_v1.grant".to_owned(),
+                json!({ "encryption_keys": { "prod": encoded } })
+            )]
         );
     }
 
