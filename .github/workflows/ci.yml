@@ -455,6 +455,15 @@ jobs:
       - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
         with:
           ruby-version: '3.3'
+      # The Java, Kotlin, Clojure and Scala examples job saves every Maven artifact this job needs.
+      - if: runner.os == 'Linux'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.m2/repository
+            !~/.m2/repository/ai/stogas
+          key: maven-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}
+          restore-keys: maven-${{ runner.os }}-
       - name: 'Java: package and OpenAI client example'
         run: |
           mvn -q -f bindings/java/pom.xml install
@@ -570,6 +579,14 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
+      # The Java, Kotlin, Clojure and Scala examples job saves every Maven artifact this job needs.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.m2/repository
+            !~/.m2/repository/ai/stogas
+          key: maven-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}
+          restore-keys: maven-${{ runner.os }}-
       - name: 'Java 25: package'
         run: mvn -q -f bindings/java/pom.xml install
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
@@ -776,6 +793,17 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      # Maven Central limits downloads from shared networks such as GitHub's runners and asks CI
+      # to keep what it downloaded. A changed pom.xml restores the last copy, so Maven fetches only
+      # what is new, and the other Linux jobs that run Maven restore what this one keeps.
+      - if: matrix.language == 'jvm'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.m2/repository
+            !~/.m2/repository/ai/stogas
+          key: maven-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}
+          restore-keys: maven-${{ runner.os }}-
       - if: matrix.language == 'dotnet'
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
