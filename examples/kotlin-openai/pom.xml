@@ -2,8 +2,8 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>example</groupId><artifactId>stogas-kotlin-openai</artifactId><version>1.0.0</version>
   <properties>
-    <kotlin.version>2.4.10</kotlin.version>
-    <maven.compiler.release>17</maven.compiler.release>
+    <kotlin.version>2.4.21</kotlin.version>
+    <kotlin.compiler.jvmTarget>17</kotlin.compiler.jvmTarget>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
   <dependencies>
@@ -14,7 +14,7 @@
   <build>
     <sourceDirectory>src/main/kotlin</sourceDirectory>
     <plugins>
-      <plugin><groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-maven-plugin</artifactId><version>${kotlin.version}</version><extensions>true</extensions></plugin>
+      <plugin><groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-maven-plugin</artifactId><version>${kotlin.version}</version><executions><execution><goals><goal>compile</goal></goals></execution></executions></plugin>
       <plugin><groupId>org.codehaus.mojo</groupId><artifactId>exec-maven-plugin</artifactId><version>3.6.3</version><configuration><mainClass>example.MainKt</mainClass></configuration></plugin>
     </plugins>
   </build>

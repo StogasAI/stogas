@@ -15,17 +15,17 @@ class SingleUseHttpClient(private val delegate: HttpClient) : HttpClient by dele
     private fun singleUse(request: HttpRequest): HttpRequest {
         val body = request.body ?: return request
         return request.toBuilder().body(object : HttpRequestBody {
-            override fun writeTo(output: OutputStream) = body.writeTo(output)
+            override fun writeTo(outputStream: OutputStream) = body.writeTo(outputStream)
             override fun contentType() = body.contentType()
             override fun contentLength() = body.contentLength()
             override fun repeatable() = false
             override fun close() = body.close()
         }).build()
     }
-    override fun execute(request: HttpRequest, options: RequestOptions) =
-        delegate.execute(singleUse(request), options)
-    override fun executeAsync(request: HttpRequest, options: RequestOptions) =
-        delegate.executeAsync(singleUse(request), options)
+    override fun execute(request: HttpRequest, requestOptions: RequestOptions) =
+        delegate.execute(singleUse(request), requestOptions)
+    override fun executeAsync(request: HttpRequest, requestOptions: RequestOptions) =
+        delegate.executeAsync(singleUse(request), requestOptions)
 }
 
 fun main() {
