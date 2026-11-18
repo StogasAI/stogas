@@ -133,13 +133,18 @@ jobs:
         name: Boot the emulator and run installed-package checks
         run: |
           set -euo pipefail
+          # The emulator gives the guest the adb key that the adb server creates when it first
+          # starts; an emulator that starts first leaves adb unauthorized.
+          adb start-server
           "$ANDROID_HOME/emulator/emulator" -avd stogas -port 5554 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > "$RUNNER_TEMP/emulator.log" 2>&1 &
           # shellcheck disable=SC2016 # The loop runs in the emulator's shell.
           timeout 900 adb -s emulator-5554 wait-for-device shell 'until [ "$(getprop sys.boot_completed)" = 1 ]; do sleep 5; done'
           python -B release/release.py qualify "$RUNNER_TEMP/sdk-packages" --platform "$PLATFORM" --out "$RUNNER_TEMP/report/$NAME.json" --device emulator-5554 ${PACKAGE:+--package "$PACKAGE"} ${PREVIEW:+--preview}
           adb -s emulator-5554 emu kill
       - if: failure() && fromJSON(inputs.target).image
-        run: tail -n 200 "$RUNNER_TEMP/emulator.log"
+        run: |
+          adb devices -l
+          tail -n 200 "$RUNNER_TEMP/emulator.log"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sdk-report-${{ fromJSON(inputs.target).name }}
