@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
 	verify_dsse_attestation,
-	verify_github_attestation
+	verify_build_attestation
 } from '../../packages/sigstore/bindings/node/node.js';
 
 const attestation = readFileSync(
@@ -31,7 +31,7 @@ const policy = {
 		'https://github.com/StogasAI/gateway/.github/workflows/gateway-igvm-release.yml@refs/tags/v0.0.1'
 };
 
-const verified = verify_github_attestation(attestation, subjects, policy, trustedRoot);
+const verified = verify_build_attestation(attestation, subjects, policy, trustedRoot);
 assert.equal(verified.subjects.length, 2);
 assert.equal(
 	verified.predicate.buildDefinition.buildType,
@@ -62,7 +62,7 @@ const hash = mutation.verificationMaterial.tlogEntries[0].inclusionProof.hashes[
 mutation.verificationMaterial.tlogEntries[0].inclusionProof.hashes[0] = `${hash.startsWith('A') ? 'B' : 'A'}${hash.slice(1)}`;
 assert.throws(
 	() =>
-		verify_github_attestation(
+		verify_build_attestation(
 			new TextEncoder().encode(JSON.stringify(mutation)),
 			subjects,
 			policy,
@@ -74,17 +74,17 @@ assert.throws(
 const withoutLogs = JSON.parse(trustedRoot);
 withoutLogs.tlogs = [];
 assert.throws(() =>
-	verify_github_attestation(attestation, subjects, policy, JSON.stringify(withoutLogs))
+	verify_build_attestation(attestation, subjects, policy, JSON.stringify(withoutLogs))
 );
 assert.throws(
-	() => verify_github_attestation(attestation, subjects, policy, '{}'),
+	() => verify_build_attestation(attestation, subjects, policy, '{}'),
 	/trusted root/i
 );
 // A misspelled requirement fails instead of going unchecked.
 const { source_commit, ...misspelled } = policy;
 assert.throws(
 	() =>
-		verify_github_attestation(
+		verify_build_attestation(
 			attestation,
 			subjects,
 			{ ...misspelled, source_comit: source_commit },
@@ -94,7 +94,7 @@ assert.throws(
 );
 assert.throws(
 	() =>
-		verify_github_attestation(
+		verify_build_attestation(
 			attestation,
 			[{ ...subjects[0], digest: subjects[0].sha256 }],
 			policy,
@@ -103,6 +103,6 @@ assert.throws(
 	/invalid subjects/
 );
 assert.throws(
-	() => verify_github_attestation(attestation, JSON.stringify(subjects), policy, trustedRoot),
+	() => verify_build_attestation(attestation, JSON.stringify(subjects), policy, trustedRoot),
 	/invalid subjects/
 );
