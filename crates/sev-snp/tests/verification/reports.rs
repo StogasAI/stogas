@@ -351,7 +351,11 @@ fn key_information_names_a_known_key() {
     ] {
         assert_eq!(Report::parse(&key_info(value)).unwrap().signing_key(), key);
     }
-    for reserved in 2..7 {
+    // Revision 1.59 of AMD's ABI names key 2, the chip-secret VCEK, and reserves keys 3 to 6.
+    let chip_secret = Report::parse(&key_info(2 << 2)).unwrap_err();
+    assert_eq!(chip_secret.kind(), ErrorKind::Report);
+    assert!(chip_secret.message().contains("chip-secret VCEK"));
+    for reserved in 3..7 {
         assert_eq!(rejection(&key_info(reserved << 2)), ErrorKind::Report);
     }
     for bit in 5..32 {

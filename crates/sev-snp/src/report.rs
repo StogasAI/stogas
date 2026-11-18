@@ -150,10 +150,16 @@ impl Report {
             )));
         }
         let key_info = u32_at(&bytes, 0x48);
-        if key_info >> 5 != 0 || matches!((key_info >> 2) & 7, 2..=6) {
+        if key_info >> 5 != 0 || matches!((key_info >> 2) & 7, 3..=6) {
             return Err(invalid(format!(
                 "key information {key_info:#010x} sets reserved bits"
             )));
+        }
+        // Revision 1.59 of AMD's ABI names signing key 2.
+        if (key_info >> 2) & 7 == 2 {
+            return Err(invalid(
+                "a chip-secret VCEK signed the report, which this crate cannot verify",
+            ));
         }
 
         let tcb = |offset: usize, label: &str| {
@@ -404,6 +410,7 @@ impl fmt::Debug for Report {
 }
 
 /// Reserved bytes are zero. Each version adds fields where the previous one reserved space.
+/// Version 6 adds extended TCBs from `0x220` to `0x27f`, which only Venice reports set.
 fn check_reserved(bytes: &[u8; REPORT_SIZE], version: u32) -> Result<(), Error> {
     let cpuid_end = if version >= 3 { 0x18b } else { 0x188 };
     let mitigations_end = if version >= 5 { 0x208 } else { 0x1f8 };

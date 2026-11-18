@@ -34,14 +34,14 @@ A host that returns no certificate table leaves you to fetch the VCEK: `kds::vce
 
 ## What verification checks
 
-| Step         | Rejects                                                                                                                                                           |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Report       | A wrong size, report versions other than 2 to 6, set reserved bytes and bits, an unsigned report, an unsupported processor and a TCB outside its product's layout |
-| Certificates | Anything but AMD's exact RSASSA-PSS SHA-384 encoding, names and extensions, and an intermediate that the pinned root did not sign                                 |
-| Binding      | A certificate for another product, TCB, chip, or kind of key                                                                                                      |
-| Signature    | An invalid ECDSA P-384 signature over the report                                                                                                                  |
-| Time         | A certificate or CRL that is not valid at the time you give                                                                                                       |
-| Policy       | Report values and guest policy flags that differ from the policy, and a platform that meets none of its platform rules                                            |
+| Step         | Rejects                                                                                                                                                                                                 |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Report       | A wrong size, report versions other than 2 to 6, set reserved bytes and bits, an unsigned report or one that a chip-secret VCEK signed, an unsupported processor and a TCB outside its product's layout |
+| Certificates | Anything but AMD's exact RSASSA-PSS SHA-384 encoding, names and extensions, and an intermediate that the pinned root did not sign                                                                       |
+| Binding      | A certificate for another product, TCB, chip, or kind of key                                                                                                                                            |
+| Signature    | An invalid ECDSA P-384 signature over the report                                                                                                                                                        |
+| Time         | A certificate or CRL that is not valid at the time you give                                                                                                                                             |
+| Policy       | Report values and guest policy flags that differ from the policy, and a platform that meets none of its platform rules                                                                                  |
 
 A `PlatformRule` names a product or CPUID, and optionally chips. Its TCB minimums apply to the reported, committed and current TCB, and its launch minimum to the launch TCB. It rejects firmware that the host updated but did not commit, which could roll back, unless `permit_provisional_firmware` is set. The guest policy rule forbids debugging and migration agents unless you change `forbid`.
 
