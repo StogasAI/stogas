@@ -96,7 +96,9 @@ def qualify(source, packages, version, platform, target, requested, cases):
             shutil.copyfile(packages / f"Stogas.{version}.nupkg", work / "packages" / f"Stogas.{version}.nupkg")
             shutil.copyfile(source / "release/consumers/dotnet/NuGet.Config", work / "dotnet/NuGet.Config")
             run(["dotnet", "restore", "dotnet/Consumer.csproj", "--packages", work / "nuget", "--configfile", "dotnet/NuGet.Config", "--runtime", target["dotnet"], "-p:SelfContained=true"])
-            qualify_cases("dotnet", runtime_of("dotnet", "--info"), ["dotnet", "run", "--no-restore", "--self-contained", "--runtime", target["dotnet"], "--project", "dotnet/Consumer.csproj"])
+            # .NET 10's `dotnet --info` sometimes exits with SIGTERM on hosted runners, and the SDK
+            # version also fixes the runtime that a self-contained build bundles.
+            qualify_cases("dotnet", runtime_of("dotnet", "--version"), ["dotnet", "run", "--no-restore", "--self-contained", "--runtime", target["dotnet"], "--project", "dotnet/Consumer.csproj"])
         if "ruby" in selected:
             shutil.copytree(source / "bindings/ruby/test", work / "ruby")
             gem = shutil.which("gem")
