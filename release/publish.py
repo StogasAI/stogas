@@ -31,6 +31,9 @@ from artifacts import REPOSITORY, digest, source_digest, unpack
 import channels
 from gate import CRATES, check_release, crate_refusals
 
+# The tagged checkout that this script runs from.
+SOURCE = Path(__file__).resolve().parents[1]
+
 
 def run(arguments, stderr=subprocess.STDOUT, **kwargs):
     """A tool's output. On failure, its last lines go to standard error, since they name the
@@ -378,7 +381,7 @@ def maven(packages, version):
                 shutil.copyfile(path, destination)
                 run(["cosign", "sign-blob", "--yes", "--bundle", f"{destination}.sigstore.json", str(destination)])
                 verify(path, f"{destination}.sigstore.json")
-            run(["jreleaser", "deploy", "--config-file", str(work / "jreleaser.yml"), "--basedir", str(Path(__file__).resolve().parents[1]), "--output-directory", str(work / "output")], env={**os.environ, "JRELEASER_PROJECT_VERSION": version})
+            run(["jreleaser", "deploy", "--config-file", str(work / "jreleaser.yml"), "--basedir", str(SOURCE), "--output-directory", str(work / "output")], env={**os.environ, "JRELEASER_PROJECT_VERSION": version})
     pending = set(artifacts)
     def served():
         for path in sorted(pending):
@@ -650,7 +653,9 @@ def container(packages, version, image=channels.IMAGE, output=None):
 def preview(packages):
     """A preview has no Stogas signature. Require the gate's preview, every file the manifest
     names and nothing else, and GitHub's build proof for the manifest and the qualification
-    report, which together name every artifact."""
+    report, which together name every artifact. When GitLab rebuilds the release, also require
+    GitLab's proof for the manifest, which names its digest only when GitLab's rebuild made the
+    same bytes. gh attestation verify accepts only github.com certificates, so cosign checks it."""
     manifest, is_preview = check_release(packages)
     if not is_preview:
         raise ValueError("Only a preview is published without the Stogas signature")
@@ -664,7 +669,17 @@ def preview(packages):
             "--predicate-type", "https://slsa.dev/provenance/v1", "--source-ref", reference,
             "--source-digest", manifest["source"]["commit"], "--deny-self-hosted-runners",
         ])
-    print(f"Preview {manifest['version']}: GitHub's build proof and the gate cover every file")
+    if (SOURCE / ".gitlab-ci.yml").exists():
+        bundle = packages / "gitlab-attestation.jsonl"
+        if not bundle.exists():
+            raise ValueError("GitLab rebuilds this release, but it has no GitLab build proof")
+        run([
+            "cosign", "verify-blob-attestation", str(packages / "release-manifest.json"),
+            "--bundle", str(bundle), "--type", "https://slsa.dev/provenance/v1",
+            "--certificate-oidc-issuer", "https://gitlab.com",
+            "--certificate-identity", f"https://gitlab.com/stogasai/stogas//.gitlab-ci.yml@{reference}",
+        ])
+    print(f"Preview {manifest['version']}: the gate and the build proofs cover every file")
 
 
 def first_versions():

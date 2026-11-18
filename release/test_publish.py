@@ -445,6 +445,29 @@ class StorageHostTests(unittest.TestCase):
                 publish.download("https://registry.npmjs.org/stogas")
 
 
+class PreviewTests(unittest.TestCase):
+    def test_a_preview_that_gitlab_rebuilds_needs_gitlab_proof_of_its_manifest(self):
+        # No Stogas signature binds a preview, so a draft made public without the release
+        # command's checks would otherwise publish with GitHub's proof alone.
+        packages = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-preview-test-")))
+        commands = []
+        self.enterContext(mock.patch.object(publish, "check_release", return_value=({"version": "1.2.3-alpha.1", "source": {"commit": "a" * 40}}, True)))
+        self.enterContext(mock.patch.object(publish, "run", side_effect=lambda arguments, **_: commands.append(arguments)))
+        self.enterContext(contextlib.redirect_stdout(io.StringIO()))
+        with self.assertRaisesRegex(ValueError, "^GitLab rebuilds this release, but it has no GitLab build proof$"):
+            publish.preview(packages)
+        (packages / "gitlab-attestation.jsonl").write_bytes(b"{}")
+        commands.clear()
+        publish.preview(packages)
+        self.assertEqual([command[:3] for command in commands[:2]], [["gh", "attestation", "verify"]] * 2)
+        self.assertEqual(commands[2], [
+            "cosign", "verify-blob-attestation", str(packages / "release-manifest.json"),
+            "--bundle", str(packages / "gitlab-attestation.jsonl"), "--type", "https://slsa.dev/provenance/v1",
+            "--certificate-oidc-issuer", "https://gitlab.com",
+            "--certificate-identity", "https://gitlab.com/stogasai/stogas//.gitlab-ci.yml@refs/tags/v1.2.3-alpha.1",
+        ])
+
+
 class FirstVersionTests(unittest.TestCase):
     def first_versions(self, documents):
         with mock.patch.object(publish, "download", side_effect=documents.get), contextlib.redirect_stdout(io.StringIO()) as output:

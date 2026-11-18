@@ -53,12 +53,17 @@ jobs:
           test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = false
           mkdir "$RUNNER_TEMP/approved"
           gh release download "$GITHUB_REF_NAME" --dir "$RUNNER_TEMP/approved"
+      - name: Install the pinned cosign
+        run: |
+          mkdir "$RUNNER_TEMP/cosign"
+          release/install-cosign.sh "$RUNNER_TEMP/cosign"
+          echo "$RUNNER_TEMP/cosign" >> "$GITHUB_PATH"
       # Stogas signs a release only after GitLab's rebuild matches GitHub's build, so a draft
       # made public without that check publishes nothing. The CLI comes from the tagged source,
       # not the release.
-      # Stogas does not sign a preview: its gate and GitHub's build proof stand alone, and
-      # only a pre-release can be one.
-      - name: Require the Stogas signature on every file, or a preview's build proof
+      # Stogas does not sign a preview: its gate and the build proofs of GitHub and GitLab stand
+      # alone, and only a pre-release can be one.
+      - name: Require the Stogas signature on every file, or a preview's build proofs
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
@@ -136,9 +141,7 @@ jobs:
           unzip -q "$RUNNER_TEMP/jreleaser.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/jreleaser-1.26.0/bin" >> "$GITHUB_PATH"
           mkdir "$RUNNER_TEMP/cosign"
-          curl --fail --location --silent --show-error https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64 --output "$RUNNER_TEMP/cosign/cosign"
-          printf '%s  %s\n' 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa "$RUNNER_TEMP/cosign/cosign" | sha256sum --check
-          chmod 755 "$RUNNER_TEMP/cosign/cosign"
+          release/install-cosign.sh "$RUNNER_TEMP/cosign"
           echo "$RUNNER_TEMP/cosign" >> "$GITHUB_PATH"
       - if: ${{ !cancelled() && steps.check.outcome == 'success' }}
         name: Publish the exact Java and Android packages
