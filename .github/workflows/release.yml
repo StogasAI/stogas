@@ -335,6 +335,9 @@ jobs:
           notes=$(printf '%s\n\nContainer image: `ghcr.io/stogasai/stogas:%s@%s`' "$notes" "${GITHUB_REF_NAME#v}" "$IMAGE_DIGEST")
           prerelease=()
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease=(--prerelease); fi
+          # The draft names no target commit, because GitHub refuses the workflow token a release
+          # whose target has workflow files that no branch has, as once main changes a workflow
+          # during the build. The existing tag still decides the commit.
           gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/sdk-packages/"* \
-            --draft "${prerelease[@]}" --verify-tag --target "$GITHUB_SHA" --title "Stogas SDK $GITHUB_REF_NAME" \
+            --draft "${prerelease[@]}" --verify-tag --title "Stogas SDK $GITHUB_REF_NAME" \
             --notes "$notes"
