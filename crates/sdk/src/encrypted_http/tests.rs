@@ -461,6 +461,24 @@ fn metadata_rejects_transport_overrides_and_unsupported_paths_before_submission(
         }
         assert!(request_metadata(&request.body(Bytes::new()).unwrap()).is_err());
     }
+    // A catalog read is a GET without content.
+    let part = format!("/v1/catalog/parts/{}", "0a".repeat(32));
+    for path in ["/v1/catalog", "/v1/models", part.as_str()] {
+        let read = |method: &str, body: &'static [u8]| {
+            let request = Request::builder().method(method).uri(path);
+            request_metadata(&request.body(Bytes::from_static(body)).unwrap())
+        };
+        assert!(read("GET", b"").is_ok());
+        assert!(read("GET", b"{}").is_err());
+        assert!(read("POST", b"").is_err());
+    }
+    for path in [
+        "/v1/catalog/parts/".to_owned(),
+        format!("/v1/catalog/parts/{}", "0A".repeat(32)),
+    ] {
+        let request = Request::builder().method("GET").uri(path);
+        assert!(request_metadata(&request.body(Bytes::new()).unwrap()).is_err());
+    }
     for metadata in [
         br#"{"status":100,"headers":{}}"#.as_slice(),
         br#"{"status":200,"headers":{"Content-Type":"a","content-type":"b"}}"#,

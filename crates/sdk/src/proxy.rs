@@ -1,5 +1,6 @@
 use crate::{
     TransportOptions, encrypted_client,
+    encrypted_http::is_catalog_read,
     evidence_client::{self, EvidenceClient},
     http2_pool, native_http,
     network::SETUP_BUDGET,
@@ -308,8 +309,10 @@ async fn proxy_request(State(state): State<Arc<ProxyState>>, request: Request) -
 #[derive(Debug)]
 enum Route {
     Refresh,
-    Preflight,
-    Inference(String),
+    /// A browser's preflight for a path that takes this method.
+    Preflight(Method),
+    /// A request that the gateway answers, with its path there.
+    Gateway(String),
 }
 fn route(config: &ServeConfig, request: &Request) -> Result<Route, Failure> {
     if request.headers().get_all(header::HOST).iter().count() != 1
@@ -365,30 +368,39 @@ fn route(config: &ServeConfig, request: &Request) -> Result<Route, Failure> {
     let path = client_path(config, request)
         .ok_or_else(|| Failure::before(StatusCode::NOT_FOUND, "invalid_path", "invalid base URL"))?
         .to_owned();
-    if !matches!(
+    // A catalog read is a GET; every other supported path takes a POST.
+    let method = if is_catalog_read(&path) {
+        Method::GET
+    } else if matches!(
         path.as_str(),
         "/v1/chat/completions"
             | "/v1/responses"
             | "/v1/policies/validate"
             | "/v1/policies/simulate"
     ) {
+        Method::POST
+    } else {
         return Err(Failure::before(
             StatusCode::NOT_FOUND,
             "unsupported_path",
-            "only chat completions, responses, policy validation and routing simulation are supported",
+            "only chat completions, responses, policy validation, routing simulation and catalog reads are supported",
         ));
-    }
+    };
     if request.method() == Method::OPTIONS && browser {
-        return Ok(Route::Preflight);
+        return Ok(Route::Preflight(method));
     }
-    if request.method() != Method::POST {
+    if request.method() != method {
         return Err(Failure::before(
             StatusCode::METHOD_NOT_ALLOWED,
             "unsupported_method",
-            "inference requires POST",
+            if method == Method::GET {
+                "catalog reads require GET"
+            } else {
+                "inference requires POST"
+            },
         ));
     }
-    Ok(Route::Inference(path))
+    Ok(Route::Gateway(path))
 }
 
 async fn proxy_request_inner(
@@ -410,9 +422,9 @@ async fn proxy_request_inner(
                 .body(Body::empty())
                 .unwrap_or_else(|_| Response::new(Body::empty())))
         }
-        Route::Preflight => browser_preflight(&request)
+        Route::Preflight(method) => browser_preflight(&request, &method)
             .map_err(|(status, message)| Failure::before(status, "invalid_preflight", message)),
-        Route::Inference(path) => forward_request(state, request, &path).await,
+        Route::Gateway(path) => forward_request(state, request, &path).await,
     }
 }
 
@@ -687,14 +699,17 @@ fn random_capability() -> Result<String> {
     Ok(hex::encode(bytes))
 }
 
-fn browser_preflight(request: &Request) -> Result<Response<Body>, (StatusCode, &'static str)> {
+fn browser_preflight(
+    request: &Request,
+    allowed: &Method,
+) -> Result<Response<Body>, (StatusCode, &'static str)> {
     let method = request
         .headers()
         .get(header::ACCESS_CONTROL_REQUEST_METHOD)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| Method::from_bytes(value.as_bytes()).ok())
         .ok_or((StatusCode::BAD_REQUEST, "invalid browser preflight"))?;
-    if method != Method::POST {
+    if method != allowed {
         return Err((
             StatusCode::METHOD_NOT_ALLOWED,
             "browser method is not allowed",
@@ -724,7 +739,10 @@ fn browser_preflight(request: &Request) -> Result<Response<Body>, (StatusCode, &
 
     let mut response = Response::builder()
         .status(StatusCode::NO_CONTENT)
-        .header(header::ACCESS_CONTROL_ALLOW_METHODS, "POST, OPTIONS")
+        .header(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            format!("{allowed}, OPTIONS"),
+        )
         .header(header::ACCESS_CONTROL_MAX_AGE, "600");
     if let Some(headers) = request
         .headers()

@@ -84,10 +84,18 @@ test('options are explicit and confidential fetch never falls through to ordinar
 			}),
 			(error) => error.submission === 'not_sent'
 		);
-	await assert.rejects(
-		transport.fetch('https://e2ee.example/v1/chat/completions'),
-		(error) => error.submission === 'not_sent'
-	);
+	// Only the catalog reads take GET, and a part is named by 64 lowercase hex digits.
+	for (const path of [
+		'/v1/chat/completions',
+		'/v1/files',
+		'/v1/catalog/parts/',
+		`/v1/catalog/parts/${'0A'.repeat(32)}`,
+		'/v1/models?limit=1'
+	])
+		await assert.rejects(
+			transport.fetch(`https://e2ee.example${path}`),
+			(error) => error.submission === 'not_sent'
+		);
 	assert.equal(calls, 0);
 	const options = transport.openAIOptions('secret');
 	assert.equal(options.baseURL, 'https://e2ee.example/v1');

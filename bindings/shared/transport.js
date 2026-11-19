@@ -8,6 +8,11 @@ const PATHS = new Set([
 	'/v1/policies/validate',
 	'/v1/policies/simulate'
 ]);
+/** Whether a GET of the path reads the public catalog: the root, the model list or one part. */
+const isCatalogRead = (path) =>
+	path === '/v1/catalog' ||
+	path === '/v1/models' ||
+	/^\/v1\/catalog\/parts\/[0-9a-f]{64}$/.test(path);
 const OPTIONS = new Set([
 	'environment',
 	'baseURL',
@@ -262,8 +267,8 @@ export function createTransportClass({
 			const url = new URL(request.url);
 			if (
 				url.origin !== new URL(this.#baseURL).origin ||
-				!PATHS.has(url.pathname) ||
-				request.method !== 'POST' ||
+				request.method !== (isCatalogRead(url.pathname) ? 'GET' : 'POST') ||
+				(request.method === 'POST' && !PATHS.has(url.pathname)) ||
 				url.search ||
 				url.hash ||
 				url.username ||
@@ -275,9 +280,11 @@ export function createTransportClass({
 					'not_sent'
 				);
 			}
-			// Routing simulation takes labels and no keys.
+			// A catalog read takes no keys, and routing simulation takes labels and no keys.
 			const keyed =
-				this.#encryptionKeys && url.pathname !== '/v1/policies/simulate'
+				this.#encryptionKeys &&
+				request.method === 'POST' &&
+				url.pathname !== '/v1/policies/simulate'
 					? await this.#withEncryptionKeys(request)
 					: request;
 			return this.#sessions.send(keyed, init?.onProgress);

@@ -17,7 +17,7 @@ fn loopback_capability_host_origin_and_route_checks_run_before_any_network_io() 
     let path = format!("/{}/v1/chat/completions", config.client_capability);
     let valid = request(&config, &path);
     assert!(
-        matches!(route(&config, &valid).unwrap(), Route::Inference(value) if value == "/v1/chat/completions")
+        matches!(route(&config, &valid).unwrap(), Route::Gateway(value) if value == "/v1/chat/completions")
     );
     for path in [
         "/v1/chat/completions".to_owned(),
@@ -63,7 +63,7 @@ fn loopback_capability_host_origin_and_route_checks_run_before_any_network_io() 
     );
     assert!(matches!(
         route(&config, &browser).unwrap(),
-        Route::Inference(_)
+        Route::Gateway(_)
     ));
     browser.headers_mut().append(
         header::ORIGIN,
@@ -93,7 +93,7 @@ fn only_pages_with_the_printed_url_and_any_configured_origin_can_read_responses(
     let path = format!("/{}/v1/responses", config.client_capability);
     assert!(matches!(
         route(&config, &request(&config, &path)).unwrap(),
-        Route::Inference(_)
+        Route::Gateway(_)
     ));
     for origin in [
         HeaderValue::from_static("null"),
@@ -104,7 +104,7 @@ fn only_pages_with_the_printed_url_and_any_configured_origin_can_read_responses(
         request.headers_mut().insert(header::ORIGIN, origin.clone());
         assert!(matches!(
             route(&config, &request).unwrap(),
-            Route::Inference(_)
+            Route::Gateway(_)
         ));
         assert_eq!(browser_access(&config, &request).unwrap(), "*");
         // A page without the random part cannot read even the error.
@@ -191,9 +191,9 @@ fn configuration_and_browser_preflight_cannot_expand_the_transport_scope() {
     );
     assert!(matches!(
         route(&config, &preflight).unwrap(),
-        Route::Preflight
+        Route::Preflight(Method::POST)
     ));
-    let response = browser_preflight(&preflight).unwrap();
+    let response = browser_preflight(&preflight, &Method::POST).unwrap();
     assert_eq!(response.status(), 204);
     assert_eq!(
         response.headers()[header::ACCESS_CONTROL_ALLOW_METHODS],
@@ -203,7 +203,7 @@ fn configuration_and_browser_preflight_cannot_expand_the_transport_scope() {
         header::ACCESS_CONTROL_REQUEST_METHOD,
         HeaderValue::from_static("GET"),
     );
-    assert!(browser_preflight(&preflight).is_err());
+    assert!(browser_preflight(&preflight, &Method::POST).is_err());
     preflight.headers_mut().insert(
         header::ACCESS_CONTROL_REQUEST_METHOD,
         HeaderValue::from_static("POST"),
@@ -212,7 +212,62 @@ fn configuration_and_browser_preflight_cannot_expand_the_transport_scope() {
         header::ACCESS_CONTROL_REQUEST_HEADERS,
         HeaderValue::from_static("cookie"),
     );
-    assert!(browser_preflight(&preflight).is_err());
+    assert!(browser_preflight(&preflight, &Method::POST).is_err());
+}
+
+#[test]
+fn catalog_reads_take_get_and_nothing_else_does() {
+    let config = config(None);
+    let at = |method: Method, path: &str| {
+        let mut request = request(&config, &format!("/{}{path}", config.client_capability));
+        *request.method_mut() = method;
+        route(&config, &request)
+    };
+    let part = format!("/v1/catalog/parts/{}", "0a".repeat(32));
+    for path in ["/v1/catalog", "/v1/models", part.as_str()] {
+        assert!(matches!(at(Method::GET, path).unwrap(), Route::Gateway(value) if value == path));
+        assert_eq!(
+            at(Method::POST, path).unwrap_err().reason,
+            "unsupported_method"
+        );
+    }
+    assert_eq!(
+        at(Method::GET, "/v1/responses").unwrap_err().reason,
+        "unsupported_method"
+    );
+    for path in [
+        "/v1/catalog/parts/".to_owned(),
+        format!("/v1/catalog/parts/{}", "0A".repeat(32)),
+        format!("/v1/catalog/parts/{}/x", "0a".repeat(31)),
+        "/v1/catalog/other".to_owned(),
+    ] {
+        assert_eq!(
+            at(Method::GET, &path).unwrap_err().reason,
+            "unsupported_path"
+        );
+    }
+    // A browser's preflight is answered for the method that the path takes.
+    let mut preflight = request(&config, &format!("/{}/v1/models", config.client_capability));
+    *preflight.method_mut() = Method::OPTIONS;
+    preflight.headers_mut().insert(
+        header::ORIGIN,
+        HeaderValue::from_static("https://client.example"),
+    );
+    preflight.headers_mut().insert(
+        header::ACCESS_CONTROL_REQUEST_METHOD,
+        HeaderValue::from_static("GET"),
+    );
+    assert!(matches!(
+        route(&config, &preflight).unwrap(),
+        Route::Preflight(Method::GET)
+    ));
+    assert_eq!(
+        browser_preflight(&preflight, &Method::GET)
+            .unwrap()
+            .headers()[header::ACCESS_CONTROL_ALLOW_METHODS],
+        "GET, OPTIONS"
+    );
+    assert!(browser_preflight(&preflight, &Method::POST).is_err());
 }
 
 #[test]

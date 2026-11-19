@@ -164,6 +164,20 @@ pub async fn send(
     Ok(response)
 }
 
+/// Whether a GET of the path reads the public catalog: the root, the model list or one part by
+/// its SHA-256.
+pub fn is_catalog_read(path: &str) -> bool {
+    matches!(path, "/v1/catalog" | "/v1/models")
+        || path
+            .strip_prefix("/v1/catalog/parts/")
+            .is_some_and(|digest| {
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+            })
+}
+
 fn request_metadata(request: &Request<Bytes>) -> Result<Vec<u8>, Error> {
     let path = request.uri().path();
     if request.uri().query().is_some()
@@ -177,7 +191,9 @@ fn request_metadata(request: &Request<Bytes>) -> Result<Vec<u8>, Error> {
                     | "/v1/policies/simulate"
                     | "/v1/byok/check"
             ))
-            || (request.method() == "DELETE" && path == "/v1/session" && request.body().is_empty()))
+            || (request.body().is_empty()
+                && ((request.method() == "GET" && is_catalog_read(path))
+                    || (request.method() == "DELETE" && path == "/v1/session"))))
     {
         return Err(Error::Request);
     }
