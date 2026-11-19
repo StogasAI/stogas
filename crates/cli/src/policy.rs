@@ -32,7 +32,7 @@ const SCOPES: [&str; 7] = [
 
 /// Editors that read JSON Schema, such as VS Code, complete and check the file with this link.
 /// It changes nothing in a policy.
-pub const SCHEMA: &str = "https://stogas.ai/schemas/key-config-v1.json";
+pub const SCHEMA: &str = "https://stogas.ai/schemas/policy-v1.json";
 
 #[derive(clap::Args)]
 pub struct EditArgs {
@@ -809,7 +809,7 @@ pub mod tests {
             vec![(
                 Some(json!({ "$schema": SCHEMA, "limits": { "rpm": 5 } })),
                 // A byte order mark and the schema link are not part of the policy.
-                "\u{feff}{\"$schema\":\"https://stogas.ai/schemas/key-config-v1.json\",\"limits\":{\"rpm\":9}}",
+                "\u{feff}{\"$schema\":\"https://stogas.ai/schemas/policy-v1.json\",\"limits\":{\"rpm\":9}}",
             )],
             vec![],
         )
@@ -940,7 +940,7 @@ pub mod tests {
                 // The author reviews the combination and closes the file as it is.
                 (
                     Some(combined.clone()),
-                    r#"{"$schema":"https://stogas.ai/schemas/key-config-v1.json","limits":{"rpm":9,"tpm":200}}"#,
+                    r#"{"$schema":"https://stogas.ai/schemas/policy-v1.json","limits":{"rpm":9,"tpm":200}}"#,
                 ),
             ],
             vec![true],
