@@ -190,6 +190,26 @@ pub fn verify_build_attestation(
     expected_subjects: &[Subject<'_>],
     policy: &BuildPolicy,
 ) -> Result<VerifiedAttestation, Error> {
+    verify_build_attestation_among(trust, bundle_bytes, expected_subjects, &[], policy)
+}
+
+/// Verify a build attestation whose statement may also name each of `other_names` once.
+///
+/// A builder's proof of a whole release names files that a caller with only some of them cannot
+/// hash, so the caller accepts those names with any digest. Everything else is as in
+/// [`verify_build_attestation`].
+///
+/// # Errors
+///
+/// Returns an error as [`verify_build_attestation`] does, also for a subject that is neither
+/// expected nor in `other_names`.
+pub fn verify_build_attestation_among(
+    trust: &TrustedRoot,
+    bundle_bytes: &[u8],
+    expected_subjects: &[Subject<'_>],
+    other_names: &[&str],
+    policy: &BuildPolicy,
+) -> Result<VerifiedAttestation, Error> {
     let (_, issuer, runner) = BUILD_PROVIDERS
         .into_iter()
         .find(|(prefix, _, _)| policy.repository.starts_with(prefix))
@@ -197,7 +217,15 @@ pub fn verify_build_attestation(
             Error::Policy("the repository is on neither GitHub nor GitLab.com".into())
         })?;
     verify_single_attestation(bundle_bytes, |value| {
-        verify_build_attestation_value(trust, value, expected_subjects, policy, issuer, runner)
+        verify_build_attestation_value(
+            trust,
+            value,
+            expected_subjects,
+            other_names,
+            policy,
+            issuer,
+            runner,
+        )
     })
 }
 
@@ -256,6 +284,7 @@ fn verify_dsse_attestation_value(
         trust,
         value,
         expected_subjects,
+        &[],
         &policy.predicate_type,
         &CertificatePolicy {
             identity: &policy.certificate_identity,
@@ -269,6 +298,7 @@ fn verify_build_attestation_value(
     trust: &TrustedRoot,
     value: &Value,
     expected_subjects: &[Subject<'_>],
+    other_names: &[&str],
     policy: &BuildPolicy,
     issuer: &str,
     runner: &str,
@@ -277,6 +307,7 @@ fn verify_build_attestation_value(
         trust,
         value,
         expected_subjects,
+        other_names,
         &policy.predicate_type,
         &CertificatePolicy {
             identity: &policy.workflow_identity,
@@ -295,6 +326,7 @@ fn verify_statement(
     trust: &TrustedRoot,
     value: &Value,
     expected_subjects: &[Subject<'_>],
+    other_names: &[&str],
     predicate_type: &str,
     certificate: &CertificatePolicy<'_>,
 ) -> Result<VerifiedAttestation, Error> {
@@ -304,7 +336,7 @@ fn verify_statement(
         .map_err(|error| Error::InvalidBundle(format!("invalid DSSE statement: {error}")))?;
     let statement: Statement = serde_json::from_value(statement_value)
         .map_err(|error| Error::InvalidBundle(format!("invalid DSSE statement: {error}")))?;
-    check_subjects(&statement, expected_subjects)?;
+    check_subjects(&statement, expected_subjects, other_names)?;
     if statement.kind != "https://in-toto.io/Statement/v1"
         || statement.predicate_type != predicate_type
     {
@@ -432,13 +464,24 @@ struct StatementDigest {
     sha256: String,
 }
 
-fn check_subjects(statement: &Statement, expected_subjects: &[Subject<'_>]) -> Result<(), Error> {
+/// The statement must name each expected subject with its digest and no other subject, except
+/// that each of `other_names` may also appear once with any digest.
+fn check_subjects(
+    statement: &Statement,
+    expected_subjects: &[Subject<'_>],
+    other_names: &[&str],
+) -> Result<(), Error> {
     if expected_subjects.is_empty() || expected_subjects.len() > MAX_SUBJECTS {
         return Err(Error::Policy(format!(
             "expected subject count must be between 1 and {MAX_SUBJECTS}"
         )));
     }
-    if statement.subject.len() != expected_subjects.len() {
+    let others = statement
+        .subject
+        .iter()
+        .filter(|subject| other_names.contains(&subject.name.as_str()))
+        .count();
+    if statement.subject.len() != expected_subjects.len() + others {
         return Err(Error::Policy(
             "attestation contains missing or unexpected subjects".into(),
         ));
@@ -446,6 +489,7 @@ fn check_subjects(statement: &Statement, expected_subjects: &[Subject<'_>]) -> R
     let mut expected_names = HashSet::new();
     for expected in expected_subjects {
         if expected.name.is_empty()
+            || other_names.contains(&expected.name)
             || !expected_names.insert(expected.name)
             || expected.sha256.len() != 64
             || !expected
@@ -571,7 +615,7 @@ mod tests {
             subject("unexpected", DIGEST),
         ]);
         assert!(matches!(
-            check_subjects(&extra, &expected),
+            check_subjects(&extra, &expected, &[]),
             Err(Error::Policy(message)) if message.contains("unexpected subjects")
         ));
 
@@ -590,9 +634,58 @@ mod tests {
             },
         ];
         assert!(matches!(
-            check_subjects(&duplicate, &duplicate_expected),
+            check_subjects(&duplicate, &duplicate_expected, &[]),
             Err(Error::Policy(message)) if message.contains("unique names")
         ));
+    }
+
+    #[test]
+    fn other_names_may_each_appear_once_with_any_digest() {
+        const IGVM: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const OTHER: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let expected = [Subject {
+            name: "gateway.igvm",
+            sha256: IGVM,
+        }];
+        let others = ["LICENSE", "NOTICE"];
+        for subjects in [
+            vec![subject("gateway.igvm", IGVM)],
+            vec![subject("gateway.igvm", IGVM), subject("NOTICE", OTHER)],
+            vec![
+                subject("LICENSE", OTHER),
+                subject("gateway.igvm", IGVM),
+                subject("NOTICE", IGVM),
+            ],
+        ] {
+            check_subjects(&statement(subjects), &expected, &others).unwrap();
+        }
+        for subjects in [
+            // An expected subject is missing or has another digest.
+            vec![subject("LICENSE", OTHER), subject("NOTICE", OTHER)],
+            vec![subject("gateway.igvm", OTHER), subject("NOTICE", OTHER)],
+            // A subject is neither expected nor named.
+            vec![
+                subject("gateway.igvm", IGVM),
+                subject("sbom.cdx.json", OTHER),
+            ],
+            // A named subject appears twice.
+            vec![
+                subject("gateway.igvm", IGVM),
+                subject("NOTICE", OTHER),
+                subject("NOTICE", OTHER),
+            ],
+        ] {
+            assert!(check_subjects(&statement(subjects), &expected, &others).is_err());
+        }
+        // An expected subject cannot also be one whose digest is free.
+        assert!(
+            check_subjects(
+                &statement(vec![subject("gateway.igvm", IGVM)]),
+                &expected,
+                &["gateway.igvm"]
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -615,6 +708,7 @@ mod tests {
                     sha256: MANIFEST,
                 },
             ],
+            &[],
         )
         .unwrap();
     }

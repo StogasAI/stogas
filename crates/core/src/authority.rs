@@ -523,7 +523,7 @@ impl VerifiedEvidence {
     // A staging-capable binary must still reject placeholders when its selected context is production.
     const fn accepts_provenance(&self, provenance: &crate::ReleaseProvenance) -> bool {
         match (self.document.environment, provenance) {
-            (Environment::Production, crate::ReleaseProvenance::Github) => true,
+            (Environment::Production, crate::ReleaseProvenance::Builders) => true,
             #[cfg(feature = "staging")]
             (Environment::Staging, _) => true,
             #[cfg(feature = "staging")]

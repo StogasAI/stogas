@@ -10,13 +10,17 @@ pub struct LoggedDocument<T> {
     pub inclusion: Value,
 }
 
-/// A release manifest and the build proof that names its files. The signed evidence that
+/// A release manifest and the build proofs that name its files. The signed evidence that
 /// lists it is the only Stogas signature over it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReleaseEvidence<T> {
     pub document: T,
+    /// GitHub's build proof, or in staging the placeholder of a local build.
     pub provenance: Value,
+    /// GitLab's build proof of the same files, which every release that GitHub built has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gitlab_provenance: Option<Value>,
 }
 
 /// One group of the signed hardware policy: chips that share a processor and firmware
@@ -213,7 +217,8 @@ pub enum AmdCollateralType {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ReleaseProvenance {
-    Github,
+    /// GitHub's and GitLab's hosted runners each built the release and signed a proof.
+    Builders,
     #[cfg(feature = "staging")]
     Staging,
 }

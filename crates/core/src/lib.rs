@@ -30,7 +30,9 @@ use sha2::{Digest, Sha256};
 #[cfg(feature = "staging")]
 use std::collections::BTreeMap;
 use stogas_sev_snp::{PlatformRule, Product, guest_policy};
-use stogas_sigstore::{BuildPolicy, Subject, TrustedRoot, verify_build_attestation};
+use stogas_sigstore::{
+    BuildPolicy, Subject, TrustedRoot, verify_build_attestation, verify_build_attestation_among,
+};
 use thiserror::Error;
 
 /// Maximum serialized evidence accepted by public adapters.
@@ -531,10 +533,8 @@ fn verify_catalog_release(
     let manifest = &catalog.document;
     validate_catalog_shape(manifest)?;
     let manifest_digest = release_manifest_sha256(manifest)?;
-    let attestation_bytes = serde_json::to_vec(&catalog.provenance)
-        .map_err(|error| Error::Release(error.to_string()))?;
     let (github_integrated_time_unix_ms, provenance) =
-        verify_catalog_provenance(&attestation_bytes, manifest, &manifest_digest, trust)?;
+        verify_catalog_provenance(catalog, &manifest_digest, trust)?;
 
     Ok(VerifiedCatalogRelease {
         github_integrated_time_unix_ms,
@@ -551,48 +551,61 @@ fn verify_catalog_release(
 }
 
 fn verify_catalog_provenance(
-    attestation_bytes: &[u8],
-    manifest: &CatalogReleaseManifest,
+    catalog: &AllowedCatalog,
     manifest_digest: &str,
     trust: &TrustedRoot,
 ) -> Result<(Option<i64>, ReleaseProvenance), Error> {
+    let manifest = &catalog.document;
+    let attestation_bytes = proof_bytes(&catalog.provenance)?;
     #[cfg(feature = "staging")]
     if is_staging_development_provenance(
-        attestation_bytes,
+        &attestation_bytes,
         &[
             ("catalog-release.json", manifest_digest),
             ("catalog.json", &manifest.artifacts.root.sha256),
         ],
     )? {
-        return Ok((None, ReleaseProvenance::Staging));
+        return staging_provenance(catalog.gitlab_provenance.as_ref());
     }
 
-    let workflow_identity = format!(
-        "https://github.com/StogasAI/catalog/.github/workflows/catalog-release.yml@refs/tags/{}",
-        manifest.source.tag
-    );
-    verify_github_provenance(
+    let subjects = [
+        Subject {
+            name: "catalog-release.json",
+            sha256: manifest_digest,
+        },
+        Subject {
+            name: "catalog.json",
+            sha256: &manifest.artifacts.root.sha256,
+        },
+    ];
+    let reference = format!("refs/tags/{}", manifest.source.tag);
+    let integrated_time = verify_github_provenance(
         trust,
-        attestation_bytes,
-        &[
-            Subject {
-                name: "catalog-release.json",
-                sha256: manifest_digest,
-            },
-            Subject {
-                name: "catalog.json",
-                sha256: &manifest.artifacts.root.sha256,
-            },
-        ],
+        &attestation_bytes,
+        &subjects,
         &BuildPolicy {
             repository: manifest.source.repository.clone(),
-            workflow_identity,
-            source_ref: format!("refs/tags/{}", manifest.source.tag),
+            workflow_identity: format!(
+                "https://github.com/StogasAI/catalog/.github/workflows/catalog-release.yml@{reference}"
+            ),
+            source_ref: reference.clone(),
             source_commit: manifest.source.commit.clone(),
             predicate_type: "https://slsa.dev/provenance/v1".into(),
         },
         "catalog provenance",
+    )?;
+    verify_build_attestation(
+        trust,
+        &gitlab_proof_bytes(catalog.gitlab_provenance.as_ref())?,
+        &subjects,
+        &gitlab_policy(
+            CATALOG_GITLAB_REPOSITORY,
+            reference,
+            &manifest.source.commit,
+        ),
     )
+    .map_err(|error| Error::Release(format!("catalog GitLab provenance: {error}")))?;
+    Ok((Some(integrated_time), ReleaseProvenance::Builders))
 }
 
 fn verify_gateway_release(
@@ -602,10 +615,8 @@ fn verify_gateway_release(
     let manifest = &release.document;
     validate_gateway_release_manifest(manifest)?;
     let manifest_digest = release_manifest_sha256(manifest)?;
-    let attestation_bytes = serde_json::to_vec(&release.provenance)
-        .map_err(|error| Error::Release(error.to_string()))?;
     let (github_integrated_time_unix_ms, provenance) =
-        verify_release_provenance(&attestation_bytes, manifest, &manifest_digest, trust)?;
+        verify_release_provenance(release, &manifest_digest, trust)?;
 
     Ok(VerifiedRelease {
         github_integrated_time_unix_ms,
@@ -625,52 +636,102 @@ fn verify_gateway_release(
 }
 
 fn verify_release_provenance(
-    attestation_bytes: &[u8],
-    manifest: &GatewayReleaseManifest,
+    release: &AllowedIgvm,
     manifest_digest: &str,
     trust: &TrustedRoot,
 ) -> Result<(Option<i64>, ReleaseProvenance), Error> {
+    let manifest = &release.document;
+    let attestation_bytes = proof_bytes(&release.provenance)?;
     #[cfg(feature = "staging")]
     if is_staging_development_provenance(
-        attestation_bytes,
+        &attestation_bytes,
         &[
             ("release-manifest.json", manifest_digest),
             ("gateway.igvm", &manifest.artifacts.gateway_igvm.sha256),
         ],
     )? {
-        return Ok((None, ReleaseProvenance::Staging));
+        return staging_provenance(release.gitlab_provenance.as_ref());
     }
 
-    let workflow_identity = format!(
-        "https://github.com/StogasAI/gateway/.github/workflows/gateway-igvm-release.yml@refs/tags/{}",
-        manifest.source.tag
-    );
-    verify_github_provenance(
+    let subjects = [
+        Subject {
+            name: "release-manifest.json",
+            sha256: manifest_digest,
+        },
+        Subject {
+            name: "gateway.igvm",
+            sha256: &manifest.artifacts.gateway_igvm.sha256,
+        },
+    ];
+    let reference = format!("refs/tags/{}", manifest.source.tag);
+    let integrated_time = verify_github_provenance(
         trust,
-        attestation_bytes,
-        &[
-            Subject {
-                name: "release-manifest.json",
-                sha256: manifest_digest,
-            },
-            Subject {
-                name: "gateway.igvm",
-                sha256: &manifest.artifacts.gateway_igvm.sha256,
-            },
-        ],
+        &attestation_bytes,
+        &subjects,
         &BuildPolicy {
             repository: manifest.source.repository.clone(),
-            workflow_identity,
-            source_ref: format!("refs/tags/{}", manifest.source.tag),
+            workflow_identity: format!(
+                "https://github.com/StogasAI/gateway/.github/workflows/gateway-igvm-release.yml@{reference}"
+            ),
+            source_ref: reference.clone(),
             source_commit: manifest.source.commit.clone(),
             predicate_type: "https://slsa.dev/provenance/v1".into(),
         },
         "gateway provenance",
+    )?;
+    // GitLab's proof also names the release's other files, whose digests evidence does not hold.
+    verify_build_attestation_among(
+        trust,
+        &gitlab_proof_bytes(release.gitlab_provenance.as_ref())?,
+        &subjects,
+        &GATEWAY_RELEASE_FILES,
+        &gitlab_policy(
+            GATEWAY_GITLAB_REPOSITORY,
+            reference,
+            &manifest.source.commit,
+        ),
     )
+    .map_err(|error| Error::Release(format!("gateway GitLab provenance: {error}")))?;
+    Ok((Some(integrated_time), ReleaseProvenance::Builders))
 }
 
-/// The GitLab project whose hosted runners rebuild each gateway release.
+/// The GitLab projects whose hosted runners rebuild each gateway and catalog release.
 const GATEWAY_GITLAB_REPOSITORY: &str = "https://gitlab.com/stogasai/gateway";
+const CATALOG_GITLAB_REPOSITORY: &str = "https://gitlab.com/stogasai/catalog";
+/// The files of a gateway release beside its manifest and image.
+const GATEWAY_RELEASE_FILES: [&str; 3] = ["LICENSE", "NOTICE", "sbom.cdx.json"];
+
+/// What GitLab's certificate must name: the project's CI file at the release tag and the commit
+/// that GitHub built.
+fn gitlab_policy(repository: &str, reference: String, commit: &str) -> BuildPolicy {
+    BuildPolicy {
+        repository: repository.into(),
+        workflow_identity: format!("{repository}//.gitlab-ci.yml@{reference}"),
+        source_ref: reference,
+        source_commit: commit.into(),
+        predicate_type: "https://slsa.dev/provenance/v1".into(),
+    }
+}
+
+fn proof_bytes(proof: &Value) -> Result<Vec<u8>, Error> {
+    serde_json::to_vec(proof).map_err(|error| Error::Release(error.to_string()))
+}
+
+/// A release that GitHub built is listed only with GitLab's proof of the same files.
+fn gitlab_proof_bytes(proof: Option<&Value>) -> Result<Vec<u8>, Error> {
+    proof_bytes(proof.ok_or_else(|| Error::Release("release has no GitLab build proof".into()))?)
+}
+
+/// A local staging build has one placeholder proof and no builder's.
+#[cfg(feature = "staging")]
+fn staging_provenance(gitlab: Option<&Value>) -> Result<(Option<i64>, ReleaseProvenance), Error> {
+    if gitlab.is_some() {
+        return Err(Error::Release(
+            "a placeholder build proof excludes a GitLab build proof".into(),
+        ));
+    }
+    Ok((None, ReleaseProvenance::Staging))
+}
 
 /// Verify GitLab's build proof of a gateway release.
 ///
@@ -724,32 +785,74 @@ pub fn verify_gateway_gitlab_build(
                 sha256: &hex::encode(Sha256::digest(sbom)),
             },
         ],
-        &BuildPolicy {
-            repository: GATEWAY_GITLAB_REPOSITORY.into(),
-            workflow_identity: format!("{GATEWAY_GITLAB_REPOSITORY}//.gitlab-ci.yml@{reference}"),
-            source_ref: reference,
-            source_commit: manifest.source.commit.clone(),
-            predicate_type: "https://slsa.dev/provenance/v1".into(),
-        },
+        &gitlab_policy(
+            GATEWAY_GITLAB_REPOSITORY,
+            reference,
+            &manifest.source.commit,
+        ),
     )
     .map(drop)
     .map_err(|error| Error::Release(format!("gateway GitLab provenance: {error}")))
 }
 
+/// Verify GitLab's build proof of a catalog release.
+///
+/// GitLab's hosted runners must have compiled the tag that the manifest names and written the
+/// same manifest and catalog root.
+///
+/// # Errors
+/// Rejects an invalid or oversized input, and a proof from another builder, project, tag or
+/// commit, or for other bytes.
+pub fn verify_catalog_gitlab_build(
+    manifest_bytes: &[u8],
+    attestation: &[u8],
+    trust: &TrustedRoot,
+) -> Result<(), Error> {
+    if manifest_bytes.len() > MAX_INPUT_BYTES || attestation.len() > MAX_INPUT_BYTES {
+        return Err(Error::Release("catalog release input is too large".into()));
+    }
+    let manifest: CatalogReleaseManifest = strict_json::from_slice(manifest_bytes)
+        .and_then(serde_json::from_value)
+        .map_err(|error| Error::Release(format!("invalid catalog release manifest: {error}")))?;
+    validate_catalog_shape(&manifest)?;
+    let reference = format!("refs/tags/{}", manifest.source.tag);
+    verify_build_attestation(
+        trust,
+        attestation,
+        &[
+            Subject {
+                name: "catalog-release.json",
+                sha256: &hex::encode(Sha256::digest(manifest_bytes)),
+            },
+            Subject {
+                name: "catalog.json",
+                sha256: &manifest.artifacts.root.sha256,
+            },
+        ],
+        &gitlab_policy(
+            CATALOG_GITLAB_REPOSITORY,
+            reference,
+            &manifest.source.commit,
+        ),
+    )
+    .map(drop)
+    .map_err(|error| Error::Release(format!("catalog GitLab provenance: {error}")))
+}
+
+/// Verify GitHub's build proof and return when Rekor logged it, in Unix milliseconds.
 fn verify_github_provenance(
     trust: &TrustedRoot,
     attestation_bytes: &[u8],
     expected_subjects: &[Subject<'_>],
     policy: &BuildPolicy,
     context: &str,
-) -> Result<(Option<i64>, ReleaseProvenance), Error> {
+) -> Result<i64, Error> {
     let verified = verify_build_attestation(trust, attestation_bytes, expected_subjects, policy)
         .map_err(|error| Error::Release(format!("{context}: {error}")))?;
-    let integrated_time = verified
+    verified
         .integrated_time
         .checked_mul(1000)
-        .ok_or_else(|| Error::Release(format!("{context} GitHub integration time overflows")))?;
-    Ok((Some(integrated_time), ReleaseProvenance::Github))
+        .ok_or_else(|| Error::Release(format!("{context} GitHub integration time overflows")))
 }
 
 #[cfg(feature = "staging")]
@@ -1283,6 +1386,86 @@ mod tests {
         }
         #[cfg(not(feature = "staging"))]
         assert!(verify_catalog_release(&catalog, production()).is_err());
+    }
+
+    /// Catalog 20, which GitHub Actions and a GitLab.com hosted runner each built from its tag on
+    /// November 19, 2026.
+    fn built_catalog() -> AllowedCatalog {
+        let proof = |bytes: &[u8]| serde_json::from_slice::<Value>(bytes).unwrap();
+        AllowedCatalog {
+            document: serde_json::from_slice(include_bytes!(
+                "../../../tests/fixtures/catalog-v20-release.json"
+            ))
+            .unwrap(),
+            provenance: proof(include_bytes!(
+                "../../../tests/fixtures/catalog-v20-github-attestation.jsonl"
+            )),
+            gitlab_provenance: Some(proof(include_bytes!(
+                "../../../tests/fixtures/catalog-v20-gitlab-attestation.jsonl"
+            ))),
+        }
+    }
+
+    #[test]
+    fn a_release_that_github_built_needs_gitlabs_proof_of_the_same_files() {
+        let catalog = built_catalog();
+        let verified = verify_catalog_release(&catalog, production()).unwrap();
+        assert!(matches!(verified.provenance, ReleaseProvenance::Builders));
+        assert!(verified.github_integrated_time_unix_ms.is_some());
+        verify_catalog_gitlab_build(
+            include_bytes!("../../../tests/fixtures/catalog-v20-release.json"),
+            include_bytes!("../../../tests/fixtures/catalog-v20-gitlab-attestation.jsonl"),
+            production(),
+        )
+        .unwrap();
+
+        let rejected = |edit: fn(&mut AllowedCatalog), message: &str| {
+            let mut changed = built_catalog();
+            edit(&mut changed);
+            let error = verify_catalog_release(&changed, production())
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(message), "{error}");
+        };
+        rejected(
+            |catalog| catalog.gitlab_provenance = None,
+            "release has no GitLab build proof",
+        );
+        // Neither builder's proof stands in for the other's.
+        rejected(
+            |catalog| catalog.gitlab_provenance = Some(catalog.provenance.clone()),
+            "catalog GitLab provenance",
+        );
+        rejected(
+            |catalog| catalog.provenance = catalog.gitlab_provenance.clone().unwrap(),
+            "catalog provenance",
+        );
+        // Another catalog, of which neither proof names the manifest.
+        rejected(
+            |catalog| catalog.document.minimum_gateway_sequence += 1,
+            "catalog provenance",
+        );
+    }
+
+    #[cfg(feature = "staging")]
+    #[test]
+    fn a_placeholder_proof_excludes_gitlabs_proof() {
+        let mut catalog = catalog_fixture();
+        let canonical = canonical_json(&serde_json::to_value(&catalog.document).unwrap()).unwrap();
+        catalog.provenance = serde_json::json!({
+            "_type": "https://in-toto.io/Statement/v1",
+            "predicateType": "https://stogas.ai/attestations/staging-development/v1",
+            "predicate": { "environment": "staging" },
+            "subject": [
+                { "name": "catalog-release.json", "digest": { "sha256": hex::encode(Sha256::digest(canonical.as_bytes())) } },
+                { "name": "catalog.json", "digest": { "sha256": &catalog.document.artifacts.root.sha256 } }
+            ]
+        });
+        catalog.gitlab_provenance = built_catalog().gitlab_provenance;
+        let error = verify_catalog_release(&catalog, production())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("excludes a GitLab build proof"), "{error}");
     }
 
     #[test]

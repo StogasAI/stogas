@@ -108,6 +108,23 @@ pub fn verify_gateway_gitlab_build(
     .map_err(|error| JsError::new(&error.to_string()))
 }
 
+/// Verify GitLab's build proof of a catalog release's manifest and root with Sigstore's keys from
+/// the given TUF files, as Stogas does before it lists the catalog in evidence.
+///
+/// # Errors
+/// Rejects invalid Sigstore files, an invalid manifest, or a proof that does not name its tag,
+/// commit and files.
+#[wasm_bindgen]
+pub fn verify_catalog_gitlab_build(
+    manifest: &[u8],
+    attestation: &[u8],
+    sigstore_files_json: &str,
+) -> Result<(), JsError> {
+    let sigstore = verified_sigstore(sigstore_files_json)?;
+    stogas_core::verify_catalog_gitlab_build(manifest, attestation, sigstore.trusted_root())
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
 /// Seal one boot's provisioning envelope to its attested X-Wing public key.
 ///
 /// # Errors
