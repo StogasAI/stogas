@@ -94,9 +94,12 @@ export declare class StogasTransport {
 export {
 	EvidenceVerifier,
 	EvidenceSnapshot,
-	inspect_snp_report
+	inspect_snp_report,
+	request_digest,
+	response_digest,
+	stream_response
 } from '../../pkg/browser/stogas.js';
-export type { RootKey } from '../../pkg/browser/stogas.js';
+export type { RootKey, SavedStream } from '../../pkg/browser/stogas.js';
 
 export {
 	EncryptedSetup,

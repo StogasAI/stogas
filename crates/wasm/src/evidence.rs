@@ -39,7 +39,7 @@ export interface RootKey {
 /// Stateful offline verifier. The trust seed comes from local configuration, never the evidence.
 #[wasm_bindgen(js_name = EvidenceVerifier)]
 pub struct EvidenceVerifier {
-    core: evidence::Verifier,
+    pub(crate) core: evidence::Verifier,
 }
 
 /// Owned immutable evidence for a connection or in-flight request. Free it when no longer used.
@@ -376,13 +376,14 @@ pub fn verify_boot_request(
 }
 
 pub fn verification_error(error: &evidence::Error) -> JsValue {
-    let value = js_sys::Error::new(&error.to_string());
+    coded_error(&error.to_string(), error.code())
+}
+
+/// A failed check, with the stable code that callers classify it by.
+pub fn coded_error(message: &str, code: &str) -> JsValue {
+    let value = js_sys::Error::new(message);
     value.set_name("EvidenceVerificationError");
     // Fixed own properties on a newly constructed Error; no caller-controlled setter is invoked.
-    let _ = js_sys::Reflect::set(
-        &value,
-        &JsValue::from_str("code"),
-        &JsValue::from_str(error.code()),
-    );
+    let _ = js_sys::Reflect::set(&value, &JsValue::from_str("code"), &JsValue::from_str(code));
     value.into()
 }

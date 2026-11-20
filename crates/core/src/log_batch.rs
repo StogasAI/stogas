@@ -56,6 +56,20 @@ pub enum Error {
     Format(#[from] crate::format::FormatError),
 }
 
+impl Error {
+    /// Stable reason for bindings; callers never classify failures by parsing display text.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Invalid | Self::Row | Self::Place => "invalid_log_proof",
+            Self::Inclusion => "log_inclusion",
+            Self::Identity => "log_identity",
+            Self::Signature => "log_signature",
+            Self::Format(error) => error.code(),
+        }
+    }
+}
+
 /// One sealed batch, as the gateway stores it without its leaves and as a proof carries it.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

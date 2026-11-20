@@ -6,6 +6,9 @@ import initModule, {
 	EncryptedRequest,
 	ResponseReceipt,
 	inspect_snp_report,
+	request_digest,
+	response_digest,
+	stream_response,
 	transport_configuration
 } from '../../pkg/browser/stogas.js';
 import { createTransportClass } from '../shared/transport.js';
@@ -28,7 +31,10 @@ export {
 	EncryptedSession,
 	EncryptedRequest,
 	ResponseReceipt,
-	inspect_snp_report
+	inspect_snp_report,
+	request_digest,
+	response_digest,
+	stream_response
 };
 // A page served from an onion address reaches every origin through Tor, so its transports are
 // proxied unless their options say otherwise. A host name may end with the root's dot.

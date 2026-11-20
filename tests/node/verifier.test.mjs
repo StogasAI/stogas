@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as publicAPI from 'stogas';
-import { EvidenceVerifier, StogasTransport } from 'stogas';
+import {
+	EvidenceVerifier,
+	StogasTransport,
+	request_digest,
+	response_digest,
+	stream_response
+} from 'stogas';
 
 for (const retired of [
 	'Verifier',
@@ -37,3 +43,17 @@ for (const invalid of [
 ])
 	assert.throws(() => new EvidenceVerifier('prod', invalid));
 assert.throws(() => new StogasTransport({ maxConnections: 0 }), /positive safe integer/);
+
+// A saved request and response hash as their receipt signs them, whatever their formatting.
+const sample = JSON.parse(
+	readFileSync(new URL('../fixtures/content-receipt-v2.json', import.meta.url), 'utf8')
+);
+const bytes = (text) => new TextEncoder().encode(text);
+const hex = (digest) => Buffer.from(digest).toString('hex');
+assert.equal(hex(request_digest(bytes(sample.request))), sample.request_digest);
+assert.equal(hex(response_digest(bytes(sample.response))), sample.response_digest);
+// A response hashes the same with the `stogas` object that carried its receipt.
+const carried = { ...JSON.parse(sample.response), stogas: { receipt: sample.receipt } };
+assert.equal(hex(response_digest(bytes(JSON.stringify(carried)))), sample.response_digest);
+assert.throws(() => request_digest(bytes('[]')), { code: 'invalid_content' });
+assert.throws(() => stream_response(bytes('data: {"id":"cut"}\n\n')), { code: 'invalid_receipt' });

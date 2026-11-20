@@ -4,6 +4,7 @@ mod evidence;
 mod host_cipher;
 #[cfg(feature = "operator")]
 mod operator;
+mod proof;
 #[cfg(feature = "operator")]
 mod signing;
 use serde::Serialize;

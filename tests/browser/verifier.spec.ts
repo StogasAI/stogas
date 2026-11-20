@@ -51,8 +51,15 @@ test('browser boot history remains offline and separate from current evidence', 
 		signature: registration.inclusion.signature,
 		inclusion: registration.inclusion.inclusion
 	};
+	// A receipt and a request log proof that the sample's boot key signed.
+	const receipt = JSON.parse(
+		await readFile(resolve(ROOT, 'tests/fixtures/content-receipt-v2.json'), 'utf8')
+	);
+	const { proof } = JSON.parse(
+		await readFile(resolve(ROOT, 'tests/fixtures/log-proof-v1.json'), 'utf8')
+	);
 	const result = await page.evaluate(
-		({ fixture, archive }) => {
+		({ fixture, archive, receipt, proof }) => {
 			const api = (
 				globalThis as unknown as {
 					stogasVerifierBindings: typeof import('../../pkg/browser/stogas.js');
@@ -60,10 +67,69 @@ test('browser boot history remains offline and separate from current evidence', 
 			).stogasVerifierBindings;
 			const core = new api.EvidenceVerifier('staging', fixture.root);
 			const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+			const text = (value: string) => new TextEncoder().encode(value);
+			const unchecked = new Uint8Array();
+			const code = (check: () => unknown) => {
+				try {
+					check();
+				} catch (error) {
+					return (error as { code?: string }).code;
+				}
+			};
 			const previousNow = Date.now;
 			Date.now = () => fixture.verified_at_ms + 366 * 24 * 60 * 60 * 1000;
 			try {
 				const verified = core.verify_boot_archive(encode(archive), encode(fixture.evidence));
+				const boot = [encode(archive), encode(fixture.evidence)] as const;
+				const stogas = { ...receipt.metadata, receipt: receipt.receipt, salts: receipt.salts };
+				const sides = [
+					api.request_digest(text(receipt.request)),
+					api.response_digest(text(receipt.response))
+				] as const;
+				const saved = {
+					both: core.verify_receipt_archive(...boot, encode(stogas), ...sides),
+					// A side without a digest stays unchecked, and needs no salt.
+					hidden: core.verify_receipt_archive(
+						...boot,
+						encode({ ...stogas, salts: { response: receipt.salts.response } }),
+						unchecked,
+						sides[1]
+					),
+					changed: code(() =>
+						core.verify_receipt_archive(
+							...boot,
+							encode(stogas),
+							sides[0],
+							api.response_digest(text('{"id":"another"}'))
+						)
+					),
+					metadata: code(() =>
+						core.verify_receipt_archive(
+							...boot,
+							encode({ ...stogas, billed_cost_usd: '0' }),
+							unchecked,
+							unchecked
+						)
+					),
+					digest: code(() =>
+						core.verify_receipt_archive(...boot, encode(stogas), sides[0].slice(1), unchecked)
+					),
+					content: code(() => api.request_digest(text('{"seed":9007199254740993}'))),
+					stream: code(() => api.stream_response(text('data: {"id":"cut"}\n\n'))),
+					row: core.verify_log_proof_archive(...boot, encode(proof)),
+					altered: code(() =>
+						core.verify_log_proof_archive(
+							...boot,
+							encode({ ...proof, row: { ...proof.row, usage: { billed_cost_usd: '0' } } })
+						)
+					),
+					later: code(() =>
+						core.verify_log_proof_archive(
+							...boot,
+							encode({ ...proof, batch: { ...proof.batch, sealed_at: '2026-11-03T08:36:00.005Z' } })
+						)
+					)
+				};
 				archive.document.evidence_sha256 = '0'.repeat(64);
 				let rejected = false;
 				try {
@@ -71,19 +137,46 @@ test('browser boot history remains offline and separate from current evidence', 
 				} catch {
 					rejected = true;
 				}
-				return { digest: verified.boot_sha256, rejected };
+				return { digest: verified.boot_sha256, node: verified.node_id, rejected, saved };
 			} finally {
 				core.free();
 				Date.now = previousNow;
 			}
 		},
-		{ fixture, archive }
+		{ fixture, archive, receipt, proof }
 	);
+	const signed = {
+		node_id: result.node,
+		boot_sha256: receipt.receipt.boot_sha256,
+		request_commitment: receipt.receipt.request_commitment,
+		response_commitment: receipt.receipt.response_commitment
+	};
 	expect(result).toEqual({
-		digest: JSON.parse(
-			await readFile(resolve(ROOT, 'tests/fixtures/content-receipt-v2.json'), 'utf8')
-		).receipt.boot_sha256,
-		rejected: true
+		digest: receipt.receipt.boot_sha256,
+		node: proof.batch.node_id,
+		rejected: true,
+		saved: {
+			both: { ...signed, request_verified: true, response_verified: true },
+			hidden: { ...signed, request_verified: false, response_verified: true },
+			changed: 'receipt_content',
+			metadata: 'receipt_signature',
+			digest: 'invalid_operation',
+			content: 'inexact_integer',
+			stream: 'invalid_receipt',
+			row: {
+				request_id: proof.row.request_id,
+				node_id: proof.batch.node_id,
+				boot_sha256: receipt.receipt.boot_sha256,
+				sequence: 4,
+				index: 2,
+				leaf_count: 3,
+				opened_at: proof.batch.opened_at,
+				sealed_at: proof.batch.sealed_at,
+				receipt_commitments: proof.row.receipt_commitments
+			},
+			altered: 'log_inclusion',
+			later: 'log_signature'
+		}
 	});
 	expect(requests).toEqual([]);
 });

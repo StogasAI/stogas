@@ -361,10 +361,9 @@ fn a_proof_reads_strictly_and_names_itself() {
     assert!(Proof::parse(&duplicated).is_err());
 }
 
+/// The boot of the hardware session sample, appraised as the sample's session saw it.
 #[cfg(feature = "staging")]
-#[test]
-fn a_proof_verifies_under_the_boot_that_signed_its_batch() {
-    use crate::signing::SigningKey;
+fn with_sample_boot<T>(check: impl FnOnce(&VerifiedBoot) -> T) -> T {
     let fixture: Value = serde_json::from_str(include_str!(
         "../../../../tests/fixtures/hardware-session-v1.json"
     ))
@@ -390,7 +389,23 @@ fn a_proof_verifies_under_the_boot_that_signed_its_batch() {
             now,
         )
         .unwrap();
-    let boot = session.boot();
+    check(session.boot())
+}
+
+/// The public deterministic key of the diagnostic boot that produced the hardware samples.
+#[cfg(feature = "staging")]
+fn sign_sample(batch: &Batch) -> String {
+    URL_SAFE_NO_PAD.encode(
+        crate::signing::SigningKey::from_seeds(&[[42; 32]; 2])
+            .sign(&batch.message().unwrap())
+            .unwrap(),
+    )
+}
+
+/// Three rows of the sample boot's node, their leaves and the batch that signs them. The last
+/// row holds a receipt's commitments.
+#[cfg(feature = "staging")]
+fn sample_batch(boot: &VerifiedBoot) -> (Vec<Value>, Vec<Hash>, Batch) {
     let node = boot.hardware().node_id().to_owned();
     let rows: Vec<Value> = (0..3)
         .map(|index| {
@@ -407,56 +422,96 @@ fn a_proof_verifies_under_the_boot_that_signed_its_batch() {
         })
         .collect();
     let leaves: Vec<Hash> = rows.iter().map(|row| leaf(row).unwrap()).collect();
-    let root = root(&leaves);
-    // The public deterministic key of the diagnostic boot that produced the hardware sample.
-    let key = SigningKey::from_seeds(&[[42; 32]; 2]);
-    let sign = |batch: &Batch| URL_SAFE_NO_PAD.encode(key.sign(&batch.message().unwrap()).unwrap());
     let mut batch = Batch {
         schema: SCHEMA.into(),
-        node_id: node.clone(),
+        node_id: node,
         boot_sha256: hex::encode(boot.document_sha256()),
         sequence: 4,
         opened_at: "2026-11-03T08:35:00.000Z".into(),
         sealed_at: "2026-11-03T08:36:00.004Z".into(),
         leaf_count: 3,
-        root: hex::encode(root),
+        root: hex::encode(root(&leaves)),
         signature: String::new(),
     };
-    batch.signature = sign(&batch);
-    let proof = |batch: &Batch| Proof {
-        schema: PROOF_SCHEMA.into(),
-        row: rows[2].clone(),
-        batch: batch.clone(),
-        path: path(&leaves, 2).iter().map(hex::encode).collect(),
-    };
-    let row = proof(&batch).verify(boot).unwrap();
-    assert_eq!((row.sequence, row.index, row.leaf_count), (4, 2, 3));
-    assert_eq!(row.node_id, node);
-    assert_eq!(
-        row.request_id.as_deref(),
-        Some("01a1a1a1-0000-7000-8000-000000000002")
-    );
-    assert_eq!(
-        row.receipt_commitments,
-        Some(ReceiptCommitments {
-            request: "aa".repeat(32),
-            response: "bb".repeat(32),
-        })
-    );
+    batch.signature = sign_sample(&batch);
+    (rows, leaves, batch)
+}
 
-    // Another boot's batch names another document, even with this node's rows.
-    let mut other = batch.clone();
-    other.boot_sha256 = "00".repeat(32);
-    other.signature = sign(&other);
-    assert!(matches!(proof(&other).verify(boot), Err(Error::Identity)));
-    // A batch whose fields changed after signing fails its signature.
-    let mut later = batch.clone();
-    later.sealed_at = "2026-11-03T08:36:00.005Z".into();
-    assert!(matches!(proof(&later).verify(boot), Err(Error::Signature)));
-    let mut unsigned = batch;
-    unsigned.signature = URL_SAFE_NO_PAD.encode([0; crate::signing::SIGNATURE_BYTES]);
-    assert!(matches!(
-        proof(&unsigned).verify(boot),
-        Err(Error::Signature)
-    ));
+#[cfg(feature = "staging")]
+#[test]
+fn a_proof_verifies_under_the_boot_that_signed_its_batch() {
+    with_sample_boot(|boot| {
+        let (rows, leaves, batch) = sample_batch(boot);
+        let proof = |batch: &Batch| Proof {
+            schema: PROOF_SCHEMA.into(),
+            row: rows[2].clone(),
+            batch: batch.clone(),
+            path: path(&leaves, 2).iter().map(hex::encode).collect(),
+        };
+        let row = proof(&batch).verify(boot).unwrap();
+        assert_eq!((row.sequence, row.index, row.leaf_count), (4, 2, 3));
+        assert_eq!(row.node_id, boot.hardware().node_id());
+        assert_eq!(
+            row.request_id.as_deref(),
+            Some("01a1a1a1-0000-7000-8000-000000000002")
+        );
+        assert_eq!(
+            row.receipt_commitments,
+            Some(ReceiptCommitments {
+                request: "aa".repeat(32),
+                response: "bb".repeat(32),
+            })
+        );
+
+        // Another boot's batch names another document, even with this node's rows.
+        let mut other = batch.clone();
+        other.boot_sha256 = "00".repeat(32);
+        other.signature = sign_sample(&other);
+        assert!(matches!(proof(&other).verify(boot), Err(Error::Identity)));
+        // A batch whose fields changed after signing fails its signature.
+        let mut later = batch.clone();
+        later.sealed_at = "2026-11-03T08:36:00.005Z".into();
+        assert!(matches!(proof(&later).verify(boot), Err(Error::Signature)));
+        let mut unsigned = batch;
+        unsigned.signature = URL_SAFE_NO_PAD.encode([0; crate::signing::SIGNATURE_BYTES]);
+        assert!(matches!(
+            proof(&unsigned).verify(boot),
+            Err(Error::Signature)
+        ));
+    });
+}
+
+/// Writes the proof sample that the browser test checks, signed by the hardware session
+/// sample's boot key. ML-DSA signatures are randomized, so the sample is written once rather
+/// than compared:
+/// `cargo test -p stogas-core --features staging -- --ignored write_log_proof_sample`.
+#[cfg(feature = "staging")]
+#[test]
+#[ignore = "writes tests/fixtures/log-proof-v1.json"]
+fn write_log_proof_sample() {
+    let proof = with_sample_boot(|boot| {
+        let (rows, leaves, batch) = sample_batch(boot);
+        let proof = Proof {
+            schema: PROOF_SCHEMA.into(),
+            row: rows[2].clone(),
+            batch,
+            path: path(&leaves, 2).iter().map(hex::encode).collect(),
+        };
+        proof.verify(boot).unwrap();
+        proof
+    });
+    let sample = json!({
+        "description": "A request log proof whose batch the boot key of the hardware session \
+            sample signed. Regenerate with `cargo test -p stogas-core --features staging -- \
+            --ignored write_log_proof_sample` after the sample's boot changes.",
+        "proof": proof,
+    });
+    std::fs::write(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/log-proof-v1.json"
+        ),
+        serde_json::to_string_pretty(&sample).unwrap() + "\n",
+    )
+    .unwrap();
 }
