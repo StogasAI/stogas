@@ -1,9 +1,14 @@
 //! `stogas policy edit`: a saved policy in your own editor, saved again with the revision it
-//! started from. Like `git commit` and `kubectl edit`, it opens `$VISUAL` or `$EDITOR`.
+//! started from. Like `git commit` and `kubectl edit`, it opens `$VISUAL` or `$EDITOR`. With an
+//! organization key it shows the values that the key encrypts in plain text and encrypts them
+//! again when it saves, as `sops edit` does, so nobody keeps a copy of the policy in plain text.
 
 use crate::{
     account,
+    customer_encryption::{self, Opened, OrganizationKey},
     dashboard::{ApiError, Dashboard, printable},
+    encryption_key::{self, parse_label},
+    policy_check::{self, CheckGateway, GrantApi},
     topup::{parse_organization, uuid},
 };
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -15,9 +20,10 @@ use std::{
     io::IsTerminal as _,
     path::{Path, PathBuf},
     process::Command,
+    sync::Mutex,
     time::{Duration, Instant},
 };
-use stogas::network::Network;
+use stogas::{TransportOptions, network::Network};
 
 /// What can hold a policy, as the dashboard API names it.
 const SCOPES: [&str; 7] = [
@@ -34,6 +40,10 @@ const SCOPES: [&str; 7] = [
 /// It changes nothing in a policy.
 pub const SCHEMA: &str = "https://stogas.ai/schemas/policy-v1.json";
 
+/// The link of a file that an organization key opened, where the schema also takes a value to
+/// encrypt as `{"encrypt": value}`.
+const KEY_SCHEMA: &str = "https://stogas.ai/schemas/policy-edit-v1.json";
+
 #[derive(clap::Args)]
 pub struct EditArgs {
     /// What holds the policy.
@@ -46,17 +56,30 @@ pub struct EditArgs {
     /// The organization's ID; without it, your personal organization.
     #[arg(long, value_parser = parse_organization)]
     organization: Option<String>,
+    /// The file with your organization key. The editor then shows each value that the key
+    /// encrypts in plain text as {"encrypt": value}, and saving encrypts every value of an export
+    /// or redaction plugin that is written so, after the gateway checks those plugins. To change
+    /// keys, give the new key first and then the old one: saving encrypts what the old key opened
+    /// with the new key.
+    #[arg(long, conflicts_with = "key")]
+    key_file: Vec<PathBuf>,
+    /// The label of a key that `stogas encryption-key` saved for the organization on this
+    /// machine, in place of --key-file.
+    #[arg(long, value_parser = parse_label)]
+    key: Vec<String>,
 }
 
 fn parse_id(value: &str) -> Result<String, String> {
     uuid(value).ok_or_else(|| "an ID is a UUID, as Copy ID copies it on the dashboard".into())
 }
 
-pub async fn run(args: EditArgs, network: &Network) -> Result<()> {
+pub async fn run(args: EditArgs, network: &Network, gateway: TransportOptions) -> Result<()> {
     let EditArgs {
         scope,
         id,
         organization,
+        key_file,
+        key,
     } = args;
     // An organization holds its own policy, so either argument names it.
     let (organization, id) = if scope == "organization" {
@@ -76,12 +99,34 @@ pub async fn run(args: EditArgs, network: &Network) -> Result<()> {
         None => account::personal_organization(&dashboard).await?,
     };
     let id = id.unwrap_or_else(|| organization.clone());
+    let mut keys = Vec::new();
+    for path in &key_file {
+        keys.push(customer_encryption::read_key(path)?);
+    }
+    for label in &key {
+        keys.push(encryption_key::saved(&organization, label).await?);
+    }
     let api = Remote::new(&dashboard, &organization, &scope, &id);
     let directory = private_directory()?;
     let file = directory.join(format!("{scope}-{id}.json"));
     let mut editor = SystemEditor::from_environment();
     let mut ask = ask_on_terminal;
-    let result = edit(&api, &mut editor, &mut ask, &file).await;
+    let result = if keys.is_empty() {
+        edit(&api, &mut editor, &mut ask, &file).await
+    } else {
+        eprintln!(
+            "Your key opens the values that it encrypts as {{\"encrypt\": value}}. Saving \
+             encrypts each value of an export or redaction plugin that is written so{}.",
+            if keys.len() > 1 {
+                ", with the first key"
+            } else {
+                ""
+            }
+        );
+        let gateway = policy_check::Verified(gateway);
+        let api = Opening::new(&api, keys, &organization, &dashboard, &gateway);
+        edit(&api, &mut editor, &mut ask, &file).await
+    };
     // An edit that was not saved stays for its author, in a directory only they can open.
     let kept = result.as_ref().is_err_and(|failure| failure.edited);
     if !kept {
@@ -128,6 +173,15 @@ pub struct Saved {
 pub trait PolicyApi: Sync {
     fn read(&self) -> impl Future<Output = Result<Saved>> + Send;
     fn save(&self, config: &Value, revision: u64) -> impl Future<Output = Result<Saved>> + Send;
+    /// The schema link of the file that shows what `read` returns.
+    fn schema(&self) -> &'static str {
+        SCHEMA
+    }
+    /// Whether saving what `read` returned would change what is stored, so that a file closed
+    /// unchanged is saved too.
+    fn rewrites(&self) -> bool {
+        false
+    }
 }
 
 pub struct Remote<'a> {
@@ -156,6 +210,99 @@ impl PolicyApi for Remote<'_> {
                 &json!({ "config": config, "revision": revision }),
             )
             .await
+    }
+}
+
+/// A policy with the values that organization keys encrypt in plain text. Reading marks each
+/// `{"encrypt": value}`, and saving encrypts every value that is marked so with the first key,
+/// after the gateway checks the plugins that hold them. A value that its author left as it was
+/// keeps its envelope when the first key made it, so the other keys' values move to the first.
+pub struct Opening<'a, A, G, C> {
+    api: &'a A,
+    keys: Vec<OrganizationKey>,
+    organization: &'a str,
+    grants: &'a G,
+    gateway: &'a C,
+    /// The values that the last read opened.
+    opened: Mutex<Vec<Opened>>,
+}
+
+impl<'a, A, G, C> Opening<'a, A, G, C> {
+    pub const fn new(
+        api: &'a A,
+        keys: Vec<OrganizationKey>,
+        organization: &'a str,
+        grants: &'a G,
+        gateway: &'a C,
+    ) -> Self {
+        Self {
+            api,
+            keys,
+            organization,
+            grants,
+            gateway,
+            opened: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+/// A mark or a plugin that cannot be encrypted, which another edit can fix.
+fn unencryptable(error: &anyhow::Error) -> anyhow::Error {
+    ApiError {
+        status: StatusCode::BAD_REQUEST,
+        code: None,
+        message: format!("{error:#}"),
+        issues: Vec::new(),
+    }
+    .into()
+}
+
+impl<A: PolicyApi, G: GrantApi, C: CheckGateway> PolicyApi for Opening<'_, A, G, C> {
+    async fn read(&self) -> Result<Saved> {
+        let saved = self.api.read().await?;
+        let (config, opened) =
+            customer_encryption::open_policy(&self.keys, self.organization, saved.config)?;
+        *self.opened.lock().expect("no panic holds the lock") = opened;
+        Ok(Saved {
+            config,
+            revision: saved.revision,
+        })
+    }
+
+    async fn save(&self, config: &Value, revision: u64) -> Result<Saved> {
+        let (plain, parts) =
+            customer_encryption::marked_parts(config.clone()).map_err(|e| unencryptable(&e))?;
+        if !parts.is_empty() {
+            let source = customer_encryption::policy_check_source(&plain, &parts);
+            policy_check::check(self.grants, self.gateway, self.organization, &source)
+                .await
+                .map_err(|e| unencryptable(&e))?;
+        }
+        let sealed = {
+            let opened = self.opened.lock().expect("no panic holds the lock");
+            customer_encryption::seal_policy(
+                &self.keys[0],
+                self.organization,
+                plain,
+                &parts,
+                &opened,
+            )
+            .map_err(|e| unencryptable(&e))?
+        };
+        let saved = self.api.save(&sealed, revision).await?;
+        Ok(Saved {
+            config: config.clone(),
+            revision: saved.revision,
+        })
+    }
+
+    fn schema(&self) -> &'static str {
+        KEY_SCHEMA
+    }
+
+    fn rewrites(&self) -> bool {
+        let opened = self.opened.lock().expect("no panic holds the lock");
+        opened.iter().any(|value| !value.sealed_by(&self.keys[0]))
     }
 }
 
@@ -290,7 +437,7 @@ pub async fn edit(
     file: &Path,
 ) -> Result<Outcome, Failure> {
     let mut saved = api.read().await?;
-    write_private(file, &shown(&saved.config))?;
+    write_private(file, &shown(&saved.config, api.schema()))?;
     eprintln!(
         "Opening revision {} in `{}`. Close the file to save it, or empty it to cancel.",
         saved.revision,
@@ -330,7 +477,7 @@ pub async fn edit(
             }
         };
         let current = settings(&saved.config);
-        if edited == current {
+        if edited == current && !api.rewrites() {
             return Ok(Outcome::Unchanged(saved.revision));
         }
         let error = match api
@@ -348,7 +495,7 @@ pub async fn edit(
             if rebased.config == settings(&saved.config) {
                 return Ok(Outcome::AlreadySaved(saved.revision));
             }
-            write_private(file, &shown(&rebased.config)).map_err(kept)?;
+            write_private(file, &shown(&rebased.config, api.schema())).map_err(kept)?;
             eprintln!(
                 "Someone saved revision {} while you edited, so your changes now apply to it.",
                 saved.revision
@@ -375,7 +522,7 @@ pub async fn edit(
             )));
         }
         if refusal.is_some_and(fixable) {
-            eprintln!("The dashboard refused the policy: {error}");
+            eprintln!("The policy was not saved: {error}");
             if ask("Edit it again?") {
                 continue;
             }
@@ -408,9 +555,9 @@ fn write_private(file: &Path, document: &Value) -> Result<()> {
 
 /// The file's form of a policy: the schema link, then its settings, two-space indented as the
 /// dashboard's editor shows them.
-fn shown(config: &Value) -> Value {
+fn shown(config: &Value, schema: &str) -> Value {
     let mut document = Map::new();
-    document.insert("$schema".into(), SCHEMA.into());
+    document.insert("$schema".into(), schema.into());
     if let Value::Object(fields) = config {
         for (key, value) in fields {
             if key != "$schema" {
@@ -429,7 +576,7 @@ fn settings(document: &Value) -> Value {
     };
     let settings: Map<String, Value> = fields
         .iter()
-        .filter(|(key, value)| !(*key == "$schema" && *value == SCHEMA))
+        .filter(|(key, value)| !(*key == "$schema" && (*value == SCHEMA || *value == KEY_SCHEMA)))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     if settings.is_empty() {
@@ -442,7 +589,7 @@ fn settings(document: &Value) -> Value {
 /// The settings to save, with the schema link only where the saved policy keeps one.
 fn linked(settings: &Value, saved: &Value) -> Value {
     if settings.is_object() && saved.get("$schema").is_some() {
-        shown(settings)
+        shown(settings, SCHEMA)
     } else {
         settings.clone()
     }
@@ -595,13 +742,14 @@ fn merge(
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use crate::policy_check::tests::{Api, ORGANIZATION, gateway};
     use std::{collections::VecDeque, sync::Mutex};
 
     #[test]
     fn shows_the_schema_link_and_saves_only_the_settings() {
-        assert_eq!(shown(&Value::Null), json!({ "$schema": SCHEMA }));
+        assert_eq!(shown(&Value::Null, SCHEMA), json!({ "$schema": SCHEMA }));
         let policy = json!({ "limits": { "rpm": 5 } });
-        let file = shown(&policy);
+        let file = shown(&policy, SCHEMA);
         assert_eq!(
             serde_json::to_string_pretty(&file).unwrap(),
             format!("{{\n  \"$schema\": \"{SCHEMA}\",\n  \"limits\": {{\n    \"rpm\": 5\n  }}\n}}")
@@ -816,6 +964,185 @@ pub mod tests {
         .await;
         assert_eq!(result.ok(), Some(Outcome::Saved(8)));
         assert_eq!(api.sent(), [(json!({ "limits": { "rpm": 9 } }), 7)]);
+    }
+
+    /// A policy whose export destination and redaction literals `key` encrypts.
+    fn encrypted_policy(key: &OrganizationKey, policy: Value) -> Value {
+        let parts = customer_encryption::policy_parts(
+            &policy,
+            &[
+                "/plugins/export/destinations/0".into(),
+                "/plugins/redaction/literals".into(),
+            ],
+        )
+        .unwrap();
+        customer_encryption::seal_policy(key, ORGANIZATION, policy, &parts, &[]).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_key_opens_encrypted_values_and_encrypts_the_marked_ones_again() {
+        let key = customer_encryption::generate().unwrap();
+        let destination = json!({ "url": "https://logs.example.com/a", "content": false });
+        let stored = encrypted_policy(
+            &key,
+            json!({
+                "limits": { "rpm": 5 },
+                "plugins": {
+                    "export": { "destinations": [destination.clone()] },
+                    "redaction": { "literals": [{ "values": ["Falcon"] }] }
+                }
+            }),
+        );
+        let api = Script::new(
+            vec![saved(stored.clone(), 7)],
+            vec![Ok(saved(Value::Null, 8))],
+        );
+        let grants = Api(Mutex::new(Vec::new()));
+        let valid = gateway(StatusCode::OK, json!({ "status": "valid" }));
+        let opening = Opening::new(&api, vec![key], ORGANIZATION, &grants, &valid);
+        // The file shows both values in plain text. The edit changes the literals, leaves the
+        // destination as it is and marks a new one.
+        let edited = json!({
+            "$schema": KEY_SCHEMA,
+            "limits": { "rpm": 5 },
+            "plugins": {
+                "export": { "destinations": [
+                    { "encrypt": destination.clone() },
+                    { "url": { "encrypt": "https://audit.example.com/b?token=t" } }
+                ] },
+                "redaction": { "literals": { "encrypt": [{ "values": ["Osprey"] }] } }
+            }
+        })
+        .to_string();
+        let (result, _) = run_edit(
+            &opening,
+            vec![(
+                Some(json!({
+                    "$schema": KEY_SCHEMA,
+                    "limits": { "rpm": 5 },
+                    "plugins": {
+                        "export": { "destinations": [{ "encrypt": destination.clone() }] },
+                        "redaction": { "literals": { "encrypt": [{ "values": ["Falcon"] }] } }
+                    }
+                })),
+                &edited,
+            )],
+            vec![],
+        )
+        .await;
+        assert_eq!(result.ok(), Some(Outcome::Saved(8)));
+        // The gateway checked both plugins in plain text.
+        assert_eq!(
+            valid.sent.lock().unwrap()[0].1["policySources"][0]["config"],
+            json!({ "plugins": {
+                "export": { "destinations": [
+                    destination,
+                    { "url": "https://audit.example.com/b?token=t" }
+                ] },
+                "redaction": { "literals": [{ "values": ["Osprey"] }] }
+            } })
+        );
+        let [(sent, 7)] = &api.sent()[..] else {
+            panic!("one save with the revision it started from");
+        };
+        assert_eq!(sent["limits"], json!({ "rpm": 5 }));
+        // The unchanged destination keeps its envelope, and the others get new ones.
+        let destinations = &sent["plugins"]["export"]["destinations"];
+        assert_eq!(
+            destinations[0],
+            stored["plugins"]["export"]["destinations"][0]
+        );
+        assert!(destinations[1]["url"]["encrypted"]["blob"].is_string());
+        let literals = &sent["plugins"]["redaction"]["literals"]["encrypted"];
+        assert_ne!(
+            *literals,
+            stored["plugins"]["redaction"]["literals"]["encrypted"]
+        );
+        assert!(!sent.to_string().contains("Osprey") && !sent.to_string().contains("audit"));
+        // A second edit opens what the first one saved, and a file closed unchanged saves nothing.
+        let reopened = Script::new(vec![saved(sent.clone(), 8)], vec![]);
+        let opening = Opening {
+            api: &reopened,
+            ..opening
+        };
+        let (result, _) = run_edit(&opening, vec![(None, &edited)], vec![]).await;
+        assert_eq!(result.ok(), Some(Outcome::Unchanged(8)));
+        assert_eq!(valid.sent.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_new_key_before_the_old_one_takes_over_its_values() {
+        let old = customer_encryption::generate().unwrap();
+        let new = customer_encryption::generate().unwrap();
+        let new_id = new.id.clone();
+        let stored = encrypted_policy(
+            &old,
+            json!({ "plugins": {
+                "export": { "destinations": [{ "url": "https://logs.example.com/a" }] },
+                "redaction": { "literals": [{ "values": ["Falcon"] }] }
+            } }),
+        );
+        let api = Script::new(vec![saved(stored, 8)], vec![Ok(saved(Value::Null, 9))]);
+        let grants = Api(Mutex::new(Vec::new()));
+        let valid = gateway(StatusCode::OK, json!({ "status": "valid" }));
+        let opening = Opening::new(&api, vec![new, old], ORGANIZATION, &grants, &valid);
+        // The old key opens both values, and closing the file as it opened encrypts each of them
+        // with the new key, after the gateway checks them.
+        let unchanged = json!({ "$schema": KEY_SCHEMA, "plugins": {
+            "export": { "destinations": [{ "encrypt": { "url": "https://logs.example.com/a" } }] },
+            "redaction": { "literals": { "encrypt": [{ "values": ["Falcon"] }] } }
+        } });
+        let text = unchanged.to_string();
+        let (result, _) = run_edit(&opening, vec![(Some(unchanged), &text)], vec![]).await;
+        assert_eq!(result.ok(), Some(Outcome::Saved(9)));
+        let [(sent, 8)] = &api.sent()[..] else {
+            panic!("one save with the revision it started from");
+        };
+        for envelope in [
+            &sent["plugins"]["export"]["destinations"][0]["encrypted"],
+            &sent["plugins"]["redaction"]["literals"]["encrypted"],
+        ] {
+            assert_eq!(envelope["keyId"], *new_id);
+        }
+        assert_eq!(valid.sent.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_mark_that_cannot_be_encrypted_opens_the_file_again() {
+        let key = customer_encryption::generate().unwrap();
+        let api = Script::new(vec![saved(json!({ "limits": { "rpm": 5 } }), 3)], vec![]);
+        let grants = Api(Mutex::new(Vec::new()));
+        let refusing = gateway(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": { "message": "Policy configuration is invalid: unknown preset" } }),
+        );
+        let opening = Opening::new(&api, vec![key], ORGANIZATION, &grants, &refusing);
+        // Headers are encrypted only with their URL, and the gateway refuses an unknown preset.
+        // Neither reaches the dashboard, and each time the author can edit again.
+        let (result, left) = run_edit(
+            &opening,
+            vec![
+                (
+                    None,
+                    r#"{"plugins":{"export":{"destinations":[{"url":"https://a.example","headers":{"encrypt":{"X":"y"}}}]}}}"#,
+                ),
+                (
+                    None,
+                    r#"{"plugins":{"redaction":{"presets":{"encrypt":["email_adress"]}}}}"#,
+                ),
+            ],
+            vec![true, false],
+        )
+        .await;
+        let failure = result.unwrap_err();
+        assert!(failure.edited);
+        assert_eq!(
+            failure.error.to_string(),
+            "Policy configuration is invalid: unknown preset"
+        );
+        assert!(left.contains("email_adress"));
+        assert!(api.sent().is_empty());
+        assert_eq!(refusing.sent.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

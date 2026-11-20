@@ -169,7 +169,7 @@ pub async fn encrypt(
         &customer_encryption::policy_check_source(&policy, &parts),
     )
     .await?;
-    let sealed = customer_encryption::seal_policy(&key, &args.organization, policy, &parts)?;
+    let sealed = customer_encryption::seal_policy(&key, &args.organization, policy, &parts, &[])?;
     customer_encryption::write_policy(args.output.as_deref(), &sealed)
 }
 

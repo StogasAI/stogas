@@ -97,12 +97,12 @@ fn body(source: &serde_json::Value) -> Result<Zeroizing<Vec<u8>>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use serde_json::{Value, json};
     use std::sync::Mutex;
 
-    struct Api(Mutex<Vec<String>>);
+    pub struct Api(pub Mutex<Vec<String>>);
 
     impl GrantApi for Api {
         async fn grant(&self, organization: &str) -> Result<Zeroizing<String>> {
@@ -111,10 +111,10 @@ mod tests {
         }
     }
 
-    struct Gateway {
+    pub struct Gateway {
         status: StatusCode,
         body: Value,
-        sent: Mutex<Vec<(String, Value)>>,
+        pub sent: Mutex<Vec<(String, Value)>>,
     }
 
     impl CheckGateway for Gateway {
@@ -130,7 +130,7 @@ mod tests {
         }
     }
 
-    fn gateway(status: StatusCode, body: Value) -> Gateway {
+    pub fn gateway(status: StatusCode, body: Value) -> Gateway {
         Gateway {
             status,
             body,
@@ -138,7 +138,7 @@ mod tests {
         }
     }
 
-    const ORGANIZATION: &str = "019a0000-0000-7000-8000-0000000000c1";
+    pub const ORGANIZATION: &str = "019a0000-0000-7000-8000-0000000000c1";
 
     #[tokio::test]
     async fn sends_the_plugins_as_the_organization_policy_with_a_grant() {

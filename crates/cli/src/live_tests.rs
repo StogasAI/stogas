@@ -85,6 +85,8 @@ async fn signs_up_tops_up_and_signs_out() {
     checks_an_encrypted_credential(&dashboard).await;
     #[cfg(feature = "staging")]
     checks_plugin_settings_before_encrypting_them(&dashboard).await;
+    #[cfg(feature = "staging")]
+    edits_a_policy_with_an_organization_key(&dashboard).await;
 
     account::revoke(&origin, token, &Network::direct())
         .await
@@ -313,4 +315,98 @@ async fn checks_plugin_settings_before_encrypting_them(dashboard: &Dashboard) {
             "Policy configuration is invalid: unknown redaction preset \"email_adress\""
         );
     }
+}
+
+/// `stogas policy edit organization --key-file`: the staging gateway checks the marked values, the
+/// dashboard stores them encrypted, and a second edit opens them and keeps the envelope of the one
+/// that it leaves alone.
+#[cfg(feature = "staging")]
+async fn edits_a_policy_with_an_organization_key(dashboard: &Dashboard) {
+    use crate::{customer_encryption, policy::Opening, policy_check::Verified};
+    use stogas::{Environment, SecurityMode, TransportOptions};
+
+    let organization = account::personal_organization(dashboard).await.unwrap();
+    let key = customer_encryption::generate().unwrap();
+    let registration = format!("/api/{organization}/encryption-keys/{}", key.id);
+    let _: Value = dashboard
+        .put(&registration, &json!({ "label": "live-edit" }))
+        .await
+        .unwrap();
+    let gateway = Verified(TransportOptions {
+        environment: Environment::Staging,
+        security: SecurityMode::E2ee,
+        base_url: None,
+        max_connections: 1,
+        proxy: None,
+        onion: false,
+        no_proxy: None,
+        encryption_keys: stogas::EncryptionKeys::default(),
+    });
+    let remote = policy::Remote::new(dashboard, &organization, "organization", &organization);
+    let old = customer_encryption::parse_key(&key.encoded).unwrap();
+    let opening = Opening::new(&remote, vec![key], &organization, dashboard, &gateway);
+    let policy = |presets: Value| {
+        json!({ "plugins": { "redaction": {
+            "presets": presets,
+            "literals": { "encrypt": [{ "values": ["Falcon"] }] }
+        } } })
+    };
+
+    // The gateway names a misspelled preset before anything is encrypted or saved.
+    let misspelled = policy(json!({ "encrypt": ["email_adress"] })).to_string();
+    let marked = policy(json!({ "encrypt": ["email_address"] })).to_string();
+    let (result, _) = run_edit(
+        &opening,
+        vec![(None, &misspelled), (None, &marked)],
+        vec![true],
+    )
+    .await;
+    let Ok(Outcome::Saved(first)) = result else {
+        panic!("the marked policy was not saved");
+    };
+    let stored = remote.read().await.unwrap().config;
+    let redaction = &stored["plugins"]["redaction"];
+    let literals = redaction["literals"]["encrypted"].clone();
+    assert!(literals["blob"].is_string() && redaction["presets"]["encrypted"]["blob"].is_string());
+    assert!(!stored.to_string().contains("Falcon"));
+
+    // The key opens both values, and the edit changes only the presets.
+    let mut opened = policy(json!({ "encrypt": ["email_address"] }));
+    opened["$schema"] = "https://stogas.ai/schemas/policy-edit-v1.json".into();
+    let changed = policy(json!({ "encrypt": ["email_address", "phone_number"] })).to_string();
+    let (result, _) = run_edit(&opening, vec![(Some(opened), &changed)], vec![]).await;
+    assert_eq!(result.ok(), Some(Outcome::Saved(first + 1)));
+    let stored = remote.read().await.unwrap().config;
+    let redaction = &stored["plugins"]["redaction"];
+    assert_eq!(redaction["literals"]["encrypted"], literals);
+    assert!(redaction["presets"]["encrypted"]["blob"].is_string());
+
+    // A second registered key before the first one takes over both values when the file closes
+    // unchanged, and the first key's registration can then be removed.
+    let new = customer_encryption::generate().unwrap();
+    let new_id = new.id.clone();
+    let new_registration = format!("/api/{organization}/encryption-keys/{new_id}");
+    let _: Value = dashboard
+        .put(&new_registration, &json!({ "label": "live-edit-2" }))
+        .await
+        .unwrap();
+    let rotating = Opening::new(&remote, vec![new, old], &organization, dashboard, &gateway);
+    let (result, _) = run_edit(&rotating, vec![(None, &changed)], vec![]).await;
+    assert_eq!(result.ok(), Some(Outcome::Saved(first + 2)));
+    let stored = remote.read().await.unwrap().config;
+    let redaction = &stored["plugins"]["redaction"];
+    for value in ["literals", "presets"] {
+        assert_eq!(redaction[value]["encrypted"]["keyId"], *new_id);
+    }
+    dashboard
+        .send(Method::DELETE, &registration, None)
+        .await
+        .unwrap();
+
+    let (result, _) = run_edit(&remote, vec![(None, "null")], vec![]).await;
+    assert_eq!(result.ok(), Some(Outcome::Saved(first + 3)));
+    dashboard
+        .send(Method::DELETE, &new_registration, None)
+        .await
+        .unwrap();
 }

@@ -135,6 +135,31 @@ const MAX_SEALED_PART: usize = 262_144;
 /// shows only roughly how long a URL, token or pattern is.
 const PAD_TO: usize = 256;
 
+/// The key of one ciphertext and the context that it authenticates: the organization, the purpose
+/// and the organization key's identifier.
+fn content_key(
+    root: &[u8],
+    organization: &str,
+    purpose: &str,
+    id: &str,
+    salt: &[u8],
+) -> Result<(aead::LessSafeKey, String)> {
+    let context = ["stogas.customer-content.v1", organization, purpose, id].join("\0");
+    let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, salt).extract(root);
+    let info = [context.as_bytes()];
+    let okm = prk
+        .expand(&info, hkdf::HKDF_SHA256)
+        .map_err(|_| anyhow::anyhow!("Cannot derive encryption key"))?;
+    let mut material = Zeroizing::new([0_u8; 32]);
+    okm.fill(material.as_mut())
+        .map_err(|_| anyhow::anyhow!("Cannot derive encryption key"))?;
+    let key = aead::LessSafeKey::new(
+        aead::UnboundKey::new(&aead::AES_256_GCM, material.as_ref())
+            .map_err(|_| anyhow::anyhow!("Cannot initialize encryption"))?,
+    );
+    Ok((key, context))
+}
+
 fn seal(
     root: &[u8],
     organization: &str,
@@ -169,19 +194,7 @@ fn seal(
         bail!("Provider credentials must contain printable ASCII without whitespace");
     }
     let id = key_id(root);
-    let context = ["stogas.customer-content.v1", organization, purpose, &id].join("\0");
-    let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, salt).extract(root);
-    let info = [context.as_bytes()];
-    let okm = prk
-        .expand(&info, hkdf::HKDF_SHA256)
-        .map_err(|_| anyhow::anyhow!("Cannot derive encryption key"))?;
-    let mut material = Zeroizing::new([0_u8; 32]);
-    okm.fill(material.as_mut())
-        .map_err(|_| anyhow::anyhow!("Cannot derive encryption key"))?;
-    let key = aead::LessSafeKey::new(
-        aead::UnboundKey::new(&aead::AES_256_GCM, material.as_ref())
-            .map_err(|_| anyhow::anyhow!("Cannot initialize encryption"))?,
-    );
+    let (key, context) = content_key(root, organization, purpose, &id, salt)?;
     let mut encrypted = Zeroizing::new(plaintext.to_vec());
     key.seal_in_place_append_tag(
         aead::Nonce::assume_unique_for_key(nonce),
@@ -212,6 +225,217 @@ fn holds_sealed(value: &serde_json::Value) -> bool {
             serde_json::Value::Object(members) => members.values().any(holds_sealed),
             _ => false,
         }
+}
+
+/// The plaintext of an encrypted value, which opens only for its organization, purpose and key.
+fn open(
+    key: &OrganizationKey,
+    organization: &str,
+    purpose: &str,
+    envelope: &serde_json::Value,
+) -> Result<Zeroizing<Vec<u8>>> {
+    let field = |name: &str| {
+        envelope[name]
+            .as_str()
+            .and_then(|text| URL_SAFE_NO_PAD.decode(text).ok())
+            .context("Invalid encrypted value")
+    };
+    let salt = field("salt")?;
+    let nonce: [u8; 12] = field("nonce")?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Invalid encrypted value"))?;
+    let mut blob = Zeroizing::new(field("blob")?);
+    if envelope["version"] != 1 || salt.len() != 32 {
+        bail!("Invalid encrypted value");
+    }
+    let (cipher, context) = content_key(&key.root, organization, purpose, &key.id, &salt)?;
+    let length = cipher
+        .open_in_place(
+            aead::Nonce::assume_unique_for_key(nonce),
+            aead::Aad::from(context.as_bytes()),
+            &mut blob,
+        )
+        .map_err(|_| anyhow::anyhow!("it was not encrypted as this setting of this organization"))?
+        .len();
+    blob.truncate(length);
+    Ok(blob)
+}
+
+/// The member that marks a value to encrypt in a policy that `stogas policy edit` opens with a
+/// key: `{"encrypt": value}` is saved as `{"encrypted": envelope}`.
+const MARK: &str = "encrypt";
+
+/// An encrypted value that the key opened: saving keeps its envelope while its author leaves the
+/// value as it is, so that an edit changes only what it changed.
+pub struct Opened {
+    purpose: String,
+    value: serde_json::Value,
+    envelope: serde_json::Value,
+}
+
+impl Opened {
+    /// Whether `key` encrypted the value, so that saving with it can keep the envelope.
+    pub fn sealed_by(&self, key: &OrganizationKey) -> bool {
+        self.envelope["keyId"] == key.id.as_str()
+    }
+}
+
+/// The policy with each value that one of the keys encrypts in plaintext, marked
+/// `{"encrypt": value}`. Values that other keys encrypt stay as they are.
+pub fn open_policy(
+    keys: &[OrganizationKey],
+    organization: &str,
+    mut policy: serde_json::Value,
+) -> Result<(serde_json::Value, Vec<Opened>)> {
+    fn visit(
+        keys: &[OrganizationKey],
+        organization: &str,
+        value: &mut serde_json::Value,
+        purpose: &str,
+        at: &str,
+        opened: &mut Vec<Opened>,
+    ) -> Result<()> {
+        if is_sealed(value) {
+            let envelope = value["encrypted"].take();
+            let key = keys.iter().find(|key| envelope["keyId"] == key.id.as_str());
+            if let Some(key) = key {
+                let plaintext = open(key, organization, purpose, &envelope)
+                    .with_context(|| format!("Cannot open {at}"))?;
+                let plain: serde_json::Value = serde_json::from_slice(&plaintext)
+                    .with_context(|| format!("Cannot open {at}"))?;
+                opened.push(Opened {
+                    purpose: purpose.to_owned(),
+                    value: plain.clone(),
+                    envelope,
+                });
+                *value = serde_json::json!({ MARK: plain });
+            } else {
+                value["encrypted"] = envelope;
+            }
+            return Ok(());
+        }
+        match value {
+            serde_json::Value::Array(items) => {
+                for (index, item) in items.iter_mut().enumerate() {
+                    visit(
+                        keys,
+                        organization,
+                        item,
+                        purpose,
+                        &format!("{at}/{index}"),
+                        opened,
+                    )?;
+                }
+            }
+            serde_json::Value::Object(members) => {
+                for (name, member) in members {
+                    let at = format!("{at}{}", pointer(std::slice::from_ref(name)));
+                    visit(
+                        keys,
+                        organization,
+                        member,
+                        &format!("{purpose}/{name}"),
+                        &at,
+                        opened,
+                    )?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    let mut opened = Vec::new();
+    for section in plugin_sections(&policy) {
+        for plugin in ENCRYPTABLE_PLUGINS {
+            let mut tokens = section.clone();
+            tokens.extend(["plugins".into(), plugin.into()]);
+            let at = pointer(&tokens);
+            if let Some(value) = policy.pointer_mut(&at) {
+                let purpose = format!("plugins/{plugin}");
+                visit(keys, organization, value, &purpose, &at, &mut opened)?;
+            }
+        }
+    }
+    Ok((policy, opened))
+}
+
+/// The parts that an edited policy marks `{"encrypt": value}` in its export and redaction plugins,
+/// and the policy with each value in its mark's place, as the gateway checks it. A header named
+/// `encrypt` holds text, so only an object there is a mark.
+pub fn marked_parts(mut policy: serde_json::Value) -> Result<(serde_json::Value, Vec<PolicyPart>)> {
+    fn visit(
+        value: &mut serde_json::Value,
+        purpose: &str,
+        tokens: &mut Vec<String>,
+        marked: &mut Vec<Vec<String>>,
+    ) {
+        let mark = value
+            .as_object_mut()
+            .filter(|object| {
+                object.len() == 1
+                    && (purpose != EXPORT_HEADERS
+                        || object.get(MARK).is_some_and(serde_json::Value::is_object))
+            })
+            .and_then(|object| object.remove(MARK));
+        if let Some(plain) = mark {
+            *value = plain;
+            marked.push(tokens.clone());
+        }
+        match value {
+            serde_json::Value::Array(items) => {
+                for (index, item) in items.iter_mut().enumerate() {
+                    tokens.push(index.to_string());
+                    visit(item, purpose, tokens, marked);
+                    tokens.pop();
+                }
+            }
+            serde_json::Value::Object(members) => {
+                for (name, member) in members {
+                    tokens.push(name.clone());
+                    visit(member, &format!("{purpose}/{name}"), tokens, marked);
+                    tokens.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut marked = Vec::new();
+    for section in plugin_sections(&policy) {
+        for plugin in ENCRYPTABLE_PLUGINS {
+            let mut tokens = section.clone();
+            tokens.extend(["plugins".into(), plugin.into()]);
+            if let Some(value) = policy.pointer_mut(&pointer(&tokens)) {
+                visit(
+                    value,
+                    &format!("plugins/{plugin}"),
+                    &mut tokens,
+                    &mut marked,
+                );
+            }
+        }
+    }
+    let mut parts = Vec::new();
+    for tokens in &marked {
+        if let Some(outer) = marked
+            .iter()
+            .find(|outer| outer.len() < tokens.len() && tokens.starts_with(outer))
+        {
+            bail!(
+                "{} is inside {}, which is encrypted as a whole",
+                pointer(tokens),
+                pointer(outer)
+            );
+        }
+        let part = policy_part(&policy, tokens)?;
+        if holds_sealed(policy.pointer(&pointer(&part.plugin)).unwrap_or(&policy)) {
+            bail!(
+                "{} also holds values that another key encrypts, so the gateway cannot check it",
+                pointer(&part.plugin)
+            );
+        }
+        parts.push(part);
+    }
+    Ok((policy, parts))
 }
 
 /// The tokens of a JSON Pointer (RFC 6901), such as `/plugins/export/destinations/0/url`.
@@ -257,13 +481,10 @@ pub fn policy_parts(policy: &serde_json::Value, paths: &[String]) -> Result<Vec<
         if policy.pointer(path).is_none() {
             bail!("The policy has nothing at {path}");
         }
-        // The sections that hold plugins: the policy's own and each rule's.
         let sections: Vec<Vec<String>> = match tokens.iter().map(String::as_str).collect::<Vec<_>>()
             [..]
         {
-            [] => std::iter::once(Vec::new())
-                .chain(rule_names(policy).map(|name| vec!["rules".into(), name]))
-                .collect(),
+            [] => plugin_sections(policy),
             ["plugins"] => vec![Vec::new()],
             ["rules"] => rule_names(policy)
                 .map(|name| vec!["rules".into(), name])
@@ -293,7 +514,15 @@ pub fn policy_parts(policy: &serde_json::Value, paths: &[String]) -> Result<Vec<
             plugins
         };
         for target in targets {
-            parts.push(policy_part(policy, &target)?);
+            let part = policy_part(policy, &target)?;
+            if holds_sealed(policy.pointer(&pointer(&part.plugin)).unwrap_or(policy)) {
+                bail!(
+                    "{} holds values encrypted before: edit them with `stogas policy edit \
+                     --key-file`, or encrypt from the policy without them",
+                    pointer(&part.plugin)
+                );
+            }
+            parts.push(part);
         }
     }
     parts.sort_by(|a, b| a.pointer.cmp(&b.pointer));
@@ -302,6 +531,13 @@ pub fn policy_parts(policy: &serde_json::Value, paths: &[String]) -> Result<Vec<
             || later.pointer.starts_with(&format!("{}/", earlier.pointer))
     });
     Ok(parts)
+}
+
+/// The sections that hold plugins: the policy's own and each rule's.
+fn plugin_sections(policy: &serde_json::Value) -> Vec<Vec<String>> {
+    std::iter::once(Vec::new())
+        .chain(rule_names(policy).map(|name| vec!["rules".into(), name]))
+        .collect()
 }
 
 fn rule_names(policy: &serde_json::Value) -> impl Iterator<Item = String> + '_ {
@@ -345,23 +581,16 @@ fn policy_part(policy: &serde_json::Value, tokens: &[String]) -> Result<PolicyPa
             .position(|token| token == "headers")
             .unwrap_or(tokens.len());
         bail!(
-            "Encrypt a destination's headers together with its URL: use --path {}",
+            "Encrypt a destination's headers together with its URL: encrypt {}",
             pointer(&tokens[..destination])
         );
     }
     if is_sealed(value) {
         bail!("{at} is already encrypted");
     }
-    let plugin = tokens[..=start].to_vec();
-    if holds_sealed(policy.pointer(&pointer(&plugin)).unwrap_or(value)) {
-        bail!(
-            "{} holds values encrypted before: encrypt from the policy without them",
-            pointer(&plugin)
-        );
-    }
     Ok(PolicyPart {
         pointer: at,
-        plugin,
+        plugin: tokens[..=start].to_vec(),
         purpose,
     })
 }
@@ -386,17 +615,31 @@ pub fn policy_check_source(policy: &serde_json::Value, parts: &[PolicyPart]) -> 
     source
 }
 
-/// Encrypts each part in place, padded with spaces to a multiple of 256 bytes.
+/// Encrypts each part in place, padded with spaces to a multiple of 256 bytes. A part that holds
+/// the value of an opened one keeps that envelope, each envelope once.
 pub fn seal_policy(
     key: &OrganizationKey,
     organization: &str,
     mut policy: serde_json::Value,
     parts: &[PolicyPart],
+    opened: &[Opened],
 ) -> Result<serde_json::Value> {
+    let mut kept = vec![false; opened.len()];
     for part in parts {
         let target = policy
             .pointer_mut(&part.pointer)
             .with_context(|| format!("The policy has nothing at {}", part.pointer))?;
+        let unchanged = opened.iter().enumerate().position(|(index, before)| {
+            !kept[index]
+                && before.sealed_by(key)
+                && before.purpose == part.purpose
+                && before.value == *target
+        });
+        if let Some(index) = unchanged {
+            kept[index] = true;
+            *target = serde_json::json!({ "encrypted": opened[index].envelope.clone() });
+            continue;
+        }
         let mut plaintext = Zeroizing::new(serde_json::to_vec(target)?);
         let padded = plaintext.len().div_ceil(PAD_TO) * PAD_TO;
         plaintext.resize(padded, b' ');
@@ -641,11 +884,11 @@ mod tests {
             ),
             (
                 "/plugins/export/destinations/0/headers",
-                "use --path /plugins/export/destinations/0",
+                "encrypt /plugins/export/destinations/0",
             ),
             (
                 "/plugins/export/destinations/0/headers/Authorization",
-                "use --path /plugins/export/destinations/0",
+                "encrypt /plugins/export/destinations/0",
             ),
             ("/plugins/export/destinations/7", "nothing at"),
             ("plugins/export", "JSON Pointer"),
@@ -665,7 +908,7 @@ mod tests {
             policy_check_source(&policy, &parts),
             serde_json::json!({ "plugins": { "export": policy["plugins"]["export"].clone() } })
         );
-        let sealed = seal_policy(&key, "org", policy.clone(), &parts).unwrap();
+        let sealed = seal_policy(&key, "org", policy.clone(), &parts, &[]).unwrap();
         let envelope = &sealed["plugins"]["export"]["destinations"][1]["encrypted"];
         assert_eq!(envelope["keyId"], key.id.as_str());
         let blob = URL_SAFE_NO_PAD
@@ -686,6 +929,92 @@ mod tests {
         assert!(error.to_string().contains("already encrypted"));
         // The redaction plugin is still free to encrypt.
         assert!(policy_parts(&sealed, &["/plugins/redaction".into()]).is_ok());
+    }
+
+    #[test]
+    fn a_key_opens_what_it_sealed_and_marks_name_the_parts_to_seal() {
+        let key = generate().unwrap();
+        let other = generate().unwrap();
+        let policy = policy();
+        let mine = policy_parts(
+            &policy,
+            &[
+                "/plugins/export/destinations/1/url".into(),
+                "/plugins/redaction".into(),
+            ],
+        )
+        .unwrap();
+        let sealed = seal_policy(&key, "org", policy.clone(), &mine, &[]).unwrap();
+        let keys = [key, other];
+        let [key, other] = &keys;
+        let (shown, opened) = open_policy(&keys[..1], "org", sealed.clone()).unwrap();
+        assert_eq!(
+            shown["plugins"]["export"]["destinations"][1]["url"],
+            serde_json::json!({ "encrypt": "https://audit.example.com/b?token=t" })
+        );
+        assert_eq!(
+            shown["plugins"]["redaction"],
+            serde_json::json!({ "encrypt": policy["plugins"]["redaction"].clone() })
+        );
+        // The marks name the same parts, and unchanged values keep their envelopes.
+        let (plain, parts) = marked_parts(shown.clone()).unwrap();
+        assert_eq!(plain, policy);
+        assert_eq!(
+            parts.iter().map(|part| &part.pointer).collect::<Vec<_>>(),
+            mine.iter().map(|part| &part.pointer).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            seal_policy(key, "org", plain.clone(), &parts, &opened).unwrap(),
+            sealed
+        );
+        // Another key encrypts the same values again, and then opens them.
+        let moved = seal_policy(other, "org", plain, &parts, &opened).unwrap();
+        assert_eq!(
+            moved["plugins"]["redaction"]["encrypted"]["keyId"],
+            *other.id
+        );
+        assert_eq!(open_policy(&keys, "org", moved).unwrap().0, shown);
+        // Another organization, another key or a moved envelope opens nothing.
+        assert!(open_policy(&keys, "other-org", sealed.clone()).is_err());
+        assert_eq!(
+            open_policy(&keys[1..], "org", sealed.clone()).unwrap().0,
+            sealed
+        );
+        let mut moved = sealed.clone();
+        moved["plugins"]["export"]["destinations"][0] =
+            sealed["plugins"]["export"]["destinations"][1]["url"].clone();
+        assert!(open_policy(&keys, "org", moved).is_err());
+        // A header named `encrypt` is a header, a mark outside the two plugins is left to the
+        // dashboard, and a mark inside headers, inside another mark or beside another key's
+        // values is refused.
+        let header = serde_json::json!({ "plugins": { "export": { "destinations": [
+            { "url": "https://a.example", "headers": { "encrypt": "x" } }
+        ] } }, "limits": { "encrypt": { "requests": 1 } } });
+        let (plain, parts) = marked_parts(header.clone()).unwrap();
+        assert!(parts.is_empty());
+        assert_eq!(plain, header);
+        // The other key opens nothing, so the export plugin still holds the first key's URL.
+        let (mut foreign, _) = open_policy(&keys[1..], "org", sealed).unwrap();
+        foreign["plugins"]["export"]["destinations"][0]["url"] =
+            serde_json::json!({ "encrypt": "https://logs.example.com/a" });
+        for (policy, message) in [
+            (
+                serde_json::json!({ "plugins": { "export": { "destinations": [
+                    { "url": "https://a.example", "headers": { "A": { "encrypt": "x" } } }
+                ] } } }),
+                "encrypt /plugins/export/destinations/0",
+            ),
+            (
+                serde_json::json!({ "plugins": { "redaction": { "encrypt": {
+                    "literals": { "encrypt": [{ "values": ["Falcon"] }] }
+                } } } }),
+                "/plugins/redaction/literals is inside /plugins/redaction",
+            ),
+            (foreign, "also holds values that another key encrypts"),
+        ] {
+            let error = marked_parts(policy).unwrap_err().to_string();
+            assert!(error.contains(message), "{error}");
+        }
     }
 
     #[test]

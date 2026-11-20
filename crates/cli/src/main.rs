@@ -365,7 +365,7 @@ async fn run() -> Result<()> {
         Command::Topup(args) => topup::run(args, &dashboard()?, route.onion).await?,
         Command::Policy {
             command: PolicyCommand::Edit(args),
-        } => policy::run(args, &dashboard()?).await?,
+        } => policy::run(args, &dashboard()?, route.gateway()).await?,
         Command::Byok {
             command: ByokCommand::Check(args),
         } => byok::run(args, &dashboard()?, route.gateway()).await?,
