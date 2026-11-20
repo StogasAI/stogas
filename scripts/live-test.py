@@ -49,6 +49,9 @@ def main(environment):
     run(*cargo, "--package", "stogas-ffi", *features)
     run(*cargo, "--package", "stogas-cli", *features)
     run(*cargo, "--profile", "wasm", "--package", "stogas-wasm", "--target", "wasm32-unknown-unknown", *features)
+    # Staging refuses to add a library to a Swift bundle of another version, which an earlier run
+    # leaves behind after a version change.
+    shutil.rmtree(ROOT / "bindings/swift/CStogas.artifactbundle", ignore_errors=True)
     run(sys.executable, "-B", "scripts/stage-native-bindings.py", "--platform", "linux-amd64", "--native-dir", native)
     # Go links this directory's static archive, not the shared library beside it in target.
     go_native = target / "go-native"
