@@ -287,14 +287,14 @@ fn request_fields<'a>(
 }
 
 #[derive(Deserialize)]
-struct Granted {
+pub struct Granted {
     access_token: String,
     token_type: String,
     expires_in: Option<u64>,
 }
 
 impl Granted {
-    fn into_token(self) -> Result<Token> {
+    pub fn into_token(self) -> Result<Token> {
         if !self.token_type.eq_ignore_ascii_case("bearer") {
             bail!(
                 "the dashboard sent a {} token, not a bearer token",
@@ -332,7 +332,7 @@ async fn redeem(
 
 /// Posts an OAuth request. A refusal in OAuth's form comes back as the inner error; one that the
 /// dashboard makes before the sign-in routes, such as a rate limit, is the outer error.
-async fn call<T: DeserializeOwned>(
+pub async fn call<T: DeserializeOwned>(
     dashboard: &Dashboard,
     path: &str,
     fields: &[(&str, &str)],

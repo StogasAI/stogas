@@ -26,6 +26,7 @@ mod native_tls;
 pub mod network;
 pub mod probe;
 mod proxy;
+pub use proxy::CredentialSource;
 mod receipt_http;
 mod upstream;
 
@@ -156,6 +157,9 @@ pub struct ServeOptions {
     pub listen: String,
     /// The only web origin that may call the endpoint. When unset, any page with the URL can.
     pub browser_origin: Option<String>,
+    /// The API key to send with every request in place of the client's, such as a workload's
+    /// access token that the source renews.
+    pub credential: Option<CredentialSource>,
 }
 
 impl Default for TransportOptions {
@@ -434,7 +438,8 @@ pub async fn serve(
         &options.listen,
         options.browser_origin.as_deref(),
     )
-    .map_err(TransportError::options)?;
+    .map_err(TransportError::options)?
+    .with_credential(options.credential);
     proxy::serve(config, shutdown)
         .await
         .map_err(TransportError::internal)

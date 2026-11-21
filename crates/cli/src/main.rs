@@ -23,6 +23,7 @@ mod route;
 mod sdk_release;
 mod sign_in;
 mod topup;
+mod workload;
 
 use anyhow::{Context, Result, bail};
 use clap::{
@@ -115,6 +116,8 @@ enum Command {
     },
     /// Sign this machine out and delete its access token.
     Logout,
+    /// Print an access token for a service key that trusts this workload's platform token.
+    Token(workload::Args),
     /// Send a request to the dashboard API and print the response.
     Api(api::Args),
     /// Add credit with a cryptocurrency or card payment.
@@ -298,6 +301,10 @@ struct ServeArgs {
     /// Repeat it for more keys.
     #[arg(long, value_name = "LABEL=FILE", value_parser = encryption_key::parse_label_file)]
     encryption_key_file: Vec<(String, PathBuf)>,
+    /// With --service-key, send a workload's access token with every request in place of the
+    /// client's API key, and renew it before it expires.
+    #[command(flatten)]
+    workload: workload::Options,
 }
 
 #[tokio::main]
@@ -361,6 +368,7 @@ async fn run() -> Result<()> {
             account::login(&dashboard()?, device_code, route.onion).await?;
         }
         Command::Logout => account::logout(&dashboard()?).await?,
+        Command::Token(args) => workload::run(args, dashboard()?).await?,
         Command::Api(args) => api::run(args, &dashboard()?).await?,
         Command::Topup(args) => topup::run(args, &dashboard()?, route.onion).await?,
         Command::Policy {
@@ -479,6 +487,16 @@ async fn run_serve(input: ServeArgs, route: Route) -> Result<()> {
         }
     }
     let shutdown = shutdown_signal(input.exit_on_stdin_close)?;
+    // The dashboard serves production accounts.
+    let credential =
+        workload::Workload::new(input.workload, route.network(Environment::Production)?)
+            .map(workload::Renewing::new)
+            .map(|renewing| {
+                stogas::CredentialSource::new(move || {
+                    let renewing = std::sync::Arc::clone(&renewing);
+                    async move { renewing.token().await }
+                })
+            });
     stogas::serve(
         stogas::ServeOptions {
             transport: stogas::TransportOptions {
@@ -496,6 +514,7 @@ async fn run_serve(input: ServeArgs, route: Route) -> Result<()> {
             },
             listen: input.listen,
             browser_origin: input.browser_origin,
+            credential,
         },
         shutdown,
     )

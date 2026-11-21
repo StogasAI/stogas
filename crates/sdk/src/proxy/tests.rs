@@ -431,3 +431,26 @@ fn a_compressed_body_gains_the_keys_and_goes_uncompressed() {
     let bomb = large.finish().unwrap();
     assert!(decoded("gzip", &bomb).is_none());
 }
+
+#[tokio::test]
+async fn a_credential_source_replaces_the_api_key_that_the_client_sends() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer client"),
+    );
+    let source = CredentialSource::new(|| async { Ok(Zeroizing::new("renewed".to_owned())) });
+    assert!(set_credential(&mut headers, &source).await.is_ok());
+    let sent: Vec<_> = headers.get_all(header::AUTHORIZATION).iter().collect();
+    assert_eq!(sent, ["Bearer renewed"]);
+    assert!(sent[0].is_sensitive());
+    // A source that fails sends nothing, and the client learns why.
+    let failing =
+        CredentialSource::new(|| async { anyhow::bail!("the token exchange was refused") });
+    let Err(failure) = set_credential(&mut headers, &failing).await else {
+        panic!("a failed source set a credential");
+    };
+    assert_eq!(failure.status, StatusCode::BAD_GATEWAY);
+    assert_eq!(failure.submission, "not_sent");
+    assert_eq!(failure.message, "the token exchange was refused");
+}

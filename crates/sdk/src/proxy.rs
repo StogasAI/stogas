@@ -20,8 +20,10 @@ use serde::de::{Deserializer, IgnoredAny, MapAccess, Visitor};
 use std::{
     collections::HashSet,
     fmt,
+    future::Future,
     io::Read as _,
     net::SocketAddr,
+    pin::Pin,
     sync::{Arc, Weak, mpsc::SyncSender},
     time::Duration,
 };
@@ -38,6 +40,27 @@ const CLOSE_BUDGET: Duration = Duration::from_secs(5);
 /// decodes.
 const MAX_REQUEST_BYTES: usize = 128 * 1024 * 1024;
 
+/// Gives the API key to send with a request. The proxy asks it for every request, so it can
+/// return an access token that it renews before the token expires.
+#[derive(Clone)]
+pub struct CredentialSource(Arc<CredentialFn>);
+type CredentialFn =
+    dyn Fn() -> Pin<Box<dyn Future<Output = Result<Zeroizing<String>>> + Send>> + Send + Sync;
+impl CredentialSource {
+    pub fn new<F, Fut>(source: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Zeroizing<String>>> + Send + 'static,
+    {
+        Self(Arc::new(move || Box::pin(source())))
+    }
+}
+impl fmt::Debug for CredentialSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CredentialSource")
+    }
+}
+
 pub struct ServeConfig {
     options: TransportOptions,
     upstream: Url,
@@ -48,6 +71,8 @@ pub struct ServeConfig {
     browser_origin: Option<String>,
     /// The `encryption_keys` member that requests without one receive.
     encryption_keys: Option<Zeroizing<String>>,
+    /// The API key that every request is sent with, in place of the client's.
+    credential: Option<CredentialSource>,
 }
 impl ServeConfig {
     pub fn new(
@@ -69,7 +94,14 @@ impl ServeConfig {
             client_capability: random_capability()?,
             browser_origin: browser_origin.map(secure_browser_origin).transpose()?,
             encryption_keys: options.encryption_keys.member(),
+            credential: None,
         })
+    }
+    /// Sends the source's API key with every request, in place of the one that the client sends.
+    #[must_use]
+    pub fn with_credential(mut self, source: Option<CredentialSource>) -> Self {
+        self.credential = source;
+        self
     }
     fn base_url(&self) -> String {
         format!(
@@ -473,6 +505,9 @@ async fn forward_request(
     for name in names {
         parts.headers.remove(name);
     }
+    if let Some(source) = &state.config.credential {
+        set_credential(&mut parts.headers, source).await?;
+    }
     let mut url = state.config.upstream.clone();
     url.set_path(path);
     parts.uri = url.as_str().parse().map_err(|_| {
@@ -532,6 +567,19 @@ async fn forward_request(
 /// that the client compressed in a way that the gateway accepts. A body that gains them goes
 /// uncompressed. Any other goes as the client sent it, so the gateway answers for a body that it
 /// cannot read or that is no JSON object.
+/// Replaces the client's API key with the source's, so a client needs none of its own.
+async fn set_credential(headers: &mut HeaderMap, source: &CredentialSource) -> Result<(), Failure> {
+    let failure = |message: String| Failure::before(StatusCode::BAD_GATEWAY, "credential", message);
+    let credential = (source.0)()
+        .await
+        .map_err(|error| failure(format!("{error:#}")))?;
+    let mut value =
+        HeaderValue::from_str(&Zeroizing::new(format!("Bearer {}", credential.as_str())))
+            .map_err(|_| failure("the API key has characters that a header cannot carry".into()))?;
+    value.set_sensitive(true);
+    headers.insert(header::AUTHORIZATION, value);
+    Ok(())
+}
 fn with_encryption_keys(headers: &mut HeaderMap, body: Bytes, member: &str) -> Bytes {
     let mut codings = headers.get_all(header::CONTENT_ENCODING).iter();
     let keyed = match (codings.next(), codings.next()) {
