@@ -64,7 +64,6 @@ pub struct Credential {
     pub name: String,
     pub kind: String,
     pub provider: String,
-    pub checked_at: Option<String>,
     /// When someone asked for a check of a stored credential, until a check that began after the
     /// ask records its result.
     pub check_asked_at: Option<String>,
@@ -468,7 +467,6 @@ mod tests {
             };
             Ok(self.credential.clone().map(|mut credential| {
                 if checked {
-                    credential.checked_at = Some("2026-11-03T12:00:00Z".into());
                     credential.check_error.clone_from(&self.stored_error);
                 }
                 credential
@@ -546,7 +544,6 @@ mod tests {
             name: "Production\u{1b}[31m".into(),
             kind: kind.into(),
             provider: "openai".into(),
-            checked_at: None,
             check_asked_at: None,
             check_error: None,
             azure_targets: None,
