@@ -70,26 +70,24 @@
 			"swift": "arm64-apple-macosx"
 		},
 		"windows-amd64": {
-			"triple": "x86_64-pc-windows-msvc",
+			"triple": "x86_64-pc-windows-gnullvm",
 			"os": "windows",
 			"arch": "amd64",
 			"minimum": "10",
 			"packages": ["native", "cli", "python", "go", "java", "dotnet", "ruby"],
 			"dotnet": "win-x64",
 			"jna": "win32-x86-64",
-			"ruby": "x64-mingw-ucrt",
-			"go_triple": "x86_64-pc-windows-gnullvm"
+			"ruby": "x64-mingw-ucrt"
 		},
 		"windows-arm64": {
-			"triple": "aarch64-pc-windows-msvc",
+			"triple": "aarch64-pc-windows-gnullvm",
 			"os": "windows",
 			"arch": "arm64",
 			"minimum": "11",
 			"packages": ["native", "cli", "python", "go", "java", "dotnet", "ruby"],
 			"dotnet": "win-arm64",
 			"jna": "win32-aarch64",
-			"ruby": "aarch64-mingw-ucrt",
-			"go_triple": "aarch64-pc-windows-gnullvm"
+			"ruby": "aarch64-mingw-ucrt"
 		},
 		"ios-arm64": {
 			"triple": "aarch64-apple-ios",

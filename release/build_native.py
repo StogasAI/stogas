@@ -55,11 +55,17 @@ def build(platform, output, epoch, tools):
     (tools / "cargo").chmod(0o755)
     env["PATH"] = f"{tools}{os.pathsep}{env['PATH']}"
     if windows:
-        env["RUSTFLAGS"] += " -C target-feature=+crt-static -C link-arg=/Brepro -C link-arg=/PDBALTPATH:%_PDB%"
-        env["RUSTFLAGS"] += f" -C linker={ROOT}/release/windows_link.py"
-        env["CL_FLAGS"] = "/Brepro"
+        # llvm-mingw's open-source runtime, linked statically, takes the place of Microsoft's, so
+        # no Windows file holds closed-source code or needs a runtime DLL beside it.
+        clang = f"/opt/llvm-mingw/bin/{triple.split('-')[0]}-w64-mingw32-clang"
+        variable = triple.replace("-", "_")
+        env["RUSTFLAGS"] += " -C target-feature=+crt-static -C link-arg=-Wl,--no-insert-timestamp"
+        env[f"CARGO_TARGET_{variable.upper()}_LINKER"] = clang
+        env[f"CC_{variable}"] = clang
+        env[f"CFLAGS_{variable}"] = "-mno-incremental-linker-compatible"
+        env[f"CXXFLAGS_{variable}"] = "-mno-incremental-linker-compatible"
+        env[f"AR_{variable}"] = "/opt/llvm-mingw/bin/llvm-ar"
         env["NASMENV"] = "--reproducible"
-        env["MATURIN_USE_XWIN"] = "1"
     if apple:
         env["RUSTFLAGS"] += f" --remap-path-prefix={env['CARGO_HOME']}=/cargo --remap-path-prefix={env['CARGO_TARGET_DIR']}=/build/target"
         env["ZERO_AR_DATE"] = "1"
@@ -73,11 +79,10 @@ def build(platform, output, epoch, tools):
         raise ValueError("The release compiler requires llvm-tools-preview")
     if android:
         base = ["cargo", "ndk", "--target", target["android_abi"], "--platform", target["minimum"], "build"]
-    elif apple:
+    elif apple or windows:
         base = ["cargo", "build", "--target", triple]
     else:
-        base = ["cargo", "xwin", "build"] if windows else ["cargo", "zigbuild"]
-        base += ["--target", zig_triple]
+        base = ["cargo", "zigbuild", "--target", zig_triple]
     base += ["--locked", "--profile", "dist"]
     library_env = dict(env)
     if target.get("libc") == "musl":
@@ -100,24 +105,25 @@ def build(platform, output, epoch, tools):
         runtime, symbols = temporary / "runtime", temporary / "symbols"
         runtime.mkdir()
         symbols.mkdir()
-        archive = "stogas_ffi.lib" if windows else "libstogas_ffi.a"
+        archive = "libstogas_ffi.a"
+        shutil.copyfile(built / archive, symbols / archive)
         if windows:
-            # COFF import members cannot be rewritten by llvm-objcopy. Preserve
-            # the complete MSVC archive; its debug records support consumer PDBs.
-            shutil.copyfile(built / archive, runtime / archive)
+            # GNU objcopy preserves NASM's reproducible COFF file records. LLVM objcopy
+            # corrupts their empty auxiliary filename; ARM objects use LLVM's backend.
+            coff_objcopy = objcopy if target["arch"] == "arm64" else Path("/usr/bin/objcopy")
+            strip_windows_archive(coff_objcopy, objcopy.with_name("llvm-ar"), built / archive, runtime / archive, env)
         else:
-            shutil.copyfile(built / archive, symbols / archive)
             sections = ["__LLVM,__bitcode", "__LLVM,__cmdline"] if apple else [".llvmbc", ".llvmcmd"]
             run([objcopy, "--strip-debug", *[f"--remove-section={name}" for name in sections], built / archive, runtime / archive], env)
         # GitHub limits individual Git files to 100 MiB. Keep real symbol names;
         # the separate unstripped archive supports source-level relinking.
-        if not windows and (runtime / archive).stat().st_size > 100 * 1024**2:
+        if (runtime / archive).stat().st_size > 100 * 1024**2:
             raise ValueError("Static library exceeds the GitHub per-file limit for the Go module")
         if windows:
             shared = "stogas_ffi.dll"
-            shutil.copyfile(built / shared, runtime / shared)
-            shutil.copyfile(built / (shared + ".lib"), runtime / (shared + ".lib"))
-            shutil.copyfile(built / "stogas_ffi.pdb", symbols / "stogas_ffi.pdb")
+            split_debug(objcopy, built / shared, runtime / shared, symbols / (shared + ".debug"), env)
+            # lld writes the import library in the format that Visual Studio's linker also reads.
+            shutil.copyfile(built / "libstogas_ffi.dll.a", runtime / (shared + ".lib"))
         elif target["os"] == "macos":
             shared = "libstogas_ffi.dylib"
             split_apple_debug(built / shared, runtime / shared, symbols / (shared + ".dSYM"), env)
@@ -132,16 +138,11 @@ def build(platform, output, epoch, tools):
         if "cli" in target["packages"]:
             run([*base, "--package", "stogas-cli"], env)
             cli.mkdir()
-            if windows:
-                shutil.copyfile(built / executable, cli / executable)
-                shutil.copyfile(built / "stogas.pdb", symbols / "stogas.pdb")
-            elif apple:
+            if apple:
                 split_apple_debug(built / executable, cli / executable, symbols / "stogas.dSYM", env)
             else:
                 split_debug(objcopy, built / executable, cli / executable, symbols / "stogas.debug", env)
             require_crate_list(objcopy, cli / executable, "stogas-cli", apple, env)
-        if windows:
-            build_windows_go(target, runtime, symbols, objcopy, env)
         for directory in (runtime, symbols, cli):
             if directory.is_dir():
                 shutil.copyfile(ROOT / "LICENSE", directory / "LICENSE")
@@ -158,9 +159,9 @@ def build(platform, output, epoch, tools):
             compatibility = [] if windows or apple else ["--compatibility", "manylinux_2_17" if target["libc"] == "glibc" else "musllinux_1_2"]
             run([
                 "maturin", "build", "--locked", "--profile", "dist", *([] if windows or apple else ["--zig"]),
-                "--target", triple, *compatibility, *(["--include-debuginfo"] if windows or apple else []),
+                "--target", triple, *compatibility, *(["--include-debuginfo"] if apple else []),
                 "--manifest-path", "bindings/python/Cargo.toml", "--out", wheels,
-                *(["--", "-C", "strip=debuginfo"] if apple else []),
+                *(["--", "-C", "strip=debuginfo"] if windows or apple else []),
             ], library_env)
             # Maturin owns native dependency validation. The wheel also installs the CLI as a
             # script, so `pipx install stogas` and `uvx stogas` run it, and Apple metadata needs
@@ -216,32 +217,6 @@ def split_apple_debug(source, binary, debug, env):
     shutil.copyfile(source, binary)
     run(["xcrun", "strip", "-S", binary], env)
     binary.chmod(0o755)
-
-
-def build_windows_go(target, runtime, symbols, objcopy, env):
-    triple = target["go_triple"]
-    machine = {"amd64": "x86_64", "arm64": "aarch64"}[target["arch"]]
-    prefix = f"/opt/llvm-mingw/bin/{machine}-w64-mingw32"
-    env = dict(env)
-    # cgo uses the GNU ABI. MSVC archives cannot substitute for this build.
-    env["RUSTFLAGS"] = f"--remap-path-prefix={ROOT}=/stogas -C debuginfo=line-tables-only -C link-arg=-Wl,--no-insert-timestamp"
-    env[f"CARGO_TARGET_{triple.upper().replace('-', '_')}_LINKER"] = prefix + "-clang"
-    env[f"CC_{triple.replace('-', '_')}"] = prefix + "-clang"
-    env[f"CFLAGS_{triple.replace('-', '_')}"] = "-mno-incremental-linker-compatible"
-    env[f"CXXFLAGS_{triple.replace('-', '_')}"] = "-mno-incremental-linker-compatible"
-    env[f"AR_{triple.replace('-', '_')}"] = "/opt/llvm-mingw/bin/llvm-ar"
-    run(["cargo", "build", "--locked", "--profile", "dist", "--target", triple, "--package", "stogas-ffi"], env)
-    original = Path(env["CARGO_TARGET_DIR"]) / triple / "dist/libstogas_ffi.a"
-    (runtime / "go").mkdir()
-    (symbols / "go").mkdir()
-    shutil.copyfile(original, symbols / "go/libstogas_ffi.a")
-    packaged = runtime / "go/libstogas_ffi.a"
-    # GNU objcopy preserves NASM's reproducible COFF file records. LLVM objcopy
-    # corrupts their empty auxiliary filename; ARM objects use LLVM's backend.
-    coff_objcopy = objcopy if target["arch"] == "arm64" else Path("/usr/bin/objcopy")
-    strip_windows_archive(coff_objcopy, objcopy.with_name("llvm-ar"), original, packaged, env)
-    if packaged.stat().st_size > 100 * 1024**2:
-        raise ValueError("Go static library exceeds the GitHub per-file limit")
 
 
 def strip_windows_archive(objcopy, ar, original, packaged, env):
