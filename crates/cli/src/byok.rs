@@ -65,6 +65,9 @@ pub struct Credential {
     pub kind: String,
     pub provider: String,
     pub checked_at: Option<String>,
+    /// When someone asked for a check of a stored credential, until a check that began after the
+    /// ask records its result.
+    pub check_asked_at: Option<String>,
     pub check_error: Option<String>,
     pub azure_targets: Option<AzureTargets>,
 }
@@ -337,12 +340,12 @@ pub async fn check(
         if matches!(keys.source, KeySource::File(_)) {
             bail!("Stogas stores {name}, so its check needs no key; run it without --key-file");
         }
-        let asked = api.check_stored().await?;
+        api.check_stored().await?;
         let deadline = Instant::now() + STORED_CHECK_WAIT;
         let checked = loop {
             tokio::time::sleep(STORED_CHECK_POLL).await;
             let credential = api.find().await?.ok_or(NotFound)?;
-            if credential.checked_at != asked.checked_at {
+            if credential.check_asked_at.is_none() {
                 break credential;
             }
             if Instant::now() >= deadline {
@@ -474,7 +477,9 @@ mod tests {
 
         async fn check_stored(&self) -> Result<Credential> {
             self.calls.lock().unwrap().push("check");
-            Ok(self.credential.clone().unwrap())
+            let mut credential = self.credential.clone().unwrap();
+            credential.check_asked_at = Some(ASKED_AT.into());
+            Ok(credential)
         }
 
         async fn grant(&self) -> Result<CheckGrant> {
@@ -496,7 +501,10 @@ mod tests {
 
     impl CheckApi for Unchecked {
         async fn find(&self) -> Result<Option<Credential>> {
-            Ok(self.0.credential.clone())
+            Ok(self.0.credential.clone().map(|mut credential| {
+                credential.check_asked_at = Some(ASKED_AT.into());
+                credential
+            }))
         }
 
         async fn check_stored(&self) -> Result<Credential> {
@@ -531,12 +539,15 @@ mod tests {
         }
     }
 
+    const ASKED_AT: &str = "2026-11-03T11:59:59Z";
+
     fn credential(kind: &str) -> Credential {
         Credential {
             name: "Production\u{1b}[31m".into(),
             kind: kind.into(),
             provider: "openai".into(),
             checked_at: None,
+            check_asked_at: None,
             check_error: None,
             azure_targets: None,
         }
