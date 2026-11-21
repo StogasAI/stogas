@@ -394,9 +394,15 @@ fn private_directory() -> Result<PathBuf> {
     let mut random = [0; 16];
     getrandom::fill(&mut random).map_err(|error| anyhow!("no randomness: {error}"))?;
     let directory = std::env::temp_dir().join(format!("stogas-policy-{}", hex::encode(random)));
-    let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    let builder = {
+        let mut builder = fs::DirBuilder::new();
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder
+    };
+    // Windows gives each user a temporary directory that no other user can open.
+    #[cfg(not(unix))]
+    let builder = fs::DirBuilder::new();
     builder
         .create(&directory)
         .with_context(|| format!("could not create {}", directory.display()))?;
