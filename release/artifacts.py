@@ -22,6 +22,10 @@ MANIFEST = "release-manifest.json"
 # The build and packaging images run x86-64 compilers and tools, and their base images also come
 # in other architectures, so every build names this one.
 BUILD_PLATFORM = "linux/amd64"
+# Maven Central answers the shared addresses of hosted runners with HTTP 429 for minutes at a
+# time. Maven waits 5 seconds longer before each retry and gives up after 3, which is 30 seconds;
+# 10 retries wait up to 275 seconds for a file.
+MAVEN_ARGS = "-Daether.connector.http.retryHandler.count=10"
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,199}\Z")
 
 

@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 import msvc
-from artifacts import unpack, wheel
+from artifacts import MAVEN_ARGS, unpack, wheel
 from gate import attempt
 
 
@@ -27,7 +27,7 @@ def qualify(source, packages, version, platform, target, requested, cases):
         work = Path(temporary)
         env = dict(os.environ)
         env.pop("STOGAS_LIVE", None)
-        env.update({"GOWORK": "off", "CGO_ENABLED": "1", "GEM_HOME": str(work / "gems"), "GEM_PATH": str(work / "gems"), "DOTNET_CLI_HOME": str(work), "PYTHONNOUSERSITE": "1"})
+        env.update({"GOWORK": "off", "CGO_ENABLED": "1", "GEM_HOME": str(work / "gems"), "GEM_PATH": str(work / "gems"), "DOTNET_CLI_HOME": str(work), "PYTHONNOUSERSITE": "1", "MAVEN_ARGS": MAVEN_ARGS})
         def run(arguments, directory=work, environment=None):
             subprocess.run([str(arg) for arg in arguments], cwd=directory, env=environment or env, check=True)
         def runtime_of(*command):

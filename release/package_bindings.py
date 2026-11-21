@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 import channels
-from artifacts import BUILD_PLATFORM, MANIFEST, digest, regular_files, source_digest, unpack, write_json
+from artifacts import BUILD_PLATFORM, MANIFEST, MAVEN_ARGS, digest, regular_files, source_digest, unpack, write_json
 
 MAVEN = "maven:3.9.11-eclipse-temurin-17@sha256:e4a7ace3dc0d645ed97f8d9ad0b0d3f0b14fa8d150138f27f116d7105a639b82"
 DOTNET = "mcr.microsoft.com/dotnet/sdk:10.0@sha256:35d40304542c8689331f8cab17c65926cdf48fe711e289321d71924b230a7d29"
@@ -24,7 +24,7 @@ def container(image, source, arguments, epoch, environment=()):
         # Unlike --mount, --volume can relabel the files for SELinux hosts such as Fedora.
         "--volume", f"{source}:/build:z", "--workdir", "/build",
         "--env", f"SOURCE_DATE_EPOCH={epoch}", "--env", "TZ=UTC", "--env", "HOME=/build",
-        "--env", "MAVEN_OPTS=-Duser.home=/build", "--env", "MAVEN_CONFIG=/build/.m2",
+        "--env", "MAVEN_OPTS=-Duser.home=/build", "--env", "MAVEN_CONFIG=/build/.m2", "--env", f"MAVEN_ARGS={MAVEN_ARGS}",
         "--env", "DOTNET_CLI_HOME=/build/.dotnet", "--env", "GEM_HOME=/build/.gem",
         *[part for entry in environment for part in ("--env", entry)],
         image, *arguments,

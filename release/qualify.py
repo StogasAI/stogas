@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-from artifacts import unpack, verify_inventory, verify_source, wheel, write_json
+from artifacts import MAVEN_ARGS, unpack, verify_inventory, verify_source, wheel, write_json
 from gate import METADATA, attempt, cases, prerelease, read_document
 from package_bindings import MAVEN, DOTNET, RUBY
 
@@ -108,7 +108,7 @@ def qualify_linux(source, packages, version, platform, target, requested, select
                 "docker", "run", "--rm", "--init", "--memory", "4g", "--cpus", "4",
                 "--platform", "linux/" + target["arch"], "--user", f"{os.getuid()}:{os.getgid()}",
                 "--mount", f"type=bind,source={work},target=/work", "--workdir", directory,
-                "--env", "HOME=/work", "--env", "MAVEN_OPTS=-Duser.home=/work",
+                "--env", "HOME=/work", "--env", "MAVEN_OPTS=-Duser.home=/work", "--env", f"MAVEN_ARGS={MAVEN_ARGS}",
                 "--env", "DOTNET_CLI_HOME=/work", "--env", "GEM_HOME=/work/.gem",
                 *(["--network", "none"] if case == "offline" else []),
                 *[part for entry in (*environment, *(["STOGAS_LIVE=prod"] if case == "live" else [])) for part in ("--env", entry)],
