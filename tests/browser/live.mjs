@@ -1,5 +1,5 @@
 // Shared by every JavaScript runtime. Sends an invalid API key through the
-// environment's encrypted gateway, then checks refresh and close.
+// environment's encrypted gateway, reads its model list, then checks refresh and close.
 export async function checkLiveGateway(StogasTransport, environment) {
 	const transport = await StogasTransport.create({ environment });
 	try {
@@ -17,6 +17,10 @@ export async function checkLiveGateway(StogasTransport, environment) {
 		const body = await response.json();
 		if (response.status !== 401 || body.error?.type !== 'authentication_error')
 			throw new Error(`The gateway did not reject the invalid key: ${response.status}`);
+		// A catalog read is a GET without content, which the gateway answers without a key.
+		const models = await transport.fetch(`${transport.baseURL}/models`);
+		if (models.status !== 200 || !(await models.json()).data?.length)
+			throw new Error(`The gateway did not list its models: ${models.status}`);
 		await Promise.all([transport.refreshEvidence(), transport.refreshEvidence()]);
 	} finally {
 		await transport.close();

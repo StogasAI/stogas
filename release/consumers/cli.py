@@ -86,6 +86,10 @@ def serve(cli, environment, security):
             with error:
                 if error.code != 401 or json.loads(error.read())["error"]["type"] != "authentication_error":
                     raise SystemExit(f"serve --security {security} answered an invalid key with HTTP {error.code}") from None
+        # A catalog read is a GET without content, which the gateway answers without a key.
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(f"{base}/models", timeout=60) as response:
+            if not json.load(response)["data"]:
+                raise SystemExit(f"serve --security {security} read an empty model list")
         process.stdin.close()
         if process.wait(timeout=10) != 0:
             raise SystemExit(f"serve --security {security} exited {process.returncode} when its stdin closed")
