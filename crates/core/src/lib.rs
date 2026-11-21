@@ -583,6 +583,7 @@ fn verify_catalog_provenance(
         trust,
         &attestation_bytes,
         &subjects,
+        &[],
         &BuildPolicy {
             repository: manifest.source.repository.clone(),
             workflow_identity: format!(
@@ -664,10 +665,13 @@ fn verify_release_provenance(
         },
     ];
     let reference = format!("refs/tags/{}", manifest.source.tag);
+    // Each builder's proof also names the release's other files, whose digests evidence does not
+    // hold.
     let integrated_time = verify_github_provenance(
         trust,
         &attestation_bytes,
         &subjects,
+        &GATEWAY_RELEASE_FILES,
         &BuildPolicy {
             repository: manifest.source.repository.clone(),
             workflow_identity: format!(
@@ -679,7 +683,6 @@ fn verify_release_provenance(
         },
         "gateway provenance",
     )?;
-    // GitLab's proof also names the release's other files, whose digests evidence does not hold.
     verify_build_attestation_among(
         trust,
         &gitlab_proof_bytes(release.gitlab_provenance.as_ref())?,
@@ -844,11 +847,18 @@ fn verify_github_provenance(
     trust: &TrustedRoot,
     attestation_bytes: &[u8],
     expected_subjects: &[Subject<'_>],
+    other_names: &[&str],
     policy: &BuildPolicy,
     context: &str,
 ) -> Result<i64, Error> {
-    let verified = verify_build_attestation(trust, attestation_bytes, expected_subjects, policy)
-        .map_err(|error| Error::Release(format!("{context}: {error}")))?;
+    let verified = verify_build_attestation_among(
+        trust,
+        attestation_bytes,
+        expected_subjects,
+        other_names,
+        policy,
+    )
+    .map_err(|error| Error::Release(format!("{context}: {error}")))?;
     verified
         .integrated_time
         .checked_mul(1000)
