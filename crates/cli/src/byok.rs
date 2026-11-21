@@ -28,6 +28,10 @@ pub const CHECK_PATH: &str = "/v1/byok/check";
 // Evidence, a new verified connection, and the check: a provider's answer within 8 seconds, or
 // an Azure sign-in and discovery within 25.
 const CHECK_BUDGET: Duration = Duration::from_secs(45);
+// A gateway takes up a stored credential's check within seconds of the request for it, and the
+// check ends within the time that one of an encrypted credential takes.
+const STORED_CHECK_WAIT: Duration = Duration::from_mins(1);
+const STORED_CHECK_POLL: Duration = Duration::from_secs(1);
 // A grant lasts five minutes, and reading its key can wait for a person, at the terminal or at the
 // system keychain's prompt. A check whose key took longer than this asks for a new grant, so the
 // connection to the gateway has most of five minutes.
@@ -60,19 +64,18 @@ pub struct Credential {
     pub name: String,
     pub kind: String,
     pub provider: String,
+    pub checked_at: Option<String>,
     pub check_error: Option<String>,
     pub azure_targets: Option<AzureTargets>,
 }
 
-/// An Azure credential's targets as the dashboard counts them.
+/// An Azure credential's models as the dashboard counts them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub struct AzureTargets {
-    /// The selected targets, one per model at most.
-    pub selected: u64,
-    /// The selected targets that do not serve now, such as a deleted deployment.
-    pub unavailable: u64,
-    /// The models that have a target that can serve but none selected.
-    pub unselected: u64,
+    /// The models that a deployment serves.
+    pub serving: u64,
+    /// The models whose deployments, of those that the owner left on, all stopped serving.
+    pub stopped: u64,
 }
 
 /// What the dashboard grants for one check by a gateway.
@@ -88,10 +91,11 @@ pub struct CheckGrant {
 /// The dashboard requests that a check makes.
 pub trait CheckApi: Sync {
     fn find(&self) -> impl Future<Output = Result<Option<Credential>>> + Send;
+    /// Asks for the check of a stored credential, which a gateway makes, and returns the credential
+    /// as it was before the check.
     fn check_stored(&self) -> impl Future<Output = Result<Credential>> + Send;
     fn grant(&self) -> impl Future<Output = Result<CheckGrant>> + Send;
-    /// The dashboard page that shows the credential, where members choose an Azure credential's
-    /// targets.
+    /// The dashboard page that shows the credential and an Azure credential's targets.
     fn page(&self) -> String;
 }
 
@@ -333,7 +337,22 @@ pub async fn check(
         if matches!(keys.source, KeySource::File(_)) {
             bail!("Stogas stores {name}, so its check needs no key; run it without --key-file");
         }
-        let checked = api.check_stored().await?;
+        let asked = api.check_stored().await?;
+        let deadline = Instant::now() + STORED_CHECK_WAIT;
+        let checked = loop {
+            tokio::time::sleep(STORED_CHECK_POLL).await;
+            let credential = api.find().await?.ok_or(NotFound)?;
+            if credential.checked_at != asked.checked_at {
+                break credential;
+            }
+            if Instant::now() >= deadline {
+                bail!(
+                    "the check of {name} is taking longer than usual; see its result at {} when it \
+                     ends",
+                    api.page()
+                );
+            }
+        };
         return outcome(
             provider,
             &name,
@@ -379,7 +398,7 @@ struct Checked {
 }
 
 /// What to print when the provider accepted the credential, or the error that says why it did not.
-/// An Azure credential also shows its targets, and where to choose them when a model needs one.
+/// An Azure credential also counts the models that its deployments serve.
 fn outcome(
     provider: &str,
     name: &str,
@@ -394,32 +413,20 @@ fn outcome(
     let Some(targets) = targets else {
         return Ok(accepted);
     };
-    if targets.selected == 0 && targets.unselected == 0 {
+    if targets.serving == 0 && targets.stopped == 0 {
         return Ok(format!(
-            "{accepted}\nIts account has no deployment that can serve a model in the catalog, so \
-             no request can use it. Deploy one in Microsoft Foundry, then check the credential \
-             again."
+            "{accepted}\nNo deployment in its account serves a model in the catalog, so requests \
+             can't use it. Deploy one in Microsoft Foundry, or turn one on at {page}"
         ));
     }
-    let unavailable = match targets.unavailable {
+    let stopped = match targets.stopped {
         0 => String::new(),
-        count => format!(", {count} of them unavailable"),
+        count => format!(", {count} stopped"),
     };
-    let unselected = match targets.unselected {
-        0 => String::new(),
-        1 => "; 1 model without a target".to_owned(),
-        count => format!("; {count} models without a target"),
-    };
-    let summary = format!(
-        "Targets: {} selected{unavailable}{unselected}",
-        targets.selected
-    );
-    let next = if targets.unavailable > 0 || targets.unselected > 0 {
-        "Choose targets at"
-    } else {
-        "Review them at"
-    };
-    Ok(format!("{accepted}\n{summary}.\n{next} {page}"))
+    Ok(format!(
+        "{accepted}\nModels: {} served{stopped}.\nSee its targets at {page}",
+        targets.serving
+    ))
 }
 
 fn provider_name(provider: &str) -> &str {
@@ -450,15 +457,24 @@ mod tests {
 
     impl CheckApi for Fake {
         async fn find(&self) -> Result<Option<Credential>> {
-            self.calls.lock().unwrap().push("find");
-            Ok(self.credential.clone())
+            // A gateway checked the stored credential once someone asked for it.
+            let checked = {
+                let mut calls = self.calls.lock().unwrap();
+                calls.push("find");
+                calls.contains(&"check")
+            };
+            Ok(self.credential.clone().map(|mut credential| {
+                if checked {
+                    credential.checked_at = Some("2026-11-03T12:00:00Z".into());
+                    credential.check_error.clone_from(&self.stored_error);
+                }
+                credential
+            }))
         }
 
         async fn check_stored(&self) -> Result<Credential> {
             self.calls.lock().unwrap().push("check");
-            let mut credential = self.credential.clone().unwrap();
-            credential.check_error.clone_from(&self.stored_error);
-            Ok(credential)
+            Ok(self.credential.clone().unwrap())
         }
 
         async fn grant(&self) -> Result<CheckGrant> {
@@ -472,6 +488,27 @@ mod tests {
 
         fn page(&self) -> String {
             "https://app.stogas.ai/org/byok?credential=id".into()
+        }
+    }
+
+    /// A dashboard where no gateway records the check that someone asked for.
+    struct Unchecked(Fake);
+
+    impl CheckApi for Unchecked {
+        async fn find(&self) -> Result<Option<Credential>> {
+            Ok(self.0.credential.clone())
+        }
+
+        async fn check_stored(&self) -> Result<Credential> {
+            self.0.check_stored().await
+        }
+
+        async fn grant(&self) -> Result<CheckGrant> {
+            self.0.grant().await
+        }
+
+        fn page(&self) -> String {
+            self.0.page()
         }
     }
 
@@ -499,6 +536,7 @@ mod tests {
             name: "Production\u{1b}[31m".into(),
             kind: kind.into(),
             provider: "openai".into(),
+            checked_at: None,
             check_error: None,
             azure_targets: None,
         }
@@ -550,7 +588,7 @@ mod tests {
         (path, encoded, id)
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn checks_a_stored_credential_on_the_dashboard() {
         let api = Fake {
             credential: Some(credential("stored")),
@@ -586,7 +624,22 @@ mod tests {
         assert!(unused.sent.lock().unwrap().is_empty());
         assert_eq!(
             *refused.calls.lock().unwrap(),
-            ["find", "check", "find", "check", "find"]
+            ["find", "check", "find", "find", "check", "find", "find"]
+        );
+
+        // A check that no gateway records in time says so.
+        let waiting = Fake {
+            credential: Some(credential("stored")),
+            stored_error: None,
+            key_id: String::new(),
+            calls: Mutex::new(Vec::new()),
+        };
+        assert!(
+            check(&Unchecked(waiting), &unused, &unsaved())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("is taking longer than usual")
         );
     }
 
@@ -795,7 +848,7 @@ mod tests {
         assert!(error.is::<NotFound>());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn shows_an_azure_credentials_targets_after_its_check() {
         let directory = Directory::new();
         let (path, _, id) = key_file(directory.path(), 7);
@@ -820,26 +873,23 @@ mod tests {
         let link = "https://app.stogas.ai/org/byok?credential=id";
         for (targets, expected) in [
             (
-                json!({ "selected": 3, "unavailable": 0, "unselected": 0 }),
-                format!("Targets: 3 selected.\nReview them at {link}"),
+                json!({ "serving": 3, "stopped": 0 }),
+                format!("Models: 3 served.\nSee its targets at {link}"),
             ),
             (
-                json!({ "selected": 3, "unavailable": 1, "unselected": 2 }),
+                json!({ "serving": 3, "stopped": 2 }),
+                format!("Models: 3 served, 2 stopped.\nSee its targets at {link}"),
+            ),
+            (
+                json!({ "serving": 0, "stopped": 1 }),
+                format!("Models: 0 served, 1 stopped.\nSee its targets at {link}"),
+            ),
+            (
+                json!({ "serving": 0, "stopped": 0 }),
                 format!(
-                    "Targets: 3 selected, 1 of them unavailable; 2 models without a target.\n\
-                     Choose targets at {link}"
+                    "No deployment in its account serves a model in the catalog, so requests \
+                     can't use it. Deploy one in Microsoft Foundry, or turn one on at {link}"
                 ),
-            ),
-            (
-                json!({ "selected": 0, "unavailable": 0, "unselected": 1 }),
-                format!("Targets: 0 selected; 1 model without a target.\nChoose targets at {link}"),
-            ),
-            (
-                json!({ "selected": 0, "unavailable": 0, "unselected": 0 }),
-                "Its account has no deployment that can serve a model in the catalog, so no \
-                 request can use it. Deploy one in Microsoft Foundry, then check the credential \
-                 again."
-                    .to_owned(),
             ),
         ] {
             assert_eq!(
@@ -853,7 +903,7 @@ mod tests {
             json!({
                 "checkedAt": "2026-11-03T12:00:00Z",
                 "checkError": "The application has no data role on this account, so requests to its deployments fail. Give it the Foundry User role on the account.",
-                "azureTargets": { "selected": 3, "unavailable": 0, "unselected": 0 },
+                "azureTargets": { "serving": 3, "stopped": 0 },
             }),
         );
         assert!(
@@ -864,14 +914,13 @@ mod tests {
                 .starts_with("The application has no data role")
         );
 
-        // Stogas checks a stored Azure credential, and the dashboard counts its targets alike.
+        // Stogas checks a stored Azure credential, and the dashboard counts its models alike.
         let stored = Fake {
             credential: Some(Credential {
                 kind: "stored".into(),
                 azure_targets: Some(AzureTargets {
-                    selected: 1,
-                    unavailable: 0,
-                    unselected: 1,
+                    serving: 1,
+                    stopped: 1,
                 }),
                 ..azure
             }),
@@ -884,8 +933,7 @@ mod tests {
                 .await
                 .unwrap(),
             format!(
-                "Azure accepted stogas-east.\nTargets: 1 selected; 1 model without a target.\n\
-                 Choose targets at {link}"
+                "Azure accepted stogas-east.\nModels: 1 served, 1 stopped.\nSee its targets at {link}"
             )
         );
     }
