@@ -15,6 +15,7 @@ pub mod canonical;
 mod chat;
 mod events;
 pub(crate) mod http;
+mod messages;
 
 pub use canonical::{
     CanonicalError, Commitment, ContentDigest, Salt, Side, request_digest, response_digest,

@@ -5,6 +5,7 @@ import { TransportError } from './http.js';
 const PATHS = new Set([
 	'/v1/chat/completions',
 	'/v1/responses',
+	'/v1/messages',
 	'/v1/policies/validate',
 	'/v1/policies/simulate'
 ]);
@@ -13,6 +14,11 @@ const isCatalogRead = (path) =>
 	path === '/v1/catalog' ||
 	path === '/v1/models' ||
 	/^\/v1\/catalog\/parts\/[0-9a-f]{64}$/.test(path);
+// The gateway ignores a catalog read's query, such as the `limit` that Anthropic's SDKs add to a
+// model list, and reads the `beta=true` that they add to a Messages request from their beta methods
+// as no query. The transport sends neither, since E2EE carries no query.
+const isIgnoredQuery = (url) =>
+	isCatalogRead(url.pathname) || (url.pathname === '/v1/messages' && url.search === '?beta=true');
 const OPTIONS = new Set([
 	'environment',
 	'baseURL',
@@ -269,7 +275,7 @@ export function createTransportClass({
 				url.origin !== new URL(this.#baseURL).origin ||
 				request.method !== (isCatalogRead(url.pathname) ? 'GET' : 'POST') ||
 				(request.method === 'POST' && !PATHS.has(url.pathname)) ||
-				url.search ||
+				(url.search && !isIgnoredQuery(url)) ||
 				url.hash ||
 				url.username ||
 				url.password
@@ -284,26 +290,33 @@ export function createTransportClass({
 			const keyed =
 				this.#encryptionKeys &&
 				request.method === 'POST' &&
-				url.pathname !== '/v1/policies/simulate'
-					? await this.#withEncryptionKeys(request)
+				url.pathname !== '/v1/policies/simulate';
+			const sent =
+				keyed || url.search
+					? await this.#rewritten(request, `${url.origin}${url.pathname}`, keyed)
 					: request;
-			return this.#sessions.send(keyed, init?.onProgress);
+			return this.#sessions.send(sent, init?.onProgress);
 		}
 
-		async #withEncryptionKeys(request) {
-			const bytes = new Uint8Array(await request.arrayBuffer());
-			const keyed = await withEncryptionKeys(
-				bytes,
-				request.headers.get('content-encoding'),
-				this.#encryptionKeys
-			);
+		// The request at `target`, the URL without its query, with the transport's keys when
+		// `keyed`.
+		async #rewritten(request, target, keyed) {
 			const headers = new Headers(request.headers);
+			if (request.method === 'GET') return new Request(target, { headers, signal: request.signal });
+			const bytes = new Uint8Array(await request.arrayBuffer());
+			const withKeys = keyed
+				? await withEncryptionKeys(
+						bytes,
+						request.headers.get('content-encoding'),
+						this.#encryptionKeys
+					)
+				: null;
 			headers.delete('content-length');
-			if (keyed !== null) headers.delete('content-encoding');
-			return new Request(request.url, {
+			if (withKeys !== null) headers.delete('content-encoding');
+			return new Request(target, {
 				method: 'POST',
 				headers,
-				body: keyed ?? bytes,
+				body: withKeys ?? bytes,
 				signal: request.signal
 			});
 		}

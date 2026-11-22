@@ -276,6 +276,44 @@ test('OpenAI request objects use the transport and upstream errors do not retry 
 	}
 });
 
+// The gateway ignores a catalog read's query and reads the beta=true of a Messages request as no
+// query, so both requests go without the query, which E2EE cannot carry.
+test('a query that the gateway ignores is left out', async () => {
+	const state = await fixture(() =>
+		response([
+			record(4),
+			record(4),
+			record(1, JSON.stringify({ status: 200, headers: { 'content-type': 'application/json' } })),
+			record(2, '{}'),
+			record(3)
+		])
+	);
+	try {
+		const body = JSON.stringify({ model: 'claude-opus-5-5', max_tokens: 1, messages: [] });
+		const messages = await state.transport.fetch('https://gateway.example/v1/messages?beta=true', {
+			method: 'POST',
+			headers: { 'x-api-key': 'private-example-key', 'content-type': 'application/json' },
+			body
+		});
+		assert.equal(messages.status, 200);
+		await state.transport.fetch('https://gateway.example/v1/models?limit=1000');
+		const sent = state.exchanges.map((exchange) =>
+			JSON.parse(new TextDecoder().decode(exchange.sealed[0].bytes))
+		);
+		assert.deepEqual(
+			sent.map(({ method, path }) => [method, path]),
+			[
+				['POST', '/v1/messages'],
+				['GET', '/v1/models']
+			]
+		);
+		assert.equal(sent[0].headers['x-api-key'], 'private-example-key');
+		assert.equal(new TextDecoder().decode(state.exchanges[0].sealed[1].bytes), body);
+	} finally {
+		await state.transport.close();
+	}
+});
+
 test('OpenAI DONE stays pending until record completion; a missing final record is an error', async () => {
 	for (const valid of [true, false]) {
 		let release;

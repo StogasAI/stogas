@@ -6,14 +6,15 @@ const SSE_RECEIPT_PREFIX: &[u8] = b": stogas ";
 const SSE_CHAT_TERMINAL_PREFIX: &[u8] = b"data: [DONE]";
 const SSE_RESPONSES_TERMINAL_PREFIX: &[u8] = b"event: response.completed\n";
 const SSE_RESPONSES_INCOMPLETE_TERMINAL_PREFIX: &[u8] = b"event: response.incomplete\n";
+const SSE_MESSAGES_TERMINAL_PREFIX: &[u8] = b"event: message_stop\n";
 const SSE_EVENT_END: &[u8] = b"\n\n";
 const SSE_KEEPALIVE: &[u8] = b": STOGAS PROCESSING\n\n";
 /// SSE receipt filter used by managed transports.
 ///
 /// The filter forwards ordinary events immediately, reads each complete event into the response
 /// that the receipt signs, and withholds the terminal event delimiter until the signature has
-/// verified. It accepts only the two terminal forms emitted by the `OpenAI` Chat Completions and
-/// Responses endpoints.
+/// verified. It accepts only the terminal events of Chat Completions, Responses and Messages
+/// streams.
 pub struct SseBody {
     /// The response the events carry, which a transport without receipts does not read.
     content: Option<StreamContent>,
@@ -40,7 +41,8 @@ enum SseState {
     Keepalive,
     Receipt,
     ChatTerminal,
-    ResponsesTerminal,
+    /// A named terminal event, which ends a Responses or Messages stream.
+    EventTerminal,
     AfterTerminal,
 }
 
@@ -123,7 +125,7 @@ impl SseBody {
                 SseState::Keepalive => self.push_keepalive(&mut output),
                 SseState::Receipt => self.push_receipt()?,
                 SseState::ChatTerminal => self.push_chat_terminal(&mut output)?,
-                SseState::ResponsesTerminal => self.push_responses_terminal(&mut output)?,
+                SseState::EventTerminal => self.push_event_terminal(&mut output)?,
                 SseState::AfterTerminal => self.push_after_terminal()?,
             };
             if action == PushAction::Stop {
@@ -188,8 +190,8 @@ impl SseBody {
             BoundaryKind::ChatTerminal => {
                 self.begin_terminal(output, SseState::ChatTerminal)?;
             }
-            BoundaryKind::ResponsesTerminal => {
-                self.begin_terminal(output, SseState::ResponsesTerminal)?;
+            BoundaryKind::EventTerminal => {
+                self.begin_terminal(output, SseState::EventTerminal)?;
             }
             kind @ (BoundaryKind::Regular | BoundaryKind::Keepalive) => {
                 if self.proof_bytes.is_some() {
@@ -272,7 +274,7 @@ impl SseBody {
         Ok(PushAction::Stop)
     }
 
-    fn push_responses_terminal(&mut self, output: &mut Vec<Vec<u8>>) -> Result<PushAction, Error> {
+    fn push_event_terminal(&mut self, output: &mut Vec<Vec<u8>>) -> Result<PushAction, Error> {
         if let Some(end) = self.find_event_end() {
             let frame = self.take_buffer_prefix(end + SSE_EVENT_END.len());
             self.finish_terminal_frame(&frame, output)?;
@@ -362,7 +364,7 @@ enum BoundaryKind {
     NeedMore,
     Receipt,
     ChatTerminal,
-    ResponsesTerminal,
+    EventTerminal,
     Regular,
     Keepalive,
 }
@@ -372,14 +374,12 @@ fn classify_sse_boundary(buffer: &[u8]) -> BoundaryKind {
         (SSE_RECEIPT_PREFIX, BoundaryKind::Receipt),
         (SSE_KEEPALIVE, BoundaryKind::Keepalive),
         (SSE_CHAT_TERMINAL_PREFIX, BoundaryKind::ChatTerminal),
-        (
-            SSE_RESPONSES_TERMINAL_PREFIX,
-            BoundaryKind::ResponsesTerminal,
-        ),
+        (SSE_RESPONSES_TERMINAL_PREFIX, BoundaryKind::EventTerminal),
         (
             SSE_RESPONSES_INCOMPLETE_TERMINAL_PREFIX,
-            BoundaryKind::ResponsesTerminal,
+            BoundaryKind::EventTerminal,
         ),
+        (SSE_MESSAGES_TERMINAL_PREFIX, BoundaryKind::EventTerminal),
     ] {
         if buffer.starts_with(prefix) {
             return kind;
@@ -391,6 +391,7 @@ fn classify_sse_boundary(buffer: &[u8]) -> BoundaryKind {
         SSE_CHAT_TERMINAL_PREFIX,
         SSE_RESPONSES_TERMINAL_PREFIX,
         SSE_RESPONSES_INCOMPLETE_TERMINAL_PREFIX,
+        SSE_MESSAGES_TERMINAL_PREFIX,
     ]
     .iter()
     .any(|prefix| prefix.starts_with(buffer))

@@ -104,10 +104,11 @@ impl ServeConfig {
         self
     }
     fn base_url(&self) -> String {
-        format!(
-            "http://{}/{}/v1",
-            self.expected_host, self.client_capability
-        )
+        format!("{}/v1", self.anthropic_base_url())
+    }
+    /// The base URL for Anthropic's clients, which add `/v1` themselves.
+    fn anthropic_base_url(&self) -> String {
+        format!("http://{}/{}", self.expected_host, self.client_capability)
     }
     fn refresh_url(&self) -> String {
         format!("http://{}{}", self.expected_host, self.refresh_path())
@@ -216,6 +217,7 @@ async fn run(
         }
     } else {
         println!("OpenAI base URL: {}", state.config.base_url());
+        println!("Anthropic base URL: {}", state.config.anthropic_base_url());
         println!("Evidence refresh URL: {}", state.config.refresh_url());
     }
     let app = Router::new()
@@ -360,7 +362,14 @@ fn route(config: &ServeConfig, request: &Request) -> Result<Route, Failure> {
             "invalid Host header",
         ));
     }
-    if request.uri().query().is_some() {
+    // The gateway ignores a catalog read's query, such as the `limit` that Anthropic's SDKs add to
+    // a model list, and reads the `beta=true` that they add to a Messages request from their beta
+    // methods as no query. The proxy sends neither, since E2EE carries no query.
+    if let Some(query) = request.uri().query()
+        && !client_path(config, request).is_some_and(|path| {
+            is_catalog_read(path) || (path == "/v1/messages" && query == "beta=true")
+        })
+    {
         return Err(Failure::before(
             StatusCode::BAD_REQUEST,
             "invalid_path",
@@ -407,6 +416,7 @@ fn route(config: &ServeConfig, request: &Request) -> Result<Route, Failure> {
         path.as_str(),
         "/v1/chat/completions"
             | "/v1/responses"
+            | "/v1/messages"
             | "/v1/policies/validate"
             | "/v1/policies/simulate"
     ) {
@@ -415,7 +425,7 @@ fn route(config: &ServeConfig, request: &Request) -> Result<Route, Failure> {
         return Err(Failure::before(
             StatusCode::NOT_FOUND,
             "unsupported_path",
-            "only chat completions, responses, policy validation, routing simulation and catalog reads are supported",
+            "only chat completions, responses, messages, policy validation, routing simulation and catalog reads are supported",
         ));
     };
     if request.method() == Method::OPTIONS && browser {
@@ -563,11 +573,9 @@ async fn forward_request(
     }));
     Ok(Response::from_parts(parts, body))
 }
-/// Adds the transport's `encryption_keys` to a JSON object that has none, after decoding a body
-/// that the client compressed in a way that the gateway accepts. A body that gains them goes
-/// uncompressed. Any other goes as the client sent it, so the gateway answers for a body that it
-/// cannot read or that is no JSON object.
-/// Replaces the client's API key with the source's, so a client needs none of its own.
+/// Replaces the client's API key with the source's, so a client needs none of its own. The key
+/// goes in `Authorization`, and every other header that the gateway reads a key from goes, since
+/// the gateway refuses two different keys.
 async fn set_credential(headers: &mut HeaderMap, source: &CredentialSource) -> Result<(), Failure> {
     let failure = |message: String| Failure::before(StatusCode::BAD_GATEWAY, "credential", message);
     let credential = (source.0)()
@@ -577,9 +585,16 @@ async fn set_credential(headers: &mut HeaderMap, source: &CredentialSource) -> R
         HeaderValue::from_str(&Zeroizing::new(format!("Bearer {}", credential.as_str())))
             .map_err(|_| failure("the API key has characters that a header cannot carry".into()))?;
     value.set_sensitive(true);
+    for name in ["api-key", "x-api-key", "x-goog-api-key"] {
+        headers.remove(name);
+    }
     headers.insert(header::AUTHORIZATION, value);
     Ok(())
 }
+/// Adds the transport's `encryption_keys` to a JSON object that has none, after decoding a body
+/// that the client compressed in a way that the gateway accepts. A body that gains them goes
+/// uncompressed. Any other goes as the client sent it, so the gateway answers for a body that it
+/// cannot read or that is no JSON object.
 fn with_encryption_keys(headers: &mut HeaderMap, body: Bytes, member: &str) -> Bytes {
     let mut codings = headers.get_all(header::CONTENT_ENCODING).iter();
     let keyed = match (codings.next(), codings.next()) {

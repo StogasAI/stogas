@@ -74,7 +74,9 @@ test('options are explicit and confidential fetch never falls through to ordinar
 		'https://unrelated.example/v1/chat/completions',
 		'https://e2ee.example/v1/models',
 		'https://e2ee.example/v1/files',
-		'https://e2ee.example/v1/chat/completions?key=secret'
+		'https://e2ee.example/v1/chat/completions?key=secret',
+		'https://e2ee.example/v1/chat/completions?beta=true',
+		'https://e2ee.example/v1/messages?beta=false'
 	])
 		await assert.rejects(
 			transport.fetch(url, {
@@ -90,7 +92,7 @@ test('options are explicit and confidential fetch never falls through to ordinar
 		'/v1/files',
 		'/v1/catalog/parts/',
 		`/v1/catalog/parts/${'0A'.repeat(32)}`,
-		'/v1/models?limit=1'
+		'/v1/messages'
 	])
 		await assert.rejects(
 			transport.fetch(`https://e2ee.example${path}`),

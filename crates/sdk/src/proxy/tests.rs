@@ -215,6 +215,33 @@ fn configuration_and_browser_preflight_cannot_expand_the_transport_scope() {
     assert!(browser_preflight(&preflight, &Method::POST).is_err());
 }
 
+// The gateway ignores a catalog read's query and reads the `beta=true` of a Messages request as no
+// query, so the proxy takes both, as Claude Code sends them, and refuses any other query.
+#[test]
+fn only_queries_that_the_gateway_ignores_pass() {
+    let config = config(None);
+    let at = |method: Method, path: &str| {
+        let mut request = request(&config, &format!("/{}{path}", config.client_capability));
+        *request.method_mut() = method;
+        route(&config, &request)
+    };
+    assert!(
+        matches!(at(Method::POST, "/v1/messages?beta=true").unwrap(), Route::Gateway(path) if path == "/v1/messages")
+    );
+    assert!(
+        matches!(at(Method::GET, "/v1/models?limit=1000").unwrap(), Route::Gateway(path) if path == "/v1/models")
+    );
+    for path in [
+        "/v1/messages?beta=false",
+        "/v1/messages?beta=true&limit=1",
+        "/v1/responses?beta=true",
+    ] {
+        assert_eq!(at(Method::POST, path).unwrap_err().reason, "invalid_path");
+    }
+    let refresh = request(&config, &format!("{}?beta=true", config.refresh_path()));
+    assert_eq!(route(&config, &refresh).unwrap_err().reason, "invalid_path");
+}
+
 #[test]
 fn catalog_reads_take_get_and_nothing_else_does() {
     let config = config(None);
@@ -439,8 +466,13 @@ async fn a_credential_source_replaces_the_api_key_that_the_client_sends() {
         header::AUTHORIZATION,
         HeaderValue::from_static("Bearer client"),
     );
+    // Anthropic's SDKs send a key in x-api-key, and the gateway refuses two different keys.
+    for name in ["api-key", "x-api-key", "x-goog-api-key"] {
+        headers.insert(name, HeaderValue::from_static("client"));
+    }
     let source = CredentialSource::new(|| async { Ok(Zeroizing::new("renewed".to_owned())) });
     assert!(set_credential(&mut headers, &source).await.is_ok());
+    assert_eq!(headers.len(), 1);
     let sent: Vec<_> = headers.get_all(header::AUTHORIZATION).iter().collect();
     assert_eq!(sent, ["Bearer renewed"]);
     assert!(sent[0].is_sensitive());

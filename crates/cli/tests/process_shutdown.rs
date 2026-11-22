@@ -47,20 +47,33 @@ fn proxy_process_closes_cleanly_on_signals_and_parent_pipe_loss() {
         let (sent, received) = mpsc::channel();
         let reader = thread::spawn(move || {
             let mut lines = BufReader::new(stdout).lines();
-            sent.send((lines.next(), lines.next())).unwrap();
+            sent.send((lines.next(), lines.next(), lines.next()))
+                .unwrap();
         });
         // Like the native ownership qualification, this verifies current staging
         // evidence during startup. It sends no inference or customer credentials.
-        let (base, refresh) = received.recv_timeout(Duration::from_secs(20)).unwrap();
+        let (base, anthropic, refresh) = received.recv_timeout(Duration::from_secs(20)).unwrap();
         reader.join().unwrap();
         let base = base.unwrap().unwrap();
+        let base = base.strip_prefix("OpenAI base URL: ").unwrap();
+        assert_eq!(
+            format!(
+                "{}/v1",
+                anthropic
+                    .unwrap()
+                    .unwrap()
+                    .strip_prefix("Anthropic base URL: ")
+                    .unwrap()
+            ),
+            base
+        );
         assert!(
             refresh
                 .unwrap()
                 .unwrap()
                 .starts_with("Evidence refresh URL: http://127.0.0.1:")
         );
-        let url = url::Url::parse(base.strip_prefix("OpenAI base URL: ").unwrap()).unwrap();
+        let url = url::Url::parse(base).unwrap();
         let address = format!("127.0.0.1:{}", url.port().unwrap());
         // Leave a connection awaiting HTTP headers: close remains bounded.
         let idle = TcpStream::connect(&address).unwrap();

@@ -1,14 +1,16 @@
 //! The response that a stream's events carry, which its receipt signs.
 //!
-//! A Chat Completions stream signs the `chat.completion` that its chunks assemble to. A
-//! Responses stream signs the `response` of its terminal event, which holds every output
-//! item; the gateway refuses a stream whose terminal response differs from what it streamed.
-//! The gateway and every verifier read events here, so both sides sign and check one form.
+//! A Chat Completions stream signs the `chat.completion` that its chunks assemble to, and a
+//! Messages stream the message that its events assemble to. A Responses stream signs the
+//! `response` of its terminal event, which holds every output item; the gateway refuses a
+//! stream whose terminal response differs from what it streamed. The gateway and every verifier
+//! read events here, so both sides sign and check one form.
 
 use super::{
     Error,
     canonical::{self, ContentDigest},
     chat::ChatAssembler,
+    messages::{self, MessagesAssembler},
 };
 use serde_json::Value;
 
@@ -18,6 +20,7 @@ const RESPONSES_TERMINALS: [&str; 2] = ["response.completed", "response.incomple
 pub struct StreamContent {
     kind: Option<Kind>,
     chat: ChatAssembler,
+    messages: MessagesAssembler,
     response: Option<Value>,
     ended: bool,
 }
@@ -26,6 +29,7 @@ pub struct StreamContent {
 enum Kind {
     Chat,
     Responses,
+    Messages,
 }
 
 impl StreamContent {
@@ -34,7 +38,7 @@ impl StreamContent {
     /// changes nothing.
     ///
     /// # Errors
-    /// Rejects malformed events, events after the terminal one and a mix of the two APIs.
+    /// Rejects malformed events, events after the terminal one and a mix of APIs.
     pub fn push(&mut self, frame: &[u8]) -> Result<(), Error> {
         let Some((event, data)) = fields(frame)? else {
             return Ok(());
@@ -54,6 +58,17 @@ impl StreamContent {
                     .map_err(|_| Error::Invalid)
             }
             Some(name) => {
+                if let Some(name) = messages::EVENTS
+                    .iter()
+                    .find(|event| event.as_bytes() == name)
+                {
+                    self.set_kind(Kind::Messages)?;
+                    self.messages
+                        .push(name, canonical::parse_object(&data)?)
+                        .map_err(|_| Error::Invalid)?;
+                    self.ended = *name == "message_stop";
+                    return Ok(());
+                }
                 self.set_kind(Kind::Responses)?;
                 let Some(terminal) = RESPONSES_TERMINALS
                     .iter()
@@ -94,6 +109,7 @@ impl StreamContent {
         match (self.kind, self.ended) {
             (Some(Kind::Chat), true) => Ok(self.chat.finish()),
             (Some(Kind::Responses), true) => self.response.ok_or(Error::Invalid),
+            (Some(Kind::Messages), true) => self.messages.finish().map_err(|_| Error::Invalid),
             _ => Err(Error::Invalid),
         }
     }
@@ -186,6 +202,62 @@ data: {"type":"response.completed","sequence_number":3,"response":{"id":"resp_1"
             vec![b"event: response.created\ndata: {}\n\n"],
             vec![terminal.as_slice(), terminal],
             vec![b"data: {\"object\":\"chat.completion.chunk\"}\n\n", terminal],
+        ] {
+            assert!(content(&bad).is_err());
+        }
+    }
+
+    #[test]
+    fn a_messages_stream_carries_its_assembled_message() {
+        let event = |value: Value| {
+            format!(
+                "event: {}\ndata: {value}\n\n",
+                value["type"].as_str().unwrap()
+            )
+        };
+        let start = event(json!({"type": "message_start",
+                                 "message": {"id": "msg_1", "content": [], "usage": {"output_tokens": 1}}}));
+        let block = event(json!({"type": "content_block_start", "index": 0,
+                                 "content_block": {"type": "text", "text": ""}}));
+        let text = event(json!({"type": "content_block_delta", "index": 0,
+                                "delta": {"type": "text_delta", "text": "Hi"}}));
+        let block_stop = event(json!({"type": "content_block_stop", "index": 0}));
+        let delta = event(
+            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+                                 "usage": {"output_tokens": 2}}),
+        );
+        let stop = event(json!({"type": "message_stop"}));
+        let ping = event(json!({"type": "ping"}));
+        let error = b"event: error\ndata: {\"type\":\"error\",\"error\":{}}\n\n".as_slice();
+        assert_eq!(
+            content(&[
+                start.as_bytes(),
+                ping.as_bytes(),
+                block.as_bytes(),
+                text.as_bytes(),
+                block_stop.as_bytes(),
+                delta.as_bytes(),
+                b": stogas {\"receipt\":{}}\n\n",
+                stop.as_bytes(),
+            ])
+            .unwrap(),
+            json!({"id": "msg_1", "content": [{"type": "text", "text": "Hi"}],
+                   "stop_reason": "end_turn", "usage": {"output_tokens": 2}})
+        );
+        for bad in [
+            vec![start.as_bytes(), block.as_bytes(), text.as_bytes()],
+            vec![start.as_bytes(), stop.as_bytes(), ping.as_bytes()],
+            vec![start.as_bytes(), error, stop.as_bytes()],
+            vec![start.as_bytes(), error],
+            vec![
+                start.as_bytes(),
+                b"event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
+                stop.as_bytes(),
+            ],
+            vec![
+                b"data: {\"object\":\"chat.completion.chunk\"}\n\n".as_slice(),
+                start.as_bytes(),
+            ],
         ] {
             assert!(content(&bad).is_err());
         }

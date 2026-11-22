@@ -20,7 +20,7 @@ Then start a local endpoint:
 stogas serve --security tls
 ```
 
-`stogas serve` checks the gateway's hardware attestation and build, and then prints a URL. Use the URL as the base URL of your OpenAI-compatible client, and keep the URL private. `--security e2ee` encrypts end to end over HTTPS instead.
+`stogas serve` checks the gateway's hardware attestation and build, and then prints a base URL for OpenAI clients and one for Anthropic clients, such as Claude Code. Use the one that fits your client, and keep it private. `--security e2ee` encrypts end to end over HTTPS instead.
 
 The [CLI guide](https://stogas.ai/docs/cli) lists every command and the other ways to install, such as Scoop, pipx, cargo-binstall, and Docker. `cargo install stogas-cli --locked` and `nix run github:StogasAI/stogas` build the CLI from source.
 

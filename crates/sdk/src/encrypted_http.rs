@@ -187,6 +187,7 @@ fn request_metadata(request: &Request<Bytes>) -> Result<Vec<u8>, Error> {
                 path,
                 "/v1/chat/completions"
                     | "/v1/responses"
+                    | "/v1/messages"
                     | "/v1/policies/validate"
                     | "/v1/policies/simulate"
                     | "/v1/byok/check"

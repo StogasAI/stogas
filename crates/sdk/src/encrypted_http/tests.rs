@@ -642,10 +642,11 @@ async fn open_source_client_compatibility_proxy() {
             let (kind, metadata) = request_records.open(&wire[46..46 + size]);
             assert_eq!(kind, Kind::Metadata);
             let metadata: Value = serde_json::from_slice(&metadata).unwrap();
-            assert_eq!(metadata["path"], "/v1/chat/completions");
             assert_eq!(metadata["headers"]["authorization"], "Bearer fixture");
             assert!(metadata["headers"].get("host").is_none());
             let mut records = request_records;
+            // The answer names the path that arrived.
+            let path = serde_json::to_vec(&metadata["path"]).unwrap();
             Response::builder()
                 .header(header::CONTENT_TYPE, CONTENT_TYPE)
                 .body(Body::from(
@@ -654,7 +655,7 @@ async fn open_source_client_compatibility_proxy() {
                             Kind::Metadata,
                             br#"{"status":200,"headers":{"Content-Type":"application/json"}}"#,
                         ),
-                        records.seal(Kind::Data, b"{\"ok\":true}"),
+                        records.seal(Kind::Data, &path),
                         records.seal(Kind::Finished, &[]),
                     ]
                     .concat(),
@@ -670,15 +671,21 @@ async fn open_source_client_compatibility_proxy() {
         "owner".into(),
     )
     .await;
-    let response = caller()
-        .post(format!("{}/chat/completions", proxy.endpoint))
-        .header(header::AUTHORIZATION, "Bearer fixture")
-        .body("{}")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.text().await.unwrap(), "{\"ok\":true}");
+    for path in ["/v1/chat/completions", "/v1/messages"] {
+        let response = caller()
+            .post(format!(
+                "{}{}",
+                proxy.endpoint,
+                path.trim_start_matches("/v1")
+            ))
+            .header(header::AUTHORIZATION, "Bearer fixture")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.text().await.unwrap(), format!("\"{path}\""));
+    }
     assert_eq!(
         caller()
             .post(proxy.endpoint.join("/v1/chat/completions").unwrap())

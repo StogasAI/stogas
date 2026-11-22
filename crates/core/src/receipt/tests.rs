@@ -7,6 +7,7 @@ fn unsigned_sse_cannot_release_completion_before_transport_finishes() {
         b"data: [DONE]\n\n".as_slice(),
         b"event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
         b"event: response.incomplete\ndata: {\"type\":\"response.incomplete\"}\n\n",
+        b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
     ] {
         let wire = [
             b": STOGAS PROCESSING\n\ndata: hello\n\n".as_slice(),
@@ -490,6 +491,75 @@ mod hardware {
             stream.finish(peer.boot()).unwrap();
             assert_eq!(stream_response(&sent).unwrap().0, terminal_response);
         }
+    }
+
+    #[test]
+    fn a_messages_stream_signs_its_assembled_message_however_it_was_cut() {
+        let peer = peer();
+        let request = request();
+        let event = |value: Value| {
+            format!(
+                "event: {}\ndata: {value}\n\n",
+                value["type"].as_str().unwrap()
+            )
+            .into_bytes()
+        };
+        let events = |pieces: &[&str]| {
+            let mut events = vec![
+                event(
+                    json!({"type": "message_start", "message": {"id": "msg_1", "type": "message",
+                             "role": "assistant", "model": "m", "content": [], "stop_reason": null,
+                             "usage": {"input_tokens": 3, "output_tokens": 1}}}),
+                ),
+                event(json!({"type": "content_block_start", "index": 0,
+                             "content_block": {"type": "text", "text": ""}})),
+            ];
+            for piece in pieces {
+                events.push(event(json!({"type": "content_block_delta", "index": 0,
+                                         "delta": {"type": "text_delta", "text": piece}})));
+            }
+            events.push(event(json!({"type": "content_block_stop", "index": 0})));
+            events.push(event(
+                json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+                                     "usage": {"output_tokens": 4}}),
+            ));
+            events
+        };
+        let message = json!({"id": "msg_1", "type": "message", "role": "assistant", "model": "m",
+                             "content": [{"type": "text", "text": "Hello there"}],
+                             "stop_reason": "end_turn",
+                             "usage": {"input_tokens": 3, "output_tokens": 4}});
+        let bag = bag(peer.boot(), &request, &message);
+        let terminal = b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+        for pieces in [vec!["Hello there"], vec!["Hel", "lo", " there"]] {
+            let sent = wire(&events(&pieces), &bag, terminal);
+            let mut stream = Stream::new(request);
+            let released = stream.push(&sent).unwrap().concat();
+            assert_eq!(released, sent[..sent.len() - 2]);
+            assert!(
+                stream
+                    .finish(peer.boot())
+                    .unwrap()
+                    .receipt
+                    .response_verified
+            );
+            assert_eq!(stream_response(&sent).unwrap().0, message);
+        }
+        let other = wire(&events(&["Hello their"]), &bag, terminal);
+        let mut stream = Stream::new(request);
+        stream.push(&other).unwrap();
+        assert!(matches!(
+            stream.finish(peer.boot()),
+            Err(Error::Content(Side::Response))
+        ));
+        // The receipt stands right before message_stop.
+        let early = [
+            format!(": stogas {bag}\n\n").into_bytes(),
+            events(&["Hello there"]).concat(),
+            terminal.to_vec(),
+        ]
+        .concat();
+        assert!(Stream::new(request).push(&early).is_err());
     }
 
     #[test]
