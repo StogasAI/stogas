@@ -1,0 +1,11 @@
+# Trust roots, test vectors and fixtures are compared byte for byte.
+crates/sigstore/src/root.json
+crates/sigstore/src/trusted_root.json
+crates/core/src/prod-root.json
+crates/core/src/staging-root.json
+crates/core/tests/fixtures/
+crates/cli/src/cloud_credentials_vector.json
+crates/cli/src/customer_encryption_vector.json
+tests/fixtures/
+# NuGet writes its lock files.
+**/packages.lock.json

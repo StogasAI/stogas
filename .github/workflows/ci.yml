@@ -45,6 +45,8 @@ jobs:
         run: |
           cargo fmt --all --check
           cargo fmt --manifest-path fuzz/Cargo.toml --check
+          npm ci --ignore-scripts
+          npm run format:check
       # The later checks also run after a failure, so one run reports every problem.
       - name: Lint each feature set
         if: ${{ !cancelled() }}
