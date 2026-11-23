@@ -4,8 +4,7 @@ import {
 	EvidenceVerifier,
 	verify_mldsa65_ed25519,
 	mldsa65_ed25519_signing_input,
-	rekor_public_key_from_seed,
-	prepare_rekor_submission_with_seed
+	prepare_rekor_submission
 } from '../../target/operator/stogas.js';
 import { verify_build_attestation } from '../../packages/sigstore/bindings/worker/worker.js';
 import fixtures from './operator-fixtures.js';
@@ -41,13 +40,13 @@ export default {
 				hex(input.ed25519_message) === hex(base64(vector.ed25519_message))
 			);
 		});
-		// One caller-owned seed must stay usable across calls.
-		const seed = bytes(signing.rekor_seed);
-		const rekorPublicKey = rekor_public_key_from_seed(seed);
-		const submission = JSON.parse(prepare_rekor_submission_with_seed(seed, message));
-		const retry = JSON.parse(prepare_rekor_submission_with_seed(seed, message));
-		const badSeed = new Uint8Array(31).fill(42);
-		const rejectedSeed = rejects(() => prepare_rekor_submission_with_seed(badSeed, message));
+		// A Rekor key's signature over the document's SHA-256 becomes its exact submission.
+		const rekorKey = bytes(signing.rekor_spki);
+		const rekorSignature = bytes(signing.rekor_signature);
+		const submission = JSON.parse(prepare_rekor_submission(message, rekorKey, rekorSignature));
+		const otherDocument = rejects(() =>
+			prepare_rekor_submission(message.subarray(1), rekorKey, rekorSignature)
+		);
 		const verifier = new EvidenceVerifier('staging', root);
 		const encoded = (value) => new TextEncoder().encode(JSON.stringify(value));
 		const altered = structuredClone(manifest);
@@ -69,12 +68,9 @@ export default {
 					verify_mldsa65_ed25519(remoteKey, message, base64(remote.vectors[0].signature))
 				),
 				representatives,
-				rekorPublicKey: hex(rekorPublicKey),
 				rekorSignature: submission.spec.signature.content,
 				hash: submission.spec.data.hash,
-				stable: JSON.stringify(submission) === JSON.stringify(retry),
-				seedUnchanged: hex(seed) === signing.rekor_seed,
-				badSeed: rejectedSeed,
+				otherDocument,
 				manifestKey: verifier.verify_key_manifest(encoded(manifest), sigstoreFiles).active_key
 					.key_id,
 				alteredManifest: rejects(() =>

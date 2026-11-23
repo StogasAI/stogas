@@ -129,13 +129,15 @@ pub struct LogPosition {
 }
 
 /// Verify that the designated submitter logged exact artifact bytes through Rekor's
-/// SHA-512/Ed25519ph profile, and return when and, in Rekor v2, where it was logged.
+/// SHA-256/ECDSA P-256 profile, and return when and, in Rekor v2, where it was logged.
 ///
-/// `submitter` is the Ed25519 `SubjectPublicKeyInfo` DER that must have submitted the entry,
-/// so a Rekor v1 search by that key finds every accepted entry. Rekor v2 has no search index:
-/// a caller that must find every entry also limits the logs and indexes it accepts and reads
-/// every entry there. The submission key does not approve the artifact: separately
-/// authenticate it with its trusted signing policy, including any post-quantum signature.
+/// `submitter` is the P-256 `SubjectPublicKeyInfo` DER that must have submitted the entry,
+/// so a Rekor v1 search by that key finds every accepted entry. Only the low-S DER form of a
+/// signature counts, so nobody else can make a second accepted entry from a logged one. Rekor
+/// v2 has no search index: a caller that must find every entry also limits the logs and
+/// indexes it accepts and reads every entry there. The submission key does not approve the
+/// artifact: separately authenticate it with its trusted signing policy, including any
+/// post-quantum signature.
 ///
 /// # Errors
 /// Rejects malformed bundles, substituted artifacts, other submitters, invalid signatures,
@@ -152,6 +154,38 @@ pub fn verify_rekor_document_inclusion(
     let value =
         strict_json::from_slice(bundle).map_err(|error| Error::InvalidBundle(error.to_string()))?;
     hashedrekord::verify(&value, artifact, submitter, trust).map_err(Error::Cryptographic)
+}
+
+/// Check that `submitter` is a key the Rekor document profile accepts: P-256
+/// `SubjectPublicKeyInfo` DER with an uncompressed point.
+///
+/// # Errors
+/// Rejects other algorithms, encodings and invalid points.
+pub fn check_document_submitter(submitter: &[u8]) -> Result<(), Error> {
+    hashedrekord::submission_key(submitter)
+        .map(drop)
+        .map_err(Error::Cryptographic)
+}
+
+/// Prepare the Rekor v1 hashedrekord submission that logs exact artifact bytes under
+/// `submitter`.
+///
+/// The signature is a DER ECDSA signature over the artifact's SHA-256 that a non-exportable
+/// key made. It is verified and logged in its low-S form. Save the exact submission before
+/// delivery, so a retry repeats it.
+///
+/// # Errors
+/// Rejects oversized artifacts, other keys, malformed signatures and signatures that do not
+/// verify.
+pub fn prepare_document_submission(
+    artifact: &[u8],
+    submitter: &[u8],
+    signature: &[u8],
+) -> Result<String, Error> {
+    if artifact.len() > MAX_DOCUMENT_BYTES {
+        return Err(Error::TooLarge);
+    }
+    hashedrekord::submission(artifact, submitter, signature).map_err(Error::Cryptographic)
 }
 
 /// Offline Sigstore verification failure.

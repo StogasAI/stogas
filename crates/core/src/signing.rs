@@ -5,8 +5,7 @@
 //! breaking both algorithms. Formats own their purpose separation and encodings,
 //! so the composite application context is always empty.
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use ed25519_dalek::{Signature, Signer as _, VerifyingKey, pkcs8::EncodePublicKey as _};
+use ed25519_dalek::{Signature, Signer as _, VerifyingKey};
 use sha2::{Digest as _, Sha512};
 use spki::{
     AlgorithmIdentifierRef, ObjectIdentifier, SubjectPublicKeyInfoRef,
@@ -39,9 +38,6 @@ pub enum Error {
     /// The SPKI is malformed, uses another algorithm, or has parameters.
     #[error("invalid signature public key encoding")]
     PublicKey,
-    /// Rekor compatibility keys use a separate 32-byte Ed25519 seed.
-    #[error("invalid Rekor submission key seed")]
-    SubmissionKey,
     /// FIPS 204 limits the signing context to 255 bytes.
     #[error("ML-DSA signing context exceeds 255 bytes")]
     Context,
@@ -180,64 +176,6 @@ pub fn remote_signing_input(
 /// Rejects trailing bytes, algorithm parameters, other algorithms and wrong key lengths.
 pub fn public_key_from_spki(der: &[u8]) -> Result<&[u8; PUBLIC_KEY_BYTES], Error> {
     spki_key(der, OID)
-}
-
-/// A Rekor compatibility key for a publisher whose signing key cannot be exported.
-///
-/// It grants no Stogas signing authority. Bind its public key to the composite key
-/// in authenticated metadata; document verification must require both proofs.
-pub struct RekorSubmissionKey(ed25519_dalek::SigningKey);
-
-impl RekorSubmissionKey {
-    /// Import a separate random seed. The caller owns erasure of its input copy.
-    ///
-    /// # Errors
-    /// Rejects seeds that are not exactly 32 bytes.
-    pub fn from_seed(seed: &[u8]) -> Result<Self, Error> {
-        Ok(Self(ed25519_dalek::SigningKey::from_bytes(
-            seed.try_into().map_err(|_| Error::SubmissionKey)?,
-        )))
-    }
-
-    /// Encode the submission public key for authenticated publication and log searches.
-    ///
-    /// # Errors
-    /// Returns an error if DER encoding fails.
-    pub fn public_key_spki(&self) -> Result<Vec<u8>, Error> {
-        self.0
-            .verifying_key()
-            .to_public_key_der()
-            .map(|document| document.as_bytes().to_vec())
-            .map_err(|_| Error::PublicKey)
-    }
-
-    /// Sign SHA-512 of the complete signed document for Rekor v1. Persist the
-    /// exact signed document and this deterministic submission before delivery.
-    ///
-    /// # Errors
-    /// Rejects oversized documents and encoding or signing failures.
-    pub fn prepare_submission(&self, signed_document: &[u8]) -> Result<String, Error> {
-        if signed_document.len() > crate::MAX_INPUT_BYTES {
-            return Err(Error::TooLarge);
-        }
-        let digest = Sha512::new_with_prefix(signed_document);
-        let signature = self
-            .0
-            .sign_prehashed(digest.clone(), None)
-            .map_err(|_| Error::Signing)?;
-        let pem = format!(
-            "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----\n",
-            STANDARD.encode(self.public_key_spki()?)
-        );
-        crate::canonical_json(&serde_json::json!({
-            "apiVersion":"0.0.1", "kind":"hashedrekord", "spec":{
-                "data":{"hash":{"algorithm":"sha512","value":hex::encode(digest.finalize())}},
-                "signature":{"content":STANDARD.encode(signature.to_bytes()),
-                    "publicKey":{"content":STANDARD.encode(pem)}}
-            }
-        }))
-        .map_err(|_| Error::Signing)
-    }
 }
 
 /// `M' = Prefix || Label || len(ctx) || ctx || SHA-512(M)` with an empty context.

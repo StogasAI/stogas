@@ -1,5 +1,6 @@
 use super::*;
 use ed25519_dalek::{Signer as _, SigningKey, pkcs8::EncodePublicKey as _};
+use p256::ecdsa::signature::hazmat::PrehashSigner as _;
 use serde_json::{Value, json};
 
 const ARTIFACT: &[u8] = b"exact document bytes, including its independent author signature\n";
@@ -55,28 +56,47 @@ fn seal_body(bundle: &mut Value, body: &Value) {
     }]);
 }
 
+fn submission_key(seed: u8) -> p256::ecdsa::SigningKey {
+    p256::ecdsa::SigningKey::from_slice(&[seed; 32]).unwrap()
+}
+
 fn submitter(seed: u8) -> Vec<u8> {
-    let key = SigningKey::from_bytes(&[seed; 32]);
-    key.verifying_key().to_public_key_der().unwrap().into_vec()
+    let point = submission_key(seed).verifying_key().to_sec1_point(false);
+    [&P256_SPKI_PREFIX[..], point.as_bytes()].concat()
+}
+
+/// RFC 6979 signs deterministically, and `normalize_s` gives the form that clients accept.
+fn signature(seed: u8, artifact: &[u8]) -> Signature {
+    let signature: Signature = submission_key(seed)
+        .sign_prehash(&Sha256::digest(artifact))
+        .unwrap();
+    signature.normalize_s()
+}
+
+fn der(signature: &Signature) -> Vec<u8> {
+    signature.to_der().as_bytes().to_vec()
+}
+
+/// The high-S twin of a signature, which verifies too.
+fn twin(signature: &Signature) -> Signature {
+    let (r, s) = signature.split_scalars();
+    Signature::from_scalars(r, -s).unwrap()
 }
 
 fn fixture(seed: u8) -> (Value, Value) {
-    let key = SigningKey::from_bytes(&[seed; 32]);
-    let spki = key.verifying_key().to_public_key_der().unwrap();
-    let signature = key
-        .sign_prehashed(Sha512::new_with_prefix(ARTIFACT), None)
-        .unwrap();
-    let public_key = pem::encode(&pem::Pem::new("PUBLIC KEY", spki.as_bytes()));
+    let spki = submitter(seed);
+    let signature = der(&signature(seed, ARTIFACT));
+    let public_key = pem::encode(&pem::Pem::new("PUBLIC KEY", spki.clone()));
     let body = json!({"apiVersion":"0.0.1","kind":"hashedrekord","spec":{
-        "data":{"hash":{"algorithm":"sha512","value":hex::encode(Sha512::digest(ARTIFACT))}},
-        "signature":{"content":STANDARD.encode(signature.to_bytes()),
+        "data":{"hash":{"algorithm":"sha256","value":hex::encode(Sha256::digest(ARTIFACT))}},
+        "signature":{"content":STANDARD.encode(&signature),
             "publicKey":{"content":STANDARD.encode(public_key)}}
     }});
     let mut bundle = json!({
         "mediaType":crate::SIGSTORE_BUNDLE_MEDIA_TYPE,
         "messageSignature":{
-            "messageDigest":{"algorithm":"SHA2_512","digest":STANDARD.encode(Sha512::digest(ARTIFACT))},
-            "signature":STANDARD.encode(signature.to_bytes())
+            "messageDigest":{"algorithm":"SHA2_256","digest":STANDARD.encode(Sha256::digest(ARTIFACT))},
+            "signature":STANDARD.encode(&signature)
         },
         "verificationMaterial":{
             "publicKey":{"hint":hex::encode(Sha256::digest(&spki))},
@@ -144,11 +164,11 @@ fn rejects_mutated_log_proofs_bundle_hints_and_ambiguous_formats() {
         ),
         (
             "/messageSignature/messageDigest/algorithm",
-            json!("SHA2_256"),
+            json!("SHA2_512"),
         ),
         (
             "/messageSignature/messageDigest/digest",
-            json!(STANDARD.encode([0; 64])),
+            json!(STANDARD.encode([0; 32])),
         ),
         (
             "/messageSignature/signature",
@@ -208,8 +228,8 @@ fn even_a_valid_log_cannot_substitute_the_artifact_hash_key_or_signature() {
     for (pointer, replacement) in [
         ("/apiVersion", json!("0.0.2")),
         ("/kind", json!("rekord")),
-        ("/spec/data/hash/algorithm", json!("sha256")),
-        ("/spec/data/hash/value", json!("a".repeat(128))),
+        ("/spec/data/hash/algorithm", json!("sha512")),
+        ("/spec/data/hash/value", json!("a".repeat(64))),
         ("/spec/signature/content", json!(STANDARD.encode([0; 64]))),
         (
             "/spec/signature/publicKey/content",
@@ -225,15 +245,99 @@ fn even_a_valid_log_cannot_substitute_the_artifact_hash_key_or_signature() {
             "{pointer}"
         );
     }
-    let key = SigningKey::from_bytes(&[9; 32]);
+    // Anyone can log the high-S twin of a logged signature. It verifies, but clients refuse it.
+    let low = signature(9, ARTIFACT);
+    let high = STANDARD.encode(der(&twin(&low)));
+    assert!(
+        submission_key(9)
+            .verifying_key()
+            .verify_prehash(&Sha256::digest(ARTIFACT), &twin(&low))
+            .is_ok()
+    );
     let mut changed = body;
-    // Plain Ed25519 over a SHA-512 digest is not Ed25519ph.
-    let wrong = STANDARD.encode(key.sign(&Sha512::digest(ARTIFACT)).to_bytes());
-    changed["spec"]["signature"]["content"] = json!(wrong);
+    changed["spec"]["signature"]["content"] = json!(high);
     let mut bundle = original;
-    bundle["messageSignature"]["signature"] = json!(wrong);
+    bundle["messageSignature"]["signature"] = json!(high);
     seal_body(&mut bundle, &changed);
     assert!(verify(&bundle, ARTIFACT, &submitter(9), &root()).is_err());
+}
+
+#[test]
+fn prepares_the_low_s_submission_that_rekor_logs_for_the_exact_artifact() {
+    let low = signature(9, ARTIFACT);
+    // A Transit signature is high-S half the time; the submission holds the low-S form.
+    for signed in [low, twin(&low)] {
+        let submission =
+            crate::prepare_document_submission(ARTIFACT, &submitter(9), &der(&signed)).unwrap();
+        let body: Value = serde_json::from_str(&submission).unwrap();
+        assert_eq!(
+            body["spec"]["signature"]["content"],
+            STANDARD.encode(der(&low))
+        );
+        // Rekor logs the canonical form of the submitted body, which this already is, so the
+        // logged entry verifies as the bundle that Control assembles from its proof.
+        assert_eq!(
+            serde_json_canonicalizer::to_string(&body).unwrap(),
+            submission
+        );
+        let (mut bundle, _) = fixture(9);
+        seal_body(&mut bundle, &body);
+        verify(&bundle, ARTIFACT, &submitter(9), &root()).unwrap();
+    }
+    // Go's PEM encoder writes the same key text that Rekor's canonical body holds.
+    let submission =
+        crate::prepare_document_submission(ARTIFACT, &submitter(9), &der(&low)).unwrap();
+    let body: Value = serde_json::from_str(&submission).unwrap();
+    let pem = String::from_utf8(
+        STANDARD
+            .decode(
+                body["spec"]["signature"]["publicKey"]["content"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        pem.starts_with("-----BEGIN PUBLIC KEY-----\n")
+            && pem.ends_with("-----END PUBLIC KEY-----\n")
+    );
+    assert!(pem.lines().all(|line| line.len() <= 64) && !pem.contains('\r'));
+    // The signature must cover the complete artifact under the designated key.
+    for (artifact, key, signed) in [
+        (b"exact document".as_slice(), 9, der(&low)),
+        (ARTIFACT, 8, der(&low)),
+        (ARTIFACT, 9, der(&signature(8, ARTIFACT))),
+        (ARTIFACT, 9, vec![0; 70]),
+    ] {
+        assert!(crate::prepare_document_submission(artifact, &submitter(key), &signed).is_err());
+    }
+    // The same key with a compressed point: valid DER, but not the bytes Rekor indexes.
+    let compressed = [
+        &[0x30, 0x39][..],
+        &P256_SPKI_PREFIX[2..23],
+        &[0x03, 0x22, 0x00],
+        submission_key(9)
+            .verifying_key()
+            .to_sec1_point(true)
+            .as_bytes(),
+    ]
+    .concat();
+    assert!(crate::check_document_submitter(&compressed).is_err());
+    let ed25519 = SigningKey::from_bytes(&[9; 32])
+        .verifying_key()
+        .to_public_key_der()
+        .unwrap();
+    assert!(crate::check_document_submitter(ed25519.as_bytes()).is_err());
+    crate::check_document_submitter(&submitter(9)).unwrap();
+    assert!(matches!(
+        crate::prepare_document_submission(
+            &vec![0; crate::MAX_DOCUMENT_BYTES + 1],
+            &submitter(9),
+            &der(&low)
+        ),
+        Err(crate::Error::TooLarge)
+    ));
 }
 
 #[test]
@@ -264,7 +368,7 @@ fn bounds_outer_input_and_rejects_duplicate_fields() {
 }
 
 // timestamp.sigstore.dev dated seed 9's signature over ARTIFACT at this second.
-const TIMESTAMPED: &str = "2026-10-31T05:16:49Z";
+const TIMESTAMPED: &str = "2026-11-23T20:06:59Z";
 const V2_LOG: &str = "log.example";
 
 fn vectors() -> Value {
@@ -360,17 +464,13 @@ fn v2_trust() -> TrustedRoot {
 /// Seed's signature over ARTIFACT, entry `index` of a `size`-entry Rekor v2 log, with the
 /// timestamp over seed 9's signature.
 fn v2_fixture(seed: u8, index: usize, size: usize) -> Value {
-    let key = SigningKey::from_bytes(&[seed; 32]);
-    let spki = key.verifying_key().to_public_key_der().unwrap();
-    let signature = key
-        .sign_prehashed(Sha512::new_with_prefix(ARTIFACT), None)
-        .unwrap()
-        .to_bytes();
+    let spki = submitter(seed);
+    let signature = der(&signature(seed, ARTIFACT));
     let body = v2_body(
-        "SHA2_512",
-        &Sha512::digest(ARTIFACT),
+        "SHA2_256",
+        &Sha256::digest(ARTIFACT),
         &signature,
-        "PKIX_ED25519_PH",
+        "PKIX_ECDSA_P256_SHA_256",
         &json!({"publicKey": {"rawBytes": STANDARD.encode(&spki)}}),
     )
     .unwrap();
@@ -388,8 +488,8 @@ fn v2_fixture(seed: u8, index: usize, size: usize) -> Value {
     json!({
         "mediaType": crate::SIGSTORE_BUNDLE_MEDIA_TYPE,
         "messageSignature": {
-            "messageDigest": {"algorithm": "SHA2_512", "digest": STANDARD.encode(Sha512::digest(ARTIFACT))},
-            "signature": STANDARD.encode(signature)
+            "messageDigest": {"algorithm": "SHA2_256", "digest": STANDARD.encode(Sha256::digest(ARTIFACT))},
+            "signature": STANDARD.encode(&signature)
         },
         "verificationMaterial": {
             "publicKey": {"hint": hex::encode(Sha256::digest(&spki))},
@@ -420,24 +520,13 @@ fn set(value: &mut Value, pointer: &str, replacement: Value) {
 fn rekor_v2_bodies_hash_to_the_leaves_rekor_tiles_logs() {
     let decode = |value: &Value| STANDARD.decode(value.as_str().unwrap()).unwrap();
     for vector in vectors()["hashedrekord"].as_array().unwrap() {
-        // GitHub's DSSE entries: a SHA-256 digest and a Fulcio certificate. Stogas documents: a
-        // SHA-512 digest and an Ed25519 key.
-        let (algorithm, verifier) = vector.get("certificate").map_or_else(
-            || {
-                (
-                    "SHA2_512",
-                    json!({"publicKey": {"rawBytes": vector["public_key"]}}),
-                )
-            },
-            |certificate| {
-                (
-                    "SHA2_256",
-                    json!({"x509Certificate": {"rawBytes": certificate}}),
-                )
-            },
+        // GitHub's DSSE entries name a Fulcio certificate, and Stogas documents a P-256 key.
+        let verifier = vector.get("certificate").map_or_else(
+            || json!({"publicKey": {"rawBytes": vector["public_key"]}}),
+            |certificate| json!({"x509Certificate": {"rawBytes": certificate}}),
         );
         let body = v2_body(
-            algorithm,
+            "SHA2_256",
             &decode(&vector["digest"]),
             &decode(&vector["signature"]),
             vector["key_details"].as_str().unwrap(),
@@ -498,9 +587,9 @@ fn proves_rekor_v2_publication_at_the_timestamp_authority_time() {
             Some(Some(1_758_585_600)),
         ),
         (json!({}), Some(None)),
-        (json!({"start": "2026-10-31T05:16:50Z"}), None),
+        (json!({"start": "2026-11-23T20:07:00Z"}), None),
         (
-            json!({"start": "2025-09-23T00:00:00Z", "end": "2026-10-31T05:16:48Z"}),
+            json!({"start": "2025-09-23T00:00:00Z", "end": "2026-11-23T20:06:58Z"}),
             None,
         ),
     ] {

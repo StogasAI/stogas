@@ -10,15 +10,21 @@ fn key(seed: u8) -> (OnlineKey, SigningKey) {
         OnlineKey {
             key_id: format!("key-{seed}"),
             public_key: STANDARD.encode(signer.public_key_spki().unwrap()),
-            rekor_public_key: STANDARD.encode(
-                crate::signing::RekorSubmissionKey::from_seed(&[seed; 32])
-                    .unwrap()
-                    .public_key_spki()
-                    .unwrap(),
-            ),
+            rekor_public_key: STANDARD.encode(rekor_key(seed)),
         },
         signer,
     )
+}
+
+/// The P-256 `SubjectPublicKeyInfo` DER of a test Rekor key.
+fn rekor_key(seed: u8) -> Vec<u8> {
+    let key = p256::ecdsa::SigningKey::from_slice(&[seed; 32]).unwrap();
+    let prefix = hex::decode("3059301306072a8648ce3d020106082a8648ce3d030107034200").unwrap();
+    [
+        &prefix[..],
+        key.verifying_key().to_sec1_point(false).as_bytes(),
+    ]
+    .concat()
 }
 
 fn root(seed: u8) -> RootKey {
@@ -895,12 +901,12 @@ fn compiled_staging_root_verifies_actual_logged_operational_delegation() {
     let keys = verifier.verify_key_manifest(bytes, sigstore, now).unwrap();
     assert_eq!(
         keys.active_key.key_id,
-        "staging-stogas-online-2026-10-10-01"
+        "staging-stogas-online-2026-11-23-01"
     );
-    assert_eq!(keys.generation, 58);
+    assert_eq!(keys.generation, 1);
     assert!(keys.retired_keys.is_empty());
     let mut changed = value;
-    changed["document"]["generation"] = json!(59);
+    changed["document"]["generation"] = json!(2);
     assert!(
         verifier
             .verify_key_manifest(&serde_json::to_vec(&changed).unwrap(), sigstore, now)

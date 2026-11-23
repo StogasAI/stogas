@@ -4,19 +4,19 @@
     "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
     "messageSignature": {
       "messageDigest": {
-        "algorithm": "SHA2_512",
-        "digest": "QfVMRxXVZPyEmUHLf2PpULEcmVYvfxtoR3O2tKcpA6gahHB5R/SVT4e3J60XwtyUH2KIWnUcxyrLZqEqs01rmg=="
+        "algorithm": "SHA2_256",
+        "digest": "euAIa6OyasSH2vJbylE/AwUFERKdmmOXlci6STQMh2o="
       },
-      "signature": "H5UTXl/AvZkkGhlIkE4HcweJXbY2WEakDnFxOT0YS8B1MejBXol/4sTJnv/s35M/VHrLlxEJvUHEO4ky96x3BQ=="
+      "signature": "MEQCIDmyy6QQ14g11jzwhWISdsWQs3b2VvonUPUE+J+6PaPYAiBJqlgOsii5xYlawCsrfGR9/fIrVvGQYa7msxQPVsu3Bw=="
     },
     "verificationMaterial": {
       "publicKey": {
-        "hint": "ed7204998d1901c7bc21e0ec84a5089b62e1523513e67f320e3e76774ebae567"
+        "hint": "d179ab7882181e073aecfddcd8276074d5d413991adf5b6145d78e3abb491f2c"
       },
       "timestampVerificationData": {},
       "tlogEntries": [
         {
-          "canonicalizedBody": "eyJhcGlWZXJzaW9uIjoiMC4wLjEiLCJraW5kIjoiaGFzaGVkcmVrb3JkIiwic3BlYyI6eyJkYXRhIjp7Imhhc2giOnsiYWxnb3JpdGhtIjoic2hhNTEyIiwidmFsdWUiOiI0MWY1NGM0NzE1ZDU2NGZjODQ5OTQxY2I3ZjYzZTk1MGIxMWM5OTU2MmY3ZjFiNjg0NzczYjZiNGE3MjkwM2E4MWE4NDcwNzk0N2Y0OTU0Zjg3YjcyN2FkMTdjMmRjOTQxZjYyODg1YTc1MWNjNzJhY2I2NmExMmFiMzRkNmI5YSJ9fSwic2lnbmF0dXJlIjp7ImNvbnRlbnQiOiJINVVUWGwvQXZaa2tHaGxJa0U0SGN3ZUpYYlkyV0Vha0RuRnhPVDBZUzhCMU1lakJYb2wvNHNUSm52L3MzNU0vVkhyTGx4RUp2VUhFTzRreTk2eDNCUT09IiwicHVibGljS2V5Ijp7ImNvbnRlbnQiOiJMUzB0TFMxQ1JVZEpUaUJRVlVKTVNVTWdTMFZaTFMwdExTMEtUVU52ZDBKUldVUkxNbFozUVhsRlFWcHpNV2RwTlV0TWFVOVZUMFIyTm5GTkwzSjRlRVI2ZGpSSVMxVnpUR2dyYml0RGNuQnhVRkJrYWswOUNpMHRMUzB0UlU1RUlGQlZRa3hKUXlCTFJWa3RMUzB0TFFvPSJ9fX19",
+          "canonicalizedBody": "eyJhcGlWZXJzaW9uIjoiMC4wLjEiLCJraW5kIjoiaGFzaGVkcmVrb3JkIiwic3BlYyI6eyJkYXRhIjp7Imhhc2giOnsiYWxnb3JpdGhtIjoic2hhMjU2IiwidmFsdWUiOiI3YWUwMDg2YmEzYjI2YWM0ODdkYWYyNWJjYTUxM2YwMzA1MDUxMTEyOWQ5YTYzOTc5NWM4YmE0OTM0MGM4NzZhIn19LCJzaWduYXR1cmUiOnsiY29udGVudCI6Ik1FUUNJRG15eTZRUTE0ZzExanp3aFdJU2RzV1FzM2IyVnZvblVQVUUrSis2UGFQWUFpQkpxbGdPc2lpNXhZbGF3Q3NyZkdSOS9mSXJWdkdRWWE3bXN4UVBWc3UzQnc9PSIsInB1YmxpY0tleSI6eyJjb250ZW50IjoiTFMwdExTMUNSVWRKVGlCUVZVSk1TVU1nUzBWWkxTMHRMUzBLVFVacmQwVjNXVWhMYjFwSmVtb3dRMEZSV1VsTGIxcEplbW93UkVGUlkwUlJaMEZGYjFCNVYzWTBiWFF6UjFOdGIwOUZUR0ZuZUU1WllYazFhbFZPVXdwc05IZDZObEpVTUdodlRXWjZaelZaU0ZOTmNrdHZSRzFVTnpKblUwOUthbmxxUldaaVoybGxSWHBuY1VFM2JFbGpRVWRzZUZWWE9USm5QVDBLTFMwdExTMUZUa1FnVUZWQ1RFbERJRXRGV1MwdExTMHRDZz09In19fX0=",
           "inclusionPromise": {
             "signedEntryTimestamp": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
           },
@@ -42,6 +42,6 @@
       ]
     }
   },
-  "description": "Synthetic log proof; valid Go Ed25519ph submission signature. This fixture must never pass trusted Rekor verification.",
-  "submission_key_spki": "302a300506032b657003210066cd608b928b88e50e0efeaa33faf1c43cefe07294b0b87e9fe0aba6a3cf7633"
+  "description": "Synthetic log proof; valid Go ECDSA P-256 submission signature. This fixture must never pass trusted Rekor verification.",
+  "submission_key_spki": "3059301306072a8648ce3d020106082a8648ce3d03010703420004a0fc96bf89addc64a6a0e10b6a0c4d61acb98d4352978c33e914f486831fce0e581d232b2a80e64fbda048e263ca311f6e089e13382a03b9487001a5c545bdda"
 }

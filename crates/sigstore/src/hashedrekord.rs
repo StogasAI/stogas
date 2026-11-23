@@ -1,9 +1,9 @@
 //! Rekor hashedrekord: verify that one designated key logged the exact artifact bytes.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use ed25519_dalek::{Signature, VerifyingKey, pkcs8::DecodePublicKey as _};
+use p256::ecdsa::{Signature, VerifyingKey, signature::hazmat::PrehashVerifier as _};
 use serde::Deserialize;
-use sha2::{Digest as _, Sha256, Sha512};
+use sha2::{Digest as _, Sha256};
 
 use crate::{
     sigstore::{TimestampVerificationData, TransparencyLogEntry},
@@ -124,10 +124,10 @@ pub fn verify(
             let time = tsa::verify_all(timestamps, &signature, root)?
                 .ok_or_else(|| "Rekor v2 entries require an RFC 3161 timestamp".to_owned())?;
             let body = v2_body(
-                "SHA2_512",
-                &Sha512::digest(artifact),
+                "SHA2_256",
+                &Sha256::digest(artifact),
                 &signature,
-                "PKIX_ED25519_PH",
+                "PKIX_ECDSA_P256_SHA_256",
                 &serde_json::json!({"publicKey": {"rawBytes": STANDARD.encode(submitter)}}),
             )?;
             let position = tlog::verify_v2(entry, &body, time, root)?;
@@ -153,8 +153,8 @@ fn verify_binding(bundle: &Bundle, artifact: &[u8], submitter: &[u8]) -> Result<
     .map_err(|error| format!("invalid Rekor document body: {error}"))?;
     if body.kind != "hashedrekord"
         || body.api_version != "0.0.1"
-        || body.spec.data.hash.algorithm != "sha512"
-        || body.spec.data.hash.value != hex::encode(Sha512::digest(artifact))
+        || body.spec.data.hash.algorithm != "sha256"
+        || body.spec.data.hash.value != hex::encode(Sha256::digest(artifact))
     {
         return Err("Rekor document hash does not bind the exact artifact bytes".into());
     }
@@ -170,15 +170,15 @@ fn verify_binding(bundle: &Bundle, artifact: &[u8], submitter: &[u8]) -> Result<
     verify_submission(bundle, artifact, submitter).map(drop)
 }
 
-/// The bundle's digest, key hint and Ed25519ph signature, which both Rekor versions log, and
-/// the signature bytes.
+/// The bundle's digest, key hint and ECDSA signature, which both Rekor versions log, and the
+/// signature bytes.
 fn verify_submission(
     bundle: &Bundle,
     artifact: &[u8],
     submitter: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let digest = Sha512::digest(artifact);
-    if bundle.message_signature.message_digest.algorithm != "SHA2_512"
+    let digest = Sha256::digest(artifact);
+    if bundle.message_signature.message_digest.algorithm != "SHA2_256"
         || decode(&bundle.message_signature.message_digest.digest)? != digest[..]
     {
         return Err("Rekor document hash does not bind the exact artifact bytes".into());
@@ -186,13 +186,61 @@ fn verify_submission(
     if bundle.verification_material.public_key.hint != hex::encode(Sha256::digest(submitter)) {
         return Err("Rekor submission key differs from its bundle hint".into());
     }
-    let key = VerifyingKey::from_public_key_der(submitter)
-        .map_err(|_| "Rekor document profile requires an Ed25519 submission key")?;
+    let key = submission_key(submitter)?;
     let signature = decode(&bundle.message_signature.signature)?;
-    let parsed = Signature::from_slice(&signature).map_err(|_| "invalid Rekor signature length")?;
-    key.verify_prehashed_strict(Sha512::new_with_prefix(artifact), None, &parsed)
-        .map_err(|_| "invalid Rekor Ed25519ph submission signature")?;
+    let parsed = Signature::from_der(&signature).map_err(|_| "invalid Rekor ECDSA signature")?;
+    // Anyone can log the high-S twin of a logged signature, so only the low-S form counts.
+    if parsed.to_der().as_bytes() != signature.as_slice() || parsed.normalize_s() != parsed {
+        return Err("Rekor submission signature is not low-S DER".into());
+    }
+    key.verify_prehash(&digest, &parsed)
+        .map_err(|_| "invalid Rekor ECDSA submission signature")?;
     Ok(signature)
+}
+
+/// `SubjectPublicKeyInfo` DER of a P-256 key, before its uncompressed point.
+const P256_SPKI_PREFIX: [u8; 26] = [
+    0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a,
+    0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00,
+];
+
+/// A submission key in its one encoding: P-256 `SubjectPublicKeyInfo` DER with an uncompressed
+/// point, the bytes Rekor indexes the key's entries by.
+pub fn submission_key(spki: &[u8]) -> Result<VerifyingKey, String> {
+    spki.strip_prefix(&P256_SPKI_PREFIX)
+        .filter(|point| point.len() == 65 && point[0] == 4)
+        .and_then(|point| VerifyingKey::from_sec1_bytes(point).ok())
+        .ok_or_else(|| "Rekor document profile requires a P-256 submission key".into())
+}
+
+/// The Rekor v1 submission that logs `artifact` under `submitter`, from an ECDSA signature
+/// over the artifact's SHA-256 that a key outside this process made, such as a Transit key.
+/// It holds the signature's low-S DER form, the only one clients accept.
+pub fn submission(artifact: &[u8], submitter: &[u8], signature: &[u8]) -> Result<String, String> {
+    let key = submission_key(submitter)?;
+    let digest = Sha256::digest(artifact);
+    let signature = Signature::from_der(signature)
+        .map_err(|_| "invalid Rekor ECDSA signature")?
+        .normalize_s();
+    key.verify_prehash(&digest, &signature)
+        .map_err(|_| "invalid Rekor ECDSA submission signature")?;
+    // Rekor stores the key as Go's PEM encoder writes it.
+    let pem = pem::encode_config(
+        &pem::Pem::new("PUBLIC KEY", submitter),
+        pem::EncodeConfig::new().set_line_ending(pem::LineEnding::LF),
+    );
+    serde_json_canonicalizer::to_string(&serde_json::json!({
+        "apiVersion": "0.0.1",
+        "kind": "hashedrekord",
+        "spec": {
+            "data": {"hash": {"algorithm": "sha256", "value": hex::encode(digest)}},
+            "signature": {
+                "content": STANDARD.encode(signature.to_der().as_bytes()),
+                "publicKey": {"content": STANDARD.encode(pem)},
+            },
+        },
+    }))
+    .map_err(|error| format!("could not encode the Rekor submission: {error}"))
 }
 
 /// The canonical body that Rekor v2 logs for a hashedrekord v0.0.2 entry: its JSON with keys

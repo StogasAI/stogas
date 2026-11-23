@@ -21,7 +21,7 @@ typedef int Socket;
 static const char OFFLINE_ROOT[] =
     "{\"environment\":\"prod\",\"root\":{"
     "\"key_id\":\"stogas-fixture-root-20260920\","
-    "\"rekor_public_key\":\"MCowBQYDK2VwAyEAaefJGJavXbTdsx1qhqIWQxIKLTxT2fKFbRhfP5QKRF0=\","
+    "\"rekor_public_key\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVFAmxieXVVyYCcFGW4PHuM/twrzg6gN6TYfzKyL8tzZr4uq2LsR5SEM5kDMTMY+iM/0N8CZU1IUYOQ65qI7kSg==\","
     "\"public_key\":\""
     "MIIH0TAKBggrBgEFBQcGMAOCB8EABSVsG+88NrrNK0tSCXjYo4VFImnk4Hv1N/7YfIwJ/mJ1x0WhaKre592S8BeY"
     "kDK8rrk+OYRP+Ul7hrZ92nat/ol4QyCJDICskDKitA8fZh8Je6D+U8ClaNU78EcxXopgavaO8Y+KnTVTNd6KYCpS"

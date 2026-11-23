@@ -101,15 +101,12 @@ test('operator Worker verifies remote signatures, Rekor submissions, key manifes
 		assert.deepEqual(await response.json(), {
 			wrongMessage: true,
 			representatives: [true, true, true],
-			rekorPublicKey: signing.rekor_spki,
 			rekorSignature: Buffer.from(signing.rekor_signature, 'hex').toString('base64'),
 			hash: {
-				algorithm: 'sha512',
-				value: createHash('sha512').update(Buffer.from(signing.message, 'hex')).digest('hex')
+				algorithm: 'sha256',
+				value: createHash('sha256').update(Buffer.from(signing.message, 'hex')).digest('hex')
 			},
-			stable: true,
-			seedUnchanged: true,
-			badSeed: true,
+			otherDocument: true,
 			manifestKey: fixtures.manifest.document.active_key.key_id,
 			alteredManifest: true,
 			unsignedSigstore: true,

@@ -10,7 +10,6 @@ use std::sync::Arc;
 #[cfg(test)]
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use ed25519_dalek::{VerifyingKey, pkcs8::DecodePublicKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -99,8 +98,8 @@ impl Environment {
 pub struct RootKey {
     pub key_id: String,
     pub public_key: String,
-    /// Canonical standard-base64 Ed25519 `SubjectPublicKeyInfo` DER of the only key that may
-    /// log this root's key manifests in Rekor, so a search by it finds every one.
+    /// Canonical standard-base64 P-256 `SubjectPublicKeyInfo` DER of the only key that may log
+    /// this root's key manifests in Rekor, so a search by it finds every one.
     pub rekor_public_key: String,
     /// Where this root's documents count in Rekor v2. Without it, no Rekor v2 entry counts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -154,7 +153,7 @@ pub struct OnlineKey {
     pub key_id: String,
     /// Canonical standard-base64 composite ML-DSA-65 and Ed25519 `SubjectPublicKeyInfo` DER.
     pub public_key: String,
-    /// Canonical standard-base64 Ed25519 `SubjectPublicKeyInfo` DER of the only key that may log
+    /// Canonical standard-base64 P-256 `SubjectPublicKeyInfo` DER of the only key that may log
     /// this key's signatures in Rekor, so a search by it finds every one. It approves nothing.
     pub rekor_public_key: String,
 }
@@ -939,13 +938,10 @@ fn decode_key(key_id: &str, public_key: &str) -> Result<Vec<u8>, Error> {
 
 fn decode_rekor_key(key: &str) -> Result<Vec<u8>, Error> {
     let bytes = STANDARD.decode(key).map_err(invalid)?;
-    if bytes.len() != 44 || STANDARD.encode(&bytes) != key {
+    if STANDARD.encode(&bytes) != key {
         return Err(Error::Invalid("Rekor public key encoding".into()));
     }
-    let public = VerifyingKey::from_public_key_der(&bytes).map_err(invalid)?;
-    if public.is_weak() {
-        return Err(Error::Invalid("weak Rekor public key".into()));
-    }
+    stogas_sigstore::check_document_submitter(&bytes).map_err(invalid)?;
     Ok(bytes)
 }
 

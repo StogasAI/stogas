@@ -1,4 +1,5 @@
 use super::*;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Deserialize;
 use serde_json::Value;
 use spki::der::asn1::AnyRef;
@@ -14,7 +15,6 @@ struct Vector {
     context_signature: String,
     rekor_spki: String,
     rekor_signature: String,
-    rekor_seed: String,
 }
 
 fn vector() -> Vector {
@@ -227,7 +227,7 @@ fn imports_rfc9881_example_mldsa65_public_key() {
 }
 
 #[test]
-fn pure_mldsa_matches_independent_go_keys_signatures_and_rekor_vectors() {
+fn pure_mldsa_and_rekor_submissions_match_independent_go_keys_and_signatures() {
     let v = vector();
     let key = mldsa::SigningKey::from_seed(&bytes(&v.seed).try_into().unwrap());
     assert_eq!(key.public_key().as_slice(), bytes(&v.public_key));
@@ -235,10 +235,16 @@ fn pure_mldsa_matches_independent_go_keys_signatures_and_rekor_vectors() {
         mldsa::public_key_from_spki(&bytes(&v.spki)).unwrap(),
         key.public_key()
     );
-    let submitter = RekorSubmissionKey::from_seed(&bytes(&v.rekor_seed)).unwrap();
-    assert_eq!(submitter.public_key_spki().unwrap(), bytes(&v.rekor_spki));
-    let submission: Value =
-        serde_json::from_str(&submitter.prepare_submission(&bytes(&v.message)).unwrap()).unwrap();
+    // Transit signs Rekor submissions with Go's ECDSA, so a Go signature must log unchanged.
+    let submission: Value = serde_json::from_str(
+        &stogas_sigstore::prepare_document_submission(
+            &bytes(&v.message),
+            &bytes(&v.rekor_spki),
+            &bytes(&v.rekor_signature),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         base64(&submission["spec"]["signature"]["content"]),
         bytes(&v.rekor_signature)
@@ -261,131 +267,4 @@ fn pure_mldsa_matches_independent_go_keys_signatures_and_rekor_vectors() {
         Err(Error::Context)
     ));
     assert!(matches!(key.sign(b"", &[3; 256]), Err(Error::Context)));
-}
-
-#[test]
-fn separate_rekor_seed_rejects_wrong_lengths_and_bounds_documents() {
-    for seed in [&[][..], &[0; 31][..], &[0; 33][..]] {
-        assert!(matches!(
-            RekorSubmissionKey::from_seed(seed),
-            Err(Error::SubmissionKey)
-        ));
-    }
-    let key = RekorSubmissionKey::from_seed(&[42; 32]).unwrap();
-    assert!(matches!(
-        key.prepare_submission(&vec![0; crate::MAX_INPUT_BYTES + 1]),
-        Err(Error::TooLarge)
-    ));
-}
-
-#[test]
-fn rekor_submission_signs_only_the_complete_document_digest() {
-    use ed25519_dalek::pkcs8::DecodePublicKey as _;
-    // Exercise the composition with a real Stogas signature, including the exact
-    // initial evidence reference. Logging only the quote or signature would lose
-    // this binding even though each individual signature could still verify.
-    let payload = serde_json::json!({
-        "boot": serde_json::from_str::<Value>(include_str!(
-            "../../../../tests/fixtures/node-boot-v1.json"
-        )).unwrap()["record"],
-        "evidence_sha256": "ab".repeat(32)
-    });
-    let message = crate::canonical_json(&payload).unwrap();
-    let author = key(17);
-    let signature = author.sign(message.as_bytes()).unwrap();
-    verify(author.public_key(), message.as_bytes(), &signature).unwrap();
-    let signed = serde_json::json!({"document": payload, "signature": STANDARD.encode(signature)});
-    let document = crate::canonical_json(&signed).unwrap();
-    let prepared = RekorSubmissionKey::from_seed(&[19; 32])
-        .unwrap()
-        .prepare_submission(document.as_bytes())
-        .unwrap();
-    let value: Value = serde_json::from_str(&prepared).unwrap();
-    assert_eq!(value["kind"], "hashedrekord");
-    assert_eq!(value["spec"]["data"]["hash"]["algorithm"], "sha512");
-    assert_eq!(
-        value["spec"]["data"]["hash"]["value"],
-        hex::encode(Sha512::digest(document.as_bytes()))
-    );
-    let public =
-        String::from_utf8(base64(&value["spec"]["signature"]["publicKey"]["content"])).unwrap();
-    let der = STANDARD
-        .decode(
-            public
-                .strip_prefix("-----BEGIN PUBLIC KEY-----\n")
-                .unwrap()
-                .strip_suffix("\n-----END PUBLIC KEY-----\n")
-                .unwrap(),
-        )
-        .unwrap();
-    let key = VerifyingKey::from_public_key_der(&der).unwrap();
-    let signature = Signature::from_slice(&base64(&value["spec"]["signature"]["content"])).unwrap();
-    key.verify_prehashed_strict(
-        Sha512::new_with_prefix(document.as_bytes()),
-        None,
-        &signature,
-    )
-    .unwrap();
-    for pointer in [
-        "/document/boot/report",
-        "/document/evidence_sha256",
-        "/signature",
-    ] {
-        let mut changed = signed.clone();
-        *changed.pointer_mut(pointer).unwrap() = serde_json::json!("altered");
-        let changed = crate::canonical_json(&changed).unwrap();
-        assert!(
-            key.verify_prehashed_strict(
-                Sha512::new_with_prefix(changed.as_bytes()),
-                None,
-                &signature
-            )
-            .is_err(),
-            "accepted substitution at {pointer}"
-        );
-    }
-    for partial in [
-        message.as_bytes(),
-        signed["signature"].as_str().unwrap().as_bytes(),
-    ] {
-        assert!(
-            key.verify_prehashed_strict(Sha512::new_with_prefix(partial), None, &signature)
-                .is_err()
-        );
-    }
-}
-
-#[test]
-fn rekor_identity_is_stable_across_restarts_and_changes_only_with_its_seed() {
-    let author = RekorSubmissionKey::from_seed(&[17; 32]).unwrap();
-    let document = "same signed document";
-    let prepared = author.prepare_submission(document.as_bytes()).unwrap();
-    let value: Value = serde_json::from_str(&prepared).unwrap();
-    // Reopening the same seed preserves log identity and exact retry bytes.
-    assert_eq!(
-        prepared,
-        RekorSubmissionKey::from_seed(&[17; 32])
-            .unwrap()
-            .prepare_submission(document.as_bytes())
-            .unwrap()
-    );
-    let rotated = RekorSubmissionKey::from_seed(&[18; 32]).unwrap();
-    assert_ne!(
-        author.public_key_spki().unwrap(),
-        rotated.public_key_spki().unwrap()
-    );
-    let next: Value = serde_json::from_str(
-        &author
-            .prepare_submission(b"another signed document")
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        value["spec"]["signature"]["publicKey"],
-        next["spec"]["signature"]["publicKey"]
-    );
-    assert_ne!(
-        value["spec"]["signature"]["content"],
-        next["spec"]["signature"]["content"]
-    );
 }

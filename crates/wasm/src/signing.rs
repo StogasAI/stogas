@@ -3,7 +3,6 @@
 use js_sys::{Object, Reflect, Uint8Array};
 use stogas_core::signing;
 use wasm_bindgen::prelude::*;
-use zeroize::Zeroizing;
 
 /// Verify a composite ML-DSA-65 and Ed25519 signature with a DER public key.
 ///
@@ -46,36 +45,24 @@ pub fn mldsa65_ed25519_signing_input(
     Ok(output.into())
 }
 
-/// Read the public identity of a separate Rekor submission seed. This supports
-/// non-exportable document signers without exporting their private keys.
-/// The binding erases its own copy; callers erase theirs.
+/// Prepare the Rekor v1 entry that logs exact signed bytes under the `submitter` P-256
+/// `SubjectPublicKeyInfo` DER, from a DER ECDSA signature over their SHA-256 that a
+/// non-exportable key made. The signed document's own signature remains independently
+/// mandatory.
 ///
 /// # Errors
-/// Rejects seeds other than 32 bytes or public-key encoding failures.
+/// Rejects oversized input, other keys and signatures that do not verify.
 #[wasm_bindgen]
-pub fn rekor_public_key_from_seed(seed: Vec<u8>) -> Result<Vec<u8>, JsError> {
-    signing::RekorSubmissionKey::from_seed(&Zeroizing::new(seed))
-        .and_then(|key| key.public_key_spki())
-        .map_err(error)
-}
-
-/// Prepare Rekor v1 inclusion using a separate submission seed. The binding
-/// erases its own copy; callers erase theirs. The signed document's own
-/// signature remains independently mandatory.
-///
-/// # Errors
-/// Rejects malformed seeds, oversized input and signing failures.
-#[wasm_bindgen]
-pub fn prepare_rekor_submission_with_seed(
-    seed: Vec<u8>,
+pub fn prepare_rekor_submission(
     signed_document: &[u8],
+    submitter: &[u8],
+    signature: &[u8],
 ) -> Result<String, JsError> {
-    signing::RekorSubmissionKey::from_seed(&Zeroizing::new(seed))
-        .and_then(|key| key.prepare_submission(signed_document))
-        .map_err(error)
+    stogas_sigstore::prepare_document_submission(signed_document, submitter, signature)
+        .map_err(|error| JsError::new(&error.to_string()))
 }
 
-/// Verify that the `submitter` Ed25519 `SubjectPublicKeyInfo` DER logged exact signed bytes,
+/// Verify that the `submitter` P-256 `SubjectPublicKeyInfo` DER logged exact signed bytes,
 /// and return the log time in Unix seconds. Sigstore's keys come from the given TUF files. This
 /// does not establish document authorship, nor check a Rekor v2 entry against the root's Rekor
 /// v2 scope, outside which clients reject it.

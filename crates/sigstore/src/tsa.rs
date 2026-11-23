@@ -520,7 +520,7 @@ mod tests {
     // lists, so one certificate is found twice.
     #[test]
     fn verifies_a_production_sigstore_timestamp() {
-        use ed25519_dalek::SigningKey;
+        use p256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner as _};
         let vectors: serde_json::Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/rekor-v2-vectors.json"
         ))
@@ -533,15 +533,13 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        let signature = SigningKey::from_bytes(&[9; 32])
-            .sign_prehashed(
-                Sha512::new_with_prefix(
-                    b"exact document bytes, including its independent author signature\n",
-                ),
-                None,
-            )
+        let signature: Signature = SigningKey::from_slice(&[9; 32])
             .unwrap()
-            .to_bytes();
+            .sign_prehash(&Sha256::digest(
+                b"exact document bytes, including its independent author signature\n",
+            ))
+            .unwrap();
+        let signature = signature.normalize_s().to_der().as_bytes().to_vec();
         let timestamp = SignedTimestamp {
             signed_timestamp: vectors["document_signature_timestamp"]
                 .as_str()
@@ -550,7 +548,7 @@ mod tests {
         };
         assert_eq!(
             verify_all(std::slice::from_ref(&timestamp), &signature, &root).unwrap(),
-            Some(1_793_423_809)
+            Some(1_795_464_419)
         );
         assert!(verify_all(&[timestamp], &[0; 64], &root).is_err());
     }
