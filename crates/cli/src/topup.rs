@@ -176,7 +176,7 @@ pub async fn wallet(
     print_qr(&uri)?;
     out!("You can reuse this address for later payments.")?;
     if deposit.testnet {
-        out!("Test network: send only test {coin}. The credit has no cash value.")?;
+        out!("Test network: send only test {coin}.")?;
     }
     Ok(Expected {
         provider: "wallet",
@@ -295,10 +295,7 @@ pub async fn ccpayment(
     print_qr(&deposit.address)?;
     out!("You can reuse this address for later payments.")?;
     if deposit.testnet {
-        out!(
-            "Test network: send only test {}. The credit has no cash value.",
-            printable(&asset.symbol)
-        )?;
+        out!("Test network: send only test {}.", printable(&asset.symbol))?;
     }
     Ok(Expected {
         provider: "ccpayment",
