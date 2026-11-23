@@ -54,6 +54,7 @@ pub struct Expected {
 struct Estimate {
     credit_usd: String,
     amount_crypto: String,
+    rate_usd: String,
     processor_fee_usd: String,
     conversion_fee_usd: String,
     network_cost_usd: String,
@@ -67,6 +68,10 @@ struct Asset {
     chain: String,
     symbol: String,
     network: String,
+    /// Other names that exchanges and wallets give the network, such as TRC20.
+    network_aliases: Vec<String>,
+    /// About how long a payment takes to credit.
+    credit_minutes: u32,
     minimum_deposit: String,
 }
 
@@ -136,8 +141,10 @@ pub async fn wallet(
     amount: &str,
 ) -> Result<Expected> {
     #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
     struct Deposit {
         address: String,
+        credit_minutes: u32,
         // Null while the exchange rate is out of date.
         estimate: Option<Estimate>,
         testnet: bool,
@@ -151,7 +158,13 @@ pub async fn wallet(
     } else {
         ("Monero", "monero", "tx_amount")
     };
-    print_instructions(&coin, network, &deposit.address, deposit.estimate.as_ref())?;
+    print_instructions(
+        &coin,
+        network,
+        &deposit.address,
+        deposit.estimate.as_ref(),
+        deposit.credit_minutes,
+    )?;
     // A payment URI with the amount lets a wallet that scans the code fill it in.
     let uri = match &deposit.estimate {
         Some(estimate) => format!(
@@ -263,6 +276,7 @@ pub async fn ccpayment(
         &asset.network,
         &deposit.address,
         Some(&deposit.estimate),
+        asset.credit_minutes,
     )?;
     if !deposit.memo.is_empty() {
         out!(
@@ -271,13 +285,9 @@ pub async fn ccpayment(
         )?;
     }
     // A zero minimum means none, as for testnet tokens.
-    if asset
-        .minimum_deposit
-        .bytes()
-        .any(|byte| matches!(byte, b'1'..=b'9'))
-    {
+    if let Some(minimum) = minimum_usd(&asset.minimum_deposit, &deposit.estimate.rate_usd) {
         out!(
-            "Minimum deposit: {} {}. Smaller deposits may not be credited.",
+            "The minimum payment is {} {}, about ${minimum:.2}.",
             printable(&asset.minimum_deposit),
             printable(&asset.symbol)
         )?;
@@ -329,7 +339,10 @@ fn choose(assets: Vec<Asset>, currency: &str, network: Option<&str>) -> Result<A
         .join(", ");
     if let Some(network) = network {
         matching.retain(|asset| {
-            asset.chain.eq_ignore_ascii_case(network) || asset.network.eq_ignore_ascii_case(network)
+            [&asset.chain, &asset.network]
+                .into_iter()
+                .chain(&asset.network_aliases)
+                .any(|name| name.eq_ignore_ascii_case(network))
         });
     }
     match matching.len() {
@@ -410,11 +423,20 @@ async fn set_location(dashboard: &Dashboard, base: &str) -> Result<()> {
     }
 }
 
+/// A token's minimum payment in dollars at the estimate's rate, rounded up to the cent, or none
+/// when the token has no minimum.
+fn minimum_usd(minimum: &str, rate_usd: &str) -> Option<f64> {
+    let usd = minimum.parse::<f64>().ok()? * rate_usd.parse::<f64>().ok()?;
+    // The margin keeps binary rounding from adding a cent to an exact amount.
+    (usd > 0.0).then(|| usd.mul_add(100.0, -1e-6).ceil().max(1.0) / 100.0)
+}
+
 fn print_instructions(
     symbol: &str,
     network: &str,
     address: &str,
     estimate: Option<&Estimate>,
+    credit_minutes: u32,
 ) -> Result<()> {
     let symbol = printable(symbol);
     let network = printable(network);
@@ -443,6 +465,10 @@ fn print_instructions(
         None => out!(
             "There is no current exchange rate. The credit uses the rate when the payment arrives."
         )?,
+    }
+    match credit_minutes {
+        1 => out!("The credit is added about a minute after you send.")?,
+        minutes => out!("The credit is added about {minutes} minutes after you send.")?,
     }
     Ok(())
 }
@@ -687,12 +713,14 @@ mod tests {
         }
     }
 
-    fn asset(symbol: &str, chain: &str, network: &str) -> Asset {
+    fn asset(symbol: &str, chain: &str, network: &str, aliases: &[&str]) -> Asset {
         Asset {
             coin_id: 1,
             chain: chain.into(),
             symbol: symbol.into(),
             network: network.into(),
+            network_aliases: aliases.iter().map(|&alias| alias.into()).collect(),
+            credit_minutes: 1,
             minimum_deposit: "1".into(),
         }
     }
@@ -701,21 +729,42 @@ mod tests {
     fn chooses_a_token_network_only_when_the_choice_is_unambiguous() {
         let assets = || {
             vec![
-                asset("USDT", "ETH", "Ethereum"),
-                asset("USDT", "TRX", "Tron"),
-                asset("USDC", "ETH", "Ethereum"),
+                asset("USDT", "ETH", "Ethereum", &["ERC20", "ERC-20"]),
+                asset("USDT", "TRX", "Tron", &["TRC20", "TRC-20"]),
+                asset("USDT", "BSC", "BNB Smart Chain", &["BEP20", "BNB"]),
+                asset("USDT", "OPBNB", "opBNB", &["BNB"]),
+                asset("USDC", "ETH", "Ethereum", &["ERC20", "ERC-20"]),
             ]
         };
         assert_eq!(choose(assets(), "usdc", None).unwrap().chain, "ETH");
-        assert_eq!(choose(assets(), "USDT", Some("tron")).unwrap().chain, "TRX");
-        assert_eq!(choose(assets(), "USDT", Some("trx")).unwrap().chain, "TRX");
+        // A network answers to CCPayment's code, its own name and the names exchanges give it.
+        for (typed, chain) in [
+            ("tron", "TRX"),
+            ("trx", "TRX"),
+            ("trc20", "TRX"),
+            ("ERC-20", "ETH"),
+            ("bep20", "BSC"),
+            ("opbnb", "OPBNB"),
+        ] {
+            assert_eq!(
+                choose(assets(), "USDT", Some(typed)).unwrap().chain,
+                chain,
+                "{typed}"
+            );
+        }
+        // A name that two of the token's networks share picks neither.
+        let shared = choose(assets(), "USDT", Some("bnb"))
+            .unwrap_err()
+            .to_string();
+        assert!(shared.contains("several networks"), "{shared}");
         let several = choose(assets(), "USDT", None).unwrap_err().to_string();
         assert!(several.contains("ETH (Ethereum), TRX (Tron)"), "{several}");
+        assert!(!several.contains("ERC20"), "{several}");
         let missing = choose(assets(), "USDT", Some("SOL"))
             .unwrap_err()
             .to_string();
         assert!(
-            missing.contains("choose one of ETH (Ethereum), TRX (Tron)"),
+            missing.contains("choose one of ETH (Ethereum), TRX (Tron), BSC (BNB Smart Chain)"),
             "{missing}"
         );
         let unknown = choose(assets(), "DOGE", None).unwrap_err().to_string();
@@ -757,6 +806,18 @@ mod tests {
             "{}",
             describe(&held)
         );
+    }
+
+    #[test]
+    fn states_a_token_minimum_in_dollars_rounded_up() {
+        assert_eq!(minimum_usd("0.1", "1"), Some(0.1));
+        assert_eq!(minimum_usd("0.07", "1"), Some(0.07));
+        assert_eq!(minimum_usd("0.000005", "3012.4"), Some(0.02));
+        assert_eq!(minimum_usd("0.000001", "1"), Some(0.01));
+        // A zero minimum means none, as for testnet tokens.
+        assert_eq!(minimum_usd("0", "2000"), None);
+        assert_eq!(minimum_usd("0.000", "2000"), None);
+        assert_eq!(minimum_usd("abc", "2000"), None);
     }
 
     #[test]
