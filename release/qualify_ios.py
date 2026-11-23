@@ -17,7 +17,9 @@ from gate import attempt
 def qualify(source, packages, version, platform, target, requested, device, device_farm, cases):
     simulator = target.get("simulator", False)
     if sys.platform != "darwin" or simulator != bool(device) or simulator == bool(device_farm):
-        raise ValueError("iOS qualification requires macOS; simulators need --device with a UDID, device slices --device-farm with a project ARN")
+        raise ValueError(
+            "iOS qualification requires macOS; simulators need --device with a UDID, device slices --device-farm with a project ARN"
+        )
     selected = set(requested or target["packages"])
     if not selected or not selected <= {"native", "swift"}:
         raise ValueError("Requested iOS package is unsupported")
@@ -39,30 +41,88 @@ def qualify(source, packages, version, platform, target, requested, device, devi
         shutil.copyfile(source / "release/consumers/native.c", app / "Native/native.c")
         identifier = "ai.stogas.consumer.q" + uuid.uuid4().hex
         env = {**os.environ, "STOGAS_CONSUMER_ID": identifier}
-        subprocess.run(["xcodegen", "generate", "--spec", "project.yml"], cwd=app, env=env, check=True)
+        subprocess.run(
+            ["xcodegen", "generate", "--spec", "project.yml"], cwd=app, env=env, check=True
+        )
         result = work / "Tests.xcresult"
         tests = {"native": "NativeTests", "swift": "SwiftTests"}
         command = [
-            "xcodebuild", "test" if simulator else "build-for-testing", "-project", "StogasConsumer.xcodeproj", "-scheme", "StogasConsumer",
-            "-destination", destination, "-derivedDataPath", str(work / "DerivedData"), f"ARCHS={architecture}",
+            "xcodebuild",
+            "test" if simulator else "build-for-testing",
+            "-project",
+            "StogasConsumer.xcodeproj",
+            "-scheme",
+            "StogasConsumer",
+            "-destination",
+            destination,
+            "-derivedDataPath",
+            str(work / "DerivedData"),
+            f"ARCHS={architecture}",
             *["-only-testing:" + tests[package] for package in sorted(selected)],
             # A preview compiles the tests without their live part.
             *([] if "live" in cases else ["STOGAS_TEST_CONDITIONS=STOGAS_OFFLINE_ONLY"]),
-            *(["-resultBundlePath", str(result), "-parallel-testing-enabled", "NO", "ONLY_ACTIVE_ARCH=YES"] if simulator else ["CODE_SIGNING_ALLOWED=NO"]),
+            *(
+                [
+                    "-resultBundlePath",
+                    str(result),
+                    "-parallel-testing-enabled",
+                    "NO",
+                    "ONLY_ACTIVE_ARCH=YES",
+                ]
+                if simulator
+                else ["CODE_SIGNING_ALLOWED=NO"]
+            ),
         ]
         if not simulator:
             subprocess.run(command, cwd=app, env=env, check=True)
-            return run_on_iphones(device_farm, work, selected, tests, platform, target, xcode, cases)
+            return run_on_iphones(
+                device_farm, work, selected, tests, platform, target, xcode, cases
+            )
         try:
             subprocess.run(command, cwd=app, env=env, check=True)
-            summary = json.loads(subprocess.check_output(["xcrun", "xcresulttool", "get", "test-results", "summary", "--path", str(result)], text=True))
-            if summary.get("passedTests") != len(selected) or summary.get("totalTestCount") != len(selected) or summary.get("failedTests") != 0 or summary.get("skippedTests") != 0:
+            summary = json.loads(
+                subprocess.check_output(
+                    [
+                        "xcrun",
+                        "xcresulttool",
+                        "get",
+                        "test-results",
+                        "summary",
+                        "--path",
+                        str(result),
+                    ],
+                    text=True,
+                )
+            )
+            if (
+                summary.get("passedTests") != len(selected)
+                or summary.get("totalTestCount") != len(selected)
+                or summary.get("failedTests") != 0
+                or summary.get("skippedTests") != 0
+            ):
                 raise ValueError("Xcode did not run and pass every selected installed-package test")
         finally:
-            subprocess.run(["xcrun", "simctl", "uninstall", device, identifier + ".Host"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    runtime = json.dumps({"xcode": xcode, "destination": destination, "architecture": architecture}, sort_keys=True)
+            subprocess.run(
+                ["xcrun", "simctl", "uninstall", device, identifier + ".Host"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    runtime = json.dumps(
+        {"xcode": xcode, "destination": destination, "architecture": architecture}, sort_keys=True
+    )
     # Each package's single test runs its offline checks, then any live ones.
-    return [{"platform": platform, "package": package, "case": case, "runtime": runtime, "outcome": "passed"} for package in sorted(selected) for case in cases]
+    return [
+        {
+            "platform": platform,
+            "package": package,
+            "case": case,
+            "runtime": runtime,
+            "outcome": "passed",
+        }
+        for package in sorted(selected)
+        for case in cases
+    ]
 
 
 def run_on_iphones(project, work, selected, tests, platform, target, xcode, cases):
@@ -70,15 +130,46 @@ def run_on_iphones(project, work, selected, tests, platform, target, xcode, case
     host = work / "DerivedData/Build/Products/Debug-iphoneos/Host.app"
     (work / "Payload").mkdir()
     shutil.copytree(host, work / "Payload/Host.app", symlinks=True)
-    subprocess.run(["ditto", "-c", "-k", "--keepParent", str(work / "Payload"), str(work / "Host.ipa")], check=True)
+    subprocess.run(
+        ["ditto", "-c", "-k", "--keepParent", str(work / "Payload"), str(work / "Host.ipa")],
+        check=True,
+    )
     checks = []
     for package in sorted(selected):
         bundle = host / f"PlugIns/{tests[package]}.xctest"
         archive = work / f"{tests[package]}.xctest.zip"
         subprocess.run(["ditto", "-c", "-k", "--keepParent", str(bundle), str(archive)], check=True)
-        test = {"native": "InstalledNativeTests/testNativePackage", "swift": "InstalledSwiftTests/testSwiftPackage"}[package]
+        test = {
+            "native": "InstalledNativeTests/testNativePackage",
+            "swift": "InstalledSwiftTests/testSwiftPackage",
+        }[package]
         phone = {}
-        outcome = attempt(package, lambda: phone.update(run_on_phone(project, platform="IOS", minimum=int(target["minimum"].split(".")[0]), architecture="arm64", app=work / "Host.ipa", app_kind="IOS_APP", tests=archive, test_kind="XCTEST_TEST_PACKAGE", test_type="XCTEST", expected=[test])))
+        outcome = attempt(
+            package,
+            lambda: phone.update(
+                run_on_phone(
+                    project,
+                    platform="IOS",
+                    minimum=int(target["minimum"].split(".")[0]),
+                    architecture="arm64",
+                    app=work / "Host.ipa",
+                    app_kind="IOS_APP",
+                    tests=archive,
+                    test_kind="XCTEST_TEST_PACKAGE",
+                    test_type="XCTEST",
+                    expected=[test],
+                )
+            ),
+        )
         # One test covers every case, so its outcome applies to each.
-        checks.extend({"platform": platform, "package": package, "case": case, "runtime": json.dumps({"xcode": xcode, **phone}, sort_keys=True), "outcome": outcome} for case in cases)
+        checks.extend(
+            {
+                "platform": platform,
+                "package": package,
+                "case": case,
+                "runtime": json.dumps({"xcode": xcode, **phone}, sort_keys=True),
+                "outcome": outcome,
+            }
+            for case in cases
+        )
     return checks

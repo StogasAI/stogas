@@ -10,9 +10,7 @@ def client(base_url: str, api_key: str) -> OpenAI:
         api_key=api_key,
         base_url=base_url,
         max_retries=0,
-        http_client=DefaultHttpxClient(
-            trust_env=False, follow_redirects=False, timeout=45 * 60
-        ),
+        http_client=DefaultHttpxClient(trust_env=False, follow_redirects=False, timeout=45 * 60),
     )
 
 

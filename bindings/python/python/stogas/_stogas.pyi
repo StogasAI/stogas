@@ -39,7 +39,9 @@ class Transport:
 
 @final
 class EvidenceVerifier:
-    def __new__(cls, *, environment: str = "prod", root: dict[str, Any] | None = None) -> EvidenceVerifier:
+    def __new__(
+        cls, *, environment: str = "prod", root: dict[str, Any] | None = None
+    ) -> EvidenceVerifier:
         """Without `root`, trusts the compiled Stogas root. A `root` is a root document, as an
         environment's root file gives it."""
     def refresh(self, evidence: bytes) -> EvidenceSnapshot: ...
@@ -61,7 +63,10 @@ class VerifiedBoot:
     def summary(self) -> bytes:
         """The verified boot's summary, as JSON."""
     def verify_receipt(
-        self, document: bytes, request_digest: bytes | None = None, response_digest: bytes | None = None
+        self,
+        document: bytes,
+        request_digest: bytes | None = None,
+        response_digest: bytes | None = None,
     ) -> bytes:
         """Verify a final Stogas metadata object, salts included, against digests from
         `request_digest` and `response_digest`. A side without a digest stays unchecked. Returns

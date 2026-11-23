@@ -13,9 +13,22 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 import channels
-from artifacts import canonical, function_names, release_source, verify_inventory, wheel, without_names, write_json
+from artifacts import (
+    canonical,
+    function_names,
+    release_source,
+    verify_inventory,
+    wheel,
+    without_names,
+    write_json,
+)
 
-METADATA = {"github-attestation.jsonl", "gitlab-attestation.jsonl", "stogas-signature.json", "qualification.json"}
+METADATA = {
+    "github-attestation.jsonl",
+    "gitlab-attestation.jsonl",
+    "stogas-signature.json",
+    "qualification.json",
+}
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 # Offline cases test installed bytes without a network. Live cases send
 # requests through production attested TLS and E2EE and verify its evidence.
@@ -25,12 +38,18 @@ NPM_RUNTIMES = ("node", "node-minimum", "bun", "deno", "worker", "chromium", "fi
 # In dependency order, which crates.io requires for a first upload.
 CRATES = ("stogas-sev-snp", "stogas-sigstore", "stogas-core", "stogas", "stogas-cli")
 # Each npm package's archive name and the path of its WebAssembly inside the package.
-NPM_MODULES = (("stogas", "pkg/browser/stogas_bg.wasm"), ("stogas-sev-snp", "pkg/browser/stogas_sev_snp_bg.wasm"), ("stogas-sigstore", "pkg/browser/stogas_sigstore_bg.wasm"))
+NPM_MODULES = (
+    ("stogas", "pkg/browser/stogas_bg.wasm"),
+    ("stogas-sev-snp", "pkg/browser/stogas_sev_snp_bg.wasm"),
+    ("stogas-sigstore", "pkg/browser/stogas_sigstore_bg.wasm"),
+)
 # crates.io reads a crate's keywords and categories from its archive's Cargo.toml, and its
 # publish.rs refuses more than 5 of either, a keyword over 20 bytes or of another form, and a
 # category missing from https://crates.io/api/v1/category_slugs, as listed on November 5, 2026.
 CRATE_KEYWORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_+-]*\Z")
-CRATE_CATEGORIES = frozenset(Path(__file__).with_name("crates-io-category-slugs.txt").read_text().split())
+CRATE_CATEGORIES = frozenset(
+    Path(__file__).with_name("crates-io-category-slugs.txt").read_text().split()
+)
 
 
 def attempt(name, action):
@@ -77,11 +96,21 @@ def required_checks(targets, preview=False):
 
 def check_qualification(report, manifest_sha256, targets, version):
     """Return whether the report qualifies a preview, which only a pre-release version may be."""
-    if set(report) != {"schema", "environment", "manifest_sha256", "checks"} or report["schema"] != "stogas.sdk-qualification.v1" or report["environment"] != "prod" or report["manifest_sha256"] != manifest_sha256:
+    if (
+        set(report) != {"schema", "environment", "manifest_sha256", "checks"}
+        or report["schema"] != "stogas.sdk-qualification.v1"
+        or report["environment"] != "prod"
+        or report["manifest_sha256"] != manifest_sha256
+    ):
         raise ValueError("Qualification does not identify this production artifact set")
     found = set()
     for check in report["checks"]:
-        if set(check) != {"platform", "package", "case", "runtime", "outcome"} or check["outcome"] != "passed" or not isinstance(check["runtime"], str) or not check["runtime"].strip():
+        if (
+            set(check) != {"platform", "package", "case", "runtime", "outcome"}
+            or check["outcome"] != "passed"
+            or not isinstance(check["runtime"], str)
+            or not check["runtime"].strip()
+        ):
             raise ValueError("Every required qualification must have a recorded runtime and pass")
         identity = (check["platform"], check["package"], check["case"])
         if identity in found:
@@ -101,12 +130,23 @@ def check_release(directory, *, reports=True):
     manifest and whether its qualification makes it a preview."""
     directory = Path(directory)
     manifest = read_document(directory / "release-manifest.json")
-    if set(manifest) != {"schema", "environment", "version", "source", "targets", "artifacts"} or manifest["schema"] != "stogas.sdk-release.v1" or manifest["environment"] != "prod":
+    if (
+        set(manifest) != {"schema", "environment", "version", "source", "targets", "artifacts"}
+        or manifest["schema"] != "stogas.sdk-release.v1"
+        or manifest["environment"] != "prod"
+    ):
         raise ValueError("Invalid production release manifest")
-    if not isinstance(manifest["version"], str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", manifest["version"]):
+    if not isinstance(manifest["version"], str) or not re.fullmatch(
+        r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", manifest["version"]
+    ):
         raise ValueError("Invalid release version")
     identity = manifest["source"]
-    if set(identity) != {"commit", "sha256", "epoch", "dirty"} or identity["dirty"] is not False or not re.fullmatch(r"[0-9a-f]{40}", identity["commit"]) or not HEX.fullmatch(identity["sha256"]):
+    if (
+        set(identity) != {"commit", "sha256", "epoch", "dirty"}
+        or identity["dirty"] is not False
+        or not re.fullmatch(r"[0-9a-f]{40}", identity["commit"])
+        or not HEX.fullmatch(identity["sha256"])
+    ):
         raise ValueError("Release source must have an immutable production identity")
     if type(identity["epoch"]) is not int or not 315532800 <= identity["epoch"] <= 0xFFFFFFFF:
         raise ValueError("Invalid source timestamp")
@@ -114,7 +154,12 @@ def check_release(directory, *, reports=True):
     if names & (METADATA | {"release-manifest.json"}):
         raise ValueError("Artifact name collides with release metadata")
     for artifact in manifest["artifacts"]:
-        if set(artifact) != {"name", "sha256", "size"} or not HEX.fullmatch(artifact["sha256"]) or type(artifact["size"]) is not int or not 0 < artifact["size"] <= 2 * 1024**3:
+        if (
+            set(artifact) != {"name", "sha256", "size"}
+            or not HEX.fullmatch(artifact["sha256"])
+            or type(artifact["size"]) is not int
+            or not 0 < artifact["size"] <= 2 * 1024**3
+        ):
             raise ValueError("Invalid release artifact")
     present_metadata = METADATA & {path.name for path in directory.iterdir()}
     manifest_sha256 = verify_inventory(directory, manifest, present_metadata)
@@ -130,7 +175,12 @@ def check_release(directory, *, reports=True):
     check_wheel_cli(directory, targets, manifest["version"])
     if channels.IMAGE_TARGETS <= targets.keys():
         check_container(directory, manifest)
-    preview = reports and check_qualification(read_document(directory / "qualification.json"), manifest_sha256, targets, manifest["version"])
+    preview = reports and check_qualification(
+        read_document(directory / "qualification.json"),
+        manifest_sha256,
+        targets,
+        manifest["version"],
+    )
     return manifest, preview
 
 
@@ -138,9 +188,15 @@ def crate_refusals(package):
     """What crates.io would refuse in a crate's [package] table."""
     keywords, categories = package.get("keywords", []), package.get("categories", [])
     refusals = [f"{len(keywords)} keywords"] if len(keywords) > 5 else []
-    refusals += [f"keyword {keyword!r}" for keyword in keywords if len(keyword.encode()) > 20 or not CRATE_KEYWORD.match(keyword)]
+    refusals += [
+        f"keyword {keyword!r}"
+        for keyword in keywords
+        if len(keyword.encode()) > 20 or not CRATE_KEYWORD.match(keyword)
+    ]
     refusals += [f"{len(categories)} categories"] if len(categories) > 5 else []
-    refusals += [f"category {category!r}" for category in categories if category not in CRATE_CATEGORIES]
+    refusals += [
+        f"category {category!r}" for category in categories if category not in CRATE_CATEGORIES
+    ]
     return refusals
 
 
@@ -149,7 +205,9 @@ def check_crates(directory, version):
     for name in CRATES:
         path = Path(directory) / f"{name}-{version}.crate"
         with tarfile.open(path) as archive:
-            package = tomllib.loads(archive.extractfile(f"{name}-{version}/Cargo.toml").read().decode())["package"]
+            package = tomllib.loads(
+                archive.extractfile(f"{name}-{version}/Cargo.toml").read().decode()
+            )["package"]
         if refusals := crate_refusals(package):
             raise ValueError(f"crates.io would refuse {path.name}: {', '.join(refusals)}")
 
@@ -169,7 +227,12 @@ def check_wasm_debug(directory, version):
     exactly those modules with their names, and their symbol maps."""
     prefix = f"stogas-v{version}-wasm32-debug"
     modules = [(package, path, PurePosixPath(path).name) for package, path in NPM_MODULES]
-    expected = sorted([f"{prefix}/LICENSE", *(f"{prefix}/{name}{suffix}" for *_, name in modules for suffix in ("", ".symbols"))])
+    expected = sorted(
+        [
+            f"{prefix}/LICENSE",
+            *(f"{prefix}/{name}{suffix}" for *_, name in modules for suffix in ("", ".symbols")),
+        ]
+    )
     with tarfile.open(Path(directory) / f"{prefix}.tar.gz") as debug:
         if sorted(member.name for member in debug.getmembers()) != expected:
             raise ValueError(f"{prefix}.tar.gz must hold exactly {', '.join(expected)}")
@@ -178,9 +241,13 @@ def check_wasm_debug(directory, version):
                 shipped = read_member(archive, f"package/{path}")
             named = read_member(debug, f"{prefix}/{name}")
             if named == shipped or without_names(named) != shipped:
-                raise ValueError(f"{prefix}.tar.gz must hold the {name} of {package}-{version}.tgz with the function names that it leaves out")
+                raise ValueError(
+                    f"{prefix}.tar.gz must hold the {name} of {package}-{version}.tgz with the function names that it leaves out"
+                )
             if read_member(debug, f"{prefix}/{name}.symbols") != function_names(named):
-                raise ValueError(f"{prefix}.tar.gz holds a symbol map that differs from the names in {name}")
+                raise ValueError(
+                    f"{prefix}.tar.gz holds a symbol map that differs from the names in {name}"
+                )
 
 
 def check_wheel_cli(directory, targets, version):
@@ -201,9 +268,17 @@ def check_wheel_cli(directory, targets, version):
                 cli = read_member(archive, f"{prefix}/{executable}")
         name = wheel(names, target)
         with zipfile.ZipFile(Path(directory) / name) as archive:
-            scripts = [entry for entry in archive.namelist() if PurePosixPath(entry).parent.match("*.data/scripts")]
-            if [PurePosixPath(entry).name for entry in scripts] != [executable] or archive.read(scripts[0]) != cli:
-                raise ValueError(f"{name} must install exactly the CLI of {prefix} as its {executable} script")
+            scripts = [
+                entry
+                for entry in archive.namelist()
+                if PurePosixPath(entry).parent.match("*.data/scripts")
+            ]
+            if [PurePosixPath(entry).name for entry in scripts] != [executable] or archive.read(
+                scripts[0]
+            ) != cli:
+                raise ValueError(
+                    f"{name} must install exactly the CLI of {prefix} as its {executable} script"
+                )
             if archive.getinfo(scripts[0]).external_attr >> 16 & 0o111 == 0:
                 raise ValueError(f"{name} installs a {executable} script that cannot run")
 
@@ -222,11 +297,15 @@ def check_container(directory, manifest):
             architecture = item["platform"]["architecture"]
             (layer,) = json.loads(found["manifests"][item["digest"]])["layers"]
             compressed = found["blobs"][layer["digest"]]
-            tar = channels.layer(*channels.cli_files(directory, version, architecture), source["epoch"])
+            tar = channels.layer(
+                *channels.cli_files(directory, version, architecture), source["epoch"]
+            )
             if gzip.decompress(compressed) != tar:
                 raise ValueError(f"the {architecture} layer holds other files")
             layers[architecture] = (tar, compressed)
-        expected = channels.oci_archive(version, channels.image(version, source, layers), source["epoch"])
+        expected = channels.oci_archive(
+            version, channels.image(version, source, layers), source["epoch"]
+        )
     except (KeyError, IndexError, TypeError, ValueError, OSError, tarfile.TarError) as error:
         raise ValueError(f"{name} is not the image of the release's musl CLIs: {error}") from None
     if expected != data:
@@ -235,21 +314,33 @@ def check_container(directory, manifest):
 
 def check_artifact_families(names, targets, version):
     expected = {
-        *[f"{package}-{version}.tgz" for package, _ in NPM_MODULES], f"stogas-v{version}-wasm32-debug.tar.gz",
+        *[f"{package}-{version}.tgz" for package, _ in NPM_MODULES],
+        f"stogas-v{version}-wasm32-debug.tar.gz",
         *[f"{crate}-{version}.crate" for crate in CRATES],
-        f"stogas-go-v{version}.tar.gz", f"stogas-swift-v{version}.tar.gz",
+        f"stogas-go-v{version}.tar.gz",
+        f"stogas-swift-v{version}.tar.gz",
         f"stogas-xcframework-v{version}.zip",
         f"stogas-source-v{version}.tar.gz",
-        f"stogas-{version}.jar", f"stogas-{version}.pom", f"Stogas.{version}.nupkg",
-        f"stogas-android-{version}.aar", f"stogas-android-{version}.pom",
+        f"stogas-{version}.jar",
+        f"stogas-{version}.pom",
+        f"Stogas.{version}.nupkg",
+        f"stogas-android-{version}.aar",
+        f"stogas-android-{version}.pom",
         f"stogas-android-{version}.module",
-        *[f"{name}-{version}-{classifier}.jar" for name in ("stogas", "stogas-android") for classifier in ("sources", "javadoc")],
+        *[
+            f"{name}-{version}-{classifier}.jar"
+            for name in ("stogas", "stogas-android")
+            for classifier in ("sources", "javadoc")
+        ],
     }
     if channels.IMAGE_TARGETS <= targets.keys():
         expected.add(channels.container_archive(version))
     for platform, target in targets.items():
         extension = "zip" if target["os"] == "windows" else "tar.gz"
-        expected |= {f"stogas-v{version}-{platform}.{extension}", f"stogas-v{version}-{platform}-debug.{extension}"}
+        expected |= {
+            f"stogas-v{version}-{platform}.{extension}",
+            f"stogas-v{version}-{platform}-debug.{extension}",
+        }
         if "cli" in target["packages"]:
             expected.add(f"stogas-cli-v{version}-{platform}.{extension}")
         if "ruby" in target:
@@ -281,7 +372,14 @@ def combine_reports(paths, destination, manifest_sha256, targets, version):
         if report.get("manifest_sha256") != manifest_sha256 or report.get("environment") != "prod":
             raise ValueError("Cannot combine qualifications from different artifacts")
         checks.extend(report["checks"])
-    report = {"schema": "stogas.sdk-qualification.v1", "environment": "prod", "manifest_sha256": manifest_sha256, "checks": sorted(checks, key=lambda check: (check["platform"], check["package"], check["case"]))}
+    report = {
+        "schema": "stogas.sdk-qualification.v1",
+        "environment": "prod",
+        "manifest_sha256": manifest_sha256,
+        "checks": sorted(
+            checks, key=lambda check: (check["platform"], check["package"], check["case"])
+        ),
+    }
     preview = check_qualification(report, manifest_sha256, targets, version)
     write_json(destination, report)
     return preview

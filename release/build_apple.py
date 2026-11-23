@@ -14,7 +14,11 @@ from artifacts import digest, inventory, source_digest, unpack, write_json, zip_
 
 
 def build(directory):
-    if sys.platform != "darwin" or subprocess.check_output(["xcodebuild", "-version"], text=True).strip() != "Xcode 26.3\nBuild version 17C529":
+    if (
+        sys.platform != "darwin"
+        or subprocess.check_output(["xcodebuild", "-version"], text=True).strip()
+        != "Xcode 26.3\nBuild version 17C529"
+    ):
         raise ValueError("Apple bundles require macOS with Xcode 26.3 (17C529)")
     metadata = json.loads((directory / "build.json").read_text())
     source = directory / "source"
@@ -38,19 +42,29 @@ def build(directory):
         for platform, target in sorted(apple.items()):
             shard = directory / platform
             description = json.loads((shard / f"{platform}.json").read_text())
-            actual = inventory(shard, [entry["name"] for entry in description["artifacts"]] + [f"{platform}.json"])
-            if [entry for entry in actual if entry["name"] != f"{platform}.json"] != description["artifacts"]:
+            actual = inventory(
+                shard, [entry["name"] for entry in description["artifacts"]] + [f"{platform}.json"]
+            )
+            if [entry for entry in actual if entry["name"] != f"{platform}.json"] != description[
+                "artifacts"
+            ]:
                 raise ValueError("Apple native artifact changed before framework assembly")
             unpack(shard / f"stogas-v{version}-{platform}.tar.gz", work / platform)
             group = target["os"] + ("-simulator" if target.get("simulator") else "")
-            groups.setdefault(group, []).append(work / platform / f"stogas-v{version}-{platform}/libstogas_ffi.a")
+            groups.setdefault(group, []).append(
+                work / platform / f"stogas-v{version}-{platform}/libstogas_ffi.a"
+            )
         arguments = ["xcodebuild", "-create-xcframework"]
         for group, libraries in sorted(groups.items()):
             library = work / group / "libstogas_ffi.a"
             library.parent.mkdir()
             # A fat library combines architectures only within one platform.
             # iOS device and simulator slices remain separate XCFramework entries.
-            subprocess.run(["xcrun", "lipo", "-create", *map(str, libraries), "-output", str(library)], check=True, env={**os.environ, "ZERO_AR_DATE": "1"})
+            subprocess.run(
+                ["xcrun", "lipo", "-create", *map(str, libraries), "-output", str(library)],
+                check=True,
+                env={**os.environ, "ZERO_AR_DATE": "1"},
+            )
             arguments += ["-library", str(library), "-headers", str(headers)]
         framework = work / "CStogas.xcframework"
         subprocess.run([*arguments, "-output", str(framework)], check=True)
@@ -58,10 +72,21 @@ def build(directory):
         destination.mkdir()
         archive = destination / f"stogas-xcframework-v{version}.zip"
         zip_archive(archive, framework, metadata["source"]["epoch"], framework.name)
-        write_json(destination / "apple.json", {
-            "schema": "stogas.sdk-build.v1", "platform": "apple", "environment": "prod",
-            "artifacts": [{"name": archive.name, "size": archive.stat().st_size, "sha256": digest(archive)}],
-        })
+        write_json(
+            destination / "apple.json",
+            {
+                "schema": "stogas.sdk-build.v1",
+                "platform": "apple",
+                "environment": "prod",
+                "artifacts": [
+                    {
+                        "name": archive.name,
+                        "size": archive.stat().st_size,
+                        "sha256": digest(archive),
+                    }
+                ],
+            },
+        )
 
 
 if __name__ == "__main__":

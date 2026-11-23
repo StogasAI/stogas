@@ -23,7 +23,7 @@ def normalize_wheel(tree, source):
 
     def portable_refs(value):
         if isinstance(value, str) and value.startswith(prefix):
-            return "path+file:///stogas/" + value[len(prefix):]
+            return "path+file:///stogas/" + value[len(prefix) :]
         if isinstance(value, list):
             return [portable_refs(item) for item in value]
         if isinstance(value, dict):
@@ -32,7 +32,12 @@ def normalize_wheel(tree, source):
 
     for path in tree.glob("*.dist-info/sboms/*.cyclonedx.json"):
         value = portable_refs(json.loads(path.read_text()))
-        path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False) + "\n")
+        path.write_text(
+            json.dumps(
+                value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+            )
+            + "\n"
+        )
 
 
 def normalize_xcframework(framework):

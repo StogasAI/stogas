@@ -20,7 +20,9 @@ HOMEPAGE = "https://stogas.ai"
 # Homebrew's limit is 80 characters, with no leading article and no final period.
 DESCRIPTION = "Verified local endpoint, sign-up and offline checks for the Stogas AI gateway"
 IMAGE = "ghcr.io/stogasai/stogas"
-VERSION = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?\Z")
+VERSION = re.compile(
+    r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?\Z"
+)
 # Every macOS that the release supports is Ventura or later.
 MACOS = "ventura"
 # A container's user when it names none: distroless's nonroot.
@@ -44,7 +46,11 @@ def precedence(version):
     core = (int(major), int(minor), int(patch))
     if pre is None:
         return core, 1, ()
-    return core, 0, tuple((0, int(part), "") if part.isdigit() else (1, 0, part) for part in pre.split("."))
+    return (
+        core,
+        0,
+        tuple((0, int(part), "") if part.isdigit() else (1, 0, part) for part in pre.split(".")),
+    )
 
 
 def preview(version):
@@ -55,8 +61,11 @@ def offered(releases):
     """The version that package managers offer, from GitHub's releases: the newest full release,
     or before the first one, the newest preview. A rerun for an older release changes nothing."""
     versions = [
-        release["tag_name"][1:] for release in releases
-        if not release["draft"] and release["tag_name"].startswith("v") and VERSION.fullmatch(release["tag_name"][1:])
+        release["tag_name"][1:]
+        for release in releases
+        if not release["draft"]
+        and release["tag_name"].startswith("v")
+        and VERSION.fullmatch(release["tag_name"][1:])
     ]
     full = [version for version in versions if not preview(version)]
     return max(full or versions, key=precedence, default=None)
@@ -76,9 +85,11 @@ def formula(manifest):
     """Homebrew unpacks the archive into its single directory, where the CLI is, and reads the
     version from the archive's name. The macOS requirement stays inside `on_macos`: Homebrew on
     Linux refuses a formula that names one anywhere else."""
+
     def files(platform):
         url, sha256 = archive(manifest, platform, "tar.gz")
         return f'      url "{url}"\n      sha256 "{sha256}"\n'
+
     return (
         f"# Generated from each {REPOSITORY} release; edits here are overwritten.\n"
         "class Stogas < Formula\n"
@@ -119,17 +130,25 @@ def formula(manifest):
 
 def scoop(manifest):
     version = manifest["version"]
+
     def files(platform):
         url, sha256 = archive(manifest, platform, "zip")
         return {"url": url, "hash": sha256, "extract_dir": f"stogas-cli-v{version}-{platform}"}
-    return json.dumps({
-        "version": version,
-        "description": DESCRIPTION,
-        "homepage": HOMEPAGE,
-        "license": "Apache-2.0",
-        "architecture": {"64bit": files("windows-amd64"), "arm64": files("windows-arm64")},
-        "bin": "stogas.exe",
-    }, indent=4) + "\n"
+
+    return (
+        json.dumps(
+            {
+                "version": version,
+                "description": DESCRIPTION,
+                "homepage": HOMEPAGE,
+                "license": "Apache-2.0",
+                "architecture": {"64bit": files("windows-amd64"), "arm64": files("windows-arm64")},
+                "bin": "stogas.exe",
+            },
+            indent=4,
+        )
+        + "\n"
+    )
 
 
 # The release forms whose pkgver pacman orders as Semantic Versioning does. vercmp ranks a version
@@ -150,7 +169,10 @@ def aur_version(version):
 def pkgbuild(manifest, pkgrel=1):
     """An AUR package of the glibc CLI, kept byte for byte as released: makepkg neither strips it
     nor splits its debug information."""
-    sources = {arch: archive(manifest, platform, "tar.gz") for arch, platform in (("x86_64", "linux-amd64"), ("aarch64", "linux-arm64"))}
+    sources = {
+        arch: archive(manifest, platform, "tar.gz")
+        for arch, platform in (("x86_64", "linux-amd64"), ("aarch64", "linux-arm64"))
+    }
     return (
         "# Maintainer: Stogas <devops@stogas.ai>\n"
         f"# Generated from each {REPOSITORY} release; edits here are overwritten.\n"
@@ -165,7 +187,10 @@ def pkgbuild(manifest, pkgrel=1):
         "provides=('stogas')\n"
         "conflicts=('stogas')\n"
         "options=('!strip' '!debug')\n"
-        + "".join(f"source_{arch}=('{url}')\nsha256sums_{arch}=('{sha256}')\n" for arch, (url, sha256) in sources.items())
+        + "".join(
+            f"source_{arch}=('{url}')\nsha256sums_{arch}=('{sha256}')\n"
+            for arch, (url, sha256) in sources.items()
+        )
         + "\n"
         "package() {\n"
         '\tinstall -Dm755 stogas-cli-v*/stogas "$pkgdir/usr/bin/stogas"\n'
@@ -201,7 +226,11 @@ def srcinfo(manifest, pkgrel=1):
 def pkgrel(current, manifest):
     """The pkgrel for this release: 1 for a new version, the same while nothing changes, and one
     more when the package changes without a new version."""
-    fields = dict(line.strip().split(" = ", 1) for line in current.splitlines() if " = " in line) if current else {}
+    fields = (
+        dict(line.strip().split(" = ", 1) for line in current.splitlines() if " = " in line)
+        if current
+        else {}
+    )
     if fields.get("pkgver") != aur_version(manifest["version"]):
         return 1
     release = int(fields["pkgrel"])
@@ -216,11 +245,13 @@ def cli_files(packages, version, architecture):
     """The static musl CLI and its license from the release's CLI archive for `architecture`."""
     name = f"stogas-cli-v{version}-linux-musl-{architecture}"
     with tarfile.open(Path(packages) / f"{name}.tar.gz") as archive:
+
         def read(member):
             entry = archive.getmember(f"{name}/{member}")
             if not entry.isfile():
                 raise ValueError(f"{name}/{member} is not a file")
             return archive.extractfile(entry).read()
+
         return read("stogas"), read("LICENSE")
 
 
@@ -229,6 +260,7 @@ def layer(cli, license_text, epoch):
     /usr/local/bin, its license, and a /tmp that every user can write."""
     data = io.BytesIO()
     with tarfile.open(fileobj=data, mode="w", format=tarfile.PAX_FORMAT) as tar:
+
         def add(name, mode, content=None):
             entry = tarfile.TarInfo(name)
             entry.mtime = epoch
@@ -240,8 +272,16 @@ def layer(cli, license_text, epoch):
             else:
                 entry.size = len(content)
                 tar.addfile(entry, io.BytesIO(content))
+
         add("tmp/", 0o1777)
-        for directory in ("usr/", "usr/local/", "usr/local/bin/", "usr/local/share/", "usr/local/share/doc/", "usr/local/share/doc/stogas/"):
+        for directory in (
+            "usr/",
+            "usr/local/",
+            "usr/local/bin/",
+            "usr/local/share/",
+            "usr/local/share/doc/",
+            "usr/local/share/doc/stogas/",
+        ):
             add(directory, 0o755)
         add("usr/local/bin/stogas", 0o755, cli)
         add("usr/local/share/doc/stogas/LICENSE", 0o644, license_text)
@@ -250,7 +290,9 @@ def layer(cli, license_text, epoch):
 
 def compress(tar):
     compressed = io.BytesIO()
-    with gzip.GzipFile(fileobj=compressed, filename="", mode="wb", mtime=0, compresslevel=9) as output:
+    with gzip.GzipFile(
+        fileobj=compressed, filename="", mode="wb", mtime=0, compresslevel=9
+    ) as output:
         output.write(tar)
     return compressed.getvalue()
 
@@ -282,53 +324,90 @@ def image(version, source, layers):
     platforms = []
     for architecture, variant in ARCHITECTURES:
         tar, compressed = layers[architecture]
-        platform = {"architecture": architecture, "os": "linux", **({"variant": variant} if variant else {})}
-        config = _json({
-            **platform,
-            "config": {
-                "Entrypoint": ["/usr/local/bin/stogas"],
-                "Env": ["PATH=/usr/local/bin"],
-                "Labels": labels,
-                "User": f"{NONROOT}:{NONROOT}",
-                "WorkingDir": "/tmp",
-            },
-            "created": created,
-            "history": [{"created": created, "created_by": f"stogas release v{version}"}],
-            "rootfs": {"diff_ids": [_blob(tar)], "type": "layers"},
-        })
-        image_manifest = _json({
-            "config": {"digest": _blob(config), "mediaType": OCI_CONFIG, "size": len(config)},
-            "layers": [{"digest": _blob(compressed), "mediaType": OCI_LAYER, "size": len(compressed)}],
-            "mediaType": OCI_MANIFEST,
-            "schemaVersion": 2,
-        })
+        platform = {
+            "architecture": architecture,
+            "os": "linux",
+            **({"variant": variant} if variant else {}),
+        }
+        config = _json(
+            {
+                **platform,
+                "config": {
+                    "Entrypoint": ["/usr/local/bin/stogas"],
+                    "Env": ["PATH=/usr/local/bin"],
+                    "Labels": labels,
+                    "User": f"{NONROOT}:{NONROOT}",
+                    "WorkingDir": "/tmp",
+                },
+                "created": created,
+                "history": [{"created": created, "created_by": f"stogas release v{version}"}],
+                "rootfs": {"diff_ids": [_blob(tar)], "type": "layers"},
+            }
+        )
+        image_manifest = _json(
+            {
+                "config": {"digest": _blob(config), "mediaType": OCI_CONFIG, "size": len(config)},
+                "layers": [
+                    {"digest": _blob(compressed), "mediaType": OCI_LAYER, "size": len(compressed)}
+                ],
+                "mediaType": OCI_MANIFEST,
+                "schemaVersion": 2,
+            }
+        )
         blobs[_blob(config)] = config
         blobs[_blob(compressed)] = compressed
-        platforms.append({"digest": _blob(image_manifest), "mediaType": OCI_MANIFEST, "platform": platform, "size": len(image_manifest), "manifest": image_manifest})
-    index = _json({
-        "annotations": labels,
-        "manifests": [{key: value for key, value in item.items() if key != "manifest"} for item in platforms],
-        "mediaType": OCI_INDEX,
-        "schemaVersion": 2,
-    })
-    return {"index": index, "manifests": {item["digest"]: item["manifest"] for item in platforms}, "blobs": blobs}
+        platforms.append(
+            {
+                "digest": _blob(image_manifest),
+                "mediaType": OCI_MANIFEST,
+                "platform": platform,
+                "size": len(image_manifest),
+                "manifest": image_manifest,
+            }
+        )
+    index = _json(
+        {
+            "annotations": labels,
+            "manifests": [
+                {key: value for key, value in item.items() if key != "manifest"}
+                for item in platforms
+            ],
+            "mediaType": OCI_INDEX,
+            "schemaVersion": 2,
+        }
+    )
+    return {
+        "index": index,
+        "manifests": {item["digest"]: item["manifest"] for item in platforms},
+        "blobs": blobs,
+    }
 
 
 def oci_archive(version, built, epoch):
     """The image as an OCI image layout in one tar, which `skopeo copy oci-archive:`, `crane push`,
     `podman load` and `docker load` read. Its index names the image index, which is the digest that
     the registry serves."""
-    layout = _json({
-        "manifests": [{
-            "annotations": {"io.containerd.image.name": f"{IMAGE}:{version}", "org.opencontainers.image.ref.name": version},
-            "digest": _blob(built["index"]), "mediaType": OCI_INDEX, "size": len(built["index"]),
-        }],
-        "mediaType": OCI_INDEX,
-        "schemaVersion": 2,
-    })
+    layout = _json(
+        {
+            "manifests": [
+                {
+                    "annotations": {
+                        "io.containerd.image.name": f"{IMAGE}:{version}",
+                        "org.opencontainers.image.ref.name": version,
+                    },
+                    "digest": _blob(built["index"]),
+                    "mediaType": OCI_INDEX,
+                    "size": len(built["index"]),
+                }
+            ],
+            "mediaType": OCI_INDEX,
+            "schemaVersion": 2,
+        }
+    )
     blobs = {_blob(built["index"]): built["index"], **built["manifests"], **built["blobs"]}
     data = io.BytesIO()
     with tarfile.open(fileobj=data, mode="w", format=tarfile.PAX_FORMAT) as tar:
+
         def add(name, content=None):
             entry = tarfile.TarInfo(name)
             entry.mtime = epoch
@@ -339,6 +418,7 @@ def oci_archive(version, built, epoch):
             else:
                 entry.size, entry.mode = len(content), 0o644
                 tar.addfile(entry, io.BytesIO(content))
+
         add("blobs/")
         add("blobs/sha256/")
         for name in sorted(blobs):
@@ -358,18 +438,28 @@ def read_oci_archive(data):
                 files[entry.name] = tar.extractfile(entry).read()
             elif not entry.isdir():
                 raise ValueError(f"The image archive holds {entry.name}, which is not a file")
+
     def blob(descriptor, media_type):
         content = files.get(f"blobs/sha256/{descriptor['digest'].removeprefix('sha256:')}")
-        if descriptor.get("mediaType") != media_type or content is None or _blob(content) != descriptor["digest"] or len(content) != descriptor["size"]:
+        if (
+            descriptor.get("mediaType") != media_type
+            or content is None
+            or _blob(content) != descriptor["digest"]
+            or len(content) != descriptor["size"]
+        ):
             raise ValueError(f"The image archive lacks the {media_type} {descriptor['digest']}")
         return content
+
     (top,) = json.loads(files["index.json"])["manifests"]
     index = blob(top, OCI_INDEX)
     manifests, blobs = {}, {}
     for item in json.loads(index)["manifests"]:
         manifests[item["digest"]] = blob(item, OCI_MANIFEST)
         image_manifest = json.loads(manifests[item["digest"]])
-        for descriptor, media_type in ((image_manifest["config"], OCI_CONFIG), *((layer_descriptor, OCI_LAYER) for layer_descriptor in image_manifest["layers"])):
+        for descriptor, media_type in (
+            (image_manifest["config"], OCI_CONFIG),
+            *((layer_descriptor, OCI_LAYER) for layer_descriptor in image_manifest["layers"]),
+        ):
             blobs[descriptor["digest"]] = blob(descriptor, media_type)
     return {"index": index, "manifests": manifests, "blobs": blobs}
 
@@ -381,8 +471,12 @@ def _created(epoch):
 if __name__ == "__main__":
     # Packaging writes the image in its pinned packer image, so every machine compresses the
     # layers with the same zlib.
-    parser = argparse.ArgumentParser(description="Write the container image of a release's static musl CLIs")
-    parser.add_argument("packages", type=Path, help="A directory that holds both linux-musl CLI archives")
+    parser = argparse.ArgumentParser(
+        description="Write the container image of a release's static musl CLIs"
+    )
+    parser.add_argument(
+        "packages", type=Path, help="A directory that holds both linux-musl CLI archives"
+    )
     parser.add_argument("destination", type=Path)
     parser.add_argument("--version", required=True)
     parser.add_argument("--commit", required=True)

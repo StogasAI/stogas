@@ -8,7 +8,22 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from artifacts import MANIFEST, canonical, digest, function_names, inventory, source_digest, tar_gz, unpack, verify_inventory, verify_source, without_names, write_json, write_record, zip_archive
+from artifacts import (
+    MANIFEST,
+    canonical,
+    digest,
+    function_names,
+    inventory,
+    source_digest,
+    tar_gz,
+    unpack,
+    verify_inventory,
+    verify_source,
+    without_names,
+    write_json,
+    write_record,
+    zip_archive,
+)
 
 
 def wasm_section(identifier, payload):
@@ -21,7 +36,12 @@ def wasm_custom(name, payload):
 
 def wasm_code(count):
     """A module of `count` functions that return nothing, which Node accepts."""
-    return b"\0asm\x01\0\0\0" + wasm_section(1, b"\x01\x60\x00\x00") + wasm_section(3, bytes([count]) + b"\x00" * count) + wasm_section(10, bytes([count]) + b"\x02\x00\x0b" * count)
+    return (
+        b"\0asm\x01\0\0\0"
+        + wasm_section(1, b"\x01\x60\x00\x00")
+        + wasm_section(3, bytes([count]) + b"\x00" * count)
+        + wasm_section(10, bytes([count]) + b"\x02\x00\x0b" * count)
+    )
 
 
 WASM_PRODUCERS = wasm_custom("producers", b"\x00")
@@ -29,13 +49,22 @@ WASM_PRODUCERS = wasm_custom("producers", b"\x00")
 
 def wasm_names(*functions):
     """A name section with a module name, the given function names and empty local names."""
-    names = bytes([len(functions)]) + b"".join(bytes([index, len(name)]) + name.encode() for index, name in enumerate(functions))
-    return wasm_custom("name", b"\x00\x05\x04demo" + wasm_section(1, names) + b"\x02\x03\x01\x00\x00")
+    names = bytes([len(functions)]) + b"".join(
+        bytes([index, len(name)]) + name.encode() for index, name in enumerate(functions)
+    )
+    return wasm_custom(
+        "name", b"\x00\x05\x04demo" + wasm_section(1, names) + b"\x02\x03\x01\x00\x00"
+    )
 
 
 def named_wasm(*functions):
     """A module of one function for each name, with its names and DWARF, then a producers section."""
-    return wasm_code(len(functions)) + wasm_names(*functions) + wasm_custom(".debug_info", b"dwarf") + WASM_PRODUCERS
+    return (
+        wasm_code(len(functions))
+        + wasm_names(*functions)
+        + wasm_custom(".debug_info", b"dwarf")
+        + WASM_PRODUCERS
+    )
 
 
 class WasmTests(unittest.TestCase):
@@ -45,7 +74,9 @@ class WasmTests(unittest.TestCase):
 
     def test_symbol_maps_number_each_named_function(self):
         self.assertEqual(function_names(named_wasm("run")), b"0:run\n")
-        self.assertEqual(function_names(named_wasm("run", "stogas::verify")), b"0:run\n1:stogas::verify\n")
+        self.assertEqual(
+            function_names(named_wasm("run", "stogas::verify")), b"0:run\n1:stogas::verify\n"
+        )
         self.assertEqual(function_names(wasm_code(1)), b"")
 
     def test_refuses_names_before_code_and_malformed_modules(self):
@@ -64,9 +95,12 @@ class WasmTests(unittest.TestCase):
         names = {
             "line break": named_wasm("run\n"),
             "truncated name": wasm_code(1) + wasm_custom("name", b"\x01\x04\x01\x00\x09run"),
-            "bytes after the names": wasm_code(1) + wasm_custom("name", b"\x01\x07\x01\x00\x03run\x00"),
-            "subsection past its section": wasm_code(1) + wasm_custom("name", b"\x02\x09\x01\x00\x00"),
-            "index over 32 bits": wasm_code(1) + wasm_custom("name", b"\x01\x0a\x01\xff\xff\xff\xff\x7f\x03run"),
+            "bytes after the names": wasm_code(1)
+            + wasm_custom("name", b"\x01\x07\x01\x00\x03run\x00"),
+            "subsection past its section": wasm_code(1)
+            + wasm_custom("name", b"\x02\x09\x01\x00\x00"),
+            "index over 32 bits": wasm_code(1)
+            + wasm_custom("name", b"\x01\x0a\x01\xff\xff\xff\xff\x7f\x03run"),
         }
         for case, module in names.items():
             with self.subTest(case=case), self.assertRaises(ValueError):
@@ -75,7 +109,13 @@ class WasmTests(unittest.TestCase):
 
 class ArtifactsTests(unittest.TestCase):
     def test_wheel_record_cannot_reference_files_outside_its_inventory(self):
-        for entries in ("../outside,,\n", "/outside,,\n", "module.py,,\nmodule.py,,\n", "", "module.py,,\nsdk.data/data/extra,,\n"):
+        for entries in (
+            "../outside,,\n",
+            "/outside,,\n",
+            "module.py,,\nmodule.py,,\n",
+            "",
+            "module.py,,\nsdk.data/data/extra,,\n",
+        ):
             with self.subTest(entries=entries), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 tree = root / "wheel"
@@ -94,13 +134,18 @@ class ArtifactsTests(unittest.TestCase):
             (tree / "sdk.data/scripts").mkdir(parents=True)
             (tree / "module.py").write_text("pass\n")
             (tree / "sdk.data/scripts/sdk").write_bytes(b"\x7fELF")
-            (tree / "sdk.dist-info/RECORD").write_text("module.py,sha256=old,1\nsdk.dist-info/RECORD,,\n")
+            (tree / "sdk.dist-info/RECORD").write_text(
+                "module.py,sha256=old,1\nsdk.dist-info/RECORD,,\n"
+            )
             write_record(tree)
-            self.assertEqual((tree / "sdk.dist-info/RECORD").read_text(), (
-                "module.py,sha256=n1bnYdeb_bNDBKASWGywTRa0Ne9hMAkal3AuVZJgovI,5\n"
-                "sdk.data/scripts/sdk,sha256=O9u0_oOXzSuEJDCznM_wGoZjx1GUXvXpoJ4mf7ix01k,4\n"
-                "sdk.dist-info/RECORD,,\n"
-            ))
+            self.assertEqual(
+                (tree / "sdk.dist-info/RECORD").read_text(),
+                (
+                    "module.py,sha256=n1bnYdeb_bNDBKASWGywTRa0Ne9hMAkal3AuVZJgovI,5\n"
+                    "sdk.data/scripts/sdk,sha256=O9u0_oOXzSuEJDCznM_wGoZjx1GUXvXpoJ4mf7ix01k,4\n"
+                    "sdk.dist-info/RECORD,,\n"
+                ),
+            )
 
     def test_source_digest_matches_the_shared_release_identity(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -112,7 +157,10 @@ class ArtifactsTests(unittest.TestCase):
             (root / "dir.txt").write_bytes(b"")
             (root / "dir" / "z").write_bytes(b"payload\0\xff")
             # The same value the gateway and catalog release tooling compute.
-            self.assertEqual(source_digest(root), "887904a1ae03e4449f05e05fb147314cf9c8c428d3eec00179e0d7f56fc3a853")
+            self.assertEqual(
+                source_digest(root),
+                "887904a1ae03e4449f05e05fb147314cf9c8c428d3eec00179e0d7f56fc3a853",
+            )
 
     def test_consumer_source_cannot_drift_from_packaged_source(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -161,12 +209,29 @@ class ArtifactsTests(unittest.TestCase):
                     self.assertEqual((actual / "a").stat().st_mode & 0o777, 0o755)
 
     def test_extraction_rejects_traversal_links_duplicates_and_total_expansion(self):
-        for attack in ("../escape", "a/../escape", "/escape", "a\\escape", "C:/escape", "./escape", "a//escape", "duplicate", "link", "oversize"):
+        for attack in (
+            "../escape",
+            "a/../escape",
+            "/escape",
+            "a\\escape",
+            "C:/escape",
+            "./escape",
+            "a//escape",
+            "duplicate",
+            "link",
+            "oversize",
+        ):
             with self.subTest(attack=attack), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 archive = root / "input.tar.gz"
                 with tarfile.open(archive, "w:gz") as output:
-                    names = ["same", "same"] if attack == "duplicate" else ["first", "second"] if attack == "oversize" else [attack]
+                    names = (
+                        ["same", "same"]
+                        if attack == "duplicate"
+                        else ["first", "second"]
+                        if attack == "oversize"
+                        else [attack]
+                    )
                     for name in names:
                         member = tarfile.TarInfo(name)
                         member.size = 4
@@ -208,7 +273,9 @@ class ArtifactsTests(unittest.TestCase):
                 verify_inventory(root, manifest)
 
     def test_canonical_json_matches_the_supported_rfc8785_subset(self):
-        self.assertEqual(canonical({"z": [True, None, "é"], "a": 1}), b'{"a":1,"z":[true,null,"\xc3\xa9"]}')
+        self.assertEqual(
+            canonical({"z": [True, None, "é"], "a": 1}), b'{"a":1,"z":[true,null,"\xc3\xa9"]}'
+        )
         for value in (1.5, float("nan"), 2**53, {"é": 1}):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 canonical(value)

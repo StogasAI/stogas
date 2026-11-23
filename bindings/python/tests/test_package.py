@@ -21,9 +21,14 @@ from stogas import (
 )
 
 # Local offline trust configuration, never accepted by the managed transport.
-_root = json.loads((Path(__file__).resolve().parents[3] / "tests/fixtures/hardware-session-v1.json").read_text())["root"]
+_root = json.loads(
+    (Path(__file__).resolve().parents[3] / "tests/fixtures/hardware-session-v1.json").read_text()
+)["root"]
 ROOT = {"root": _root}
-SCOPE = {"first_indexes": {"log2025-1.rekor.sigstore.dev": 1}, "opened_from": "2026-10-31T00:00:00Z"}
+SCOPE = {
+    "first_indexes": {"log2025-1.rekor.sigstore.dev": 1},
+    "opened_from": "2026-10-31T00:00:00Z",
+}
 
 
 class PackageTests(unittest.TestCase):
@@ -36,9 +41,9 @@ class PackageTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "invalid_evidence")
         # A rejected candidate cannot leave a forged snapshot behind.
         with self.assertRaises(VerificationError):
-            verifier.refresh(b'{}')
+            verifier.refresh(b"{}")
         with self.assertRaises(VerificationError):
-            verifier.verify_boot_archive(b'{}', b'{}')
+            verifier.verify_boot_archive(b"{}", b"{}")
 
     def test_content_digests_hold_meaning_and_refuse_what_a_receipt_cannot(self):
         self.assertEqual(len(request_digest(b'{"model":"m"}')), 64)
@@ -47,7 +52,9 @@ class PackageTests(unittest.TestCase):
             request_digest(b'{ "b": 1, "a": [1.0, "x"], "encryption_keys": {"default": "k"} }'),
             request_digest(b'{"a":[1,"x"],"b":1}'),
         )
-        self.assertEqual(response_digest(b'{"id":"r","stogas":{"receipt":{}}}'), response_digest(b'{"id":"r"}'))
+        self.assertEqual(
+            response_digest(b'{"id":"r","stogas":{"receipt":{}}}'), response_digest(b'{"id":"r"}')
+        )
         for body, code in (
             (b'{"seed":9007199254740993}', "inexact_integer"),
             (b"[]", "invalid_content"),
@@ -60,14 +67,17 @@ class PackageTests(unittest.TestCase):
 
     def test_a_stream_reads_into_the_response_its_receipt_signs(self):
         chunk = lambda text: (
-            'data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"%s"}}]}\n\n' % text
+            'data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"%s"}}]}\n\n'
+            % text
         ).encode()
         reader = StreamContent()
-        for event in (b": STOGAS PROCESSING\n\n", chunk("Hel"), chunk("lo"), b'data: [DONE]\n\n'):
+        for event in (b": STOGAS PROCESSING\n\n", chunk("Hel"), chunk("lo"), b"data: [DONE]\n\n"):
             reader.push(event)
         self.assertEqual(
             reader.digest(),
-            response_digest(b'{"object":"chat.completion","choices":[{"index":0,"message":{"content":"Hello"}}]}'),
+            response_digest(
+                b'{"object":"chat.completion","choices":[{"index":0,"message":{"content":"Hello"}}]}'
+            ),
         )
         with self.assertRaises(ValueError):
             reader.digest()
@@ -105,7 +115,7 @@ class PackageTests(unittest.TestCase):
 
     def test_evidence_requires_immutable_bytes(self):
         verifier = EvidenceVerifier(**ROOT)
-        for value in (bytearray(b'{}'), memoryview(b'{}'), '{}'):
+        for value in (bytearray(b"{}"), memoryview(b"{}"), "{}"):
             with self.subTest(value=type(value)), self.assertRaises(TypeError):
                 verifier.refresh(value)
 
@@ -144,18 +154,30 @@ class PackageTests(unittest.TestCase):
     def test_live_gateway_rejects_an_invalid_key_through_each_security_mode(self):
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         body = b'{"model":"stogas-status-monitor","messages":[{"role":"user","content":"ping"}]}'
-        headers = {"Authorization": "Bearer stogas-status-monitor-uncredentialed", "Content-Type": "application/json"}
+        headers = {
+            "Authorization": "Bearer stogas-status-monitor-uncredentialed",
+            "Content-Type": "application/json",
+        }
         for security in ("tls", "e2ee"):
             with self.subTest(security=security):
                 transport = Transport(environment=os.environ["STOGAS_LIVE"], security=security)
                 try:
-                    self.assertEqual(urllib.parse.urlsplit(transport.base_url).hostname, "127.0.0.1")
-                    request = urllib.request.Request(transport.base_url + "/chat/completions", data=body, headers=headers, method="POST")
+                    self.assertEqual(
+                        urllib.parse.urlsplit(transport.base_url).hostname, "127.0.0.1"
+                    )
+                    request = urllib.request.Request(
+                        transport.base_url + "/chat/completions",
+                        data=body,
+                        headers=headers,
+                        method="POST",
+                    )
                     with self.assertRaises(urllib.error.HTTPError) as caught:
                         opener.open(request, timeout=30)
                     with caught.exception as response:
                         self.assertEqual(response.code, 401)
-                        self.assertEqual(json.loads(response.read())["error"]["type"], "authentication_error")
+                        self.assertEqual(
+                            json.loads(response.read())["error"]["type"], "authentication_error"
+                        )
                     with ThreadPoolExecutor(3) as pool:
                         list(pool.map(lambda _: transport.refresh_evidence(), range(3)))
                 finally:

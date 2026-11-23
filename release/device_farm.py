@@ -15,18 +15,42 @@ REGION = "us-west-2"
 
 
 def aws(*arguments):
-    return json.loads(subprocess.check_output(["aws", "devicefarm", *arguments, "--region", REGION, "--output", "json"]))
+    return json.loads(
+        subprocess.check_output(
+            ["aws", "devicefarm", *arguments, "--region", REGION, "--output", "json"]
+        )
+    )
 
 
 def upload(project, path, kind):
-    created = aws("create-upload", "--project-arn", project, "--name", path.name, "--type", kind, "--content-type", "application/octet-stream")["upload"]
-    request = urllib.request.Request(created["url"], data=path.read_bytes(), method="PUT", headers={"Content-Type": "application/octet-stream"})
+    created = aws(
+        "create-upload",
+        "--project-arn",
+        project,
+        "--name",
+        path.name,
+        "--type",
+        kind,
+        "--content-type",
+        "application/octet-stream",
+    )["upload"]
+    request = urllib.request.Request(
+        created["url"],
+        data=path.read_bytes(),
+        method="PUT",
+        headers={"Content-Type": "application/octet-stream"},
+    )
     with urllib.request.urlopen(request, timeout=600):
         pass
-    while (status := aws("get-upload", "--arn", created["arn"])["upload"])["status"] in {"INITIALIZED", "PROCESSING"}:
+    while (status := aws("get-upload", "--arn", created["arn"])["upload"])["status"] in {
+        "INITIALIZED",
+        "PROCESSING",
+    }:
         time.sleep(5)
     if status["status"] != "SUCCEEDED":
-        raise ValueError(f"Device Farm rejected {path.name}: {status.get('metadata') or status.get('message')}")
+        raise ValueError(
+            f"Device Farm rejected {path.name}: {status.get('metadata') or status.get('message')}"
+        )
     return created["arn"]
 
 
@@ -41,14 +65,28 @@ def results(arn):
                 if test["result"] == "PASSED":
                     continue
                 # Device Farm's result often omits the reason, for example when a test exits.
-                for artifact in aws("list-artifacts", "--arn", test["arn"], "--type", "FILE")["artifacts"]:
+                for artifact in aws("list-artifacts", "--arn", test["arn"], "--type", "FILE")[
+                    "artifacts"
+                ]:
                     if artifact["type"] in {"AUTOMATION_OUTPUT", "INSTRUMENTATION_OUTPUT"}:
                         with urllib.request.urlopen(artifact["url"], timeout=60) as response:
                             print(response.read(1024 * 1024).decode(errors="replace"), flush=True)
     return jobs, outcomes
 
 
-def run(project, *, platform, minimum, architecture, app, app_kind, tests, test_kind, test_type, expected):
+def run(
+    project,
+    *,
+    platform,
+    minimum,
+    architecture,
+    app,
+    app_kind,
+    tests,
+    test_kind,
+    test_type,
+    expected,
+):
     """Run `tests` against `app` on one phone with the oldest major system version that Device Farm
     offers from `minimum` on, and require exactly `expected` to pass."""
     filters = [
@@ -58,17 +96,33 @@ def run(project, *, platform, minimum, architecture, app, app_kind, tests, test_
         {"attribute": "FLEET_TYPE", "operator": "EQUALS", "values": ["PUBLIC"]},
     ]
     major = lambda device: int(device["os"].split(".")[0])
-    devices = [device for device in aws("list-devices", "--filters", json.dumps(filters))["devices"] if major(device) >= minimum and device["cpu"]["architecture"] == architecture]
+    devices = [
+        device
+        for device in aws("list-devices", "--filters", json.dumps(filters))["devices"]
+        if major(device) >= minimum and device["cpu"]["architecture"] == architecture
+    ]
     if not devices:
-        raise ValueError(f"Device Farm has no available {platform} {minimum} or later {architecture} phone")
+        raise ValueError(
+            f"Device Farm has no available {platform} {minimum} or later {architecture} phone"
+        )
     oldest = min(map(major, devices))
     phones = [device["arn"] for device in devices if major(device) == oldest]
     scheduled = aws(
-        "schedule-run", "--project-arn", project, "--name", tests.name,
-        "--app-arn", upload(project, app, app_kind),
-        "--test", json.dumps({"type": test_type, "testPackageArn": upload(project, tests, test_kind)}),
-        "--device-selection-configuration", json.dumps({"filters": [{"attribute": "ARN", "operator": "IN", "values": phones}], "maxDevices": 1}),
-        "--execution-configuration", json.dumps({"jobTimeoutMinutes": 20, "videoCapture": False}),
+        "schedule-run",
+        "--project-arn",
+        project,
+        "--name",
+        tests.name,
+        "--app-arn",
+        upload(project, app, app_kind),
+        "--test",
+        json.dumps({"type": test_type, "testPackageArn": upload(project, tests, test_kind)}),
+        "--device-selection-configuration",
+        json.dumps(
+            {"filters": [{"attribute": "ARN", "operator": "IN", "values": phones}], "maxDevices": 1}
+        ),
+        "--execution-configuration",
+        json.dumps({"jobTimeoutMinutes": 20, "videoCapture": False}),
     )["run"]
     try:
         while (result := aws("get-run", "--arn", scheduled["arn"])["run"])["status"] != "COMPLETED":
@@ -77,9 +131,21 @@ def run(project, *, platform, minimum, architecture, app, app_kind, tests, test_
         aws("stop-run", "--arn", scheduled["arn"])
         raise
     jobs, outcomes = results(scheduled["arn"])
-    print(json.dumps({"run": scheduled["arn"], "result": result["result"], "tests": outcomes}, indent=1), flush=True)
+    print(
+        json.dumps(
+            {"run": scheduled["arn"], "result": result["result"], "tests": outcomes}, indent=1
+        ),
+        flush=True,
+    )
     passed = {name for name, outcome in outcomes.items() if outcome == "PASSED"}
     if result["result"] != "PASSED" or len(jobs) != 1 or not set(expected) <= passed:
-        raise ValueError(f"Device Farm did not pass every installed-package test: {result.get('message', result['result'])}")
+        raise ValueError(
+            f"Device Farm did not pass every installed-package test: {result.get('message', result['result'])}"
+        )
     device = jobs[0]["device"]
-    return {"device": device["name"], "os": device["os"], "architecture": device["cpu"]["architecture"], "device_farm": device["arn"]}
+    return {
+        "device": device["name"],
+        "os": device["os"],
+        "architecture": device["cpu"]["architecture"],
+        "device_farm": device["arn"],
+    }

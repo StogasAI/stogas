@@ -1,0 +1,2 @@
+# One style for every Python file: the line width that Prettier and rustfmt use here.
+line-length = 100

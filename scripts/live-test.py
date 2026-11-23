@@ -36,23 +36,63 @@ def main(environment):
 
     def run(*arguments, cwd=ROOT, **variables):
         print("+", *arguments, flush=True)
-        subprocess.run([str(argument) for argument in arguments], cwd=cwd, env={**env, **variables}, check=True)
+        subprocess.run(
+            [str(argument) for argument in arguments], cwd=cwd, env={**env, **variables}, check=True
+        )
 
     def docker(image, mounts, *arguments, workdir="/work"):
-        run("docker", "run", "--rm", "--init", "--user", f"{os.getuid()}:{os.getgid()}",
-            *[part for source, path in mounts.items() for part in ("--mount", f"type=bind,source={source},target={path}")],
-            "--workdir", workdir, "--env", "HOME=/work", "--env", "DOTNET_CLI_HOME=/work", "--env", f"STOGAS_LIVE={environment}",
-            "--entrypoint", arguments[0], image, *arguments[1:])
+        run(
+            "docker",
+            "run",
+            "--rm",
+            "--init",
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
+            *[
+                part
+                for source, path in mounts.items()
+                for part in ("--mount", f"type=bind,source={source},target={path}")
+            ],
+            "--workdir",
+            workdir,
+            "--env",
+            "HOME=/work",
+            "--env",
+            "DOTNET_CLI_HOME=/work",
+            "--env",
+            f"STOGAS_LIVE={environment}",
+            "--entrypoint",
+            arguments[0],
+            image,
+            *arguments[1:],
+        )
 
     features = ["--features", "staging"] if staging else []
     cargo = ["cargo", "build", "--locked", "--target-dir", target]
     run(*cargo, "--package", "stogas-ffi", *features)
     run(*cargo, "--package", "stogas-cli", *features)
-    run(*cargo, "--profile", "wasm", "--package", "stogas-wasm", "--target", "wasm32-unknown-unknown", *features)
+    run(
+        *cargo,
+        "--profile",
+        "wasm",
+        "--package",
+        "stogas-wasm",
+        "--target",
+        "wasm32-unknown-unknown",
+        *features,
+    )
     # Staging refuses to add a library to a Swift bundle of another version, which an earlier run
     # leaves behind after a version change.
     shutil.rmtree(ROOT / "bindings/swift/CStogas.artifactbundle", ignore_errors=True)
-    run(sys.executable, "-B", "scripts/stage-native-bindings.py", "--platform", "linux-amd64", "--native-dir", native)
+    run(
+        sys.executable,
+        "-B",
+        "scripts/stage-native-bindings.py",
+        "--platform",
+        "linux-amd64",
+        "--native-dir",
+        native,
+    )
     # Go links this directory's static archive, not the shared library beside it in target.
     go_native = target / "go-native"
     go_native.mkdir(parents=True, exist_ok=True)
@@ -61,46 +101,176 @@ def main(environment):
     target.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="live-", dir=target) as temporary:
         work = Path(temporary)
-        run(sys.executable, "-I", "release/consumers/cli.py", native / "stogas", version, "tests/fixtures")
-        run("cc", "-Wall", "-Wextra", "-Werror", "-Iinclude", "release/consumers/native.c", f"-L{native}", "-lstogas_ffi", f"-Wl,-rpath,{native}", "-o", work / "native")
+        run(
+            sys.executable,
+            "-I",
+            "release/consumers/cli.py",
+            native / "stogas",
+            version,
+            "tests/fixtures",
+        )
+        run(
+            "cc",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-Iinclude",
+            "release/consumers/native.c",
+            f"-L{native}",
+            "-lstogas_ffi",
+            f"-Wl,-rpath,{native}",
+            "-o",
+            work / "native",
+        )
         run(work / "native")
-        run("go", "test", "-count=1", *(["-tags", "staging"] if staging else []), "./...", cwd=ROOT / "go", CGO_ENABLED="1", CGO_LDFLAGS=f"-L{go_native}", GOWORK="off")
+        run(
+            "go",
+            "test",
+            "-count=1",
+            *(["-tags", "staging"] if staging else []),
+            "./...",
+            cwd=ROOT / "go",
+            CGO_ENABLED="1",
+            CGO_LDFLAGS=f"-L{go_native}",
+            GOWORK="off",
+        )
         run("mvn", "-B", "-q", "-f", "bindings/java/pom.xml", "test")
         gems = {"GEM_HOME": work / "gems", "GEM_PATH": work / "gems"}
-        run("gem", "-C", "bindings/ruby", "build", "stogas.gemspec", "--output", work / "stogas.gem")
+        run(
+            "gem", "-C", "bindings/ruby", "build", "stogas.gemspec", "--output", work / "stogas.gem"
+        )
         run("gem", "install", "--no-document", work / "stogas.gem", "minitest:6.0.6", **gems)
         run("ruby", "bindings/ruby/test/transport_test.rb", **gems)
 
         python = work / "python/bin/python"
         run("uv", "venv", work / "python")
-        run("uv", "tool", "run", "--from", "maturin>=1.14,<2", "maturin", "build", "--locked", *features, "--interpreter", python,
-            "--manifest-path", "bindings/python/Cargo.toml", "--target-dir", target, "--out", work / "wheels")
+        run(
+            "uv",
+            "tool",
+            "run",
+            "--from",
+            "maturin>=1.14,<2",
+            "maturin",
+            "build",
+            "--locked",
+            *features,
+            "--interpreter",
+            python,
+            "--manifest-path",
+            "bindings/python/Cargo.toml",
+            "--target-dir",
+            target,
+            "--out",
+            work / "wheels",
+        )
         run("uv", "pip", "install", "--python", python, *(work / "wheels").glob("*.whl"))
-        run(python, "-m", "unittest", "discover", "-s", "bindings/python/tests", "-p", "test_package.py", "-v")
+        run(
+            python,
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "bindings/python/tests",
+            "-p",
+            "test_package.py",
+            "-v",
+        )
 
         source = {ROOT: "/source", work: "/work"}
-        shutil.copytree(ROOT / "bindings/dotnet/tests", work / "dotnet", ignore=shutil.ignore_patterns("bin", "obj"))
-        shutil.copyfile(ROOT / "release/consumers/dotnet/NuGet.Config", work / "dotnet/NuGet.Config")
-        docker(DOTNET, source, "dotnet", "pack", "/source/bindings/dotnet/Stogas", "--artifacts-path", "/work/dotnet-build", "-o", "/work/packages")
-        docker(DOTNET, source, "dotnet", "restore", "dotnet/Consumer.csproj", "--configfile", "dotnet/NuGet.Config")
-        docker(DOTNET, source, "dotnet", "run", "--no-restore", "--project", "dotnet/Consumer.csproj")
-        docker(SWIFT, source, "swift", "test", "--package-path", "/source/bindings/swift", "--scratch-path", "/work/swift", "-j", "4")
+        shutil.copytree(
+            ROOT / "bindings/dotnet/tests",
+            work / "dotnet",
+            ignore=shutil.ignore_patterns("bin", "obj"),
+        )
+        shutil.copyfile(
+            ROOT / "release/consumers/dotnet/NuGet.Config", work / "dotnet/NuGet.Config"
+        )
+        docker(
+            DOTNET,
+            source,
+            "dotnet",
+            "pack",
+            "/source/bindings/dotnet/Stogas",
+            "--artifacts-path",
+            "/work/dotnet-build",
+            "-o",
+            "/work/packages",
+        )
+        docker(
+            DOTNET,
+            source,
+            "dotnet",
+            "restore",
+            "dotnet/Consumer.csproj",
+            "--configfile",
+            "dotnet/NuGet.Config",
+        )
+        docker(
+            DOTNET, source, "dotnet", "run", "--no-restore", "--project", "dotnet/Consumer.csproj"
+        )
+        docker(
+            SWIFT,
+            source,
+            "swift",
+            "test",
+            "--package-path",
+            "/source/bindings/swift",
+            "--scratch-path",
+            "/work/swift",
+            "-j",
+            "4",
+        )
 
         # JavaScript runtimes load this environment's Wasm build from a package copy.
         js = work / "js"
-        run("wasm-bindgen", target / "wasm32-unknown-unknown/wasm/stogas_wasm.wasm", "--target", "web", "--remove-name-section", "--out-dir", js / "pkg/browser", "--out-name", "stogas")
+        run(
+            "wasm-bindgen",
+            target / "wasm32-unknown-unknown/wasm/stogas_wasm.wasm",
+            "--target",
+            "web",
+            "--remove-name-section",
+            "--out-dir",
+            js / "pkg/browser",
+            "--out-name",
+            "stogas",
+        )
         for name in ("bindings", "tests"):
             shutil.copytree(ROOT / name, js / name)
         shutil.copyfile(ROOT / "package.json", js / "package.json")
         (js / "node_modules").symlink_to(ROOT / "node_modules")
         run("node", "--test", "tests/node/live.test.mjs", cwd=js)
-        run("node", "--test", "--test-name-pattern", "live gateway", "tests/worker/transport.test.mjs", cwd=js)
+        run(
+            "node",
+            "--test",
+            "--test-name-pattern",
+            "live gateway",
+            "tests/worker/transport.test.mjs",
+            cwd=js,
+        )
         docker(BUN, {js: "/work"}, "bun", "test", "tests/node/live.test.mjs")
-        docker(DENO, {js: "/work"}, "deno", "test", "--allow-all", "--no-check", "tests/node/live.test.mjs")
-        (js / "tests/browser/live.config.mjs").write_text("""import {defineConfig} from '@playwright/test';
+        docker(
+            DENO,
+            {js: "/work"},
+            "deno",
+            "test",
+            "--allow-all",
+            "--no-check",
+            "tests/node/live.test.mjs",
+        )
+        (
+            js / "tests/browser/live.config.mjs"
+        ).write_text("""import {defineConfig} from '@playwright/test';
 export default defineConfig({testDir:'.',testMatch:'live.spec.ts',forbidOnly:true,retries:0,reporter:'line',projects:['chromium','firefox','webkit'].map(name=>({name,use:{browserName:name,headless:true,...(name==='webkit'?{launchOptions:{env:{...process.env,JSC_numberOfGCMarkers:'1'}}}:{})}}))});
 """)
-        run("npx", "--no-install", "playwright", "test", "--config", "tests/browser/live.config.mjs", cwd=js)
+        run(
+            "npx",
+            "--no-install",
+            "playwright",
+            "test",
+            "--config",
+            "tests/browser/live.config.mjs",
+            cwd=js,
+        )
     print(f"Every runtime reached the {environment} gateway and verified its evidence")
 
 

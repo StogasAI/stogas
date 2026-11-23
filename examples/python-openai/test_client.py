@@ -21,21 +21,30 @@ class ClientTests(unittest.TestCase):
                         pass
 
                     def do_POST(self):
-                        calls.append((
-                            self.path,
-                            self.headers.get("Authorization"),
-                            json.loads(self.rfile.read(int(self.headers["Content-Length"]))),
-                        ))
+                        calls.append(
+                            (
+                                self.path,
+                                self.headers.get("Authorization"),
+                                json.loads(self.rfile.read(int(self.headers["Content-Length"]))),
+                            )
+                        )
                         self.send_response(status)
                         self.send_header("Content-Type", "application/json")
                         self.send_header("Location", "/must-not-follow")
                         self.end_headers()
                         payload = (
-                            {"id": "chat-1", "choices": [{"index": 0, "message": {
-                                "role": "assistant", "content": "Hello"
-                            }, "finish_reason": "stop"}]}
-                            if status == 200 else
-                            {"error": {"message": "Unavailable", "type": "server_error"}}
+                            {
+                                "id": "chat-1",
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "message": {"role": "assistant", "content": "Hello"},
+                                        "finish_reason": "stop",
+                                    }
+                                ],
+                            }
+                            if status == 200
+                            else {"error": {"message": "Unavailable", "type": "server_error"}}
                         )
                         self.wfile.write(json.dumps(payload).encode())
 
@@ -43,8 +52,13 @@ class ClientTests(unittest.TestCase):
                     thread = threading.Thread(target=server.serve_forever)
                     thread.start()
                     try:
-                        with client(f"http://127.0.0.1:{server.server_port}/v1", "example-key") as api:
-                            request = {"model": "example/model", "messages": [{"role": "user", "content": "hello"}]}
+                        with client(
+                            f"http://127.0.0.1:{server.server_port}/v1", "example-key"
+                        ) as api:
+                            request = {
+                                "model": "example/model",
+                                "messages": [{"role": "user", "content": "hello"}],
+                            }
                             if status == 200:
                                 result = api.chat.completions.create(**request)
                                 self.assertEqual(result.choices[0].message.content, "Hello")
@@ -52,7 +66,9 @@ class ClientTests(unittest.TestCase):
                                 with self.assertRaises(APIStatusError) as caught:
                                     api.chat.completions.create(**request)
                                 self.assertEqual(caught.exception.status_code, status)
-                            self.assertEqual(calls, [("/v1/chat/completions", "Bearer example-key", request)])
+                            self.assertEqual(
+                                calls, [("/v1/chat/completions", "Bearer example-key", request)]
+                            )
                     finally:
                         server.shutdown()
                         thread.join()

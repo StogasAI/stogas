@@ -45,15 +45,24 @@ def canonical(value):
             for child in item.values():
                 validate(child)
             return
-        raise ValueError("Release JSON requires ASCII keys, strings and safe integers; floats are forbidden")
+        raise ValueError(
+            "Release JSON requires ASCII keys, strings and safe integers; floats are forbidden"
+        )
+
     validate(value)
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    ).encode()
 
 
 def wheel_tag(target):
     machine = {"amd64": "x86_64", "arm64": "aarch64"}[target["arch"]]
     if target["os"] == "linux":
-        return f"manylinux_2_17_{machine}.manylinux2014_{machine}" if target["libc"] == "glibc" else f"musllinux_1_2_{machine}"
+        return (
+            f"manylinux_2_17_{machine}.manylinux2014_{machine}"
+            if target["libc"] == "glibc"
+            else f"musllinux_1_2_{machine}"
+        )
     if target["os"] == "windows":
         return {"amd64": "win_amd64", "arm64": "win_arm64"}[target["arch"]]
     return f"macosx_{target['minimum'].replace('.', '_')}_{'arm64' if target['arch'] == 'arm64' else 'x86_64'}"
@@ -61,7 +70,13 @@ def wheel_tag(target):
 
 def wheel(names, target):
     """Return the one abi3 wheel built for a target."""
-    matching = [name for name in names if re.fullmatch(r"stogas-[0-9A-Za-z.]+-cp310-abi3-" + re.escape(wheel_tag(target)) + r"\.whl", name)]
+    matching = [
+        name
+        for name in names
+        if re.fullmatch(
+            r"stogas-[0-9A-Za-z.]+-cp310-abi3-" + re.escape(wheel_tag(target)) + r"\.whl", name
+        )
+    ]
     if len(matching) != 1:
         raise ValueError(f"Release requires exactly one wheel for {wheel_tag(target)}")
     return matching[0]
@@ -75,7 +90,9 @@ def digest(path):
 def write_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name + ".", delete=False) as output:
+    with tempfile.NamedTemporaryFile(
+        dir=path.parent, prefix=path.name + ".", delete=False
+    ) as output:
         temporary = Path(output.name)
         try:
             output.write(canonical(value) + b"\n")
@@ -104,7 +121,14 @@ def regular_files(root):
 
 def source_digest(root):
     """Identify a source tree by its paths, executable bits and file bytes."""
-    files = [{"path": path.relative_to(root).as_posix(), "mode": 0o755 if path.stat().st_mode & 0o111 else 0o644, "sha256": digest(path)} for path in regular_files(root)]
+    files = [
+        {
+            "path": path.relative_to(root).as_posix(),
+            "mode": 0o755 if path.stat().st_mode & 0o111 else 0o644,
+            "sha256": digest(path),
+        }
+        for path in regular_files(root)
+    ]
     return hashlib.sha256(canonical(files)).hexdigest()
 
 
@@ -116,9 +140,13 @@ def verify_source(source, archive, expected, prefix):
     total = 0
     with tarfile.open(archive, "r:gz") as packed:
         for member in packed:
-            if not member.isfile() or not member.name.startswith(prefix + "/") or member.mode not in (0o644, 0o755):
+            if (
+                not member.isfile()
+                or not member.name.startswith(prefix + "/")
+                or member.mode not in (0o644, 0o755)
+            ):
                 raise ValueError("Invalid source archive entry")
-            name = member.name[len(prefix) + 1:]
+            name = member.name[len(prefix) + 1 :]
             total += member.size
             if name not in actual or name in seen or member.size < 0 or total > 2 * 1024**3:
                 raise ValueError("Source archive inventory differs")
@@ -128,7 +156,11 @@ def verify_source(source, archive, expected, prefix):
             if actual[name].stat().st_size != member.size or digest(actual[name]) != sha256:
                 raise ValueError(f"Source bytes differ: {name}")
             entries.append({"path": name, "mode": member.mode, "sha256": sha256})
-    if seen != set(actual) or hashlib.sha256(canonical(sorted(entries, key=lambda entry: entry["path"]))).hexdigest() != expected:
+    if (
+        seen != set(actual)
+        or hashlib.sha256(canonical(sorted(entries, key=lambda entry: entry["path"]))).hexdigest()
+        != expected
+    ):
         raise ValueError("Source differs from its recorded identity")
 
 
@@ -148,7 +180,9 @@ def tar_gz(destination, root, epoch, prefix=""):
     """Normalize ordering, owners, modes and both tar/gzip timestamps."""
     root = Path(root)
     with Path(destination).open("xb") as output:
-        with gzip.GzipFile(fileobj=output, filename="", mode="wb", mtime=epoch, compresslevel=9) as compressed:
+        with gzip.GzipFile(
+            fileobj=output, filename="", mode="wb", mtime=epoch, compresslevel=9
+        ) as compressed:
             with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as archive:
                 for path in regular_files(root):
                     name = str(PurePosixPath(prefix) / path.relative_to(root).as_posix())
@@ -163,13 +197,17 @@ def tar_gz(destination, root, epoch, prefix=""):
 def zip_archive(destination, root, epoch, prefix=""):
     root = Path(root)
     date = time.gmtime(max(epoch, 315532800))[:6]
-    with zipfile.ZipFile(destination, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+    with zipfile.ZipFile(
+        destination, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=9
+    ) as archive:
         for path in regular_files(root):
             name = str(PurePosixPath(prefix) / path.relative_to(root).as_posix())
             entry = zipfile.ZipInfo(name, date_time=date)
             entry.create_system = 3
             entry.compress_type = zipfile.ZIP_DEFLATED
-            entry.external_attr = (stat.S_IFREG | (0o755 if path.stat().st_mode & 0o111 else 0o644)) << 16
+            entry.external_attr = (
+                stat.S_IFREG | (0o755 if path.stat().st_mode & 0o111 else 0o644)
+            ) << 16
             archive.writestr(entry, path.read_bytes(), compresslevel=9)
 
 
@@ -184,7 +222,9 @@ def write_record(tree):
     with record.open(newline="") as stream:
         listed = [row[0] for row in csv.reader(stream)]
     names = [path.relative_to(tree).as_posix() for path in regular_files(tree)]
-    added = {name for name in names if PurePosixPath(name).parent.match("*.data/scripts")} - set(listed)
+    added = {name for name in names if PurePosixPath(name).parent.match("*.data/scripts")} - set(
+        listed
+    )
     if len(listed) != len(set(listed)) or set(listed) | added != set(names):
         raise ValueError("Wheel RECORD does not match its file inventory")
     rows = []
@@ -194,7 +234,13 @@ def write_record(tree):
             continue
         with path.open("rb") as stream:
             checksum = hashlib.file_digest(stream, "sha256").digest()
-        rows.append([name, "sha256=" + base64.urlsafe_b64encode(checksum).rstrip(b"=").decode(), str(path.stat().st_size)])
+        rows.append(
+            [
+                name,
+                "sha256=" + base64.urlsafe_b64encode(checksum).rstrip(b"=").decode(),
+                str(path.stat().st_size),
+            ]
+        )
     rows.append([record.relative_to(tree).as_posix(), "", ""])
     with record.open("w", newline="") as stream:
         csv.writer(stream, lineterminator="\n").writerows(rows)
@@ -209,7 +255,13 @@ def unpack(source, destination, max_bytes=2 * 1024**3):
     def save(name, stream, size, mode):
         nonlocal total
         parts = PurePosixPath(name).parts
-        if not parts or "/".join(parts) != name or name.startswith("/") or "\\" in name or any(p in {".", ".."} or ":" in p for p in parts):
+        if (
+            not parts
+            or "/".join(parts) != name
+            or name.startswith("/")
+            or "\\" in name
+            or any(p in {".", ".."} or ":" in p for p in parts)
+        ):
             raise ValueError(f"Unsafe archive name: {name}")
         total += size
         if name in seen or size < 0 or total > max_bytes:
@@ -256,7 +308,9 @@ def inventory(directory, expected):
     directory = Path(directory)
     actual = {p.name for p in directory.iterdir()}
     if actual != set(expected):
-        raise ValueError(f"Release inventory differs: missing={sorted(set(expected) - actual)}, extra={sorted(actual - set(expected))}")
+        raise ValueError(
+            f"Release inventory differs: missing={sorted(set(expected) - actual)}, extra={sorted(actual - set(expected))}"
+        )
     files = []
     for name in sorted(expected):
         path = directory / name
@@ -298,7 +352,7 @@ def wasm_sections(module):
             length, start = leb128(module, payload)
             if start + length > end:
                 raise ValueError("Malformed WebAssembly custom section")
-            name, payload = module[start:start + length].decode(), start + length
+            name, payload = module[start : start + length].decode(), start + length
         sections.append((identifier, name, offset, payload, end))
         offset = end
     return sections
@@ -337,7 +391,7 @@ def function_names(module):
                 for _ in range(count):
                     index, cursor = leb128(module, cursor)
                     length, cursor = leb128(module, cursor)
-                    text = module[cursor:cursor + length].decode()
+                    text = module[cursor : cursor + length].decode()
                     if "\n" in text:
                         raise ValueError("WebAssembly function name holds a line break")
                     lines.append(f"{index}:{text}\n")
@@ -350,7 +404,11 @@ def function_names(module):
 
 def crate_list_root(section):
     """The package whose crates a cargo-auditable `.dep-v0` section lists."""
-    roots = [package["name"] for package in json.loads(zlib.decompress(section))["packages"] if package.get("root")]
+    roots = [
+        package["name"]
+        for package in json.loads(zlib.decompress(section))["packages"]
+        if package.get("root")
+    ]
     if len(roots) != 1:
         raise ValueError("A crate list must have one root package")
     return roots[0]
@@ -372,6 +430,7 @@ def verify_inventory(directory, manifest, metadata=()):
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("format", choices=["zip", "tar.gz"])
     parser.add_argument("source", type=Path)

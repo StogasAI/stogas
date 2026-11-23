@@ -80,13 +80,19 @@ def published_dependencies():
                     features = set(dependency.get("features", ()))
                     if dependency.get("workspace"):
                         dependency = workspace[name]
-                        dependency = {"version": dependency} if isinstance(dependency, str) else dependency
+                        dependency = (
+                            {"version": dependency} if isinstance(dependency, str) else dependency
+                        )
                         features |= set(dependency.get("features", ()))
                     yield path, name, dependency["version"], features
 
 
 def locked(path):
-    return {(package["name"], package["version"]) for package in tomllib.loads(path.read_text())["package"] if "source" in package}
+    return {
+        (package["name"], package["version"])
+        for package in tomllib.loads(path.read_text())["package"]
+        if "source" in package
+    }
 
 
 class CrateManifestTests(unittest.TestCase):
@@ -98,15 +104,26 @@ class CrateManifestTests(unittest.TestCase):
             # crates.io records an SPDX expression; the archive carries the text, which release
             # inputs cannot link to.
             self.assertEqual(manifest["package"]["license"], {"workspace": True}, path)
-            self.assertEqual((path.parent / "LICENSE").read_bytes(), (ROOT / "LICENSE").read_bytes(), path)
+            self.assertEqual(
+                (path.parent / "LICENSE").read_bytes(), (ROOT / "LICENSE").read_bytes(), path
+            )
         self.assertEqual(set(published), set(gate.CRATES))
-        self.assertEqual(tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["license"], "Apache-2.0")
+        self.assertEqual(
+            tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["license"],
+            "Apache-2.0",
+        )
 
     def test_published_crates_require_versions_that_dependents_can_share(self):
         # An exact requirement makes every project that uses the crate take that one version.
         # The siblings release together, and signatures cover the canonicalizer's output; Cargo
         # refuses an exact sibling requirement that differs from the sibling's version.
-        exact = {"stogas", "stogas-core", "stogas-sev-snp", "stogas-sigstore", "serde_json_canonicalizer"}
+        exact = {
+            "stogas",
+            "stogas-core",
+            "stogas-sev-snp",
+            "stogas-sigstore",
+            "serde_json_canonicalizer",
+        }
         for path, name, requirement, _ in published_dependencies():
             with self.subTest(crate=path.parent.name, dependency=name):
                 self.assertEqual(requirement.startswith("="), name in exact, requirement)
@@ -125,7 +142,14 @@ class CrateManifestTests(unittest.TestCase):
         names = {name for name, _ in shipped}
         for workspace in ("fuzz", "tests/security/probe"):
             with self.subTest(workspace=workspace):
-                self.assertEqual(sorted(entry for entry in locked(ROOT / workspace / "Cargo.lock") - shipped if entry[0] in names), [])
+                self.assertEqual(
+                    sorted(
+                        entry
+                        for entry in locked(ROOT / workspace / "Cargo.lock") - shipped
+                        if entry[0] in names
+                    ),
+                    [],
+                )
 
     def test_the_wasm_profile_names_only_dependencies(self):
         # Cargo only warns about a profile entry that matches no crate, so a crate that an update
@@ -139,9 +163,15 @@ class CrateManifestTests(unittest.TestCase):
             "keywords": ["confidential-computing", "sev-snp", "-dash", "ok_1+", "e", "f"],
             "categories": ["web-programming::wasm", "cryptography"],
         }
-        self.assertEqual(gate.crate_refusals(package), [
-            "6 keywords", "keyword 'confidential-computing'", "keyword '-dash'", "category 'web-programming::wasm'",
-        ])
+        self.assertEqual(
+            gate.crate_refusals(package),
+            [
+                "6 keywords",
+                "keyword 'confidential-computing'",
+                "keyword '-dash'",
+                "category 'web-programming::wasm'",
+            ],
+        )
         self.assertEqual(gate.crate_refusals({"categories": ["wasm"] * 6}), ["6 categories"])
         self.assertEqual(gate.crate_refusals({}), [])
 
@@ -157,23 +187,37 @@ class NpmTests(unittest.TestCase):
         (tools / "npm").write_text(FAKE_NPM.format(python=sys.executable))
         (tools / "npm").chmod(0o755)
         path = f"{tools}{os.pathsep}{os.environ['PATH']}"
-        self.enterContext(mock.patch.dict(os.environ, {"PATH": path, "FAKE_NPM_LOG": str(self.log)}))
+        self.enterContext(
+            mock.patch.dict(os.environ, {"PATH": path, "FAKE_NPM_LOG": str(self.log)})
+        )
         self.releases = [{"tag_name": "v1.0.0", "draft": False}]
         self.enterContext(mock.patch.object(publish, "releases", side_effect=lambda: self.releases))
-        self.enterContext(mock.patch.object(publish, "wait_for", side_effect=lambda check, what, minutes=5: None))
+        self.enterContext(
+            mock.patch.object(publish, "wait_for", side_effect=lambda check, what, minutes=5: None)
+        )
         # As npm served the packages after the first preview: none from a workflow yet.
         self.documents = {
-            name: {"dist-tags": {"latest": "0.1.0-alpha.1"}, "versions": {"0.1.0-alpha.1": {"_npmUser": {"name": "stogas"}}}}
+            name: {
+                "dist-tags": {"latest": "0.1.0-alpha.1"},
+                "versions": {"0.1.0-alpha.1": {"_npmUser": {"name": "stogas"}}},
+            }
             for name, _ in publish.NPM_PACKAGES
         }
-        self.enterContext(mock.patch.object(publish, "npm_document", side_effect=lambda name: self.documents[name]))
+        self.enterContext(
+            mock.patch.object(
+                publish, "npm_document", side_effect=lambda name: self.documents[name]
+            )
+        )
 
     def owner(self, trust=None):
         # The terminal copies npm's output to file descriptor 1 itself.
         terminal, quiet = os.dup(1), os.open(os.devnull, os.O_WRONLY)
         os.dup2(quiet, 1)
         try:
-            with mock.patch.dict(os.environ, {"FAKE_NPM_TRUST": json.dumps(trust or {})}), contextlib.redirect_stdout(io.StringIO()):
+            with (
+                mock.patch.dict(os.environ, {"FAKE_NPM_TRUST": json.dumps(trust or {})}),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
                 publish.npm_owner(self.packages, "1.2.3")
         finally:
             os.dup2(terminal, 1)
@@ -181,31 +225,57 @@ class NpmTests(unittest.TestCase):
             os.close(quiet)
 
     def commands(self):
-        return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
+        return (
+            [json.loads(line) for line in self.log.read_text().splitlines()]
+            if self.log.exists()
+            else []
+        )
 
     def test_owner_publishes_new_packages_and_trusts_publish_yml_where_no_workflow_published(self):
         self.documents["@stogas/sev-snp"] = None
-        self.documents["stogas"]["versions"]["0.1.0-alpha.2"] = {"_npmUser": {"name": "GitHub Actions", "trustedPublisher": {"id": "github"}}}
+        self.documents["stogas"]["versions"]["0.1.0-alpha.2"] = {
+            "_npmUser": {"name": "GitHub Actions", "trustedPublisher": {"id": "github"}}
+        }
         # An expired configuration cannot be changed, only replaced.
         self.owner({"@stogas/sigstore": ["expired"]})
         sessions = {session for session, *_ in self.commands()}
         self.assertEqual(len(sessions), 1)
         session = Path(sessions.pop())
         self.assertFalse(session.exists())
-        trust = ["--repo", "StogasAI/stogas", "--file", "publish.yml", "--env", "release", "--allow-publish", "--yes"]
-        self.assertEqual([command for _, *command in self.commands()], [
-            ["login", "--auth-type=web"],
-            # package.json asks for provenance, which npm makes only in CI.
-            ["publish", str(self.packages / "stogas-sev-snp-1.2.3.tgz"), "--access", "public", "--tag", "latest", "--provenance=false"],
-            ["trust", "list", "@stogas/sev-snp", "--json"],
-            ["trust", "github", "@stogas/sev-snp", *trust],
-            ["access", "set", "mfa=publish", "@stogas/sev-snp"],
-            ["trust", "list", "@stogas/sigstore", "--json"],
-            ["trust", "revoke", "@stogas/sigstore", "--id", "expired"],
-            ["trust", "github", "@stogas/sigstore", *trust],
-            ["access", "set", "mfa=publish", "@stogas/sigstore"],
-            ["logout"],
-        ])
+        trust = [
+            "--repo",
+            "StogasAI/stogas",
+            "--file",
+            "publish.yml",
+            "--env",
+            "release",
+            "--allow-publish",
+            "--yes",
+        ]
+        self.assertEqual(
+            [command for _, *command in self.commands()],
+            [
+                ["login", "--auth-type=web"],
+                # package.json asks for provenance, which npm makes only in CI.
+                [
+                    "publish",
+                    str(self.packages / "stogas-sev-snp-1.2.3.tgz"),
+                    "--access",
+                    "public",
+                    "--tag",
+                    "latest",
+                    "--provenance=false",
+                ],
+                ["trust", "list", "@stogas/sev-snp", "--json"],
+                ["trust", "github", "@stogas/sev-snp", *trust],
+                ["access", "set", "mfa=publish", "@stogas/sev-snp"],
+                ["trust", "list", "@stogas/sigstore", "--json"],
+                ["trust", "revoke", "@stogas/sigstore", "--id", "expired"],
+                ["trust", "github", "@stogas/sigstore", *trust],
+                ["access", "set", "mfa=publish", "@stogas/sigstore"],
+                ["logout"],
+            ],
+        )
 
     def test_owner_removes_the_staging_placeholder_and_a_next_tag_that_latest_reached(self):
         # As the first preview left both packages that npm staged.
@@ -213,15 +283,20 @@ class NpmTests(unittest.TestCase):
             self.documents[name]["dist-tags"] = {"latest": "0.0.0-stage", "next": "0.1.0-alpha.1"}
             self.documents[name]["versions"]["0.0.0-stage"] = {"_npmUser": {"name": "stogas"}}
         self.owner()
-        tidied = [command for _, *command in self.commands() if command[0] in ("dist-tag", "unpublish")]
-        self.assertEqual(tidied, [
-            ["dist-tag", "add", "@stogas/sigstore@0.1.0-alpha.1", "latest"],
-            ["unpublish", "@stogas/sigstore@0.0.0-stage"],
-            ["dist-tag", "rm", "@stogas/sigstore", "next"],
-            ["dist-tag", "add", "stogas@0.1.0-alpha.1", "latest"],
-            ["unpublish", "stogas@0.0.0-stage"],
-            ["dist-tag", "rm", "stogas", "next"],
-        ])
+        tidied = [
+            command for _, *command in self.commands() if command[0] in ("dist-tag", "unpublish")
+        ]
+        self.assertEqual(
+            tidied,
+            [
+                ["dist-tag", "add", "@stogas/sigstore@0.1.0-alpha.1", "latest"],
+                ["unpublish", "@stogas/sigstore@0.0.0-stage"],
+                ["dist-tag", "rm", "@stogas/sigstore", "next"],
+                ["dist-tag", "add", "stogas@0.1.0-alpha.1", "latest"],
+                ["unpublish", "stogas@0.0.0-stage"],
+                ["dist-tag", "rm", "stogas", "next"],
+            ],
+        )
         self.assertEqual(self.commands()[-1][1:], ["logout"])
 
     def test_a_next_tag_ahead_of_latest_stays(self):
@@ -229,7 +304,9 @@ class NpmTests(unittest.TestCase):
         document["dist-tags"]["next"] = "0.2.0-alpha.1"
         document["versions"]["0.2.0-alpha.1"] = {"_npmUser": {"name": "stogas"}}
         self.owner()
-        self.assertFalse([command for _, *command in self.commands() if command[0] in ("dist-tag", "unpublish")])
+        self.assertFalse(
+            [command for _, *command in self.commands() if command[0] in ("dist-tag", "unpublish")]
+        )
 
     def test_owner_signs_out_after_a_failure(self):
         with mock.patch.dict(os.environ, {"FAKE_NPM_FAIL": "trust"}):
@@ -239,7 +316,9 @@ class NpmTests(unittest.TestCase):
 
     def test_owner_needs_nothing_once_a_workflow_published_each_package(self):
         for document in self.documents.values():
-            document["versions"]["1.2.2"] = {"_npmUser": {"name": "GitHub Actions", "trustedPublisher": {"id": "github"}}}
+            document["versions"]["1.2.2"] = {
+                "_npmUser": {"name": "GitHub Actions", "trustedPublisher": {"id": "github"}}
+            }
         self.owner()
         self.assertEqual(self.commands(), [])
 
@@ -248,14 +327,36 @@ class NpmTests(unittest.TestCase):
 
         def run(arguments, **_):
             commands.append(arguments)
-            served.add(next(name for name, filename in publish.NPM_PACKAGES if Path(arguments[2]).name == f"{filename}-1.2.3.tgz"))
+            served.add(
+                next(
+                    name
+                    for name, filename in publish.NPM_PACKAGES
+                    if Path(arguments[2]).name == f"{filename}-1.2.3.tgz"
+                )
+            )
 
-        with mock.patch.object(publish, "npm_served", side_effect=lambda name, path, version: name in served), mock.patch.object(publish, "run", side_effect=run):
+        with (
+            mock.patch.object(
+                publish, "npm_served", side_effect=lambda name, path, version: name in served
+            ),
+            mock.patch.object(publish, "run", side_effect=run),
+        ):
             publish.npm(self.packages, "1.2.3")
-        self.assertEqual(commands, [
-            ["npm", "publish", str(self.packages / f"{filename}-1.2.3.tgz"), "--access", "public", "--tag", "latest"]
-            for filename in ("stogas-sev-snp", "stogas")
-        ])
+        self.assertEqual(
+            commands,
+            [
+                [
+                    "npm",
+                    "publish",
+                    str(self.packages / f"{filename}-1.2.3.tgz"),
+                    "--access",
+                    "public",
+                    "--tag",
+                    "latest",
+                ]
+                for filename in ("stogas-sev-snp", "stogas")
+            ],
+        )
 
     def test_latest_follows_what_the_other_package_managers_offer(self):
         self.assertEqual(publish.npm_tag("1.2.3"), "latest")
@@ -263,15 +364,29 @@ class NpmTests(unittest.TestCase):
         self.assertEqual(publish.npm_tag("1.2.3-alpha.1"), "next")
         # Before the first full release, the newest preview is latest, even while its GitHub
         # release is still a draft, as when the owner publishes a new package.
-        self.releases = [{"tag_name": "v0.1.0-alpha.1", "draft": False}, {"tag_name": "v0.1.0-alpha.2", "draft": True}]
+        self.releases = [
+            {"tag_name": "v0.1.0-alpha.1", "draft": False},
+            {"tag_name": "v0.1.0-alpha.2", "draft": True},
+        ]
         self.assertEqual(publish.npm_tag("0.1.0-alpha.2"), "latest")
         self.releases[1]["draft"] = False
         self.assertEqual(publish.npm_tag("0.1.0-alpha.1"), "next")
 
     def test_a_failure_shows_the_tools_reason_and_names_npms_error_code(self):
         with contextlib.redirect_stderr(io.StringIO()) as errors:
-            with self.assertRaisesRegex(RuntimeError, r"^npm failed \(exit 1, npm error code EUSAGE\); registry publication stopped$"):
-                publish.run(["npm", "publish", str(self.packages / "stogas-1.2.3.tgz"), "--access", "public"])
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"^npm failed \(exit 1, npm error code EUSAGE\); registry publication stopped$",
+            ):
+                publish.run(
+                    [
+                        "npm",
+                        "publish",
+                        str(self.packages / "stogas-1.2.3.tgz"),
+                        "--access",
+                        "public",
+                    ]
+                )
         self.assertIn("Automatic provenance generation not supported", errors.getvalue())
 
 
@@ -282,17 +397,26 @@ class ReadbackTests(unittest.TestCase):
         def sleep(seconds):
             self.clock[0] += seconds
 
-        self.enterContext(mock.patch.object(publish.time, "monotonic", side_effect=lambda: self.clock[0]))
+        self.enterContext(
+            mock.patch.object(publish.time, "monotonic", side_effect=lambda: self.clock[0])
+        )
         self.enterContext(mock.patch.object(publish.time, "sleep", side_effect=sleep))
 
     def test_reads_back_until_the_deadline_then_names_it(self):
-        with self.assertRaisesRegex(RuntimeError, "^stogas@1.2.3 did not become available for verified readback within 60 minutes$"):
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "^stogas@1.2.3 did not become available for verified readback within 60 minutes$",
+        ):
             publish.wait_for(lambda: False, "stogas@1.2.3", minutes=60)
         self.assertGreaterEqual(self.clock[0], 3600)
         self.assertLess(self.clock[0], 3610)
 
     def test_a_read_that_may_succeed_later_only_delays_readback(self):
-        failures = [urllib.error.HTTPError("https://api.nuget.org/x", 503, "unavailable", {}, None), urllib.error.URLError("no DNS"), TimeoutError()]
+        failures = [
+            urllib.error.HTTPError("https://api.nuget.org/x", 503, "unavailable", {}, None),
+            urllib.error.URLError("no DNS"),
+            TimeoutError(),
+        ]
 
         def urlopen(request, timeout):
             if failures:
@@ -304,9 +428,16 @@ class ReadbackTests(unittest.TestCase):
         self.assertEqual(self.clock[0], 30)
 
     def test_names_the_last_failed_read_at_the_deadline(self):
-        with mock.patch.object(publish.urllib.request, "urlopen", side_effect=urllib.error.URLError("no DNS")):
-            with self.assertRaisesRegex(RuntimeError, r"within 5 minutes; the last read failed: Registry read of https://api.nuget.org/x failed \(URLError\)$"):
-                publish.wait_for(lambda: publish.download("https://api.nuget.org/x?token=1") is not None, "x")
+        with mock.patch.object(
+            publish.urllib.request, "urlopen", side_effect=urllib.error.URLError("no DNS")
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"within 5 minutes; the last read failed: Registry read of https://api.nuget.org/x failed \(URLError\)$",
+            ):
+                publish.wait_for(
+                    lambda: publish.download("https://api.nuget.org/x?token=1") is not None, "x"
+                )
 
     def test_other_failures_stop_readback_at_once(self):
         def differs():
@@ -318,63 +449,125 @@ class ReadbackTests(unittest.TestCase):
 
     def test_nuget_waits_an_hour_for_its_index_and_skips_a_taken_version(self):
         # nuget.org served the first version more than 5 minutes after accepting it.
-        directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-nuget-test-")))
+        directory = Path(
+            self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-nuget-test-"))
+        )
         (directory / "Stogas.1.2.3.nupkg").write_bytes(b"package")
         commands, waits = [], []
-        with mock.patch.dict(os.environ, {"NUGET_API_KEY": "short-lived"}), mock.patch.object(publish, "download", return_value=None), mock.patch.object(publish, "run", side_effect=lambda arguments, **_: commands.append(arguments)), mock.patch.object(publish, "wait_for", side_effect=lambda check, what, minutes=5: waits.append((what, minutes))):
+        with (
+            mock.patch.dict(os.environ, {"NUGET_API_KEY": "short-lived"}),
+            mock.patch.object(publish, "download", return_value=None),
+            mock.patch.object(
+                publish, "run", side_effect=lambda arguments, **_: commands.append(arguments)
+            ),
+            mock.patch.object(
+                publish,
+                "wait_for",
+                side_effect=lambda check, what, minutes=5: waits.append((what, minutes)),
+            ),
+        ):
             publish.nuget(directory, "1.2.3")
         self.assertEqual([command[:3] for command in commands], [["dotnet", "nuget", "push"]])
         self.assertEqual(commands[0][-1], "--skip-duplicate")
         self.assertEqual(waits, [("Stogas.1.2.3.nupkg", 60)])
 
     def test_maven_waits_for_files_still_syncing_instead_of_deploying_again(self):
-        directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-maven-test-")))
+        directory = Path(
+            self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-maven-test-"))
+        )
         for name in ("stogas-1.2.3.jar", "stogas-1.2.3.pom"):
             (directory / name).write_bytes(name.encode())
-        served = {"https://repo.maven.apache.org/maven2/ai/stogas/stogas/1.2.3/stogas-1.2.3.pom": b"stogas-1.2.3.pom"}
+        served = {
+            "https://repo.maven.apache.org/maven2/ai/stogas/stogas/1.2.3/stogas-1.2.3.pom": b"stogas-1.2.3.pom"
+        }
         commands = []
-        with mock.patch.object(publish, "download", side_effect=lambda url, absent=(404,): served.get(url)), mock.patch.object(publish, "run", side_effect=lambda arguments, **_: commands.append(arguments)):
-            with self.assertRaisesRegex(RuntimeError, "^ai.stogas 1.2.3 on Maven Central did not become available for verified readback within 30 minutes$"):
+        with (
+            mock.patch.object(
+                publish, "download", side_effect=lambda url, absent=(404,): served.get(url)
+            ),
+            mock.patch.object(
+                publish, "run", side_effect=lambda arguments, **_: commands.append(arguments)
+            ),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "^ai.stogas 1.2.3 on Maven Central did not become available for verified readback within 30 minutes$",
+            ):
                 publish.maven(directory, "1.2.3")
         self.assertEqual(commands, [])
 
     def test_maven_checks_each_signature_before_deploying_and_as_central_serves_it(self):
         # Central never replaces a published file, so a bad signature would stay.
-        directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-maven-test-")))
+        directory = Path(
+            self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-maven-test-"))
+        )
         names = ("stogas-1.2.3.jar", "stogas-1.2.3.pom")
         for name in names:
             (directory / name).write_bytes(name.encode())
         served, steps = {}, []
+
         def run(arguments, **_):
             tool, action, *rest = arguments
             steps.append((tool, action, Path(rest[-1]).name if tool == "cosign" else None))
             if action == "verify-blob":
-                self.assertIn("https://github.com/StogasAI/stogas/.github/workflows/publish.yml@refs/tags/v1.2.3", arguments)
+                self.assertIn(
+                    "https://github.com/StogasAI/stogas/.github/workflows/publish.yml@refs/tags/v1.2.3",
+                    arguments,
+                )
             if tool == "jreleaser":
                 for name in names:
                     url = f"https://repo.maven.apache.org/maven2/ai/stogas/stogas/1.2.3/{name}"
                     served.update({url: name.encode(), f"{url}.sigstore.json": b"bundle"})
-        with mock.patch.object(publish, "download", side_effect=lambda url, absent=(404,): served.get(url)), mock.patch.object(publish, "run", side_effect=run):
+
+        with (
+            mock.patch.object(
+                publish, "download", side_effect=lambda url, absent=(404,): served.get(url)
+            ),
+            mock.patch.object(publish, "run", side_effect=run),
+        ):
             publish.maven(directory, "1.2.3")
-        signing = [step for name in names for step in (("cosign", "sign-blob", name), ("cosign", "verify-blob", name))]
-        self.assertEqual(steps, [*signing, ("jreleaser", "deploy", None), *(("cosign", "verify-blob", name) for name in names)])
+        signing = [
+            step
+            for name in names
+            for step in (("cosign", "sign-blob", name), ("cosign", "verify-blob", name))
+        ]
+        self.assertEqual(
+            steps,
+            [
+                *signing,
+                ("jreleaser", "deploy", None),
+                *(("cosign", "verify-blob", name) for name in names),
+            ],
+        )
 
 
 class StorageHostTests(unittest.TestCase):
     """static.crates.io and rubygems.org/downloads answered 403 for a missing file on November 5, 2026."""
 
     def setUp(self):
-        self.packages = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-storage-test-")))
+        self.packages = Path(
+            self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-storage-test-"))
+        )
         self.served = {}
 
         def urlopen(request, timeout):
             if request.full_url not in self.served:
-                storage = request.full_url.startswith(("https://static.crates.io/", "https://rubygems.org/downloads/"))
-                raise urllib.error.HTTPError(request.full_url, 403 if storage else 404, "absent", {}, None)
+                storage = request.full_url.startswith(
+                    ("https://static.crates.io/", "https://rubygems.org/downloads/")
+                )
+                raise urllib.error.HTTPError(
+                    request.full_url, 403 if storage else 404, "absent", {}, None
+                )
             return contextlib.closing(io.BytesIO(self.served[request.full_url]))
 
         self.enterContext(mock.patch.object(publish.urllib.request, "urlopen", side_effect=urlopen))
-        self.enterContext(mock.patch.object(publish, "wait_for", side_effect=lambda check, what, minutes=5: self.assertTrue(check(), what)))
+        self.enterContext(
+            mock.patch.object(
+                publish,
+                "wait_for",
+                side_effect=lambda check, what, minutes=5: self.assertTrue(check(), what),
+            )
+        )
 
     def test_uploads_each_crate_the_storage_host_does_not_hold(self):
         uploaded = []
@@ -384,11 +577,16 @@ class StorageHostTests(unittest.TestCase):
             uploaded.append(name)
             self.served[f"https://static.crates.io/crates/{name}/{path.name}"] = path.read_bytes()
             entry = {"vers": "1.2.3", "cksum": publish.digest(path), "yanked": False}
-            self.served[f"https://index.crates.io/{name[:2]}/{name[2:4]}/{name}"] = json.dumps(entry).encode()
+            self.served[f"https://index.crates.io/{name[:2]}/{name[2:4]}/{name}"] = json.dumps(
+                entry
+            ).encode()
 
         for name in publish.CRATES:
             (self.packages / f"{name}-1.2.3.crate").write_bytes(name.encode())
-        with mock.patch.object(publish, "crate_metadata", return_value={}), mock.patch.object(publish, "crate_upload", side_effect=upload):
+        with (
+            mock.patch.object(publish, "crate_metadata", return_value={}),
+            mock.patch.object(publish, "crate_upload", side_effect=upload),
+        ):
             publish.crates(self.packages, "1.2.3", "token")
             self.assertEqual(uploaded, list(publish.CRATES))
             # A rerun finds every crate and uploads none.
@@ -398,9 +596,17 @@ class StorageHostTests(unittest.TestCase):
     def test_uploads_no_crate_while_crates_io_would_refuse_any(self):
         for name in publish.CRATES:
             (self.packages / f"{name}-1.2.3.crate").write_bytes(name.encode())
-        metadata = lambda path: {"keywords": ["confidential-computing"]} if path.name.startswith("stogas-core-") else {}
-        with mock.patch.object(publish, "crate_metadata", side_effect=metadata), mock.patch.object(publish, "crate_upload") as upload:
-            with self.assertRaisesRegex(ValueError, "^crates.io would refuse stogas-core-1.2.3.crate: keyword 'confidential-computing'$"):
+        metadata = lambda path: (
+            {"keywords": ["confidential-computing"]} if path.name.startswith("stogas-core-") else {}
+        )
+        with (
+            mock.patch.object(publish, "crate_metadata", side_effect=metadata),
+            mock.patch.object(publish, "crate_upload") as upload,
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "^crates.io would refuse stogas-core-1.2.3.crate: keyword 'confidential-computing'$",
+            ):
                 publish.crates(self.packages, "1.2.3", "token")
         upload.assert_not_called()
 
@@ -415,7 +621,10 @@ class StorageHostTests(unittest.TestCase):
             pushed.append((path.name, bundle, key))
             self.served[f"https://rubygems.org/downloads/{gem.name}"] = gem.read_bytes()
 
-        with mock.patch.dict(os.environ, {"GEM_HOST_API_KEY": "rubygems-key"}), mock.patch.object(publish, "gem_push", side_effect=push):
+        with (
+            mock.patch.dict(os.environ, {"GEM_HOST_API_KEY": "rubygems-key"}),
+            mock.patch.object(publish, "gem_push", side_effect=push),
+        ):
             publish.ruby(self.packages, proof)
             publish.ruby(self.packages, proof)
         self.assertEqual(pushed, [(gem.name, {"mediaType": "bundle"}, "rubygems-key")])
@@ -426,22 +635,46 @@ class StorageHostTests(unittest.TestCase):
         gem.write_bytes(b"gem\r\n--bytes")
         sent = []
         opener = mock.Mock()
-        opener.open.side_effect = lambda request, timeout: sent.append(request) or contextlib.closing(io.BytesIO(b"Successfully registered gem"))
+        opener.open.side_effect = lambda request, timeout: (
+            sent.append(request) or contextlib.closing(io.BytesIO(b"Successfully registered gem"))
+        )
         with mock.patch.object(publish.urllib.request, "build_opener", return_value=opener):
             publish.gem_push(gem, {"mediaType": "bundle"}, "rubygems-key")
         [request] = sent
-        self.assertEqual((request.full_url, request.get_header("Authorization")), ("https://rubygems.org/api/v1/gems", "rubygems-key"))
+        self.assertEqual(
+            (request.full_url, request.get_header("Authorization")),
+            ("https://rubygems.org/api/v1/gems", "rubygems-key"),
+        )
         head = f"Content-Type: {request.get_header('Content-type')}\r\n\r\n".encode()
         form = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(head + request.data)
-        self.assertEqual([(part["Content-Disposition"], part["Content-Type"], part.get_payload(decode=True)) for part in form.iter_parts()], [
-            ('form-data; name="gem"; filename="stogas-1.2.3-x86_64-linux.gem"', "application/octet-stream", b"gem\r\n--bytes"),
-            ('form-data; name="attestations"', None, b'[{"mediaType": "bundle"}]'),
-        ])
+        self.assertEqual(
+            [
+                (part["Content-Disposition"], part["Content-Type"], part.get_payload(decode=True))
+                for part in form.iter_parts()
+            ],
+            [
+                (
+                    'form-data; name="gem"; filename="stogas-1.2.3-x86_64-linux.gem"',
+                    "application/octet-stream",
+                    b"gem\r\n--bytes",
+                ),
+                ('form-data; name="attestations"', None, b'[{"mediaType": "bundle"}]'),
+            ],
+        )
 
     def test_other_registries_still_fail_on_403(self):
         self.served.clear()
-        with mock.patch.object(publish.urllib.request, "urlopen", side_effect=urllib.error.HTTPError("https://registry.npmjs.org/stogas", 403, "forbidden", {}, None)):
-            with self.assertRaisesRegex(RuntimeError, r"^Registry read of https://registry.npmjs.org/stogas failed \(HTTP 403\)$"):
+        with mock.patch.object(
+            publish.urllib.request,
+            "urlopen",
+            side_effect=urllib.error.HTTPError(
+                "https://registry.npmjs.org/stogas", 403, "forbidden", {}, None
+            ),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"^Registry read of https://registry.npmjs.org/stogas failed \(HTTP 403\)$",
+            ):
                 publish.download("https://registry.npmjs.org/stogas")
 
 
@@ -449,28 +682,57 @@ class PreviewTests(unittest.TestCase):
     def test_a_preview_that_gitlab_rebuilds_needs_gitlab_proof_of_its_manifest(self):
         # No Stogas signature binds a preview, so a draft made public without the release
         # command's checks would otherwise publish with GitHub's proof alone.
-        packages = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-preview-test-")))
+        packages = Path(
+            self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-preview-test-"))
+        )
         commands = []
-        self.enterContext(mock.patch.object(publish, "check_release", return_value=({"version": "1.2.3-alpha.1", "source": {"commit": "a" * 40}}, True)))
-        self.enterContext(mock.patch.object(publish, "run", side_effect=lambda arguments, **_: commands.append(arguments)))
+        self.enterContext(
+            mock.patch.object(
+                publish,
+                "check_release",
+                return_value=({"version": "1.2.3-alpha.1", "source": {"commit": "a" * 40}}, True),
+            )
+        )
+        self.enterContext(
+            mock.patch.object(
+                publish, "run", side_effect=lambda arguments, **_: commands.append(arguments)
+            )
+        )
         self.enterContext(contextlib.redirect_stdout(io.StringIO()))
-        with self.assertRaisesRegex(ValueError, "^GitLab rebuilds this release, but it has no GitLab build proof$"):
+        with self.assertRaisesRegex(
+            ValueError, "^GitLab rebuilds this release, but it has no GitLab build proof$"
+        ):
             publish.preview(packages)
         (packages / "gitlab-attestation.jsonl").write_bytes(b"{}")
         commands.clear()
         publish.preview(packages)
-        self.assertEqual([command[:3] for command in commands[:2]], [["gh", "attestation", "verify"]] * 2)
-        self.assertEqual(commands[2], [
-            "cosign", "verify-blob-attestation", str(packages / "release-manifest.json"),
-            "--bundle", str(packages / "gitlab-attestation.jsonl"), "--type", "https://slsa.dev/provenance/v1",
-            "--certificate-oidc-issuer", "https://gitlab.com",
-            "--certificate-identity", "https://gitlab.com/stogasai/stogas//.gitlab-ci.yml@refs/tags/v1.2.3-alpha.1",
-        ])
+        self.assertEqual(
+            [command[:3] for command in commands[:2]], [["gh", "attestation", "verify"]] * 2
+        )
+        self.assertEqual(
+            commands[2],
+            [
+                "cosign",
+                "verify-blob-attestation",
+                str(packages / "release-manifest.json"),
+                "--bundle",
+                str(packages / "gitlab-attestation.jsonl"),
+                "--type",
+                "https://slsa.dev/provenance/v1",
+                "--certificate-oidc-issuer",
+                "https://gitlab.com",
+                "--certificate-identity",
+                "https://gitlab.com/stogasai/stogas//.gitlab-ci.yml@refs/tags/v1.2.3-alpha.1",
+            ],
+        )
 
 
 class FirstVersionTests(unittest.TestCase):
     def first_versions(self, documents):
-        with mock.patch.object(publish, "download", side_effect=documents.get), contextlib.redirect_stdout(io.StringIO()) as output:
+        with (
+            mock.patch.object(publish, "download", side_effect=documents.get),
+            contextlib.redirect_stdout(io.StringIO()) as output,
+        ):
             publish.first_versions()
         return output.getvalue().split()
 
@@ -480,7 +742,9 @@ class FirstVersionTests(unittest.TestCase):
 
     def test_crates_wait_until_every_crate_trusts_only_publish_yml(self):
         crate = lambda trusted: json.dumps({"crate": {"trustpub_only": trusted}}).encode()
-        documents = {f"https://crates.io/api/v1/crates/{name}": crate(True) for name in publish.CRATES}
+        documents = {
+            f"https://crates.io/api/v1/crates/{name}": crate(True) for name in publish.CRATES
+        }
         self.assertIn("crates=false", self.first_versions(documents))
         documents["https://crates.io/api/v1/crates/stogas-cli"] = crate(False)
         self.assertIn("crates=true", self.first_versions(documents))
@@ -489,7 +753,10 @@ class FirstVersionTests(unittest.TestCase):
 
     def test_npm_waits_until_it_has_every_package(self):
         package = json.dumps({"versions": {"0.1.0-alpha.1": {}}}).encode()
-        documents = {f"https://registry.npmjs.org/{urllib.parse.quote(name, safe='')}": package for name, _ in publish.NPM_PACKAGES}
+        documents = {
+            f"https://registry.npmjs.org/{urllib.parse.quote(name, safe='')}": package
+            for name, _ in publish.NPM_PACKAGES
+        }
         self.assertIn("npm=false", self.first_versions(documents))
         # A package added later waits for its first version from the owner.
         del documents["https://registry.npmjs.org/%40stogas%2Fsev-snp"]
@@ -501,20 +768,44 @@ class CratesOwnerTests(unittest.TestCase):
         calls = []
         handed_over = {"stogas-sigstore"}
         with (
-            mock.patch.object(publish, "crate_handed_over", side_effect=lambda name: name in handed_over),
+            mock.patch.object(
+                publish, "crate_handed_over", side_effect=lambda name: name in handed_over
+            ),
             mock.patch.object(publish.getpass, "getpass", return_value=" owner-token\n"),
-            mock.patch.object(publish, "crates_api", side_effect=lambda method, path, token, body=None: calls.append((method, path, token, body))),
-            mock.patch.object(publish, "crates", side_effect=lambda packages, version, token: calls.append(("upload", version, token))),
-            mock.patch.object(publish, "crates_trust", side_effect=lambda token: calls.append(("trust", token))),
+            mock.patch.object(
+                publish,
+                "crates_api",
+                side_effect=lambda method, path, token, body=None: calls.append(
+                    (method, path, token, body)
+                ),
+            ),
+            mock.patch.object(
+                publish,
+                "crates",
+                side_effect=lambda packages, version, token: calls.append(
+                    ("upload", version, token)
+                ),
+            ),
+            mock.patch.object(
+                publish, "crates_trust", side_effect=lambda token: calls.append(("trust", token))
+            ),
             contextlib.redirect_stdout(io.StringIO()),
         ):
             publish.crates_owner(Path("packages"), "1.2.3", None)
             # A new crate can depend on this version of a crate that only publish.yml publishes.
-            self.assertEqual(calls, [
-                ("PATCH", "crates/stogas-sigstore", "owner-token", {"crate": {"trustpub_only": False}}),
-                ("upload", "1.2.3", "owner-token"),
-                ("trust", "owner-token"),
-            ])
+            self.assertEqual(
+                calls,
+                [
+                    (
+                        "PATCH",
+                        "crates/stogas-sigstore",
+                        "owner-token",
+                        {"crate": {"trustpub_only": False}},
+                    ),
+                    ("upload", "1.2.3", "owner-token"),
+                    ("trust", "owner-token"),
+                ],
+            )
             handed_over.update(publish.CRATES)
             publish.crates_owner(Path("packages"), "1.2.3", None)
         self.assertEqual(len(calls), 3)
@@ -525,8 +816,14 @@ class CratesOwnerTests(unittest.TestCase):
             mock.patch.dict(os.environ, {"CARGO_REGISTRY_TOKEN": "lasting"}),
             mock.patch.object(publish, "crate_handed_over", return_value=False),
             mock.patch.object(publish.getpass, "getpass", side_effect=AssertionError("prompted")),
-            mock.patch.object(publish, "crates", side_effect=lambda packages, version, token: tokens.append(token)),
-            mock.patch.object(publish, "crates_trust", side_effect=lambda token: tokens.append(os.environ.get("CARGO_REGISTRY_TOKEN"))),
+            mock.patch.object(
+                publish, "crates", side_effect=lambda packages, version, token: tokens.append(token)
+            ),
+            mock.patch.object(
+                publish,
+                "crates_trust",
+                side_effect=lambda token: tokens.append(os.environ.get("CARGO_REGISTRY_TOKEN")),
+            ),
             mock.patch.object(publish, "npm_owner"),
             mock.patch.object(publish, "ruby_owner"),
             contextlib.redirect_stdout(io.StringIO()),
@@ -545,16 +842,21 @@ class CratesOwnerTests(unittest.TestCase):
                 return {"github_configs": existing.get(path.rsplit("=", 1)[1], [])}
             return None
 
-        with mock.patch.object(publish, "crates_api", side_effect=api), contextlib.redirect_stdout(io.StringIO()):
+        with (
+            mock.patch.object(publish, "crates_api", side_effect=api),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
             publish.crates_trust("one-time")
         # A rerun keeps an existing configuration instead of adding a second one.
         created = [body["github_config"]["crate"] for method, _, body in calls if method == "POST"]
         self.assertEqual(created, ["stogas-sev-snp", "stogas-sigstore", "stogas", "stogas-cli"])
         updated = [(path, body) for method, path, body in calls if method == "PATCH"]
-        self.assertEqual(updated, [(f"crates/{name}", {"crate": {"trustpub_only": True}}) for name in publish.CRATES])
+        self.assertEqual(
+            updated,
+            [(f"crates/{name}", {"crate": {"trustpub_only": True}}) for name in publish.CRATES],
+        )
         # crates.io refuses a scoped token's request to revoke itself.
         self.assertNotIn("DELETE", [method for method, _, _ in calls])
-
 
 
 class WorkflowTests(unittest.TestCase):

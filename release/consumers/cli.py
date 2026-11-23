@@ -27,7 +27,9 @@ ORIGINS = {
 def run(cli, *arguments, accepted=True):
     result = subprocess.run([cli, *arguments], capture_output=True, text=True, timeout=60)
     if (result.returncode == 0) != accepted:
-        raise SystemExit(f"stogas {arguments[0]} exited {result.returncode}: {(result.stderr or result.stdout).strip()}")
+        raise SystemExit(
+            f"stogas {arguments[0]} exited {result.returncode}: {(result.stderr or result.stdout).strip()}"
+        )
     return result.stdout
 
 
@@ -39,21 +41,43 @@ def offline(cli, version, fixtures, work):
     evidence = work / "staging-evidence.json"
     evidence.write_text(json.dumps(fixture["evidence"]))
     run(cli, "verify", "--environment", "staging", str(evidence), accepted=False)
-    run(cli, "verify", "--now-unix-ms", str(fixture["verified_at_ms"]), str(evidence), accepted=False)
+    run(
+        cli,
+        "verify",
+        "--now-unix-ms",
+        str(fixture["verified_at_ms"]),
+        str(evidence),
+        accepted=False,
+    )
     key = work / "organization.key"
     key_id = run(cli, "encryption-key", "create", "--output", str(key)).strip()
     # A plugin's settings need a signed-in check by the gateway first; a credential seals offline.
     credential = work / "openai.key"
     credential.write_text("sk-offline-consumer-test")
     envelope = work / "openai.sealed"
-    run(cli, "encrypt", "--key-file", str(key), "--organization", "0b4f1e2a-3c5d-4e6f-8a7b-9c0d1e2f3a4b", "--credential", "openai", "--input", str(credential), "--output", str(envelope))
+    run(
+        cli,
+        "encrypt",
+        "--key-file",
+        str(key),
+        "--organization",
+        "0b4f1e2a-3c5d-4e6f-8a7b-9c0d1e2f3a4b",
+        "--credential",
+        "openai",
+        "--input",
+        str(credential),
+        "--output",
+        str(envelope),
+    )
     if json.loads(envelope.read_text())["encryptedSecret"]["keyId"] != key_id:
         raise SystemExit("The encrypted envelope names a different key")
     (work / "empty").mkdir()
     run(cli, "verify-release", str(work / "empty"), accepted=False)
     # Without evidence, serve exits without advertising an endpoint. The closed proxy port makes
     # this hold on runners that have a network.
-    if "OpenAI base URL" in run(cli, "--proxy", "http://127.0.0.1:9", "serve", "--listen", "127.0.0.1:0", accepted=False):
+    if "OpenAI base URL" in run(
+        cli, "--proxy", "http://127.0.0.1:9", "serve", "--listen", "127.0.0.1:0", accepted=False
+    ):
         raise SystemExit("serve advertised an endpoint without verified evidence")
 
 
@@ -61,40 +85,73 @@ def serve(cli, environment, security):
     """The CLI's local endpoint answers through the gateway, then closes when its parent's pipe
     does, as an application that starts it relies on."""
     process = subprocess.Popen(
-        [cli, "serve", "--environment", environment, "--security", security, "--listen", "127.0.0.1:0", "--exit-on-stdin-close"],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        [
+            cli,
+            "serve",
+            "--environment",
+            environment,
+            "--security",
+            security,
+            "--listen",
+            "127.0.0.1:0",
+            "--exit-on-stdin-close",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
     )
     try:
         lines = queue.Queue()
-        threading.Thread(target=lambda: [lines.put(line) for line in process.stdout], daemon=True).start()
+        threading.Thread(
+            target=lambda: [lines.put(line) for line in process.stdout], daemon=True
+        ).start()
         try:
             line = lines.get(timeout=60)
         except queue.Empty:
-            raise SystemExit(f"serve --security {security} named no endpoint within 60 seconds") from None
+            raise SystemExit(
+                f"serve --security {security} named no endpoint within 60 seconds"
+            ) from None
         if not line.startswith("OpenAI base URL: "):
             raise SystemExit(f"serve --security {security} began with {line.strip()!r}")
         base = line.removeprefix("OpenAI base URL: ").strip()
         request = urllib.request.Request(
-            f"{base}/chat/completions", method="POST",
+            f"{base}/chat/completions",
+            method="POST",
             data=b'{"model":"stogas-status-monitor","messages":[{"role":"user","content":"ping"}]}',
-            headers={"Authorization": "Bearer stogas-status-monitor-uncredentialed", "Content-Type": "application/json"},
+            headers={
+                "Authorization": "Bearer stogas-status-monitor-uncredentialed",
+                "Content-Type": "application/json",
+            },
         )
         try:
-            urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=60).close()
+            urllib.request.build_opener(urllib.request.ProxyHandler({})).open(
+                request, timeout=60
+            ).close()
             raise SystemExit(f"serve --security {security} accepted an invalid key")
         except urllib.error.HTTPError as error:
             with error:
-                if error.code != 401 or json.loads(error.read())["error"]["type"] != "authentication_error":
-                    raise SystemExit(f"serve --security {security} answered an invalid key with HTTP {error.code}") from None
+                if (
+                    error.code != 401
+                    or json.loads(error.read())["error"]["type"] != "authentication_error"
+                ):
+                    raise SystemExit(
+                        f"serve --security {security} answered an invalid key with HTTP {error.code}"
+                    ) from None
         # A catalog read is a GET without content, which the gateway answers without a key.
-        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(f"{base}/models", timeout=60) as response:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(
+            f"{base}/models", timeout=60
+        ) as response:
             if not json.load(response)["data"]:
                 raise SystemExit(f"serve --security {security} read an empty model list")
         process.stdin.close()
         if process.wait(timeout=10) != 0:
-            raise SystemExit(f"serve --security {security} exited {process.returncode} when its stdin closed")
+            raise SystemExit(
+                f"serve --security {security} exited {process.returncode} when its stdin closed"
+            )
         try:
-            socket.create_connection(("127.0.0.1", urllib.parse.urlsplit(base).port), timeout=5).close()
+            socket.create_connection(
+                ("127.0.0.1", urllib.parse.urlsplit(base).port), timeout=5
+            ).close()
         except ConnectionRefusedError:
             return
         raise SystemExit(f"serve --security {security} kept listening after it exited")

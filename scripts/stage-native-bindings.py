@@ -22,10 +22,18 @@ def copy(source, destination):
 
 def stage(platform, native, bindings, version, *, apple_swift=True):
     target = PLATFORMS[platform]
-    extension = "dll" if platform.startswith("windows") else "dylib" if platform.startswith("darwin") else "so"
+    extension = (
+        "dll"
+        if platform.startswith("windows")
+        else "dylib"
+        if platform.startswith("darwin")
+        else "so"
+    )
     name = ("" if extension == "dll" else "lib") + "stogas_ffi." + extension
     if "dotnet" in target:
-        copy(native / name, bindings / "dotnet/Stogas/runtimes" / target["dotnet"] / "native" / name)
+        copy(
+            native / name, bindings / "dotnet/Stogas/runtimes" / target["dotnet"] / "native" / name
+        )
     if "jna" in target:
         copy(native / name, bindings / "java/src/main/resources" / target["jna"] / name)
     if "ruby" in target:
@@ -40,9 +48,23 @@ def stage(platform, native, bindings, version, *, apple_swift=True):
             temporary = Path(temporary)
             headers = temporary / "include"
             copy(ROOT / "include/stogas.h", headers / "stogas.h")
-            (headers / "module.modulemap").write_text('module CStogas { header "stogas.h" export * }\n')
+            (headers / "module.modulemap").write_text(
+                'module CStogas { header "stogas.h" export * }\n'
+            )
             bundle = temporary / "CStogas.xcframework"
-            subprocess.run(["xcodebuild", "-create-xcframework", "-library", str((native / "libstogas_ffi.a").resolve()), "-headers", str(headers), "-output", str(bundle)], check=True)
+            subprocess.run(
+                [
+                    "xcodebuild",
+                    "-create-xcframework",
+                    "-library",
+                    str((native / "libstogas_ffi.a").resolve()),
+                    "-headers",
+                    str(headers),
+                    "-output",
+                    str(bundle),
+                ],
+                check=True,
+            )
             destination = bindings / "swift/CStogas.xcframework"
             if destination.exists():
                 shutil.rmtree(destination)
@@ -53,7 +75,9 @@ def stage(platform, native, bindings, version, *, apple_swift=True):
         static = "libstogas_ffi.a"
         copy(native / static, bundle / platform / static)
         copy(Path(__file__).resolve().parents[1] / "include/stogas.h", bundle / "include/stogas.h")
-        (bundle / "include/module.modulemap").write_text('module CStogas { header "stogas.h" export * }\n')
+        (bundle / "include/module.modulemap").write_text(
+            'module CStogas { header "stogas.h" export * }\n'
+        )
         manifest = bundle / "info.json"
         artifact = {"type": "staticLibrary", "version": version, "variants": []}
         if manifest.exists():
@@ -62,20 +86,35 @@ def stage(platform, native, bindings, version, *, apple_swift=True):
                 raise ValueError("Cannot combine native libraries from different releases")
         path = f"{platform}/{static}"
         variants = [v for v in artifact["variants"] if v["path"] != path]
-        variants.append({
-            "path": path,
-            "supportedTriples": [target["swift"]],
-            "staticLibraryMetadata": {"headerPaths": ["include"], "moduleMapPath": "include/module.modulemap"},
-        })
+        variants.append(
+            {
+                "path": path,
+                "supportedTriples": [target["swift"]],
+                "staticLibraryMetadata": {
+                    "headerPaths": ["include"],
+                    "moduleMapPath": "include/module.modulemap",
+                },
+            }
+        )
         artifact["variants"] = sorted(variants, key=lambda v: v["path"])
-        manifest.write_text(json.dumps({"schemaVersion": "1.0", "artifacts": {"CStogas": artifact}}, indent=2) + "\n")
+        manifest.write_text(
+            json.dumps({"schemaVersion": "1.0", "artifacts": {"CStogas": artifact}}, indent=2)
+            + "\n"
+        )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--platform", required=True, choices=PLATFORMS)
     parser.add_argument("--native-dir", required=True, type=Path)
-    parser.add_argument("--bindings-dir", type=Path, default=Path(__file__).resolve().parents[1] / "bindings")
-    parser.add_argument("--version", default=json.loads((Path(__file__).resolve().parents[1] / "package.json").read_text())["version"])
+    parser.add_argument(
+        "--bindings-dir", type=Path, default=Path(__file__).resolve().parents[1] / "bindings"
+    )
+    parser.add_argument(
+        "--version",
+        default=json.loads((Path(__file__).resolve().parents[1] / "package.json").read_text())[
+            "version"
+        ],
+    )
     arguments = parser.parse_args()
     stage(arguments.platform, arguments.native_dir, arguments.bindings_dir, arguments.version)

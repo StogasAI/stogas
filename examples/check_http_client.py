@@ -3,6 +3,7 @@
 Runs each case directly and through the real Rust E2EE record transport. The
 encrypted peer uses synthetic setup; hardware appraisal is tested separately.
 """
+
 import json
 from contextlib import contextmanager, ExitStack
 from itertools import product
@@ -19,18 +20,25 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+
 def encrypted_fixture_binary(*, release=False):
     root = Path(__file__).resolve().parents[1]
     build = subprocess.run(
-        ["cargo", "test", "--locked", "-p", "stogas", "--lib", "--no-run", "--message-format=json"] + (["--release"] if release else []),
-        cwd=root, capture_output=True, text=True, check=True,
+        ["cargo", "test", "--locked", "-p", "stogas", "--lib", "--no-run", "--message-format=json"]
+        + (["--release"] if release else []),
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     for line in build.stdout.splitlines():
         artifact = json.loads(line)
-        if (artifact.get("reason") == "compiler-artifact"
-                and artifact.get("target", {}).get("name") == "stogas"
-                and artifact.get("target", {}).get("kind") == ["lib"]
-                and artifact.get("executable")):
+        if (
+            artifact.get("reason") == "compiler-artifact"
+            and artifact.get("target", {}).get("name") == "stogas"
+            and artifact.get("target", {}).get("kind") == ["lib"]
+            and artifact.get("executable")
+        ):
             return artifact["executable"]
     raise RuntimeError("Rust encrypted HTTP fixture binary was not built")
 
@@ -46,20 +54,27 @@ def encrypted_proxy(binary, upstream):
         with subprocess.Popen(
             [binary, "encrypted_http_client_fixture", "--nocapture", "--test-threads=1"],
             env=dict(os.environ, STOGAS_HTTP_TEST_UPSTREAM=upstream),
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=errors,
+            text=True,
         ) as process:
             ready = queue.Queue()
+
             def read_output():
                 for line in process.stdout:
                     match = re.search(r"STOGAS_HTTP_TEST_BASE_URL=(http://[^\s]+)", line)
                     if match:
                         ready.put(match[1])
                 ready.put(None)
+
             reader = threading.Thread(target=read_output, daemon=True)
             reader.start()
             try:
                 base_url = ready.get(timeout=30)
-                assert base_url and re.fullmatch(r"http://127\.0\.0\.1:[0-9]+/[0-9a-f]{64}/v1", base_url), "invalid encrypted fixture URL"
+                assert base_url and re.fullmatch(
+                    r"http://127\.0\.0\.1:[0-9]+/[0-9a-f]{64}/v1", base_url
+                ), "invalid encrypted fixture URL"
                 yield EncryptedProxy(base_url, process)
             except BaseException:
                 errors.seek(0)
@@ -99,13 +114,38 @@ def main():
     if framing:
         command = command[1:]
     if not command:
-        raise SystemExit("usage: python check_http_client.py [--transport http|e2ee] [--unary | --sse-framing | --cancel] COMMAND [ARGS...]")
+        raise SystemExit(
+            "usage: python check_http_client.py [--transport http|e2ee] [--unary | --sse-framing | --cancel] COMMAND [ARGS...]"
+        )
 
-    scenarios = ["success", "quota", "unavailable", "delayed_quota", "disconnected", "stream_error", "truncated", "truncated_chunk"]
+    scenarios = [
+        "success",
+        "quota",
+        "unavailable",
+        "delayed_quota",
+        "disconnected",
+        "stream_error",
+        "truncated",
+        "truncated_chunk",
+    ]
     if unary:
-        scenarios = ["success", "quota", "unavailable", "delayed_quota", "disconnected", "truncated"]
+        scenarios = [
+            "success",
+            "quota",
+            "unavailable",
+            "delayed_quota",
+            "disconnected",
+            "truncated",
+        ]
     if framing:
-        scenarios += ["success_crlf", "success_cr", "success_multiline", "malformed", "trailing_json", "missing_terminal"]
+        scenarios += [
+            "success_crlf",
+            "success_cr",
+            "success_multiline",
+            "malformed",
+            "trailing_json",
+            "missing_terminal",
+        ]
     if cancel:
         scenarios = ["cancelled_before_headers", "cancelled"]
     binary = encrypted_fixture_binary() if "e2ee" in transports else None
@@ -152,9 +192,19 @@ def main():
                     self.close_connection = True
                     return
                 responses = self.path.endswith("/responses")
-                chunk = json.dumps({"type": "response.output_text.delta", "delta": "Hello"} if responses else
-                                   {"id": "example", "object": "chat.completion.chunk", "created": 1,
-                                    "model": "example", "choices": [{"index": 0, "delta": {"content": "Hello"}, "finish_reason": None}]})
+                chunk = json.dumps(
+                    {"type": "response.output_text.delta", "delta": "Hello"}
+                    if responses
+                    else {
+                        "id": "example",
+                        "object": "chat.completion.chunk",
+                        "created": 1,
+                        "model": "example",
+                        "choices": [
+                            {"index": 0, "delta": {"content": "Hello"}, "finish_reason": None}
+                        ],
+                    }
+                )
                 prefix = f": STOGAS PROCESSING\n\ndata: {chunk}\n\n".encode()
                 if scenario in ("quota", "unavailable", "delayed_quota"):
                     if scenario == "delayed_quota":
@@ -166,15 +216,32 @@ def main():
                 else:
                     self.send_response(200)
                     if unary:
-                        data = json.dumps({"id": "example", "object": "chat.completion", "created": 1,
-                                           "model": "example", "choices": [{"index": 0,
-                                           "message": {"role": "assistant", "content": "Hello"},
-                                           "finish_reason": "stop"}]}).encode()
+                        data = json.dumps(
+                            {
+                                "id": "example",
+                                "object": "chat.completion",
+                                "created": 1,
+                                "model": "example",
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "message": {"role": "assistant", "content": "Hello"},
+                                        "finish_reason": "stop",
+                                    }
+                                ],
+                            }
+                        ).encode()
                     elif scenario == "stream_error":
-                        data = prefix + b'data: {"error":{"message":"provider disconnected","type":"provider_unavailable","code":"provider_unavailable"},"choices":[{"index":0,"delta":{},"finish_reason":"error"}]}\n\ndata: [DONE]\n\n'
+                        data = (
+                            prefix
+                            + b'data: {"error":{"message":"provider disconnected","type":"provider_unavailable","code":"provider_unavailable"},"choices":[{"index":0,"delta":{},"finish_reason":"error"}]}\n\ndata: [DONE]\n\n'
+                        )
                     else:
-                        terminal = (b'event: response.completed\ndata: {"type":"response.completed","response":{"id":"example","status":"completed"}}\n\n'
-                                    if responses else b"data: [DONE]\n\n")
+                        terminal = (
+                            b'event: response.completed\ndata: {"type":"response.completed","response":{"id":"example","status":"completed"}}\n\n'
+                            if responses
+                            else b"data: [DONE]\n\n"
+                        )
                         data = prefix + (terminal if scenario.startswith("success") else b"")
                         if scenario == "success_crlf":
                             data = data.replace(b"\n", b"\r\n")
@@ -186,13 +253,17 @@ def main():
                             data = prefix + b"data: {broken}\n\n" + terminal
                         elif scenario == "trailing_json":
                             data = prefix + b"data: {} unparsed\n\n" + terminal
-                    self.send_header("Content-Type", "application/json" if unary else "text/event-stream")
+                    self.send_header(
+                        "Content-Type", "application/json" if unary else "text/event-stream"
+                    )
                 if scenario in ("truncated_chunk", "cancelled"):
                     self.send_header("Transfer-Encoding", "chunked")
                     # The local verifier proxy aborts a failed stream without the final HTTP chunk.
                     data = f"{len(data):x}\r\n".encode() + data + b"\r\n"
                 else:
-                    self.send_header("Content-Length", str(len(data) + (100 if scenario == "truncated" else 0)))
+                    self.send_header(
+                        "Content-Length", str(len(data) + (100 if scenario == "truncated" else 0))
+                    )
                 self.send_header("Connection", "close")
                 self.end_headers()
                 try:
@@ -212,26 +283,47 @@ def main():
         try:
             with ExitStack() as stack:
                 upstream = f"http://127.0.0.1:{server.server_port}/cap"
-                base_url = (stack.enter_context(encrypted_proxy(binary, upstream)).base_url
-                            if transport == "e2ee" else f"{upstream}/v1")
-                environment = dict(os.environ, STOGAS_BASE_URL=base_url,
-                                   STOGAS_API_KEY="test-key", STOGAS_MODEL="example")
+                base_url = (
+                    stack.enter_context(encrypted_proxy(binary, upstream)).base_url
+                    if transport == "e2ee"
+                    else f"{upstream}/v1"
+                )
+                environment = dict(
+                    os.environ,
+                    STOGAS_BASE_URL=base_url,
+                    STOGAS_API_KEY="test-key",
+                    STOGAS_MODEL="example",
+                )
                 if cancel:
-                    with subprocess.Popen(command, env=environment, stdout=subprocess.PIPE,
-                                          stderr=subprocess.PIPE, text=True) as process:
+                    with subprocess.Popen(
+                        command,
+                        env=environment,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    ) as process:
                         try:
                             assert started.wait(20), "client never started its request"
                             process.send_signal(signal.SIGINT)
                             stdout, stderr = process.communicate(timeout=8)
-                            result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+                            result = subprocess.CompletedProcess(
+                                command, process.returncode, stdout, stderr
+                            )
                             assert closed.wait(2), "cancelled client left its request open"
                         finally:
                             if process.poll() is None:
                                 process.kill()
                                 process.wait()
                 else:
-                    result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=20)
-                assert len(calls) == 1, (scenario, "unexpected dispatch count", len(calls), result.stderr)
+                    result = subprocess.run(
+                        command, env=environment, capture_output=True, text=True, timeout=20
+                    )
+                assert len(calls) == 1, (
+                    scenario,
+                    "unexpected dispatch count",
+                    len(calls),
+                    result.stderr,
+                )
                 assert calls[0][0] in ("/cap/v1/chat/completions", "/cap/v1/responses"), calls[0][0]
                 assert calls[0][1] == "Bearer test-key"
                 assert calls[0][2]["model"] == "example"
@@ -244,9 +336,17 @@ def main():
                 # separately exercise the wider SSE line-ending grammar.
                 canonical = scenario not in ("success_crlf", "success_cr")
                 if scenario.startswith("success") and (transport == "http" or canonical):
-                    assert result.returncode == 0 and "Hello" in result.stdout, (scenario, result.returncode, result.stderr)
+                    assert result.returncode == 0 and "Hello" in result.stdout, (
+                        scenario,
+                        result.returncode,
+                        result.stderr,
+                    )
                 else:
-                    assert result.returncode != 0, (scenario, "client reported success", result.stdout)
+                    assert result.returncode != 0, (
+                        scenario,
+                        "client reported success",
+                        result.stdout,
+                    )
                 print(transport, scenario, "passed", flush=True)
         finally:
             server.shutdown()

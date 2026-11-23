@@ -20,17 +20,30 @@ def statement(packages, apple, environment):
     return {
         "_type": "https://in-toto.io/Statement/v1",
         "subject": [
-            *({"name": artifact["name"], "digest": {"sha256": artifact["sha256"]}} for artifact in manifest["artifacts"]),
+            *(
+                {"name": artifact["name"], "digest": {"sha256": artifact["sha256"]}}
+                for artifact in manifest["artifacts"]
+            ),
             {"name": MANIFEST, "digest": {"sha256": digest(packages / MANIFEST)}},
         ],
         "predicateType": "https://slsa.dev/provenance/v1",
         "predicate": {
             "buildDefinition": {
                 "buildType": "https://stogas.ai/docs/reproducible-builds#rebuild-an-sdk-release",
-                "externalParameters": {"source": project, "ref": f"refs/tags/{tag}", "configuration": ".gitlab-ci.yml"},
+                "externalParameters": {
+                    "source": project,
+                    "ref": f"refs/tags/{tag}",
+                    "configuration": ".gitlab-ci.yml",
+                },
                 "resolvedDependencies": [
-                    {"uri": f"git+{project}@refs/tags/{tag}", "digest": {"gitCommit": environment["CI_COMMIT_SHA"]}},
-                    *({"name": path.name, "digest": {"sha256": digest(path)}} for path in sorted(apple.iterdir())),
+                    {
+                        "uri": f"git+{project}@refs/tags/{tag}",
+                        "digest": {"gitCommit": environment["CI_COMMIT_SHA"]},
+                    },
+                    *(
+                        {"name": path.name, "digest": {"sha256": digest(path)}}
+                        for path in sorted(apple.iterdir())
+                    ),
                 ],
             },
             "runDetails": {

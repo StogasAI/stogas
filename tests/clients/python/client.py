@@ -1,4 +1,5 @@
 """Third-party consumers for the shared HTTP and encrypted-record fixtures."""
+
 import asyncio
 import os
 import sys
@@ -14,8 +15,15 @@ def run():
     library = sys.argv[1]
     if library == "langchain":
         from langchain_openai import ChatOpenAI
-        llm = ChatOpenAI(model=model, api_key=key, base_url=base_url, max_retries=0,
-                         timeout=15, use_responses_api=False)
+
+        llm = ChatOpenAI(
+            model=model,
+            api_key=key,
+            base_url=base_url,
+            max_retries=0,
+            timeout=15,
+            use_responses_api=False,
+        )
         if streaming:
             for chunk in llm.stream(prompt):
                 print(chunk.content, end="", flush=True)
@@ -24,8 +32,15 @@ def run():
     elif library == "llamaindex":
         from llama_index.core.llms import ChatMessage
         from llama_index.llms.openai_like import OpenAILike
-        llm = OpenAILike(model=model, api_key=key, api_base=base_url, max_retries=0,
-                         is_chat_model=True, timeout=15)
+
+        llm = OpenAILike(
+            model=model,
+            api_key=key,
+            api_base=base_url,
+            max_retries=0,
+            is_chat_model=True,
+            timeout=15,
+        )
         messages = [ChatMessage(role="user", content=prompt)]
         if streaming:
             for chunk in llm.stream_chat(messages):
@@ -35,9 +50,16 @@ def run():
     elif library == "litellm":
         os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
         import litellm
-        response = litellm.completion(model=f"openai/{model}", api_key=key, api_base=base_url,
-            messages=[{"role": "user", "content": prompt}], stream=streaming,
-            num_retries=0, timeout=15)
+
+        response = litellm.completion(
+            model=f"openai/{model}",
+            api_key=key,
+            api_base=base_url,
+            messages=[{"role": "user", "content": prompt}],
+            stream=streaming,
+            num_retries=0,
+            timeout=15,
+        )
         if streaming:
             for chunk in response:
                 for choice in chunk.choices:
@@ -55,8 +77,11 @@ async def pydantic():
     from pydantic_ai import Agent
     from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.openai import OpenAIProvider
+
     async with AsyncOpenAI(api_key=key, base_url=base_url, max_retries=0, timeout=15) as client:
-        agent = Agent(OpenAIChatModel(model, provider=OpenAIProvider(openai_client=client)), retries=0)
+        agent = Agent(
+            OpenAIChatModel(model, provider=OpenAIProvider(openai_client=client)), retries=0
+        )
         if streaming:
             async with agent.run_stream(prompt) as response:
                 async for text in response.stream_text(delta=True):
