@@ -297,13 +297,8 @@ impl Verifier {
 /// When an archive's one Rekor entry says it was logged. This is only a candidate clock: the
 /// caller must authenticate this exact time before it returns anything that it checked.
 fn logged_time(inclusion: &Value, now_unix_ms: i64) -> Result<i64, Error> {
-    let entries = inclusion["verificationMaterial"]["tlogEntries"]
-        .as_array()
-        .filter(|entries| entries.len() == 1)
-        .ok_or_else(|| super::invalid("archive requires one log entry"))?;
-    entries[0]["integratedTime"]
-        .as_str()
-        .and_then(|value| value.parse::<i64>().ok())
+    stogas_sigstore::claimed_document_log_time(inclusion)
+        .ok()
         .and_then(|value| value.checked_mul(1000))
         .filter(|value| *value > 0 && *value <= now_unix_ms)
         .ok_or_else(|| super::invalid("invalid archive log time"))

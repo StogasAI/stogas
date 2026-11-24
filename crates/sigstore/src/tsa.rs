@@ -112,6 +112,20 @@ pub fn verify_all(
     Ok(earliest)
 }
 
+/// The earliest time that `timestamps` state, in Unix seconds, before any of them is checked:
+/// the value that [`verify_all`] returns once every one verifies.
+pub fn claimed_time(timestamps: &[SignedTimestamp]) -> Option<i64> {
+    if timestamps.len() > MAX_TIMESTAMPS {
+        return None;
+    }
+    let times = timestamps.iter().map(|timestamp| {
+        let bytes = STANDARD.decode(&timestamp.signed_timestamp).ok()?;
+        let (info, _, _) = parse_timestamp(&bytes).ok()?;
+        i64::try_from(info.gen_time.to_unix_duration().as_secs()).ok()
+    });
+    times.collect::<Option<Vec<_>>>()?.into_iter().min()
+}
+
 fn verify_timestamp(token: &[u8], signature: &[u8], root: &TrustedRoot) -> Result<i64, String> {
     let (info, signed_data, content) = parse_timestamp(token)?;
     if info.version != 1

@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 `gh attestation download app.tar.gz --repo OWNER/REPO` saves a file's bundles as JSON Lines. Pass one bundle or the whole file; exactly one bundle must match. The repository's host selects the provider: a GitLab.com project such as `https://gitlab.com/GROUP/PROJECT` takes the identity `https://gitlab.com/GROUP/PROJECT//.gitlab-ci.yml@refs/tags/v1.2.3`. The repository, ref, commit and the provider's own hosted runner come from the Fulcio certificate, as `gh attestation verify` checks them, because the job writes the provenance predicate itself.
 
-`verify_dsse_attestation` takes any signer's exact certificate identity and OIDC issuer instead. Both return the statement's predicate, as its signer wrote it, for your own policy. `verify_rekor_document_inclusion` checks that a given P-256 key logged exact document bytes as a Rekor hashedrekord entry, with a low-S ECDSA signature over their SHA-256. `prepare_document_submission` turns that key's signature into the entry to submit.
+`verify_dsse_attestation` takes any signer's exact certificate identity and OIDC issuer instead. Both return the statement's predicate, as its signer wrote it, for your own policy. `verify_rekor_document_inclusion` checks that a given P-256 key logged exact document bytes as a Rekor hashedrekord entry, with a low-S ECDSA signature over their SHA-256. `prepare_document_submission` turns that key's signature into the Rekor v2 request that logs it.
 
 ## Trusted root
 

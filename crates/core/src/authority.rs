@@ -13,7 +13,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use stogas_sigstore::{LogPosition, TrustedRoot};
+use stogas_sigstore::{DocumentEntry, TrustedRoot};
 use thiserror::Error;
 
 use crate::{
@@ -101,7 +101,8 @@ pub struct RootKey {
     /// Canonical standard-base64 P-256 `SubjectPublicKeyInfo` DER of the only key that may log
     /// this root's key manifests in Rekor, so a search by it finds every one.
     pub rekor_public_key: String,
-    /// Where this root's documents count in Rekor v2. Without it, no Rekor v2 entry counts.
+    /// Where this root's documents count in Rekor v2, and until when in Rekor v1. Without it,
+    /// every Rekor v1 entry counts and no Rekor v2 entry does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rekor_v2: Option<RekorV2Scope>,
 }
@@ -110,26 +111,31 @@ pub struct RootKey {
 ///
 /// Rekor v2 has no search index, so Control's Rekor watcher reads every entry in this scope
 /// instead: a stolen submission key cannot log a document that clients accept anywhere the
-/// watcher does not read.
+/// watcher does not read. Stogas logs a root's documents only in Rekor v2 once the scope opens,
+/// so a later Rekor v1 entry does not count and nobody needs to search Rekor v1 for one.
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RekorV2Scope {
     /// Logs by checkpoint origin, each with the first index that counts: the watcher reads
     /// each from there.
     pub first_indexes: BTreeMap<String, u64>,
-    /// Any other log counts from its first entry if its key's validity in Sigstore's trusted
-    /// root starts at or after this time, in whole UTC seconds, so a log that Sigstore opens
-    /// later needs no verifier release.
+    /// When the root's documents moved to Rekor v2, in whole UTC seconds. A Rekor v1 entry
+    /// counts only if Rekor v1 logged it earlier. A log that `first_indexes` does not list
+    /// counts from its first entry if its key's validity in Sigstore's trusted root starts at or
+    /// after this time, so a log that Sigstore opens later needs no verifier release.
     pub opened_from: String,
 }
 
 impl RekorV2Scope {
-    /// Whether a Rekor v2 entry at `position` counts.
-    pub(crate) fn admits(&self, position: &LogPosition) -> Result<bool, Error> {
+    /// Whether a document's entry counts.
+    pub(crate) fn admits(&self, entry: &DocumentEntry) -> Result<bool, Error> {
+        let opened_from = utc_seconds(&self.opened_from, "Rekor v2 opening time")? / 1000;
+        let Some(position) = &entry.v2 else {
+            return Ok(entry.time < opened_from);
+        };
         if let Some(first) = self.first_indexes.get(&position.origin) {
             return Ok(position.index >= *first);
         }
-        let opened_from = utc_seconds(&self.opened_from, "Rekor v2 opening time")? / 1000;
         Ok(position.log_start.is_some_and(|start| start >= opened_from))
     }
 
@@ -873,7 +879,7 @@ pub(crate) fn verify_signature(
 }
 
 /// Verify that `submitter`, a Rekor key from validated authorization, logged this signed
-/// document in Rekor v1 or within the root's Rekor v2 scope, and return the log time in Unix
+/// document where the root's Rekor scope lets it count, and return the log time in Unix
 /// milliseconds.
 pub(crate) fn verify_document_inclusion(
     document: &Value,
@@ -892,7 +898,7 @@ pub(crate) fn verify_document_inclusion(
         &STANDARD.decode(submitter).map_err(invalid)?,
     )
     .map_err(|error| Error::Transparency(error.to_string()))?;
-    check_rekor_v2_scope(entry.v2.as_ref(), rekor_v2)?;
+    check_rekor_scope(&entry, rekor_v2)?;
     entry
         .time
         .checked_mul(1000)
@@ -900,19 +906,23 @@ pub(crate) fn verify_document_inclusion(
 }
 
 /// Rekor v2 has no search index, so an entry counts only where the watcher reads every entry.
-fn check_rekor_v2_scope(
-    position: Option<&LogPosition>,
-    scope: Option<&RekorV2Scope>,
-) -> Result<(), Error> {
-    let Some(position) = position else {
-        return Ok(());
+/// Rekor v1 entries count until the root's documents move to Rekor v2.
+fn check_rekor_scope(entry: &DocumentEntry, scope: Option<&RekorV2Scope>) -> Result<(), Error> {
+    let counts = match scope {
+        Some(scope) => scope.admits(entry)?,
+        None => entry.v2.is_none(),
     };
-    if scope.map_or(Ok(false), |scope| scope.admits(position))? {
+    if counts {
         return Ok(());
     }
-    Err(Error::Transparency(format!(
-        "Rekor v2 entry {} of {} is outside the root's Rekor v2 scope",
-        position.index, position.origin
+    Err(Error::Transparency(entry.v2.as_ref().map_or_else(
+        || "Rekor v1 entry is newer than the root's move to Rekor v2".into(),
+        |position| {
+            format!(
+                "Rekor v2 entry {} of {} is outside the root's Rekor v2 scope",
+                position.index, position.origin
+            )
+        },
     )))
 }
 

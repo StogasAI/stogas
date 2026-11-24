@@ -1,6 +1,7 @@
 use super::*;
 use crate::signing::SigningKey;
 use serde_json::json;
+use stogas_sigstore::LogPosition;
 
 const NOW: i64 = 1_789_900_000_000;
 
@@ -252,53 +253,70 @@ fn scope(first_index: u64, opened_from: &str) -> RekorV2Scope {
     }
 }
 
-fn position(origin: &str, index: u64, log_start: Option<i64>) -> LogPosition {
-    LogPosition {
-        origin: origin.into(),
-        index,
-        log_start,
+fn v2(origin: &str, index: u64, log_start: Option<i64>) -> DocumentEntry {
+    DocumentEntry {
+        time: OPENED_FROM,
+        v2: Some(LogPosition {
+            origin: origin.into(),
+            index,
+            log_start,
+        }),
     }
 }
 
+fn v1(time: i64) -> DocumentEntry {
+    DocumentEntry { time, v2: None }
+}
+
+// 2026-10-31T00:00:00Z.
+const OPENED_FROM: i64 = 1_793_404_800;
+
 #[test]
-fn rekor_v2_entries_count_only_where_the_watcher_reads_every_entry() {
-    // 2026-10-31T00:00:00Z.
-    const OPENED_FROM: i64 = 1_793_404_800;
+fn entries_count_only_where_the_watcher_reads_every_entry() {
     let scope = scope(1000, "2026-10-31T00:00:00Z");
-    for (position, counts) in [
+    for (entry, counts) in [
         // A listed log counts from its first index on, whenever it opened.
-        (position(V2_LOG, 1000, Some(1_758_585_600)), true),
-        (position(V2_LOG, u64::MAX, None), true),
-        (position(V2_LOG, 999, Some(OPENED_FROM)), false),
-        (position(V2_LOG, 0, Some(OPENED_FROM + 1)), false),
+        (v2(V2_LOG, 1000, Some(1_758_585_600)), true),
+        (v2(V2_LOG, u64::MAX, None), true),
+        (v2(V2_LOG, 999, Some(OPENED_FROM)), false),
+        (v2(V2_LOG, 0, Some(OPENED_FROM + 1)), false),
         // Another log counts whole if it opened at or after the scope's time.
         (
-            position("log2026-1.rekor.sigstore.dev", 0, Some(OPENED_FROM)),
+            v2("log2026-1.rekor.sigstore.dev", 0, Some(OPENED_FROM)),
             true,
         ),
         (
-            position("log2027-1.rekor.sigstore.dev", 7, Some(OPENED_FROM + 1)),
+            v2("log2027-1.rekor.sigstore.dev", 7, Some(OPENED_FROM + 1)),
             true,
         ),
         (
-            position("log2026-1.rekor.sigstore.dev", 0, Some(OPENED_FROM - 1)),
+            v2("log2026-1.rekor.sigstore.dev", 0, Some(OPENED_FROM - 1)),
             false,
         ),
-        (position("log2026-1.rekor.sigstore.dev", 0, None), false),
+        (v2("log2026-1.rekor.sigstore.dev", 0, None), false),
         // Origins match exactly.
-        (position("LOG2025-1.rekor.sigstore.dev", 1000, None), false),
+        (v2("LOG2025-1.rekor.sigstore.dev", 1000, None), false),
+        // Rekor v1 counts only for what it logged before the move.
+        (v1(OPENED_FROM - 1), true),
+        (v1(OPENED_FROM), false),
     ] {
         assert_eq!(
-            check_rekor_v2_scope(Some(&position), Some(&scope)).is_ok(),
+            check_rekor_scope(&entry, Some(&scope)).is_ok(),
             counts,
-            "{position:?}"
+            "{entry:?}"
         );
     }
-    // Rekor v1 has a search index, and a root without a scope accepts no Rekor v2 entry.
-    check_rekor_v2_scope(None, None).unwrap();
-    check_rekor_v2_scope(None, Some(&scope)).unwrap();
     assert_eq!(
-        check_rekor_v2_scope(Some(&position(V2_LOG, 1000, Some(OPENED_FROM))), None),
+        check_rekor_scope(&v1(OPENED_FROM), Some(&scope)),
+        Err(Error::Transparency(
+            "Rekor v1 entry is newer than the root's move to Rekor v2".into()
+        ))
+    );
+    // A root without a scope accepts every Rekor v1 entry, which its search index finds, and no
+    // Rekor v2 entry.
+    check_rekor_scope(&v1(i64::MAX), None).unwrap();
+    assert_eq!(
+        check_rekor_scope(&v2(V2_LOG, 1000, Some(OPENED_FROM)), None),
         Err(Error::Transparency(format!(
             "Rekor v2 entry 1000 of {V2_LOG} is outside the root's Rekor v2 scope"
         )))

@@ -16,7 +16,8 @@ type TrustRoot struct {
 	PublicKey string `json:"public_key"`
 	// RekorPublicKey is the only key that may log this root's key manifests.
 	RekorPublicKey string `json:"rekor_public_key"`
-	// RekorV2 is where this root's documents count in Rekor v2. Without it, no Rekor v2 entry counts.
+	// RekorV2 is where this root's documents count in Rekor v2, and until when in Rekor v1.
+	// Without it, every Rekor v1 entry counts and no Rekor v2 entry does.
 	RekorV2 *RekorV2Scope `json:"rekor_v2,omitempty"`
 }
 
@@ -24,8 +25,10 @@ type TrustRoot struct {
 type RekorV2Scope struct {
 	// FirstIndexes gives each log, by checkpoint origin, the first index that counts.
 	FirstIndexes map[string]uint64 `json:"first_indexes"`
-	// OpenedFrom admits any other log from its first entry if its key's validity in Sigstore's
-	// trusted root starts at or after this UTC time, such as 2026-10-31T00:00:00Z.
+	// OpenedFrom is when the root's documents moved to Rekor v2, in UTC, such as
+	// 2026-10-31T00:00:00Z. A Rekor v1 entry counts only if Rekor v1 logged it earlier, and any
+	// other Rekor v2 log counts from its first entry if its key's validity in Sigstore's trusted
+	// root starts at or after this time.
 	OpenedFrom string `json:"opened_from"`
 }
 

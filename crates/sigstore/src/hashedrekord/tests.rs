@@ -263,46 +263,38 @@ fn even_a_valid_log_cannot_substitute_the_artifact_hash_key_or_signature() {
 }
 
 #[test]
-fn prepares_the_low_s_submission_that_rekor_logs_for_the_exact_artifact() {
+fn prepares_the_low_s_request_whose_rekor_v2_entry_verifies() {
     let low = signature(9, ARTIFACT);
-    // A Transit signature is high-S half the time; the submission holds the low-S form.
+    let decode = |value: &Value| STANDARD.decode(value.as_str().unwrap()).unwrap();
+    // A Transit signature is high-S half the time; the request holds the low-S form.
     for signed in [low, twin(&low)] {
         let submission =
             crate::prepare_document_submission(ARTIFACT, &submitter(9), &der(&signed)).unwrap();
-        let body: Value = serde_json::from_str(&submission).unwrap();
+        let parsed: Value = serde_json::from_str(&submission).unwrap();
         assert_eq!(
-            body["spec"]["signature"]["content"],
-            STANDARD.encode(der(&low))
-        );
-        // Rekor logs the canonical form of the submitted body, which this already is, so the
-        // logged entry verifies as the bundle that Control assembles from its proof.
-        assert_eq!(
-            serde_json_canonicalizer::to_string(&body).unwrap(),
+            serde_json_canonicalizer::to_string(&parsed).unwrap(),
             submission
         );
-        let (mut bundle, _) = fixture(9);
-        seal_body(&mut bundle, &body);
-        verify(&bundle, ARTIFACT, &submitter(9), &root()).unwrap();
+        let request = &parsed["hashedRekordRequestV002"];
+        let verifier = &request["signature"]["verifier"];
+        assert_eq!(request["signature"]["content"], STANDARD.encode(der(&low)));
+        // Rekor v2 logs the request's digest, signature and verifier, which the verifier
+        // rebuilds from the bundle, so the entry that Rekor makes verifies.
+        let body = v2_body(
+            "SHA2_256",
+            &decode(&request["digest"]),
+            &decode(&request["signature"]["content"]),
+            verifier["keyDetails"].as_str().unwrap(),
+            &json!({"publicKey": verifier["publicKey"]}),
+        )
+        .unwrap();
+        let bundle = v2_fixture(9, 3, 7);
+        assert_eq!(
+            bundle["verificationMaterial"]["tlogEntries"][0]["canonicalizedBody"],
+            STANDARD.encode(&body)
+        );
+        verify(&bundle, ARTIFACT, &submitter(9), &v2_trust()).unwrap();
     }
-    // Go's PEM encoder writes the same key text that Rekor's canonical body holds.
-    let submission =
-        crate::prepare_document_submission(ARTIFACT, &submitter(9), &der(&low)).unwrap();
-    let body: Value = serde_json::from_str(&submission).unwrap();
-    let pem = String::from_utf8(
-        STANDARD
-            .decode(
-                body["spec"]["signature"]["publicKey"]["content"]
-                    .as_str()
-                    .unwrap(),
-            )
-            .unwrap(),
-    )
-    .unwrap();
-    assert!(
-        pem.starts_with("-----BEGIN PUBLIC KEY-----\n")
-            && pem.ends_with("-----END PUBLIC KEY-----\n")
-    );
-    assert!(pem.lines().all(|line| line.len() <= 64) && !pem.contains('\r'));
     // The signature must cover the complete artifact under the designated key.
     for (artifact, key, signed) in [
         (b"exact document".as_slice(), 9, der(&low)),
@@ -312,7 +304,7 @@ fn prepares_the_low_s_submission_that_rekor_logs_for_the_exact_artifact() {
     ] {
         assert!(crate::prepare_document_submission(artifact, &submitter(key), &signed).is_err());
     }
-    // The same key with a compressed point: valid DER, but not the bytes Rekor indexes.
+    // The same key with a compressed point: valid DER, but not the bytes the watchers look for.
     let compressed = [
         &[0x30, 0x39][..],
         &P256_SPKI_PREFIX[2..23],
@@ -783,4 +775,20 @@ fn rekor_v1_document_proofs_carry_no_timestamps() {
         json!({"rfc3161Timestamps": [{"signedTimestamp": vectors()["document_signature_timestamp"]}]}),
     );
     assert!(verify(&bundle, ARTIFACT, &submitter(9), &root()).is_err());
+}
+
+#[test]
+fn claims_the_log_time_that_verification_authenticates() {
+    let (v1, _) = fixture(9);
+    assert_eq!(claimed_time(&v1), Ok(NOW / 1000));
+    let v2 = v2_fixture(9, 2, 5);
+    let verified = verify(&v2, ARTIFACT, &submitter(9), &v2_trust()).unwrap();
+    assert_eq!(claimed_time(&v2), Ok(verified.time));
+    let mut undated = v2;
+    set(
+        &mut undated,
+        "/verificationMaterial/timestampVerificationData",
+        json!({}),
+    );
+    assert!(claimed_time(&undated).is_err());
 }

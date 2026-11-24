@@ -140,6 +140,30 @@ pub fn verify(
     }
 }
 
+/// When a document bundle says its one entry was logged, in Unix seconds, before anything in it
+/// is checked: Rekor v1's integrated time, or the earliest RFC 3161 time of a Rekor v2 entry.
+/// [`verify`] returns the same time once it authenticates it.
+pub fn claimed_time(value: &serde_json::Value) -> Result<i64, String> {
+    let bundle = Bundle::deserialize(value)
+        .map_err(|error| format!("invalid Rekor document bundle: {error}"))?;
+    let [entry] = bundle.verification_material.tlog_entries.as_slice() else {
+        return Err("unsupported or ambiguous Rekor document bundle".into());
+    };
+    let timestamps = &bundle
+        .verification_material
+        .timestamp_verification_data
+        .rfc3161_timestamps;
+    match entry.kind_version.version.as_str() {
+        "0.0.1" => entry
+            .integrated_time
+            .as_deref()
+            .and_then(|time| time.parse().ok()),
+        "0.0.2" => tsa::claimed_time(timestamps),
+        _ => None,
+    }
+    .ok_or_else(|| "Rekor document bundle states no log time".into())
+}
+
 /// Rekor v1: the logged body names the artifact digest, the submission key and its signature.
 fn verify_binding(bundle: &Bundle, artifact: &[u8], submitter: &[u8]) -> Result<(), String> {
     let entry = &bundle.verification_material.tlog_entries[0];
@@ -205,7 +229,7 @@ const P256_SPKI_PREFIX: [u8; 26] = [
 ];
 
 /// A submission key in its one encoding: P-256 `SubjectPublicKeyInfo` DER with an uncompressed
-/// point, the bytes Rekor indexes the key's entries by.
+/// point, the bytes that Rekor v1 indexes the key's entries by and the Rekor v2 watcher looks for.
 pub fn submission_key(spki: &[u8]) -> Result<VerifyingKey, String> {
     spki.strip_prefix(&P256_SPKI_PREFIX)
         .filter(|point| point.len() == 65 && point[0] == 4)
@@ -213,9 +237,10 @@ pub fn submission_key(spki: &[u8]) -> Result<VerifyingKey, String> {
         .ok_or_else(|| "Rekor document profile requires a P-256 submission key".into())
 }
 
-/// The Rekor v1 submission that logs `artifact` under `submitter`, from an ECDSA signature
-/// over the artifact's SHA-256 that a key outside this process made, such as a Transit key.
-/// It holds the signature's low-S DER form, the only one clients accept.
+/// The Rekor v2 request that logs `artifact` under `submitter`, from an ECDSA signature over
+/// the artifact's SHA-256 that a key outside this process made, such as a Transit key. It
+/// holds the signature's low-S DER form, the only one clients accept. Rekor logs the body that
+/// [`v2_body`] builds from it.
 pub fn submission(artifact: &[u8], submitter: &[u8], signature: &[u8]) -> Result<String, String> {
     let key = submission_key(submitter)?;
     let digest = Sha256::digest(artifact);
@@ -224,19 +249,15 @@ pub fn submission(artifact: &[u8], submitter: &[u8], signature: &[u8]) -> Result
         .normalize_s();
     key.verify_prehash(&digest, &signature)
         .map_err(|_| "invalid Rekor ECDSA submission signature")?;
-    // Rekor stores the key as Go's PEM encoder writes it.
-    let pem = pem::encode_config(
-        &pem::Pem::new("PUBLIC KEY", submitter),
-        pem::EncodeConfig::new().set_line_ending(pem::LineEnding::LF),
-    );
     serde_json_canonicalizer::to_string(&serde_json::json!({
-        "apiVersion": "0.0.1",
-        "kind": "hashedrekord",
-        "spec": {
-            "data": {"hash": {"algorithm": "sha256", "value": hex::encode(digest)}},
+        "hashedRekordRequestV002": {
+            "digest": STANDARD.encode(digest),
             "signature": {
                 "content": STANDARD.encode(signature.to_der().as_bytes()),
-                "publicKey": {"content": STANDARD.encode(pem)},
+                "verifier": {
+                    "keyDetails": "PKIX_ECDSA_P256_SHA_256",
+                    "publicKey": {"rawBytes": STANDARD.encode(submitter)},
+                },
             },
         },
     }))

@@ -156,6 +156,18 @@ pub fn verify_rekor_document_inclusion(
     hashedrekord::verify(&value, artifact, submitter, trust).map_err(Error::Cryptographic)
 }
 
+/// When a document bundle says its entry was logged, in Unix seconds, before anything is checked.
+///
+/// This is Rekor v1's integrated time, or for Rekor v2 the earliest RFC 3161 time. It serves
+/// only as the clock for checking the bundle at that time, which
+/// [`verify_rekor_document_inclusion`] then returns once it authenticates it.
+///
+/// # Errors
+/// Rejects malformed bundles and bundles that state no time.
+pub fn claimed_document_log_time(bundle: &serde_json::Value) -> Result<i64, Error> {
+    hashedrekord::claimed_time(bundle).map_err(Error::InvalidBundle)
+}
+
 /// Check that `submitter` is a key the Rekor document profile accepts: P-256
 /// `SubjectPublicKeyInfo` DER with an uncompressed point.
 ///
@@ -167,11 +179,11 @@ pub fn check_document_submitter(submitter: &[u8]) -> Result<(), Error> {
         .map_err(Error::Cryptographic)
 }
 
-/// Prepare the Rekor v1 hashedrekord submission that logs exact artifact bytes under
+/// Prepare the Rekor v2 hashedrekord request that logs exact artifact bytes under
 /// `submitter`.
 ///
 /// The signature is a DER ECDSA signature over the artifact's SHA-256 that a non-exportable
-/// key made. It is verified and logged in its low-S form. Save the exact submission before
+/// key made. It is verified and logged in its low-S form. Save the exact request before
 /// delivery, so a retry repeats it.
 ///
 /// # Errors

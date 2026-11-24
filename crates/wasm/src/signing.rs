@@ -45,7 +45,7 @@ pub fn mldsa65_ed25519_signing_input(
     Ok(output.into())
 }
 
-/// Prepare the Rekor v1 entry that logs exact signed bytes under the `submitter` P-256
+/// Prepare the Rekor v2 request that logs exact signed bytes under the `submitter` P-256
 /// `SubjectPublicKeyInfo` DER, from a DER ECDSA signature over their SHA-256 that a
 /// non-exportable key made. The signed document's own signature remains independently
 /// mandatory.

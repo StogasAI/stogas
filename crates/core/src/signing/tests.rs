@@ -246,7 +246,7 @@ fn pure_mldsa_and_rekor_submissions_match_independent_go_keys_and_signatures() {
     )
     .unwrap();
     assert_eq!(
-        base64(&submission["spec"]["signature"]["content"]),
+        base64(&submission["hashedRekordRequestV002"]["signature"]["content"]),
         bytes(&v.rekor_signature)
     );
     let message = bytes(&v.message);
