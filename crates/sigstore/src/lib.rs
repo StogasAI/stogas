@@ -110,11 +110,10 @@ pub struct VerifiedAttestation {
 /// A verified Rekor entry that logged a document.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DocumentEntry {
-    /// Unix seconds: Rekor v1's signed entry time, or for Rekor v2, which signs no time, the
-    /// timestamp authority's.
+    /// Unix seconds from the timestamp authority, since Rekor v2 signs no entry time.
     pub time: i64,
-    /// Where a Rekor v2 log holds the entry. Rekor v1 is one log with a search index.
-    pub v2: Option<LogPosition>,
+    /// Where the log holds the entry.
+    pub position: LogPosition,
 }
 
 /// An entry's place in a Rekor v2 log.
@@ -128,16 +127,15 @@ pub struct LogPosition {
     pub log_start: Option<i64>,
 }
 
-/// Verify that the designated submitter logged exact artifact bytes through Rekor's
-/// SHA-256/ECDSA P-256 profile, and return when and, in Rekor v2, where it was logged.
+/// Verify that the designated submitter logged exact artifact bytes through Rekor v2's
+/// SHA-256/ECDSA P-256 profile, and return when and where it was logged.
 ///
-/// `submitter` is the P-256 `SubjectPublicKeyInfo` DER that must have submitted the entry,
-/// so a Rekor v1 search by that key finds every accepted entry. Only the low-S DER form of a
-/// signature counts, so nobody else can make a second accepted entry from a logged one. Rekor
-/// v2 has no search index: a caller that must find every entry also limits the logs and
-/// indexes it accepts and reads every entry there. The submission key does not approve the
-/// artifact: separately authenticate it with its trusted signing policy, including any
-/// post-quantum signature.
+/// `submitter` is the P-256 `SubjectPublicKeyInfo` DER that must have submitted the entry. Only
+/// the low-S DER form of a signature counts, so nobody else can make a second accepted entry
+/// from a logged one. Rekor v2 has no search index: a caller that must find every entry also
+/// limits the logs and indexes it accepts and reads every entry there. The submission key does
+/// not approve the artifact: separately authenticate it with its trusted signing policy,
+/// including any post-quantum signature.
 ///
 /// # Errors
 /// Rejects malformed bundles, substituted artifacts, other submitters, invalid signatures,
@@ -158,9 +156,8 @@ pub fn verify_rekor_document_inclusion(
 
 /// When a document bundle says its entry was logged, in Unix seconds, before anything is checked.
 ///
-/// This is Rekor v1's integrated time, or for Rekor v2 the earliest RFC 3161 time. It serves
-/// only as the clock for checking the bundle at that time, which
-/// [`verify_rekor_document_inclusion`] then returns once it authenticates it.
+/// This is its earliest RFC 3161 time. It serves only as the clock for checking the bundle at
+/// that time, which [`verify_rekor_document_inclusion`] then returns once it authenticates it.
 ///
 /// # Errors
 /// Rejects malformed bundles and bundles that state no time.

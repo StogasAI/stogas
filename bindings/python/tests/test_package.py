@@ -101,11 +101,12 @@ class PackageTests(unittest.TestCase):
             {"root": {**_root, "rekor_v2": {**SCOPE, "opened_from": "2026-10-31"}}},
             {"root": {**_root, "rekor_v2": {**SCOPE, "first_indexes": {"Log.Example": 1}}}},
             {"root": {**_root, "rekor_v2": {"first_indexes": {}}}},
+            {"root": {key: value for key, value in _root.items() if key != "rekor_v2"}},
         ):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 EvidenceVerifier(**options)
 
-    def test_root_document_keeps_its_rekor_v2_scope(self):
+    def test_root_document_names_its_rekor_v2_scope(self):
         EvidenceVerifier(root={**_root, "rekor_v2": SCOPE})
 
     def test_verified_values_cannot_be_fabricated(self):

@@ -31,9 +31,8 @@ export interface RootKey {
     key_id: string;
     public_key: string;
     rekor_public_key: string;
-    /** Where the root's documents count in Rekor v2, and until `opened_from` in Rekor v1.
-     * Without it, every Rekor v1 entry counts and no Rekor v2 entry does. */
-    rekor_v2?: { first_indexes: Record<string, number>; opened_from: string };
+    /** Where the root's documents count in Rekor v2. */
+    rekor_v2: { first_indexes: Record<string, number>; opened_from: string };
 }
 "#;
 

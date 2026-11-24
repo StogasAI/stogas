@@ -4,56 +4,8 @@ use p256::ecdsa::signature::hazmat::PrehashSigner as _;
 use serde_json::{Value, json};
 
 const ARTIFACT: &[u8] = b"exact document bytes, including its independent author signature\n";
-const NOW: i64 = 1_790_000_000_000;
-
 fn log_key() -> SigningKey {
     SigningKey::from_bytes(&[33; 32])
-}
-
-fn root() -> TrustedRoot {
-    let spki = log_key().verifying_key().to_public_key_der().unwrap();
-    TrustedRoot::from_json(
-        &json!({
-            "mediaType": "application/vnd.dev.sigstore.trustedroot+json;version=0.1",
-            "certificateAuthorities": [], "ctlogs": [], "timestampAuthorities": [],
-            "tlogs": [{
-                "baseUrl": "https://rekor.sigstore.dev", "hashAlgorithm": "SHA2_256",
-                "publicKey": {"rawBytes":STANDARD.encode(&spki), "keyDetails":"PKIX_ED25519"},
-                "logId": {"keyId":STANDARD.encode(Sha256::digest(&spki))}
-            }]
-        })
-        .to_string(),
-    )
-    .unwrap()
-}
-
-/// Sign the one-leaf test log independently of the document submission signature.
-fn seal_body(bundle: &mut Value, body: &Value) {
-    let body = serde_json_canonicalizer::to_vec(body).unwrap();
-    let log = log_key();
-    let spki = log.verifying_key().to_public_key_der().unwrap();
-    let id = Sha256::digest(&spki);
-    let root = Sha256::digest([&[0][..], body.as_slice()].concat());
-    let checkpoint = format!("rekor.sigstore.dev - 1\n1\n{}\n", STANDARD.encode(root));
-    let checkpoint_signature = log.sign(checkpoint.as_bytes());
-    let checkpoint = format!(
-        "{checkpoint}\n— rekor.sigstore.dev {}\n",
-        STANDARD.encode([&id[..4], checkpoint_signature.to_bytes().as_slice()].concat())
-    );
-    let set = serde_json_canonicalizer::to_vec(&json!({
-        "body": STANDARD.encode(&body), "integratedTime": NOW / 1000,
-        "logID": hex::encode(id), "logIndex":0
-    }))
-    .unwrap();
-    bundle["verificationMaterial"]["tlogEntries"] = json!([{
-        "logIndex":"0", "logId":{"keyId":STANDARD.encode(id)},
-        "kindVersion":{"kind":"hashedrekord","version":"0.0.1"},
-        "integratedTime": (NOW / 1000).to_string(),
-        "canonicalizedBody":STANDARD.encode(&body),
-        "inclusionPromise":{"signedEntryTimestamp":STANDARD.encode(log.sign(&set).to_bytes())},
-        "inclusionProof":{"logIndex":"0","rootHash":STANDARD.encode(root),"treeSize":"1",
-            "hashes":[], "checkpoint":{"envelope":checkpoint}}
-    }]);
 }
 
 fn submission_key(seed: u8) -> p256::ecdsa::SigningKey {
@@ -83,80 +35,36 @@ fn twin(signature: &Signature) -> Signature {
     Signature::from_scalars(r, -s).unwrap()
 }
 
-fn fixture(seed: u8) -> (Value, Value) {
-    let spki = submitter(seed);
-    let signature = der(&signature(seed, ARTIFACT));
-    let public_key = pem::encode(&pem::Pem::new("PUBLIC KEY", spki.clone()));
-    let body = json!({"apiVersion":"0.0.1","kind":"hashedrekord","spec":{
-        "data":{"hash":{"algorithm":"sha256","value":hex::encode(Sha256::digest(ARTIFACT))}},
-        "signature":{"content":STANDARD.encode(&signature),
-            "publicKey":{"content":STANDARD.encode(public_key)}}
-    }});
-    let mut bundle = json!({
-        "mediaType":crate::SIGSTORE_BUNDLE_MEDIA_TYPE,
-        "messageSignature":{
-            "messageDigest":{"algorithm":"SHA2_256","digest":STANDARD.encode(Sha256::digest(ARTIFACT))},
-            "signature":STANDARD.encode(&signature)
-        },
-        "verificationMaterial":{
-            "publicKey":{"hint":hex::encode(Sha256::digest(&spki))},
-            "timestampVerificationData":{}, "tlogEntries":[]
-        }
-    });
-    seal_body(&mut bundle, &body);
-    (bundle, body)
-}
-
 #[test]
 fn proves_exact_publication_by_the_designated_submitter_but_never_trusts_a_supplied_log() {
-    // Qualify the fuzz seed's independently generated Go submission signature.
-    // A valid artifact binding still cannot authenticate its synthetic log proof.
+    // The fuzz seed is a valid submission in a log that only this test's trusted root names.
     let seed: Value = serde_json::from_str(include_str!(
-        "../../../../tests/fixtures/rekor-document-v1.json"
+        "../../../../tests/fixtures/rekor-document-v2.json"
     ))
     .unwrap();
-    let artifact = seed["artifact"].as_str().unwrap().as_bytes();
-    let parsed: Bundle = serde_json::from_value(seed["bundle"].clone()).unwrap();
-    let go_submitter = hex::decode(seed["submission_key_spki"].as_str().unwrap()).unwrap();
-    verify_binding(&parsed, artifact, &go_submitter).unwrap();
-    assert!(verify_binding(&parsed, artifact, &submitter(9)).is_err());
+    assert_eq!(seed["artifact"].as_str().unwrap().as_bytes(), ARTIFACT);
+    assert_eq!(
+        seed["submission_key_spki"].as_str().unwrap(),
+        hex::encode(submitter(9))
+    );
+    assert_eq!(seed["bundle"], v2_fixture(9, 2, 5));
+    let bundle = serde_json::to_vec(&seed["bundle"]).unwrap();
+    verify(&seed["bundle"], ARTIFACT, &submitter(9), &v2_trust()).unwrap();
     assert!(
         crate::verify_rekor_document_inclusion(
             TrustedRoot::production(),
-            &serde_json::to_vec(&seed["bundle"]).unwrap(),
-            artifact,
-            &go_submitter
+            &bundle,
+            ARTIFACT,
+            &submitter(9)
         )
         .is_err()
     );
-    for seed in [8, 9] {
-        let (bundle, _) = fixture(seed);
-        let designated = submitter(seed);
-        assert_eq!(
-            verify(&bundle, ARTIFACT, &designated, &root()).unwrap(),
-            crate::DocumentEntry {
-                time: NOW / 1000,
-                v2: None
-            }
-        );
-        assert!(verify(&bundle, b"substituted document", &designated, &root()).is_err());
-        // Anyone can log the same bytes, but only the designated key's entries are findable.
-        assert!(verify(&bundle, ARTIFACT, &submitter(seed + 1), &root()).is_err());
-        assert!(
-            crate::verify_rekor_document_inclusion(
-                TrustedRoot::production(),
-                &serde_json::to_vec(&bundle).unwrap(),
-                ARTIFACT,
-                &designated
-            )
-            .is_err()
-        );
-    }
 }
 
 #[test]
-fn rejects_mutated_log_proofs_bundle_hints_and_ambiguous_formats() {
-    let (original, _) = fixture(9);
+fn rejects_bundles_whose_digest_hint_or_signature_differ_and_ambiguous_formats() {
+    let original = v2_fixture(9, 2, 5);
+    let rejects = |bundle: &Value| verify(bundle, ARTIFACT, &submitter(9), &v2_trust()).is_err();
     for (pointer, replacement) in [
         (
             "/mediaType",
@@ -175,91 +83,36 @@ fn rejects_mutated_log_proofs_bundle_hints_and_ambiguous_formats() {
             json!(STANDARD.encode([0; 64])),
         ),
         (
+            "/messageSignature/signature",
+            json!(STANDARD.encode(der(&signature(8, ARTIFACT)))),
+        ),
+        (
             "/verificationMaterial/publicKey/hint",
             json!("a".repeat(64)),
-        ),
-        (
-            "/verificationMaterial/tlogEntries/0/kindVersion/kind",
-            json!("dsse"),
-        ),
-        (
-            "/verificationMaterial/tlogEntries/0/integratedTime",
-            json!("1"),
-        ),
-        (
-            "/verificationMaterial/tlogEntries/0/inclusionPromise/signedEntryTimestamp",
-            json!(STANDARD.encode([0; 64])),
-        ),
-        (
-            "/verificationMaterial/tlogEntries/0/inclusionProof/rootHash",
-            json!(STANDARD.encode([0; 32])),
-        ),
-        (
-            "/verificationMaterial/tlogEntries/0/inclusionProof/hashes",
-            json!([STANDARD.encode([0; 32])]),
-        ),
-        (
-            "/verificationMaterial/tlogEntries/0/inclusionProof/checkpoint/envelope",
-            json!("bad checkpoint"),
         ),
         ("/verificationMaterial/tlogEntries", json!([])),
     ] {
         let mut bundle = original.clone();
         *bundle.pointer_mut(pointer).unwrap() = replacement;
-        assert!(
-            verify(&bundle, ARTIFACT, &submitter(9), &root()).is_err(),
-            "{pointer}"
-        );
+        assert!(rejects(&bundle), "{pointer}");
     }
     let mut bundle = original.clone();
-    bundle["verificationMaterial"]["tlogEntries"]
-        .as_array_mut()
-        .unwrap()
-        .push(original["verificationMaterial"]["tlogEntries"][0].clone());
-    assert!(verify(&bundle, ARTIFACT, &submitter(9), &root()).is_err());
-    bundle = original;
     bundle["dsseEnvelope"] = json!({});
-    assert!(verify(&bundle, ARTIFACT, &submitter(9), &root()).is_err());
-}
-
-#[test]
-fn even_a_valid_log_cannot_substitute_the_artifact_hash_key_or_signature() {
-    let (original, body) = fixture(9);
-    for (pointer, replacement) in [
-        ("/apiVersion", json!("0.0.2")),
-        ("/kind", json!("rekord")),
-        ("/spec/data/hash/algorithm", json!("sha512")),
-        ("/spec/data/hash/value", json!("a".repeat(64))),
-        ("/spec/signature/content", json!(STANDARD.encode([0; 64]))),
-        (
-            "/spec/signature/publicKey/content",
-            json!(STANDARD.encode("bad public key")),
-        ),
-    ] {
-        let mut changed = body.clone();
-        *changed.pointer_mut(pointer).unwrap() = replacement;
-        let mut bundle = original.clone();
-        seal_body(&mut bundle, &changed);
-        assert!(
-            verify(&bundle, ARTIFACT, &submitter(9), &root()).is_err(),
-            "{pointer}"
-        );
-    }
+    assert!(rejects(&bundle));
     // Anyone can log the high-S twin of a logged signature. It verifies, but clients refuse it.
     let low = signature(9, ARTIFACT);
-    let high = STANDARD.encode(der(&twin(&low)));
     assert!(
         submission_key(9)
             .verifying_key()
             .verify_prehash(&Sha256::digest(ARTIFACT), &twin(&low))
             .is_ok()
     );
-    let mut changed = body;
-    changed["spec"]["signature"]["content"] = json!(high);
     let mut bundle = original;
-    bundle["messageSignature"]["signature"] = json!(high);
-    seal_body(&mut bundle, &changed);
-    assert!(verify(&bundle, ARTIFACT, &submitter(9), &root()).is_err());
+    bundle["messageSignature"]["signature"] = json!(STANDARD.encode(der(&twin(&low))));
+    assert_eq!(
+        verify(&bundle, ARTIFACT, &submitter(9), &v2_trust()),
+        Err("Rekor submission signature is not low-S DER".into())
+    );
 }
 
 #[test]
@@ -539,12 +392,12 @@ fn proves_rekor_v2_publication_at_the_timestamp_authority_time() {
     let time = i64::try_from(crate::rfc3339::unix_time(TIMESTAMPED).unwrap().as_secs()).unwrap();
     let entry = |index: usize| crate::DocumentEntry {
         time,
-        v2: Some(crate::LogPosition {
+        position: crate::LogPosition {
             origin: V2_LOG.into(),
             index: index as u64,
             // v2_trust's log key opens on 2026-01-01.
             log_start: Some(1_767_225_600),
-        }),
+        },
     };
     // Every position in trees of every shape, including each tree's right edge.
     for size in 1..=9 {
@@ -589,7 +442,7 @@ fn proves_rekor_v2_publication_at_the_timestamp_authority_time() {
         assert_eq!(
             verify(&bundle, ARTIFACT, &submitter(9), &trust)
                 .ok()
-                .map(|entry| entry.v2.unwrap().log_start),
+                .map(|entry| entry.position.log_start),
             start,
             "{validity}"
         );
@@ -767,20 +620,7 @@ fn rekor_v2_checkpoints_are_the_logs_own() {
 }
 
 #[test]
-fn rekor_v1_document_proofs_carry_no_timestamps() {
-    let (mut bundle, _) = fixture(9);
-    set(
-        &mut bundle,
-        "/verificationMaterial/timestampVerificationData",
-        json!({"rfc3161Timestamps": [{"signedTimestamp": vectors()["document_signature_timestamp"]}]}),
-    );
-    assert!(verify(&bundle, ARTIFACT, &submitter(9), &root()).is_err());
-}
-
-#[test]
 fn claims_the_log_time_that_verification_authenticates() {
-    let (v1, _) = fixture(9);
-    assert_eq!(claimed_time(&v1), Ok(NOW / 1000));
     let v2 = v2_fixture(9, 2, 5);
     let verified = verify(&v2, ARTIFACT, &submitter(9), &v2_trust()).unwrap();
     assert_eq!(claimed_time(&v2), Ok(verified.time));

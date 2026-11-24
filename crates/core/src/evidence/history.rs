@@ -116,12 +116,7 @@ mod tests {
         assert_eq!(summary["document"], evidence["document"]);
         // The appraisal runs at the authenticated log time, never one the bundle merely claims.
         let logged =
-            evidence["inclusion"]["verificationMaterial"]["tlogEntries"][0]["integratedTime"]
-                .as_str()
-                .unwrap()
-                .parse::<i64>()
-                .unwrap()
-                * 1000;
+            stogas_sigstore::claimed_document_log_time(&evidence["inclusion"]).unwrap() * 1000;
         let mut moved = evidence.clone();
         moved["inclusion"]["verificationMaterial"]["tlogEntries"][0]["integratedTime"] =
             json!((logged / 1000 + 1).to_string());
@@ -151,8 +146,8 @@ mod tests {
                 json!("0".repeat(64)),
             ),
             (
-                "/inclusion/verificationMaterial/tlogEntries/0/integratedTime",
-                json!("1"),
+                "/inclusion/verificationMaterial/timestampVerificationData/rfc3161Timestamps/0/signedTimestamp",
+                json!("AAAA"),
             ),
             (
                 "/inclusion/verificationMaterial/tlogEntries/0/inclusionProof/rootHash",

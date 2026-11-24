@@ -39,19 +39,6 @@ pub fn verify(
     Ok(integrated_time)
 }
 
-/// Verify log signatures, time and inclusion. The caller binds the entry body to its artifact.
-pub fn verify_publication(entry: &TransparencyLogEntry, root: &TrustedRoot) -> Result<i64, String> {
-    let integrated_time = integrated_time(entry)?;
-    if integrated_time <= 0 {
-        return Err("Rekor integrated time is invalid".into());
-    }
-    let log_id = decode_32(&entry.log_id.key_id, "Rekor log id")?;
-    let log_key = root.rekor_key_at(&log_id, integrated_time)?;
-    verify_set(entry, &log_id, &log_key.spki)?;
-    verify_inclusion(entry, log_key)?;
-    Ok(integrated_time)
-}
-
 /// Verify a Rekor v2 entry whose canonical body the caller rebuilt from the bundle, as
 /// sigstore-go does, so the logged leaf commits to the bundle's digest, signature and key.
 ///

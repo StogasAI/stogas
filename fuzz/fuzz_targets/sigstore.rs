@@ -14,7 +14,7 @@ const FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/gateway-v0.0.1-attes
 /// Bundle, artifact and designated submitter of the Rekor document seed.
 static DOCUMENT: LazyLock<(Vec<u8>, Vec<u8>, Vec<u8>)> = LazyLock::new(|| {
     let fixture: serde_json::Value =
-        serde_json::from_str(include_str!("../../tests/fixtures/rekor-document-v1.json")).unwrap();
+        serde_json::from_str(include_str!("../../tests/fixtures/rekor-document-v2.json")).unwrap();
     let submitter = fixture["submission_key_spki"].as_str().unwrap();
     (
         serde_json::to_vec(&fixture["bundle"]).unwrap(),
@@ -28,9 +28,8 @@ static DOCUMENT: LazyLock<(Vec<u8>, Vec<u8>, Vec<u8>)> = LazyLock::new(|| {
 
 fuzz_target!(|data: &[u8]| {
     if data.first() == Some(&b'H') {
-        // The GitHub DSSE seed cannot reach hashedrekord's key/digest parser.
-        // Start with a valid independently generated submission binding instead;
-        // the synthetic log proof itself must never establish trust.
+        // The GitHub DSSE seed cannot reach hashedrekord's key and digest parser. Start with a
+        // valid submission instead; its test log must never establish trust.
         let candidate = mutate_fixture(&DOCUMENT.0, &data[1..]);
         let _ = stogas_sigstore::verify_rekor_document_inclusion(
             &TRUST,

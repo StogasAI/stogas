@@ -34,7 +34,7 @@ fn root(seed: u8) -> RootKey {
         key_id: key.key_id,
         public_key: key.public_key,
         rekor_public_key: key.rekor_public_key,
-        rekor_v2: None,
+        rekor_v2: scope(0, "2026-10-31T00:00:00Z"),
     }
 }
 
@@ -101,7 +101,12 @@ fn verified_keys(keys: &KeyManifest) -> VerifiedKeys {
 
 fn check(document: EvidenceDocument) -> Result<VerifiedEvidence, Error> {
     let keys = verified_keys(&document.keys.document);
-    check_document(keys, document, Arc::clone(&sigstore_fixture().1), None)
+    check_document(
+        keys,
+        document,
+        Arc::clone(&sigstore_fixture().1),
+        scope(0, "2026-10-31T00:00:00Z"),
+    )
 }
 
 // Exercises acceptance independently of Rekor's existing cryptographic test suite. Production
@@ -189,7 +194,7 @@ fn actual_logged_evidence_verifies_and_rejects_substituted_material() {
         "/document/keys/signature/signature",
         "/document/keys/inclusion/verificationMaterial/publicKey/hint",
         "/document/keys/inclusion/verificationMaterial/tlogEntries/0/canonicalizedBody",
-        "/document/keys/inclusion/verificationMaterial/tlogEntries/0/inclusionPromise/signedEntryTimestamp",
+        "/document/keys/inclusion/verificationMaterial/timestampVerificationData/rfc3161Timestamps/0/signedTimestamp",
         "/document/keys/inclusion/verificationMaterial/tlogEntries/0/inclusionProof/rootHash",
         "/document/keys/inclusion/verificationMaterial/tlogEntries/0/inclusionProof/checkpoint/envelope",
         "/signature/signature",
@@ -216,8 +221,8 @@ fn only_the_designated_rekor_key_can_log_a_signature() {
     let mut keys = session["evidence"]["document"]["keys"].clone();
     let verify = |keys: &Value| authority.verify_keys(&serde_json::to_vec(keys).unwrap(), trust);
     verify(&keys).unwrap();
-    // Another Rekor key logged the same root-signed manifest; a search by the root's key
-    // would miss that entry.
+    // Another Rekor key logged the same root-signed manifest, so the watcher, which looks for
+    // the root's key, would miss that entry.
     let republication: Value = serde_json::from_str(include_str!(
         "../../../../tests/fixtures/rekor-republication-v1.json"
     ))
@@ -234,7 +239,7 @@ fn only_the_designated_rekor_key_can_log_a_signature() {
             &evidence.inclusion,
             trust,
             submitter,
-            None,
+            &root.rekor_v2,
         )
     };
     logged(&evidence.document.keys.document.active_key.rekor_public_key).unwrap();
@@ -256,16 +261,12 @@ fn scope(first_index: u64, opened_from: &str) -> RekorV2Scope {
 fn v2(origin: &str, index: u64, log_start: Option<i64>) -> DocumentEntry {
     DocumentEntry {
         time: OPENED_FROM,
-        v2: Some(LogPosition {
+        position: LogPosition {
             origin: origin.into(),
             index,
             log_start,
-        }),
+        },
     }
-}
-
-fn v1(time: i64) -> DocumentEntry {
-    DocumentEntry { time, v2: None }
 }
 
 // 2026-10-31T00:00:00Z.
@@ -296,31 +297,9 @@ fn entries_count_only_where_the_watcher_reads_every_entry() {
         (v2("log2026-1.rekor.sigstore.dev", 0, None), false),
         // Origins match exactly.
         (v2("LOG2025-1.rekor.sigstore.dev", 1000, None), false),
-        // Rekor v1 counts only for what it logged before the move.
-        (v1(OPENED_FROM - 1), true),
-        (v1(OPENED_FROM), false),
     ] {
-        assert_eq!(
-            check_rekor_scope(&entry, Some(&scope)).is_ok(),
-            counts,
-            "{entry:?}"
-        );
+        assert_eq!(scope.admits(&entry), Ok(counts), "{entry:?}");
     }
-    assert_eq!(
-        check_rekor_scope(&v1(OPENED_FROM), Some(&scope)),
-        Err(Error::Transparency(
-            "Rekor v1 entry is newer than the root's move to Rekor v2".into()
-        ))
-    );
-    // A root without a scope accepts every Rekor v1 entry, which its search index finds, and no
-    // Rekor v2 entry.
-    check_rekor_scope(&v1(i64::MAX), None).unwrap();
-    assert_eq!(
-        check_rekor_scope(&v2(V2_LOG, 1000, Some(OPENED_FROM)), None),
-        Err(Error::Transparency(format!(
-            "Rekor v2 entry 1000 of {V2_LOG} is outside the root's Rekor v2 scope"
-        )))
-    );
 }
 
 #[test]
@@ -329,10 +308,9 @@ fn roots_name_rekor_v2_scopes_exactly() {
         rekor_v2,
         ..root(1)
     };
-    Authority::new(Environment::Production, with(None)).unwrap();
     Authority::new(
         Environment::Production,
-        with(Some(scope(0, "2026-10-31T00:00:00Z"))),
+        with(scope(0, "2026-10-31T00:00:00Z")),
     )
     .unwrap();
     for opened_from in [
@@ -343,7 +321,7 @@ fn roots_name_rekor_v2_scopes_exactly() {
         "",
     ] {
         assert!(
-            Authority::new(Environment::Production, with(Some(scope(0, opened_from)))).is_err(),
+            Authority::new(Environment::Production, with(scope(0, opened_from))).is_err(),
             "{opened_from}"
         );
     }
@@ -357,23 +335,27 @@ fn roots_name_rekor_v2_scopes_exactly() {
         let mut scope = scope(0, "2026-10-31T00:00:00Z");
         scope.first_indexes = BTreeMap::from([(origin.to_owned(), 0)]);
         assert!(
-            Authority::new(Environment::Production, with(Some(scope))).is_err(),
+            Authority::new(Environment::Production, with(scope)).is_err(),
             "{origin}"
         );
     }
-    // The compiled roots parse, and a root without a scope serializes as it did before.
-    let json = serde_json::to_value(with(None)).unwrap();
-    assert!(json.get("rekor_v2").is_none());
     let scoped: RootKey = serde_json::from_value(serde_json::json!({
         "key_id": "k", "public_key": "p", "rekor_public_key": "r",
         "rekor_v2": {"first_indexes": {V2_LOG: 5}, "opened_from": "2026-10-31T00:00:00Z"}
     }))
     .unwrap();
-    assert_eq!(scoped.rekor_v2, Some(scope(5, "2026-10-31T00:00:00Z")));
+    assert_eq!(scoped.rekor_v2, scope(5, "2026-10-31T00:00:00Z"));
     assert!(
         serde_json::from_value::<RootKey>(serde_json::json!({
             "key_id": "k", "public_key": "p", "rekor_public_key": "r",
             "rekor_v2": {"first_indexes": {}, "opened_from": "2026-10-31T00:00:00Z", "other": 1}
+        }))
+        .is_err()
+    );
+    // A root names its scope, since no entry counts without one.
+    assert!(
+        serde_json::from_value::<RootKey>(serde_json::json!({
+            "key_id": "k", "public_key": "p", "rekor_public_key": "r"
         }))
         .is_err()
     );
@@ -647,7 +629,7 @@ fn signatures_are_bound_to_the_active_key_document_and_purpose() {
                 verified_keys(&keys),
                 substituted,
                 Arc::clone(&sigstore_fixture().1),
-                None
+                scope(0, "2026-10-31T00:00:00Z")
             )
             .unwrap_err(),
             Error::Invalid("verified keys or Sigstore files differ".into())
@@ -907,13 +889,8 @@ fn production_build_cannot_parse_staging_authorization() {
 fn compiled_staging_root_verifies_actual_logged_operational_delegation() {
     let bytes = include_bytes!("../../../../tests/fixtures/staging-key-manifest.json");
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
-    let now = value["inclusion"]["verificationMaterial"]["tlogEntries"][0]["integratedTime"]
-        .as_str()
-        .unwrap()
-        .parse::<i64>()
-        .unwrap()
-        * 1000
-        + 1000;
+    let now =
+        stogas_sigstore::claimed_document_log_time(&value["inclusion"]).unwrap() * 1000 + 1000;
     let verifier = crate::evidence::Verifier::stogas(Environment::Staging).unwrap();
     let sigstore = &sigstore_fixture().1;
     let keys = verifier.verify_key_manifest(bytes, sigstore, now).unwrap();
@@ -921,10 +898,10 @@ fn compiled_staging_root_verifies_actual_logged_operational_delegation() {
         keys.active_key.key_id,
         "staging-stogas-online-2026-11-23-01"
     );
-    assert_eq!(keys.generation, 1);
+    assert_eq!(keys.generation, 5);
     assert!(keys.retired_keys.is_empty());
     let mut changed = value;
-    changed["document"]["generation"] = json!(2);
+    changed["document"]["generation"] = json!(6);
     assert!(
         verifier
             .verify_key_manifest(&serde_json::to_vec(&changed).unwrap(), sigstore, now)

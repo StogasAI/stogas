@@ -48,47 +48,6 @@ struct PublicKeyHint {
     hint: String,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Body {
-    api_version: String,
-    kind: String,
-    spec: Spec,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Spec {
-    data: Data,
-    signature: SubmissionSignature,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Data {
-    hash: Hash,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Hash {
-    algorithm: String,
-    value: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SubmissionSignature {
-    content: String,
-    public_key: PublicKey,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PublicKey {
-    content: String,
-}
-
 pub fn verify(
     value: &serde_json::Value,
     artifact: &[u8],
@@ -107,95 +66,43 @@ pub fn verify(
         .verification_material
         .timestamp_verification_data
         .rfc3161_timestamps;
-    match (
-        entry.kind_version.kind.as_str(),
-        entry.kind_version.version.as_str(),
-    ) {
-        ("hashedrekord", "0.0.1") if timestamps.is_empty() => {
-            verify_binding(&bundle, artifact, submitter)?;
-            Ok(crate::DocumentEntry {
-                time: tlog::verify_publication(entry, root)?,
-                v2: None,
-            })
-        }
-        ("hashedrekord", "0.0.2") => {
-            let signature = verify_submission(&bundle, artifact, submitter)?;
-            // Rekor v2 signs no entry time, so the timestamp authority's dates the entry.
-            let time = tsa::verify_all(timestamps, &signature, root)?
-                .ok_or_else(|| "Rekor v2 entries require an RFC 3161 timestamp".to_owned())?;
-            let body = v2_body(
-                "SHA2_256",
-                &Sha256::digest(artifact),
-                &signature,
-                "PKIX_ECDSA_P256_SHA_256",
-                &serde_json::json!({"publicKey": {"rawBytes": STANDARD.encode(submitter)}}),
-            )?;
-            let position = tlog::verify_v2(entry, &body, time, root)?;
-            Ok(crate::DocumentEntry {
-                time,
-                v2: Some(position),
-            })
-        }
-        _ => Err("only Rekor hashedrekord v0.0.1 and v0.0.2 entries are supported for document inclusion".into()),
+    if entry.kind_version.kind != "hashedrekord" || entry.kind_version.version != "0.0.2" {
+        return Err(
+            "only Rekor hashedrekord v0.0.2 entries are supported for document inclusion".into(),
+        );
     }
+    let signature = verify_submission(&bundle, artifact, submitter)?;
+    // Rekor v2 signs no entry time, so the timestamp authority's dates the entry.
+    let time = tsa::verify_all(timestamps, &signature, root)?
+        .ok_or_else(|| "Rekor v2 entries require an RFC 3161 timestamp".to_owned())?;
+    let body = v2_body(
+        "SHA2_256",
+        &Sha256::digest(artifact),
+        &signature,
+        "PKIX_ECDSA_P256_SHA_256",
+        &serde_json::json!({"publicKey": {"rawBytes": STANDARD.encode(submitter)}}),
+    )?;
+    let position = tlog::verify_v2(entry, &body, time, root)?;
+    Ok(crate::DocumentEntry { time, position })
 }
 
 /// When a document bundle says its one entry was logged, in Unix seconds, before anything in it
-/// is checked: Rekor v1's integrated time, or the earliest RFC 3161 time of a Rekor v2 entry.
-/// [`verify`] returns the same time once it authenticates it.
+/// is checked: its earliest RFC 3161 time. [`verify`] returns the same time once it
+/// authenticates it.
 pub fn claimed_time(value: &serde_json::Value) -> Result<i64, String> {
     let bundle = Bundle::deserialize(value)
         .map_err(|error| format!("invalid Rekor document bundle: {error}"))?;
-    let [entry] = bundle.verification_material.tlog_entries.as_slice() else {
-        return Err("unsupported or ambiguous Rekor document bundle".into());
-    };
-    let timestamps = &bundle
-        .verification_material
-        .timestamp_verification_data
-        .rfc3161_timestamps;
-    match entry.kind_version.version.as_str() {
-        "0.0.1" => entry
-            .integrated_time
-            .as_deref()
-            .and_then(|time| time.parse().ok()),
-        "0.0.2" => tsa::claimed_time(timestamps),
-        _ => None,
-    }
+    tsa::claimed_time(
+        &bundle
+            .verification_material
+            .timestamp_verification_data
+            .rfc3161_timestamps,
+    )
     .ok_or_else(|| "Rekor document bundle states no log time".into())
 }
 
-/// Rekor v1: the logged body names the artifact digest, the submission key and its signature.
-fn verify_binding(bundle: &Bundle, artifact: &[u8], submitter: &[u8]) -> Result<(), String> {
-    let entry = &bundle.verification_material.tlog_entries[0];
-    if entry.kind_version.kind != "hashedrekord" || entry.kind_version.version != "0.0.1" {
-        return Err("only Rekor hashedrekord v0.0.1 is supported for document inclusion".into());
-    }
-    let raw = decode(&entry.canonicalized_body)?;
-    let body: Body = serde_json::from_value(
-        crate::strict_json::from_slice(&raw).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| format!("invalid Rekor document body: {error}"))?;
-    if body.kind != "hashedrekord"
-        || body.api_version != "0.0.1"
-        || body.spec.data.hash.algorithm != "sha256"
-        || body.spec.data.hash.value != hex::encode(Sha256::digest(artifact))
-    {
-        return Err("Rekor document hash does not bind the exact artifact bytes".into());
-    }
-    let pem = pem::parse(decode(&body.spec.signature.public_key.content)?)
-        .map_err(|_| "invalid Rekor submission public key")?;
-    // Rekor indexes entries by this key, so a search by the designated key finds every entry.
-    if pem.tag() != "PUBLIC KEY" || pem.contents() != submitter {
-        return Err("Rekor entry was not submitted by the designated key".into());
-    }
-    if decode(&body.spec.signature.content)? != decode(&bundle.message_signature.signature)? {
-        return Err("Rekor submission signature differs from the bundle".into());
-    }
-    verify_submission(bundle, artifact, submitter).map(drop)
-}
-
-/// The bundle's digest, key hint and ECDSA signature, which both Rekor versions log, and the
-/// signature bytes.
+/// The bundle's digest, key hint and ECDSA signature, which the entry logs, and the signature
+/// bytes.
 fn verify_submission(
     bundle: &Bundle,
     artifact: &[u8],
@@ -229,7 +136,7 @@ const P256_SPKI_PREFIX: [u8; 26] = [
 ];
 
 /// A submission key in its one encoding: P-256 `SubjectPublicKeyInfo` DER with an uncompressed
-/// point, the bytes that Rekor v1 indexes the key's entries by and the Rekor v2 watcher looks for.
+/// point, the bytes that the Rekor watcher looks for.
 pub fn submission_key(spki: &[u8]) -> Result<VerifyingKey, String> {
     spki.strip_prefix(&P256_SPKI_PREFIX)
         .filter(|point| point.len() == 65 && point[0] == 4)

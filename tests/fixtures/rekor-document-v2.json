@@ -1,0 +1,53 @@
+{
+  "artifact": "exact document bytes, including its independent author signature\n",
+  "bundle": {
+    "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+    "messageSignature": {
+      "messageDigest": {
+        "algorithm": "SHA2_256",
+        "digest": "z1tsOCBCESIduXzjL1fpQf4XGd29up5ap2PeF6Tlo0c="
+      },
+      "signature": "MEQCIGzBrBJ67sP415ezKDNpmRWl2Z2NCy7klgKFQt3i3MrEAiAYFEdGLqNsfSKds2b0tJY3XQYHdYsfwqJN4gj4VZ1G0A=="
+    },
+    "verificationMaterial": {
+      "publicKey": {
+        "hint": "0ca9bbe6c59d6a770f864ca136e378b35033297cef665289225f4357d1c2d744"
+      },
+      "timestampVerificationData": {
+        "rfc3161Timestamps": [
+          {
+            "signedTimestamp": "MIIE6jADAgEAMIIE4QYJKoZIhvcNAQcCoIIE0jCCBM4CAQMxDTALBglghkgBZQMEAgEwgcIGCyqGSIb3DQEJEAEEoIGyBIGvMIGsAgEBBgkrBgEEAYO/MAIwMTANBglghkgBZQMEAgEFAAQgmhk6t158gTKow1tSFNYVF6vpBSbah9ZRZBVOU8p8ue4CFQCCzg2nX6hwP3nUGVHMZjoEyFeSUxgPMjAyNjExMjMyMDA2NTlaMAMCAQECCGMurpk/+eq3oDKkMDAuMRUwEwYDVQQKEwxzaWdzdG9yZS5kZXYxFTATBgNVBAMTDHNpZ3N0b3JlLXRzYaCCAhQwggIQMIIBlqADAgECAhQ6E1QvDJBh7rzBQy/Lio6LKiOLDDAKBggqhkjOPQQDAzA5MRUwEwYDVQQKEwxzaWdzdG9yZS5kZXYxIDAeBgNVBAMTF3NpZ3N0b3JlLXRzYS1zZWxmc2lnbmVkMB4XDTI1MDQwODA2NTk0M1oXDTM1MDQwNjA2NTk0M1owLjEVMBMGA1UEChMMc2lnc3RvcmUuZGV2MRUwEwYDVQQDEwxzaWdzdG9yZS10c2EwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAATitrZnyEo2KDZP2QWMIBOgYbfSOTL5ZC/cHMv6Yq+HVIo1H9TC7Cx80KDiyvKhgB3wTqKyi9UDczhqg12b1AOLnRnydMTK+qB8M+1MjBci1+Jb8AV/VXu7CRuQCiPTHFyjajBoMA4GA1UdDwEB/wQEAwIHgDAdBgNVHQ4EFgQUif15Q4fP0GVGwwJGxyxzW3206wMwHwYDVR0jBBgwFoAUmOwB73+7Uf/UlR5vioiYUweJzr8wFgYDVR0lAQH/BAwwCgYIKwYBBQUHAwgwCgYIKoZIzj0EAwMDaAAwZQIwO2mxX/opo7SrIX9QyxfZpJRcpAV2gZOm1AZzR+2rVyy6Uc8Ybp2ybIw13ckH4bcRAjEA5qO8FyOkmYpvg2/7ZNqiPxRzn5vqKHoVcIIqtpKq6l7TvOqzAxxclN7VwTG8e++XMYIB2zCCAdcCAQEwUTA5MRUwEwYDVQQKEwxzaWdzdG9yZS5kZXYxIDAeBgNVBAMTF3NpZ3N0b3JlLXRzYS1zZWxmc2lnbmVkAhQ6E1QvDJBh7rzBQy/Lio6LKiOLDDALBglghkgBZQMEAgGggfwwGgYJKoZIhvcNAQkDMQ0GCyqGSIb3DQEJEAEEMBwGCSqGSIb3DQEJBTEPFw0yNjExMjMyMDA2NTlaMC8GCSqGSIb3DQEJBDEiBCCaBDfpwHMLT50YrFklTcMo3aLW6PeH1H5PIVaYskTLmjCBjgYLKoZIhvcNAQkQAi8xfzB9MHsweQQghfknvAerYsrDtENWwQ78gbLGiD/aernm2HDZ0TrNBbcwVTA9pDswOTEVMBMGA1UEChMMc2lnc3RvcmUuZGV2MSAwHgYDVQQDExdzaWdzdG9yZS10c2Etc2VsZnNpZ25lZAIUOhNULwyQYe68wUMvy4qOiyojiwwwCgYIKoZIzj0EAwIEZzBlAjBckyyfW0N5yI2OJESYt+4/UDgOqZngshZ1XCHK/I2BIYw2d6/VinEm/XZtADUK5K0CMQDGXN+dwBrwPZUS1g/URh9nrpZ2+0zGoln54EuydCdBKTebc2CV6WjQEwSnCYP1l9U="
+          }
+        ]
+      },
+      "tlogEntries": [
+        {
+          "canonicalizedBody": "eyJhcGlWZXJzaW9uIjoiMC4wLjIiLCJraW5kIjoiaGFzaGVkcmVrb3JkIiwic3BlYyI6eyJoYXNoZWRSZWtvcmRWMDAyIjp7ImRhdGEiOnsiYWxnb3JpdGhtIjoiU0hBMl8yNTYiLCJkaWdlc3QiOiJ6MXRzT0NCQ0VTSWR1WHpqTDFmcFFmNFhHZDI5dXA1YXAyUGVGNlRsbzBjPSJ9LCJzaWduYXR1cmUiOnsiY29udGVudCI6Ik1FUUNJR3pCckJKNjdzUDQxNWV6S0ROcG1SV2wyWjJOQ3k3a2xnS0ZRdDNpM01yRUFpQVlGRWRHTHFOc2ZTS2RzMmIwdEpZM1hRWUhkWXNmd3FKTjRnajRWWjFHMEE9PSIsInZlcmlmaWVyIjp7ImtleURldGFpbHMiOiJQS0lYX0VDRFNBX1AyNTZfU0hBXzI1NiIsInB1YmxpY0tleSI6eyJyYXdCeXRlcyI6Ik1Ga3dFd1lIS29aSXpqMENBUVlJS29aSXpqMERBUWNEUWdBRWNUWDZUOWs2Q2R6cGk3OW9HMHY4OVE1OERXTlU1aXI3Qy84cU5DbGhlR1h0VEI4QzNia0NQdVZxVlg1UlhXcWR4bXdSOGlDV0RlV1VNMDMxaUhkbkpBPT0ifX19fX19",
+          "inclusionProof": {
+            "checkpoint": {
+              "envelope": "log.example\n5\nNDq6DNpQLhGTL+ICtzj5XKi3P4vbO5+njOky8ajk0cE=\n\n— log.example 29xhcwqXRZYa6/j6BNQ3524EI9qFmZdGMMoLZaTSeG/4gBgpXP4TfsGlxhl8AqyDkXw+c8Jgdh870do4/X7Pbx1FxgI=\n"
+            },
+            "hashes": [
+              "YcoROfaBWEHVuvLQ0tm9nf7pfImN1ve6DAqpQe5sAes=",
+              "WkdmL9ijF9lgSaP59HxV3GfKZgUbqjaD27GbL+CaB7A=",
+              "SFM123z+yWXxX/dF/GJcQdXqJkaTaTAWWCj3PdS2iFQ="
+            ],
+            "logIndex": "2",
+            "rootHash": "NDq6DNpQLhGTL+ICtzj5XKi3P4vbO5+njOky8ajk0cE=",
+            "treeSize": "5"
+          },
+          "kindVersion": {
+            "kind": "hashedrekord",
+            "version": "0.0.2"
+          },
+          "logId": {
+            "keyId": "29xhc91+bb6dtR21BD5/gg6VKsSNJfgEGyBjINZ7PTU="
+          },
+          "logIndex": "2"
+        }
+      ]
+    }
+  },
+  "description": "A document submission that verifies only in a test log: the fuzz seed for Rekor document inclusion. Sigstore's timestamp authority dated the signature.",
+  "submission_key_spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200047135fa4fd93a09dce98bbf681b4bfcf50e7c0d6354e62afb0bff2a3429617865ed4c1f02ddb9023ee56a557e515d6a9dc66c11f220960de594334df588776724"
+}

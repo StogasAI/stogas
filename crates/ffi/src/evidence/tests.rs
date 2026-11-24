@@ -66,14 +66,8 @@ fn output_handles_are_cleared_and_inputs_bounded_before_reading() {
 fn compiled_authorities_never_substitute_another_environment() {
     let configuration = br#"{"environment":"prod"}"#;
     let keys = include_bytes!("../../../../tests/fixtures/staging-key-manifest.json");
-    let value: serde_json::Value = serde_json::from_slice(keys).unwrap();
-    let now = value["inclusion"]["verificationMaterial"]["tlogEntries"][0]["integratedTime"]
-        .as_str()
-        .unwrap()
-        .parse::<i64>()
-        .unwrap()
-        * 1000
-        + 1000;
+    // 2026-11-24T22:04:00Z, just after Rekor logged the manifest.
+    let now = 1_795_557_840_000;
     let mut handle = ptr::null_mut();
     // SAFETY: configuration is live and output writable. The successful owner
     // is inspected exclusively and returned exactly once after the check.
