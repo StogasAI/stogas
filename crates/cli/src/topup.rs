@@ -81,13 +81,16 @@ struct Payment {
     id: String,
     amount: String,
     card: Option<Card>,
-    credit_status: String,
     credit_usd: Option<String>,
     currency: String,
     method: String,
     provider: String,
     /// The processor holds the deposit until the payer contacts support.
     provider_hold: bool,
+    /// What the credit is doing, as the Balance page names it.
+    state: String,
+    /// `pending` until the payment settles; a card in review is only authorized until then.
+    status: String,
 }
 
 #[derive(Deserialize)]
@@ -100,12 +103,7 @@ pub async fn run(args: Args, network: &Network, onion: bool) -> Result<()> {
     let currency = args.currency.to_ascii_uppercase();
     let wallet_coin = matches!(currency.as_str(), "BTC" | "XMR");
     let card = currency == "CARD";
-    if card && args.network.is_some() {
-        bail!("a card payment has no network; leave out --network");
-    }
-    if wallet_coin && args.network.is_some() {
-        bail!("{currency} has one network; leave out --network");
-    }
+    one_network(&currency, args.network.as_deref())?;
     let dashboard = signed_in(network).await?;
     let base = args.organization.map_or_else(
         || "/api/funding".to_owned(),
@@ -132,6 +130,15 @@ pub async fn run(args: Args, network: &Network, onion: bool) -> Result<()> {
         .await?
     };
     wait(&dashboard, &base, &expected, &earlier).await
+}
+
+/// A card and the coins with one network take no `--network`.
+fn one_network(currency: &str, network: Option<&str>) -> Result<()> {
+    match (currency, network) {
+        ("CARD", Some(_)) => bail!("a card payment has no network; leave out --network"),
+        ("BTC" | "XMR", Some(_)) => bail!("{currency} has one network; leave out --network"),
+        _ => Ok(()),
+    }
 }
 
 pub async fn wallet(
@@ -207,13 +214,7 @@ pub async fn card(
     let body = json!({ "creditUsd": amount });
     let checkout: Checkout =
         with_location(dashboard, base, async || dashboard.post(&path, &body).await).await?;
-    // The link goes into a terminal escape sequence, so it must be Stripe's and plain text.
-    if !checkout.url.starts_with("https://checkout.stripe.com/")
-        || checkout
-            .url
-            .chars()
-            .any(|c| c.is_control() || c.is_whitespace())
-    {
+    if !stripe_page(&checkout.url) {
         bail!("the dashboard returned an unexpected payment page");
     }
     let closes = rfc3339::unix_time(&checkout.expires_at)
@@ -243,6 +244,12 @@ pub async fn card(
         id: Some(checkout.id),
         until: Some(closes + CARD_SWEEP),
     })
+}
+
+/// The link goes into a terminal escape sequence, so it must be Stripe's and plain text.
+fn stripe_page(url: &str) -> bool {
+    url.starts_with("https://checkout.stripe.com/")
+        && !url.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 
 pub async fn ccpayment(
@@ -449,15 +456,7 @@ fn print_instructions(
         Some(estimate) => out!(
             "You get about ${} in credit after ${:.2} in estimated fees.",
             dollars(&estimate.credit_usd),
-            [
-                &estimate.processor_fee_usd,
-                &estimate.conversion_fee_usd,
-                &estimate.network_cost_usd,
-                &estimate.platform_fee_usd,
-            ]
-            .into_iter()
-            .map(|fee| fee.parse::<f64>().unwrap_or(f64::NAN))
-            .sum::<f64>()
+            fees(estimate)
         )?,
         None => out!(
             "There is no current exchange rate. The credit uses the rate when the payment arrives."
@@ -468,6 +467,19 @@ fn print_instructions(
         minutes => out!("The credit is added about {minutes} minutes after you send.")?,
     }
     Ok(())
+}
+
+/// All the fees of an estimate in dollars; not a number when the API sent one that is none.
+fn fees(estimate: &Estimate) -> f64 {
+    [
+        &estimate.processor_fee_usd,
+        &estimate.conversion_fee_usd,
+        &estimate.network_cost_usd,
+        &estimate.platform_fee_usd,
+    ]
+    .into_iter()
+    .map(|fee| fee.parse::<f64>().unwrap_or(f64::NAN))
+    .sum()
 }
 
 /// Whether stdout takes escape sequences: a terminal whose `TERM` allows them, where Windows
@@ -509,7 +521,7 @@ async fn payments(dashboard: &Dashboard, base: &str) -> Result<Vec<Payment>> {
     Ok(page.items)
 }
 
-/// Reports each new payment to the address until one is credited or needs a person.
+/// Reports each new payment to the address until one is credited or stops for another reason.
 pub async fn wait(
     dashboard: &Dashboard,
     base: &str,
@@ -520,11 +532,7 @@ pub async fn wait(
     let mut reported = HashMap::new();
     loop {
         tokio::time::sleep(CHECK_EVERY).await;
-        if reported.is_empty()
-            && expected
-                .until
-                .is_some_and(|until| SystemTime::now() > until)
-        {
+        if closed(expected, reported.is_empty(), SystemTime::now()) {
             bail!("the payment page closed without a payment; run the command again to pay");
         }
         let payments = match payments(dashboard, base).await {
@@ -535,34 +543,66 @@ pub async fn wait(
             }
             Err(error) => return Err(error),
         };
-        for payment in payments.iter().filter(|payment| {
-            !earlier.contains(&payment.id)
-                && expected.id.as_ref().is_none_or(|id| *id == payment.id)
-                && payment.provider == expected.provider
-                && payment.currency == expected.currency
-                && payment.method == expected.method
-        }) {
-            let status = describe(payment);
-            if reported.get(&payment.id) != Some(&status) {
-                out!("{status}")?;
-                reported.insert(payment.id.clone(), status);
-            }
-            match payment.credit_status.as_str() {
-                "credited" => return Ok(()),
-                "not_creditable" | "review_required" => {
-                    bail!("stopped waiting; the Balance page shows the payment's status")
-                }
-                _ => {}
-            }
+        let (lines, next) = follow(&payments, expected, earlier, &mut reported);
+        for line in lines {
+            out!("{line}")?;
+        }
+        match next {
+            Next::Wait => {}
+            Next::Done => return Ok(()),
+            Next::Stop => bail!("stopped waiting; the Balance page shows the payment's status"),
         }
     }
 }
 
-fn describe(payment: &Payment) -> String {
-    let card = payment.card.as_ref();
-    if card.is_some_and(|card| card.canceled_reason.is_some()) {
-        return "The card payment was canceled, and your card wasn't charged.".to_owned();
+/// Whether the wait goes on after what the payments list says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Next {
+    Wait,
+    /// A payment was credited.
+    Done,
+    /// A payment adds no credit now, and waiting would not change that soon.
+    Stop,
+}
+
+/// A card's payment page closed, and no payment came from it.
+fn closed(expected: &Expected, none_reported: bool, now: SystemTime) -> bool {
+    none_reported && expected.until.is_some_and(|until| now > until)
+}
+
+/// The top-up's payments among those listed: new ones to its address, or the card payment by its
+/// ID. Returns each status that changed since the last look, and where the first payment that
+/// ends the wait leaves it.
+fn follow(
+    payments: &[Payment],
+    expected: &Expected,
+    earlier: &HashSet<String>,
+    reported: &mut HashMap<String, String>,
+) -> (Vec<String>, Next) {
+    let mut lines = Vec::new();
+    for payment in payments.iter().filter(|payment| {
+        !earlier.contains(&payment.id)
+            && expected.id.as_ref().is_none_or(|id| *id == payment.id)
+            && payment.provider == expected.provider
+            && payment.currency == expected.currency
+            && payment.method == expected.method
+    }) {
+        let (status, next) = describe(payment);
+        if reported.get(&payment.id) != Some(&status) {
+            lines.push(status.clone());
+            reported.insert(payment.id.clone(), status);
+        }
+        if next != Next::Wait {
+            return (lines, next);
+        }
     }
+    (lines, Next::Wait)
+}
+
+/// What a payment's state means to its payer, in the words of the Balance page, and whether the
+/// wait ends there.
+fn describe(payment: &Payment) -> (String, Next) {
+    let card = payment.card.as_ref();
     let received = match card {
         Some(_) => format!("Paid ${} by card", dollars(&payment.amount)),
         None => format!(
@@ -571,19 +611,56 @@ fn describe(payment: &Payment) -> String {
             printable(&payment.currency)
         ),
     };
-    match payment.credit_status.as_str() {
-        "credited" => format!(
-            "{received}. Added ${} in credit.",
-            dollars(payment.credit_usd.as_deref().unwrap_or("0"))
+    match payment.state.as_str() {
+        "credited" => (
+            format!(
+                "{received}. Added ${} in credit.",
+                dollars(payment.credit_usd.as_deref().unwrap_or("0"))
+            ),
+            Next::Done,
         ),
-        "not_creditable" => format!("{received}. It cannot be credited."),
-        "review_required" => format!("{received}. It needs a review before it is credited."),
-        _ if payment.provider_hold => format!(
-            "{received}. The payment processor holds it for review. Contact billing@stogas.ai; another payment will not release it."
+        // A card is only authorized until its payment settles.
+        "confirming" if card.is_some() => (
+            "Your bank approved the payment. The charge is pending.".to_owned(),
+            Next::Wait,
         ),
-        "waiting_settlement" if card.is_some() => format!("{received}. Adding the credit."),
-        "waiting_settlement" => format!("{received}. Waiting for network confirmations."),
-        _ => format!("{received}. Adding the credit."),
+        "confirming" => (
+            format!("{received}. Waiting for network confirmations."),
+            Next::Wait,
+        ),
+        "crediting" => (format!("{received}. Adding the credit."), Next::Wait),
+        "pending" => (
+            format!(
+                "{received}. The credit is pending until the prepaid limits or a restriction allow it."
+            ),
+            Next::Stop,
+        ),
+        "review" if payment.provider_hold => (
+            format!(
+                "{received}. The payment processor holds it for review. Contact billing@stogas.ai; another payment will not release it."
+            ),
+            Next::Stop,
+        ),
+        "review" if card.is_some() && payment.status == "pending" => (
+            "We're reviewing this payment before we charge your card. This can take up to 7 days."
+                .to_owned(),
+            Next::Stop,
+        ),
+        "review" => (
+            format!("{received}. We're reviewing this payment."),
+            Next::Stop,
+        ),
+        "failed" if card.is_some_and(|card| card.canceled_reason.is_some()) => (
+            "The card payment was canceled, and your card wasn't charged.".to_owned(),
+            Next::Stop,
+        ),
+        "failed" => (format!("{received}. The payment failed."), Next::Stop),
+        "too_small" => (
+            format!("{received}. It is smaller than its fees, so it adds no credit."),
+            Next::Stop,
+        ),
+        // `not_credited`, and any state that a newer dashboard adds.
+        _ => (format!("{received}. It adds no credit."), Next::Stop),
     }
 }
 
@@ -771,38 +848,430 @@ mod tests {
         );
     }
 
+    fn payment(record: Value) -> Payment {
+        serde_json::from_value(record).unwrap()
+    }
+
+    /// A card payment of $26.62 for $25.00 of credit, as the payments list returns it.
+    fn card_payment(id: &str, state: &str, status: &str, canceled: &Value) -> Payment {
+        payment(json!({
+            "amount": "26.62", "card": { "brand": "visa", "last4": "4242", "canceledReason": canceled },
+            "creditStatus": "waiting_settlement", "creditUsd": "25", "currency": "USD", "id": id,
+            "method": "card", "provider": "stripe", "providerHold": false, "state": state,
+            "status": status,
+        }))
+    }
+
+    /// A payment of 5.1 USDT on Tron for $4.9 of credit.
+    fn coin_payment(id: &str, state: &str, hold: bool) -> Payment {
+        payment(json!({
+            "amount": "5.1", "card": null, "creditStatus": "waiting_settlement",
+            "creditUsd": "4.9", "currency": "USDT", "id": id, "method": "TRX",
+            "provider": "ccpayment", "providerHold": hold, "state": state, "status": "settled",
+        }))
+    }
+
+    fn expected_coin() -> Expected {
+        Expected {
+            provider: "ccpayment",
+            currency: "USDT".into(),
+            method: "TRX".into(),
+            id: None,
+            until: None,
+        }
+    }
+
+    fn expected_card(id: &str, until: SystemTime) -> Expected {
+        Expected {
+            provider: "stripe",
+            currency: "USD".into(),
+            method: "card".into(),
+            id: Some(id.into()),
+            until: Some(until),
+        }
+    }
+
     #[test]
-    fn describes_payments_as_the_payments_list_returns_them() {
-        let payment = |record: Value| -> Payment { serde_json::from_value(record).unwrap() };
-        let card = |status: &str, canceled: Value| {
-            payment(json!({
-                "amount": "26.62", "card": { "brand": "visa", "last4": "4242", "canceledReason": canceled },
-                "creditStatus": status, "creditUsd": "25", "currency": "USD", "id": "a",
-                "method": "card", "provider": "stripe", "providerHold": false, "state": "credited",
-            }))
+    fn describes_every_state_of_a_coin_payment() {
+        for (state, hold, text, next) in [
+            (
+                "confirming",
+                false,
+                "Received 5.1 USDT. Waiting for network confirmations.",
+                Next::Wait,
+            ),
+            (
+                "crediting",
+                false,
+                "Received 5.1 USDT. Adding the credit.",
+                Next::Wait,
+            ),
+            (
+                "credited",
+                false,
+                "Received 5.1 USDT. Added $4.90 in credit.",
+                Next::Done,
+            ),
+            // The limits or a restriction can hold credit for a day or longer.
+            (
+                "pending",
+                false,
+                "Received 5.1 USDT. The credit is pending until the prepaid limits or a restriction allow it.",
+                Next::Stop,
+            ),
+            (
+                "review",
+                false,
+                "Received 5.1 USDT. We're reviewing this payment.",
+                Next::Stop,
+            ),
+            (
+                "review",
+                true,
+                "Received 5.1 USDT. The payment processor holds it for review. Contact billing@stogas.ai; another payment will not release it.",
+                Next::Stop,
+            ),
+            (
+                "failed",
+                false,
+                "Received 5.1 USDT. The payment failed.",
+                Next::Stop,
+            ),
+            (
+                "too_small",
+                false,
+                "Received 5.1 USDT. It is smaller than its fees, so it adds no credit.",
+                Next::Stop,
+            ),
+            (
+                "not_credited",
+                false,
+                "Received 5.1 USDT. It adds no credit.",
+                Next::Stop,
+            ),
+            // A state that this version does not know ends the wait instead of running forever.
+            (
+                "escrowed",
+                false,
+                "Received 5.1 USDT. It adds no credit.",
+                Next::Stop,
+            ),
+        ] {
+            assert_eq!(
+                describe(&coin_payment("a", state, hold)),
+                (text.to_owned(), next),
+                "{state}"
+            );
+        }
+    }
+
+    #[test]
+    fn describes_every_state_of_a_card_payment() {
+        for (state, status, canceled, text, next) in [
+            // The bank approved the payment, and the card is not charged yet.
+            (
+                "confirming",
+                "pending",
+                Value::Null,
+                "Your bank approved the payment. The charge is pending.",
+                Next::Wait,
+            ),
+            (
+                "crediting",
+                "settled",
+                Value::Null,
+                "Paid $26.62 by card. Adding the credit.",
+                Next::Wait,
+            ),
+            (
+                "credited",
+                "settled",
+                Value::Null,
+                "Paid $26.62 by card. Added $25.00 in credit.",
+                Next::Done,
+            ),
+            // A review before the charge can take 7 days, so the wait ends.
+            (
+                "review",
+                "pending",
+                Value::Null,
+                "We're reviewing this payment before we charge your card. This can take up to 7 days.",
+                Next::Stop,
+            ),
+            (
+                "review",
+                "settled",
+                Value::Null,
+                "Paid $26.62 by card. We're reviewing this payment.",
+                Next::Stop,
+            ),
+            (
+                "failed",
+                "failed",
+                json!("high_risk"),
+                "The card payment was canceled, and your card wasn't charged.",
+                Next::Stop,
+            ),
+            (
+                "failed",
+                "failed",
+                Value::Null,
+                "Paid $26.62 by card. The payment failed.",
+                Next::Stop,
+            ),
+            (
+                "pending",
+                "settled",
+                Value::Null,
+                "Paid $26.62 by card. The credit is pending until the prepaid limits or a restriction allow it.",
+                Next::Stop,
+            ),
+            // A refund or a lost dispute took the payment back.
+            (
+                "not_credited",
+                "settled",
+                Value::Null,
+                "Paid $26.62 by card. It adds no credit.",
+                Next::Stop,
+            ),
+        ] {
+            assert_eq!(
+                describe(&card_payment("a", state, status, &canceled)),
+                (text.to_owned(), next),
+                "{state} {status}"
+            );
+        }
+    }
+
+    #[test]
+    fn follows_a_coin_payment_from_its_arrival_to_its_credit() {
+        let expected = expected_coin();
+        let earlier = HashSet::from(["old".to_owned()]);
+        let mut reported = HashMap::new();
+        let mut look = |payments: &[Payment]| follow(payments, &expected, &earlier, &mut reported);
+        // Nothing arrived yet, and an earlier payment to the same address is not this top-up.
+        assert_eq!(look(&[]), (vec![], Next::Wait));
+        assert_eq!(
+            look(&[coin_payment("old", "credited", false)]),
+            (vec![], Next::Wait)
+        );
+        // Each state prints once, however often the list repeats it.
+        let confirming = [
+            coin_payment("new", "confirming", false),
+            coin_payment("old", "credited", false),
+        ];
+        assert_eq!(
+            look(&confirming),
+            (
+                vec!["Received 5.1 USDT. Waiting for network confirmations.".to_owned()],
+                Next::Wait
+            )
+        );
+        assert_eq!(look(&confirming), (vec![], Next::Wait));
+        assert_eq!(
+            look(&[coin_payment("new", "crediting", false)]),
+            (
+                vec!["Received 5.1 USDT. Adding the credit.".to_owned()],
+                Next::Wait
+            )
+        );
+        assert_eq!(
+            look(&[coin_payment("new", "credited", false)]),
+            (
+                vec!["Received 5.1 USDT. Added $4.90 in credit.".to_owned()],
+                Next::Done
+            )
+        );
+    }
+
+    #[test]
+    fn follows_only_payments_of_the_coin_and_network_it_asked_for() {
+        let expected = expected_coin();
+        let other = |change: fn(&mut Payment)| {
+            let mut payment = coin_payment("new", "credited", false);
+            change(&mut payment);
+            payment
         };
+        let payments = [
+            other(|payment| payment.method = "ETH".into()),
+            other(|payment| payment.currency = "USDC".into()),
+            other(|payment| payment.provider = "wallet".into()),
+        ];
         assert_eq!(
-            describe(&card("credited", Value::Null)),
-            "Paid $26.62 by card. Added $25.00 in credit."
+            follow(&payments, &expected, &HashSet::new(), &mut HashMap::new()),
+            (vec![], Next::Wait)
         );
+    }
+
+    #[test]
+    fn reports_two_payments_to_one_address_and_ends_with_the_first_credit() {
+        let expected = expected_coin();
+        let mut reported = HashMap::new();
+        let payments = [
+            coin_payment("second", "confirming", false),
+            coin_payment("first", "credited", false),
+        ];
+        let (lines, next) = follow(&payments, &expected, &HashSet::new(), &mut reported);
         assert_eq!(
-            describe(&card("waiting_settlement", Value::Null)),
-            "Paid $26.62 by card. Adding the credit."
+            lines,
+            [
+                "Received 5.1 USDT. Waiting for network confirmations.",
+                "Received 5.1 USDT. Added $4.90 in credit."
+            ]
         );
+        assert_eq!(next, Next::Done);
+        // A payment that stops ends the wait even while another is still confirming.
+        let stopped = [
+            coin_payment("first", "too_small", false),
+            coin_payment("second", "confirming", false),
+        ];
+        let (lines, next) = follow(&stopped, &expected, &HashSet::new(), &mut HashMap::new());
+        assert_eq!(lines.len(), 1);
+        assert_eq!(next, Next::Stop);
+    }
+
+    #[test]
+    fn follows_a_card_payment_by_its_id_alone() {
+        let closes = SystemTime::now() + Duration::from_mins(31);
+        let expected = expected_card("mine", closes);
+        let mut reported = HashMap::new();
+        // Another card payment of the same member, started in another terminal, is not this one.
+        let payments = [
+            card_payment("other", "credited", "settled", &Value::Null),
+            card_payment("mine", "confirming", "pending", &Value::Null),
+        ];
         assert_eq!(
-            describe(&card("not_creditable", json!("high_risk"))),
-            "The card payment was canceled, and your card wasn't charged."
+            follow(&payments, &expected, &HashSet::new(), &mut reported),
+            (
+                vec!["Your bank approved the payment. The charge is pending.".to_owned()],
+                Next::Wait
+            )
         );
-        let held = payment(json!({
-            "amount": "5.1", "card": null, "creditStatus": "settled_pending_credit",
-            "creditUsd": null, "currency": "USDT", "id": "b", "method": "TRX",
-            "provider": "ccpayment", "providerHold": true,
-        }));
-        assert!(
-            describe(&held).starts_with("Received 5.1 USDT. The payment processor holds it"),
-            "{}",
-            describe(&held)
+        let canceled = [card_payment(
+            "mine",
+            "failed",
+            "failed",
+            &json!("prepaid_limit"),
+        )];
+        assert_eq!(
+            follow(&canceled, &expected, &HashSet::new(), &mut reported),
+            (
+                vec!["The card payment was canceled, and your card wasn't charged.".to_owned()],
+                Next::Stop
+            )
         );
+    }
+
+    #[test]
+    fn stops_when_the_card_page_closed_without_a_payment() {
+        let now = SystemTime::now();
+        let open = expected_card("mine", now + Duration::from_secs(1));
+        let shut = expected_card("mine", now - Duration::from_secs(1));
+        assert!(!closed(&open, true, now));
+        assert!(closed(&shut, true, now));
+        // A payment that was reported keeps the wait going past the page's end.
+        assert!(!closed(&shut, false, now));
+        // A deposit address never closes.
+        assert!(!closed(&expected_coin(), true, now));
+    }
+
+    #[test]
+    fn retries_only_failures_that_can_pass() {
+        let refused = |status: StatusCode| {
+            anyhow::Error::new(ApiError {
+                status,
+                code: None,
+                message: String::new(),
+                issues: Vec::new(),
+            })
+        };
+        for status in [
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            assert!(transient(&refused(status)), "{status}");
+        }
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
+        ] {
+            assert!(!transient(&refused(status)), "{status}");
+        }
+        // A failure that is no answer from the API, such as a lost connection.
+        assert!(transient(&anyhow::anyhow!("connection reset")));
+    }
+
+    #[test]
+    fn asks_for_the_billing_location_only_when_the_api_names_it() {
+        let refused = |code: Option<&str>| {
+            anyhow::Error::new(ApiError {
+                status: StatusCode::BAD_REQUEST,
+                code: code.map(Into::into),
+                message: String::new(),
+                issues: Vec::new(),
+            })
+        };
+        assert!(has_code(
+            &refused(Some("BILLING_LOCATION_REQUIRED")),
+            "BILLING_LOCATION_REQUIRED"
+        ));
+        assert!(!has_code(
+            &refused(Some("INVALID_REQUEST")),
+            "BILLING_LOCATION_REQUIRED"
+        ));
+        assert!(!has_code(&refused(None), "BILLING_LOCATION_REQUIRED"));
+        assert!(!has_code(
+            &anyhow::anyhow!("BILLING_LOCATION_REQUIRED"),
+            "BILLING_LOCATION_REQUIRED"
+        ));
+    }
+
+    #[test]
+    fn takes_a_network_only_for_a_coin_that_has_several() {
+        assert!(one_network("USDT", Some("TRX")).is_ok());
+        assert!(one_network("USDT", None).is_ok());
+        for currency in ["CARD", "BTC", "XMR"] {
+            assert!(one_network(currency, None).is_ok(), "{currency}");
+            assert!(one_network(currency, Some("ETH")).is_err(), "{currency}");
+        }
+    }
+
+    #[test]
+    fn prints_only_a_plain_link_to_stripe() {
+        assert!(stripe_page(
+            "https://checkout.stripe.com/c/pay/cs_test_a1#fid"
+        ));
+        for url in [
+            "http://checkout.stripe.com/c/pay/cs_test_a1",
+            "https://checkout.stripe.com.example.com/c/pay",
+            "https://checkout.stripe.com",
+            "https://example.com/https://checkout.stripe.com/",
+            "https://checkout.stripe.com/c/pay\u{1b}]8;;https://example.com\u{1b}\\",
+            "https://checkout.stripe.com/c/pay x",
+            "https://checkout.stripe.com/c/pay\n",
+        ] {
+            assert!(!stripe_page(url), "{url:?}");
+        }
+    }
+
+    #[test]
+    fn shows_fees_as_what_the_payment_costs_above_its_credit() {
+        // Every fee of the estimate counts, and a missing one must not read as free.
+        let estimate = |platform: &str| Estimate {
+            credit_usd: "25".into(),
+            amount_crypto: "25.9".into(),
+            rate_usd: "1".into(),
+            processor_fee_usd: "0.13".into(),
+            conversion_fee_usd: "0.05".into(),
+            network_cost_usd: "0.2".into(),
+            platform_fee_usd: platform.into(),
+        };
+        assert_eq!(format!("{:.2}", fees(&estimate("0.52"))), "0.90");
+        assert!(fees(&estimate("free")).is_nan());
     }
 
     #[test]
