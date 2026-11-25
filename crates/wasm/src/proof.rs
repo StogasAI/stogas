@@ -1,4 +1,4 @@
-//! Saved receipts and request log proofs, checked against the archived boot that signed them.
+//! Saved receipts and request record proofs, checked against the archived boot that signed them.
 
 use stogas_core::{
     evidence,
@@ -46,7 +46,7 @@ impl EvidenceVerifier {
         Ok(super::to_js_value(&verified.receipt)?)
     }
 
-    /// Verify a request log proof under the archived boot that its batch names. It does not show
+    /// Verify a request record's proof under the archived boot that its batch names. It does not show
     /// that analytics holds every row the batch counts.
     ///
     /// # Errors

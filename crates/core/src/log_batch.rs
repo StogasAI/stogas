@@ -1,4 +1,4 @@
-//! Signed batches of request log rows.
+//! Signed batches of request records.
 //!
 //! A gateway boot seals every row that it sends to analytics into numbered batches. A batch is
 //! an RFC 9162 Merkle tree over SHA-512, with one leaf per row, and the boot's key signs its
@@ -40,13 +40,13 @@ pub type Hash = [u8; 64];
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("invalid request log proof")]
+    #[error("invalid request record proof")]
     Invalid,
-    #[error("the request log row is not JSON that a batch can sign")]
+    #[error("the request record is not JSON that a batch can sign")]
     Row,
-    #[error("the request log row does not name this batch and leaf")]
+    #[error("the request record does not name this batch and leaf")]
     Place,
-    #[error("the request log row does not match its signed batch")]
+    #[error("the request record does not match its signed batch")]
     Inclusion,
     #[error("the batch does not name the verified boot")]
     Identity,
@@ -324,7 +324,7 @@ impl Proof {
         serde_json::from_value(value).map_err(|_| Error::Invalid)
     }
 
-    /// Whether a JSON document is a request log proof, in any version of its format, rather than
+    /// Whether a JSON document is a request record's proof, in any version of its format, rather than
     /// a receipt's metadata.
     #[must_use]
     pub fn is_proof(value: &Value) -> bool {

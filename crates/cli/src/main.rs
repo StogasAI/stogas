@@ -183,8 +183,9 @@ enum Command {
         #[arg(long, default_value = ".")]
         output: PathBuf,
     },
-    /// Verify a receipt or a request log row against the archived evidence of the boot that
-    /// signed it, and write a receipt proof that shows others only the sides you choose.
+    /// Verify a receipt or a request record against the archived evidence of the boot that
+    /// signed it, and write a proof for others: of a receipt with only the sides you choose, or
+    /// of a request record.
     Proof(ProofArgs),
     /// Run the verified loopback proxy.
     Serve(ServeArgs),
@@ -220,11 +221,30 @@ struct VerifyArgs {
 
 #[derive(Args)]
 struct ProofArgs {
-    /// The final Stogas metadata on its own, as --share writes it, or a request log row's proof
-    /// from the dashboard. With metadata, --response holds the response JSON, with or without
-    /// it, and may be left out to check only the rest. A log row's proof stands alone.
+    /// The final Stogas metadata on its own, as --share writes it, or a request record's proof.
+    /// With metadata, --response holds the response JSON, with or without it, and may be left
+    /// out to check only the rest. A record's proof stands alone.
     #[arg(long, conflicts_with = "stream")]
     proof: Option<PathBuf>,
+    /// The ID of a request that you can read in Analytics. The command reads the proof of its
+    /// record from the dashboard API, which needs `stogas login`, and verifies it. With --share,
+    /// it also saves the proof for others to check.
+    #[arg(
+        long,
+        value_parser = parse_request_id,
+        conflicts_with_all = ["proof", "stream", "request", "response", "hide"]
+    )]
+    request_id: Option<String>,
+    /// The organization of --request-id; without it, your personal organization.
+    // clap drops `requires` when a present argument conflicts with the required one, so this
+    // names the same conflicts.
+    #[arg(
+        long,
+        requires = "request_id",
+        value_parser = topup::parse_organization,
+        conflicts_with_all = ["proof", "stream", "request", "response", "hide"]
+    )]
+    organization: Option<String>,
     /// Read --response as a complete SSE stream, including its metadata and terminal event.
     #[arg(long)]
     stream: bool,
@@ -234,10 +254,10 @@ struct ProofArgs {
     request: Option<PathBuf>,
     /// Buffered JSON with its metadata, a complete SSE stream, or with --proof the response
     /// JSON alone.
-    #[arg(long, required_unless_present = "proof")]
+    #[arg(long, required_unless_present_any = ["proof", "request_id"])]
     response: Option<PathBuf>,
-    /// After verifying, write metadata.json and each side it proves into this directory.
-    /// Anyone can check them with the command this prints.
+    /// After verifying, write metadata.json and each side it proves into this directory, or
+    /// with --request-id the record's proof. Anyone can check them with the command this prints.
     #[arg(long)]
     share: Option<PathBuf>,
     /// Leave this side out of the shared proof. Its commitment then reveals nothing about it.
@@ -259,6 +279,11 @@ struct ProofArgs {
     /// Exact appraisal time in milliseconds, for tests and historical audits only.
     #[arg(long, hide = true)]
     now_unix_ms: Option<i64>,
+}
+
+fn parse_request_id(value: &str) -> Result<String, String> {
+    topup::uuid(value)
+        .ok_or_else(|| "a request ID is a UUID, as the request's page shows it".into())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
@@ -440,19 +465,27 @@ async fn run() -> Result<()> {
             }
         }
         Command::Proof(args) => {
+            let fetched = match &args.request_id {
+                Some(id) => Some(fetch_log_proof(&args, id, &dashboard()?).await?),
+                None => None,
+            };
             let network = network(args.environment)?;
-            run_proof(&args, network).await?;
+            run_proof(&args, fetched, network).await?;
         }
         Command::Serve(args) => run_serve(args, route).await?,
     }
     Ok(())
 }
 
-async fn run_proof(args: &ProofArgs, network: Network) -> Result<()> {
+async fn run_proof(args: &ProofArgs, fetched: Option<Vec<u8>>, network: Network) -> Result<()> {
     let verifier = Verifier::stogas(args.environment)?;
+    if let Some(bytes) = fetched {
+        let (row, shared) = verify_fetched_log_proof(args, &bytes, &verifier, network).await?;
+        return print_log_row_output(&row, shared.as_deref(), args.json);
+    }
     if let Some(proof) = read_log_proof(args).await? {
         let row = verify_log_proof(args, &proof, &verifier, network).await?;
-        return print_log_row_output(&row, args.json);
+        return print_log_row_output(&row, None, args.json);
     }
     let proof = verify_proof_files(args, &verifier, network).await?;
     let shared = match &args.share {
@@ -640,7 +673,61 @@ async fn verified_boot(
     Ok(verifier.verify_boot_archive(&archive, &evidence, now)?)
 }
 
-/// The request log row's proof that --proof names, when it names one rather than a receipt's
+/// The proof of the request's record, as the dashboard API gives it to a member who can read
+/// the request.
+async fn fetch_log_proof(input: &ProofArgs, id: &str, network: &Network) -> Result<Vec<u8>> {
+    // The dashboard serves production accounts, whose records production gateways sign.
+    if input.environment != stogas::Environment::Production {
+        bail!("--request-id reads production requests; leave out --environment");
+    }
+    let dashboard = account::signed_in(network).await?;
+    let organization = match &input.organization {
+        Some(organization) => organization.clone(),
+        None => account::personal_organization(&dashboard).await?,
+    };
+    let proof: serde_json::Value = dashboard
+        .get(&format!(
+            "/api/{organization}/analytics/proof?requestId={id}"
+        ))
+        .await?;
+    Ok(serde_json::to_vec_pretty(&proof)?)
+}
+
+/// Verifies a record's proof that the dashboard returned. With --share it then saves the proof,
+/// and returns the command that checks the saved file.
+async fn verify_fetched_log_proof(
+    input: &ProofArgs,
+    bytes: &[u8],
+    verifier: &Verifier,
+    network: Network,
+) -> Result<(log_batch::VerifiedRow, Option<String>)> {
+    let proof = log_batch::Proof::parse(bytes).context("the record's proof is malformed")?;
+    let row = verify_log_proof(input, &proof, verifier, network).await?;
+    let shared = match &input.share {
+        Some(directory) => Some(share_log_proof(&row, bytes, directory).await?),
+        None => None,
+    };
+    Ok((row, shared))
+}
+
+/// Writes the record's proof into `directory`, and returns the command that checks it.
+async fn share_log_proof(
+    row: &log_batch::VerifiedRow,
+    proof: &[u8],
+    directory: &Path,
+) -> Result<String> {
+    tokio::fs::create_dir_all(directory)
+        .await
+        .with_context(|| format!("could not create {}", directory.display()))?;
+    let id = row.request_id.as_deref().unwrap_or("record");
+    let path = directory.join(format!("request-{id}-proof.json"));
+    tokio::fs::write(&path, proof)
+        .await
+        .with_context(|| format!("could not write {}", path.display()))?;
+    Ok(format!("stogas proof --proof {}", shell_word(&path)))
+}
+
+/// The request record's proof that --proof names, when it names one rather than a receipt's
 /// metadata.
 async fn read_log_proof(input: &ProofArgs) -> Result<Option<log_batch::Proof>> {
     let Some(path) = &input.proof else {
@@ -651,10 +738,10 @@ async fn read_log_proof(input: &ProofArgs) -> Result<Option<log_batch::Proof>> {
         return Ok(None);
     }
     if input.request.is_some() || input.response.is_some() || input.share.is_some() {
-        bail!("a log row's proof stands alone: leave out --request, --response and --share");
+        bail!("a record's proof stands alone: leave out --request, --response and --share");
     }
     Ok(Some(
-        log_batch::Proof::parse(&bytes).context("the log row's proof is malformed")?,
+        log_batch::Proof::parse(&bytes).context("the record's proof is malformed")?,
     ))
 }
 
@@ -670,25 +757,33 @@ async fn verify_log_proof(
     Ok(proof.verify(&boot)?)
 }
 
-fn print_log_row_output(row: &log_batch::VerifiedRow, json: bool) -> Result<()> {
+fn print_log_row_output(
+    row: &log_batch::VerifiedRow,
+    shared: Option<&str>,
+    json: bool,
+) -> Result<()> {
     use dashboard::printable;
     if json {
-        out!("{}", serde_json::to_string(row)?)?;
+        let mut output = serde_json::to_value(row)?;
+        if let Some(command) = shared {
+            output["verify_command"] = command.into();
+        }
+        out!("{output}")?;
         return Ok(());
     }
     match &row.request_id {
         Some(id) => out!(
-            "Verified request {} in the log of node {}",
+            "Verified the record of request {} from node {}",
             printable(id),
             row.node_id
         )?,
-        None => out!("Verified a request log row of node {}", row.node_id)?,
+        None => out!("Verified a request record from node {}", row.node_id)?,
     }
     out!(
-        "  row: exactly as the gateway signed it, index {} of {} in batch {}",
+        "  record: exactly as the gateway signed it, leaf index {} in batch {} of {} records",
         row.index,
-        row.leaf_count,
-        row.sequence
+        row.sequence,
+        row.leaf_count
     )?;
     out!(
         "  batch: boot {}, open from {} to {}",
@@ -702,6 +797,10 @@ fn print_log_row_output(row: &log_batch::VerifiedRow, json: bool) -> Result<()> 
             printable(&commitments.request),
             printable(&commitments.response)
         )?;
+    }
+    if let Some(command) = shared {
+        out!("Proof written. Anyone can check it with:")?;
+        out!("  {command}")?;
     }
     Ok(())
 }
@@ -944,6 +1043,39 @@ fn wall_clock_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_id_takes_the_place_of_a_proofs_files() {
+        const ID: &str = "019a4a00-0000-7000-8000-00000000000a";
+        let proof = |arguments: &[&str]| {
+            Cli::try_parse_from(["stogas", "proof"].iter().chain(arguments)).is_ok()
+        };
+        assert!(proof(&["--request-id", ID]));
+        assert!(proof(&["--request-id", ID, "--organization", ID]));
+        assert!(proof(&["--request-id", ID, "--share", "proof", "--json"]));
+        // The dashboard holds the proof, so no file and no side of a receipt goes with the ID.
+        for file in ["--proof", "--request", "--response"] {
+            assert!(!proof(&["--request-id", ID, file, "saved.json"]), "{file}");
+        }
+        assert!(!proof(&[
+            "--request-id",
+            ID,
+            "--share",
+            "proof",
+            "--hide",
+            "request"
+        ]));
+        assert!(!proof(&["--request-id", "latest"]));
+        assert!(!proof(&[
+            "--organization",
+            ID,
+            "--response",
+            "response.json"
+        ]));
+        assert!(!proof(&["--organization", ID]));
+        // Without an ID, a proof still needs a file to read.
+        assert!(!proof(&[]));
+    }
 
     #[test]
     fn tor_is_a_flag_with_an_optional_port() {

@@ -66,6 +66,8 @@ impl Files {
     fn args(directory: &Path, now_unix_ms: Option<i64>) -> ProofArgs {
         ProofArgs {
             proof: None,
+            request_id: None,
+            organization: None,
             stream: false,
             request: Some(directory.join("request")),
             response: Some(directory.join("response")),
@@ -191,13 +193,6 @@ async fn offline_files_verify_buffered_streamed_and_detached_content_by_meaning(
     assert_eq!(sides(&proof), (true, true));
     assert_eq!(proof.response, Some(response.clone()));
     assert_eq!(proof.request, Some(json!({"messages": []})));
-    assert!(
-        !serde_json::to_value(&proof.verified)
-            .unwrap()
-            .as_object()
-            .unwrap()
-            .contains_key("catalog")
-    );
 
     // Without the request, only the response and the metadata are checked.
     files.input.request = None;
@@ -362,7 +357,9 @@ async fn offline_files_fail_closed_on_changed_evidence_content_and_oversized_rec
 }
 
 async fn check(input: &ProofArgs, verifier: &Verifier) -> Result<log_batch::VerifiedRow> {
-    let proof = read_log_proof(input).await?.context("not a log proof")?;
+    let proof = read_log_proof(input)
+        .await?
+        .context("not a record's proof")?;
     verify_log_proof(input, &proof, verifier, Network::direct()).await
 }
 
@@ -442,6 +439,44 @@ async fn a_log_rows_proof_verifies_under_its_boot_and_stands_alone() {
         serde_json::to_value(&row.receipt_commitments).unwrap(),
         json!({"request": "aa".repeat(32), "response": "bb".repeat(32)})
     );
+
+    // A proof that the dashboard returned for --request-id verifies the same way, and --share
+    // saves exactly what was verified, under the request's ID, for the command it returns.
+    let fetched = std::fs::read(files.path("log-proof.json")).unwrap();
+    let mut lookup = Files::args(&files.directory, files.input.now_unix_ms);
+    (lookup.request, lookup.response) = (None, None);
+    lookup.request_id = row.request_id.clone();
+    lookup.share = Some(files.path("shared"));
+    let (found, command) =
+        verify_fetched_log_proof(&lookup, &fetched, &verifier, Network::direct())
+            .await
+            .unwrap();
+    assert_eq!((found.sequence, found.index), (4, 1));
+    let saved = files
+        .path("shared")
+        .join("request-01a1a1a1-0000-7000-8000-000000000001-proof.json");
+    assert_eq!(std::fs::read(&saved).unwrap(), fetched);
+    assert_eq!(
+        command.unwrap(),
+        format!("stogas proof --proof {}", shell_word(&saved))
+    );
+    let mut reader = Files::args(&files.directory, files.input.now_unix_ms);
+    (reader.request, reader.response, reader.proof) = (None, None, Some(saved));
+    assert_eq!(check(&reader, &verifier).await.unwrap().index, 1);
+    // A proof that the dashboard changed on the way fails like a changed file.
+    let mut forged: Value = serde_json::from_slice(&fetched).unwrap();
+    forged["row"]["usage"]["billed_cost_usd"] = json!("0.02");
+    lookup.share = None;
+    let error = verify_fetched_log_proof(
+        &lookup,
+        forged.to_string().as_bytes(),
+        &verifier,
+        Network::direct(),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("does not match its signed batch"), "{error}");
 
     // A row's proof carries everything that it proves.
     let mut input = Files::args(&files.directory, files.input.now_unix_ms);

@@ -182,7 +182,7 @@ impl NodeKeys {
         })
     }
 
-    /// Seal one batch of request log rows: the root of the rows' leaves, signed with this boot's
+    /// Seal one batch of request records: the root of their leaves, signed with this boot's
     /// key together with the batch's number, the times it opened and was sealed, and its size.
     ///
     /// # Errors

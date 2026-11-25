@@ -313,7 +313,7 @@ pub unsafe extern "C" fn stogas_node_sign_receipt(
     })
 }
 
-/// Seal one batch of request log rows from their leaves, which `stogas_log_row_leaf` computes,
+/// Seal one batch of request records from their leaves, which `stogas_log_row_leaf` computes,
 /// and return the signed batch as JSON. Times are Unix milliseconds.
 ///
 /// # Safety
@@ -363,7 +363,7 @@ pub unsafe extern "C" fn stogas_node_sign_log_batch(
     })
 }
 
-/// The leaf of one request log row, which must be a JSON object that RFC 8785 writes exactly.
+/// The leaf of one request record, which must be a JSON object that RFC 8785 writes exactly.
 ///
 /// # Safety
 /// The row addresses its readable length; the leaf addresses 64 writable bytes.

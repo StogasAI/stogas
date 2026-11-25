@@ -22,10 +22,10 @@ import (
 // most 13 hashes.
 const MaxLogBatchLeaves = 8192
 
-// LogLeaf is one request log row's leaf in its signed batch.
+// LogLeaf is one request record's leaf in its signed batch.
 type LogLeaf = [64]byte
 
-// LogRowLeaf hashes one request log row for its batch: SHA-512 over a fixed domain and the
+// LogRowLeaf hashes one request record for its batch: SHA-512 over a fixed domain and the
 // row's RFC 8785 form, so whitespace and key order never change it. The row must be one JSON
 // object without duplicate keys, invalid Unicode or integers beyond ±(2^53−1).
 func LogRowLeaf(row []byte) (LogLeaf, error) {
