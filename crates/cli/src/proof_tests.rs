@@ -363,6 +363,45 @@ async fn check(input: &ProofArgs, verifier: &Verifier) -> Result<log_batch::Veri
     verify_log_proof(input, &proof, verifier, Network::direct()).await
 }
 
+/// A proof that the dashboard returned for --request-id verifies as a saved one does, and --share
+/// saves exactly what was verified, under the request's ID, for the command it returns.
+async fn check_fetched(files: &Files, verifier: &Verifier, request_id: &str) {
+    let fetched = std::fs::read(files.path("log-proof.json")).unwrap();
+    let mut lookup = Files::args(&files.directory, files.input.now_unix_ms);
+    (lookup.request, lookup.response) = (None, None);
+    lookup.request_id = Some(request_id.into());
+    lookup.share = Some(files.path("shared"));
+    let (found, command) = verify_fetched_log_proof(&lookup, &fetched, verifier, Network::direct())
+        .await
+        .unwrap();
+    assert_eq!((found.sequence, found.index), (4, 1));
+    let saved = files
+        .path("shared")
+        .join("request-01a1a1a1-0000-7000-8000-000000000001-proof.json");
+    assert_eq!(std::fs::read(&saved).unwrap(), fetched);
+    assert_eq!(
+        command.unwrap(),
+        format!("stogas proof --proof {}", shell_word(&saved))
+    );
+    let mut reader = Files::args(&files.directory, files.input.now_unix_ms);
+    (reader.request, reader.response, reader.proof) = (None, None, Some(saved));
+    assert_eq!(check(&reader, verifier).await.unwrap().index, 1);
+    // A proof that the dashboard changed on the way fails like a changed file.
+    let mut forged: Value = serde_json::from_slice(&fetched).unwrap();
+    forged["row"]["usage"]["billed_cost_usd"] = json!("0.02");
+    lookup.share = None;
+    let error = verify_fetched_log_proof(
+        &lookup,
+        forged.to_string().as_bytes(),
+        verifier,
+        Network::direct(),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("does not match its signed batch"), "{error}");
+}
+
 #[tokio::test]
 async fn a_log_rows_proof_verifies_under_its_boot_and_stands_alone() {
     let mut files = Files::new();
@@ -440,43 +479,7 @@ async fn a_log_rows_proof_verifies_under_its_boot_and_stands_alone() {
         json!({"request": "aa".repeat(32), "response": "bb".repeat(32)})
     );
 
-    // A proof that the dashboard returned for --request-id verifies the same way, and --share
-    // saves exactly what was verified, under the request's ID, for the command it returns.
-    let fetched = std::fs::read(files.path("log-proof.json")).unwrap();
-    let mut lookup = Files::args(&files.directory, files.input.now_unix_ms);
-    (lookup.request, lookup.response) = (None, None);
-    lookup.request_id = row.request_id.clone();
-    lookup.share = Some(files.path("shared"));
-    let (found, command) =
-        verify_fetched_log_proof(&lookup, &fetched, &verifier, Network::direct())
-            .await
-            .unwrap();
-    assert_eq!((found.sequence, found.index), (4, 1));
-    let saved = files
-        .path("shared")
-        .join("request-01a1a1a1-0000-7000-8000-000000000001-proof.json");
-    assert_eq!(std::fs::read(&saved).unwrap(), fetched);
-    assert_eq!(
-        command.unwrap(),
-        format!("stogas proof --proof {}", shell_word(&saved))
-    );
-    let mut reader = Files::args(&files.directory, files.input.now_unix_ms);
-    (reader.request, reader.response, reader.proof) = (None, None, Some(saved));
-    assert_eq!(check(&reader, &verifier).await.unwrap().index, 1);
-    // A proof that the dashboard changed on the way fails like a changed file.
-    let mut forged: Value = serde_json::from_slice(&fetched).unwrap();
-    forged["row"]["usage"]["billed_cost_usd"] = json!("0.02");
-    lookup.share = None;
-    let error = verify_fetched_log_proof(
-        &lookup,
-        forged.to_string().as_bytes(),
-        &verifier,
-        Network::direct(),
-    )
-    .await
-    .unwrap_err()
-    .to_string();
-    assert!(error.contains("does not match its signed batch"), "{error}");
+    check_fetched(&files, &verifier, row.request_id.as_deref().unwrap()).await;
 
     // A row's proof carries everything that it proves.
     let mut input = Files::args(&files.directory, files.input.now_unix_ms);
