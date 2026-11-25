@@ -19,7 +19,7 @@ use std::{
     fs,
     io::IsTerminal as _,
     path::{Path, PathBuf},
-    process::Command,
+    process,
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -44,8 +44,9 @@ pub const SCHEMA: &str = "https://stogas.ai/schemas/policy-v1.json";
 /// encrypt as `{"encrypt": value}`.
 const KEY_SCHEMA: &str = "https://stogas.ai/schemas/policy-edit-v1.json";
 
+/// Which policy a command reads or saves, and the keys that open its encrypted values.
 #[derive(clap::Args)]
-pub struct EditArgs {
+pub struct Target {
     /// What holds the policy.
     #[arg(value_parser = SCOPES)]
     scope: String,
@@ -56,11 +57,11 @@ pub struct EditArgs {
     /// The organization's ID; without it, your personal organization.
     #[arg(long, value_parser = parse_organization)]
     organization: Option<String>,
-    /// The file with your organization key. The editor then shows each value that the key
-    /// encrypts in plain text as {"encrypt": value}, and saving encrypts every value of an export
-    /// or redaction plugin that is written so, after the gateway checks those plugins. To change
-    /// keys, give the new key first and then the old one: saving encrypts what the old key opened
-    /// with the new key.
+    /// The file with your organization key. Each value that the key encrypts then reads in plain
+    /// text as {"encrypt": value}, and saving encrypts every value of an export or redaction
+    /// plugin that is written so, after the gateway checks those plugins. To change keys, give
+    /// the new key first and then the old one: saving encrypts what the old key opened with the
+    /// new key.
     #[arg(long, conflicts_with = "key")]
     key_file: Vec<PathBuf>,
     /// The label of a key that `stogas encryption-key` saved for the organization on this
@@ -69,30 +70,68 @@ pub struct EditArgs {
     key: Vec<String>,
 }
 
+#[derive(clap::Args)]
+pub struct SetArgs {
+    #[command(flatten)]
+    target: Target,
+    /// The file with the policy. Without it, the CLI reads what is piped in.
+    #[arg(long)]
+    file: Option<PathBuf>,
+    /// The revision that the policy was written from, as `stogas policy get` reports it. The
+    /// save fails when the policy has another revision. Without it, the policy replaces whichever
+    /// revision is saved.
+    #[arg(long)]
+    revision: Option<u64>,
+    /// Report what saving would encrypt, and save nothing.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(clap::Subcommand)]
+pub enum Command {
+    /// Open a policy in $VISUAL or $EDITOR, and save it when you close the file.
+    Edit(Target),
+    /// Print a saved policy as JSON, for a script or an agent to read.
+    Get(Target),
+    /// Save a policy from a file or from what is piped in, without an editor or a question.
+    Set(SetArgs),
+}
+
 fn parse_id(value: &str) -> Result<String, String> {
     uuid(value).ok_or_else(|| "an ID is a UUID, as Copy ID copies it on the dashboard".into())
 }
 
-pub async fn run(args: EditArgs, network: &Network, gateway: TransportOptions) -> Result<()> {
-    let EditArgs {
+pub async fn run(command: Command, network: &Network, gateway: TransportOptions) -> Result<()> {
+    let (target, set) = match &command {
+        Command::Edit(target) | Command::Get(target) => (target, None),
+        Command::Set(args) => (&args.target, Some(args)),
+    };
+    let Target {
         scope,
         id,
         organization,
         key_file,
         key,
-    } = args;
+    } = target;
     // An organization holds its own policy, so either argument names it.
     let (organization, id) = if scope == "organization" {
-        if let (Some(id), Some(organization)) = (&id, &organization)
+        if let (Some(id), Some(organization)) = (id, organization)
             && id != organization
         {
             bail!("the ID and --organization name different organizations; give it once");
         }
-        (id.or(organization), None)
+        (id.clone().or_else(|| organization.clone()), None)
     } else {
-        let id = id.with_context(|| format!("name the {scope} with its ID"))?;
-        (organization, Some(id))
+        let id = id
+            .clone()
+            .with_context(|| format!("name the {scope} with its ID"))?;
+        (organization.clone(), Some(id))
     };
+    // A policy to save is read before anything is asked of the dashboard, so a missing or
+    // unreadable file changes nothing.
+    let input = set
+        .map(|args| read_input(args.file.as_deref()))
+        .transpose()?;
     let dashboard = account::signed_in(network).await?;
     let organization = match organization {
         Some(organization) => organization,
@@ -100,33 +139,144 @@ pub async fn run(args: EditArgs, network: &Network, gateway: TransportOptions) -
     };
     let id = id.unwrap_or_else(|| organization.clone());
     let mut keys = Vec::new();
-    for path in &key_file {
+    for path in key_file {
         keys.push(customer_encryption::read_key(path)?);
     }
-    for label in &key {
+    for label in key {
         keys.push(encryption_key::saved(&organization, label).await?);
     }
-    let api = Remote::new(&dashboard, &organization, &scope, &id);
+    let several_keys = keys.len() > 1;
+    let remote = Remote::new(&dashboard, &organization, scope, &id);
+    let gateway = policy_check::Verified(gateway);
+    let opening = (!keys.is_empty())
+        .then(|| Opening::new(&remote, keys, &organization, &dashboard, &gateway));
+    match (&command, &opening) {
+        (Command::Edit(_), Some(api)) => edit_in_editor(api, scope, &id, several_keys).await,
+        (Command::Edit(_), None) => edit_in_editor(&remote, scope, &id, false).await,
+        (Command::Get(_), Some(api)) => get(api, scope).await,
+        (Command::Get(_), None) => get(&remote, scope).await,
+        (Command::Set(args), Some(api)) => report_set(api, scope, args, input).await,
+        (Command::Set(args), None) => report_set(&remote, scope, args, input).await,
+    }
+}
+
+/// The policy to save, from its file or from what is piped in.
+fn read_input(file: Option<&Path>) -> Result<Value> {
+    let text = match file {
+        Some(path) => {
+            fs::read(path).with_context(|| format!("could not read {}", path.display()))?
+        }
+        None if std::io::stdin().is_terminal() => {
+            bail!("name the policy's file with --file, or pipe the policy in")
+        }
+        None => {
+            let mut text = Vec::new();
+            std::io::Read::read_to_end(&mut std::io::stdin().lock(), &mut text)?;
+            text
+        }
+    };
+    // Some Windows editors start UTF-8 with a byte order mark, which JSON does not allow.
+    parse(text.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&text))
+        .context("the policy is not valid JSON")
+}
+
+/// Prints the saved policy as the editor shows it, and its revision apart from it, so that the
+/// output is one JSON document.
+async fn get(api: &impl PolicyApi, scope: &str) -> Result<()> {
+    let saved = api.read().await?;
+    out!(
+        "{}",
+        serde_json::to_string_pretty(&shown(&saved.config, api.schema()))?
+    )?;
+    eprintln!("Revision {} of the {scope} policy.", saved.revision);
+    Ok(())
+}
+
+/// What `set` did with a policy.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SetOutcome {
+    Saved(u64),
+    Unchanged(u64),
+    /// Nothing was saved, by request. The policy stays at this revision.
+    DryRun(u64),
+}
+
+/// Saves `document` over the saved policy, as an editor's save does, with nobody to ask: what
+/// saving encrypts is reported before anything is sent, and a refusal ends the command.
+pub async fn set(
+    api: &impl PolicyApi,
+    document: &Value,
+    revision: Option<u64>,
+    dry_run: bool,
+) -> Result<SetOutcome> {
+    let saved = api.read().await?;
+    if let Some(expected) = revision
+        && expected != saved.revision
+    {
+        bail!(
+            "the policy is at revision {}, not {expected}; read it again with `stogas policy get`",
+            saved.revision
+        );
+    }
+    let edited = settings(document);
+    if edited == settings(&saved.config) && !api.rewrites() {
+        return Ok(SetOutcome::Unchanged(saved.revision));
+    }
+    if let Some(pointers) = api.encrypts(&edited) {
+        eprintln!("{}", encryption_preview(&pointers));
+    }
+    if dry_run {
+        return Ok(SetOutcome::DryRun(saved.revision));
+    }
+    let record = api
+        .save(&linked(&edited, &saved.config), saved.revision)
+        .await?;
+    Ok(SetOutcome::Saved(record.revision))
+}
+
+async fn report_set(
+    api: &impl PolicyApi,
+    scope: &str,
+    args: &SetArgs,
+    input: Option<Value>,
+) -> Result<()> {
+    let document = input.context("no policy was read")?;
+    match set(api, &document, args.revision, args.dry_run).await? {
+        SetOutcome::Saved(revision) => {
+            eprintln!("Saved revision {revision} of the {scope} policy.");
+        }
+        SetOutcome::Unchanged(revision) => {
+            eprintln!("No changes; the {scope} policy stays at revision {revision}.");
+        }
+        SetOutcome::DryRun(revision) => {
+            eprintln!("Dry run; the {scope} policy stays at revision {revision}.");
+        }
+    }
+    Ok(())
+}
+
+async fn edit_in_editor(
+    api: &impl PolicyApi,
+    scope: &str,
+    id: &str,
+    several_keys: bool,
+) -> Result<()> {
     let directory = private_directory()?;
     let file = directory.join(format!("{scope}-{id}.json"));
     let mut editor = SystemEditor::from_environment();
     let mut ask = ask_on_terminal;
-    let result = if keys.is_empty() {
-        edit(&api, &mut editor, &mut ask, &file).await
-    } else {
+    if api.schema() == KEY_SCHEMA {
         eprintln!(
             "Your key opens the values that it encrypts as {{\"encrypt\": value}}. Saving \
              encrypts each value of an export or redaction plugin that is written so{}.",
-            if keys.len() > 1 {
+            if several_keys {
                 ", with the first key"
             } else {
                 ""
             }
         );
-        let gateway = policy_check::Verified(gateway);
-        let api = Opening::new(&api, keys, &organization, &dashboard, &gateway);
-        edit(&api, &mut editor, &mut ask, &file).await
-    };
+    }
+    let result = edit(api, &mut editor, &mut ask, &file).await;
     // An edit that was not saved stays for its author, in a directory only they can open.
     let kept = result.as_ref().is_err_and(|failure| failure.edited);
     if !kept {
@@ -371,8 +521,8 @@ impl Editor for SystemEditor {
 }
 
 #[cfg(not(windows))]
-fn editor_command(editor: &str, file: &Path) -> Command {
-    let mut command = Command::new("sh");
+fn editor_command(editor: &str, file: &Path) -> process::Command {
+    let mut command = process::Command::new("sh");
     command
         .arg("-c")
         .arg(format!("{editor} \"$@\""))
@@ -382,9 +532,9 @@ fn editor_command(editor: &str, file: &Path) -> Command {
 }
 
 #[cfg(windows)]
-fn editor_command(editor: &str, file: &Path) -> Command {
+fn editor_command(editor: &str, file: &Path) -> process::Command {
     use std::os::windows::process::CommandExt as _;
-    let mut command = Command::new("cmd");
+    let mut command = process::Command::new("cmd");
     command
         .arg("/C")
         .raw_arg(format!("{editor} \"{}\"", file.display()));
@@ -1035,6 +1185,117 @@ pub mod tests {
         .await;
         assert_eq!(result.ok(), Some(Outcome::Saved(8)));
         assert_eq!(api.sent(), [(json!({ "limits": { "rpm": 9 } }), 7)]);
+    }
+
+    #[tokio::test]
+    async fn set_saves_a_piped_policy_without_an_editor_or_a_question() {
+        let policy = json!({ "limits": { "rpm": 5 } });
+        let change = json!({ "$schema": SCHEMA, "limits": { "rpm": 9 } });
+        // A revision that the policy has left refuses the save, and nothing is sent.
+        let api = Script::new(vec![saved(policy.clone(), 7)], vec![]);
+        assert_eq!(
+            set(&api, &change, Some(6), false)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "the policy is at revision 7, not 6; read it again with `stogas policy get`"
+        );
+        // The same policy again, and a dry run, save nothing.
+        let api = Script::new(
+            vec![saved(policy.clone(), 7), saved(policy.clone(), 7)],
+            vec![],
+        );
+        assert_eq!(
+            set(&api, &policy, None, false).await.unwrap(),
+            SetOutcome::Unchanged(7)
+        );
+        assert_eq!(
+            set(&api, &change, Some(7), true).await.unwrap(),
+            SetOutcome::DryRun(7)
+        );
+        assert!(api.sent().is_empty());
+        // A change saves the settings with the revision that was read, and a refusal is the
+        // command's error.
+        let api = Script::new(
+            vec![saved(policy.clone(), 7), saved(policy, 8)],
+            vec![
+                Ok(saved(Value::Null, 8)),
+                Err(refused(
+                    StatusCode::BAD_REQUEST,
+                    "INVALID_API_KEY_CONFIG",
+                    "limits.rpm must be a whole number",
+                )),
+            ],
+        );
+        assert_eq!(
+            set(&api, &change, None, false).await.unwrap(),
+            SetOutcome::Saved(8)
+        );
+        assert!(
+            set(&api, &json!({ "limits": { "rpm": 1.5 } }), None, false)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("limits.rpm must be a whole number")
+        );
+        assert_eq!(
+            api.sent(),
+            [
+                (json!({ "limits": { "rpm": 9 } }), 7),
+                (json!({ "limits": { "rpm": 1.5 } }), 8)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn set_with_a_key_encrypts_the_marked_values_as_the_editor_does() {
+        let key = customer_encryption::generate().unwrap();
+        let api = Script::new(
+            vec![saved(Value::Null, 1), saved(Value::Null, 1)],
+            vec![Ok(saved(Value::Null, 2))],
+        );
+        let grants = Api(Mutex::new(Vec::new()));
+        let valid = gateway(StatusCode::OK, json!({ "status": "valid" }));
+        let opening = Opening::new(&api, vec![key], ORGANIZATION, &grants, &valid);
+        let document = json!({
+            "$schema": KEY_SCHEMA,
+            "plugins": { "export": { "destinations": [
+                { "url": { "encrypt": "https://audit.example.com/b?token=t" }, "content": false }
+            ] } }
+        });
+        // A dry run names what saving would encrypt and asks the gateway nothing.
+        assert_eq!(
+            opening.encrypts(&settings(&document)),
+            Some(vec!["/plugins/export/destinations/0/url".to_owned()])
+        );
+        assert_eq!(
+            set(&opening, &document, None, true).await.unwrap(),
+            SetOutcome::DryRun(1)
+        );
+        assert!(valid.sent.lock().unwrap().is_empty() && api.sent().is_empty());
+        assert_eq!(
+            set(&opening, &document, Some(1), false).await.unwrap(),
+            SetOutcome::Saved(2)
+        );
+        let [(sent, 1)] = &api.sent()[..] else {
+            panic!("one save with the revision that was read");
+        };
+        let destination = &sent["plugins"]["export"]["destinations"][0];
+        assert!(destination["url"]["encrypted"]["blob"].is_string());
+        assert_eq!(destination["content"], json!(false));
+        assert!(!sent.to_string().contains("audit"));
+        // What `get` prints with the key is what `set` takes back unchanged.
+        let reread = Script::new(vec![saved(sent.clone(), 2), saved(sent.clone(), 2)], vec![]);
+        let opening = Opening {
+            api: &reread,
+            ..opening
+        };
+        let printed = shown(&opening.read().await.unwrap().config, opening.schema());
+        assert_eq!(printed, document);
+        assert_eq!(
+            set(&opening, &printed, None, false).await.unwrap(),
+            SetOutcome::Unchanged(2)
+        );
     }
 
     /// A policy whose export destination and redaction literals `key` encrypts.

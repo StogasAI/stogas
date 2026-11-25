@@ -77,6 +77,8 @@ struct Cli {
     command: Command,
 }
 
+/// A release build knows production alone and has no `--environment`.
+#[cfg(feature = "staging")]
 fn parse_environment(value: &str) -> Result<stogas::Environment, String> {
     serde_json::from_value(serde_json::Value::String(value.to_owned()))
         .map_err(|_| "environment is unsupported by this build".into())
@@ -122,10 +124,10 @@ enum Command {
     Api(api::Args),
     /// Add credit with a cryptocurrency or card payment.
     Topup(topup::Args),
-    /// Change a saved policy.
+    /// Read or change a saved policy.
     Policy {
         #[command(subcommand)]
-        command: PolicyCommand,
+        command: policy::Command,
     },
     /// Check a provider credential.
     Byok {
@@ -145,7 +147,11 @@ enum Command {
     /// Check fresh session verification and gateway admission without a provider call.
     Probe {
         /// The Stogas environment whose signed evidence to trust.
-        #[arg(long, default_value = "prod", value_parser = parse_environment)]
+        #[cfg_attr(
+            feature = "staging",
+            arg(long, default_value = "prod", value_parser = parse_environment)
+        )]
+        #[cfg_attr(not(feature = "staging"), arg(skip = stogas::Environment::Production))]
         environment: stogas::Environment,
         /// Optional HTTPS API origin; the environment's evidence roots remain fixed.
         #[arg(long)]
@@ -177,7 +183,11 @@ enum Command {
         #[arg(long)]
         boot: String,
         /// The Stogas environment whose signed evidence to trust.
-        #[arg(long, default_value = "prod", value_parser = parse_environment)]
+        #[cfg_attr(
+            feature = "staging",
+            arg(long, default_value = "prod", value_parser = parse_environment)
+        )]
+        #[cfg_attr(not(feature = "staging"), arg(skip = stogas::Environment::Production))]
         environment: stogas::Environment,
         /// Directory for `boot.json` and `evidence.json`.
         #[arg(long, default_value = ".")]
@@ -198,18 +208,16 @@ enum ByokCommand {
     Check(byok::CheckArgs),
 }
 
-#[derive(Subcommand)]
-enum PolicyCommand {
-    /// Open a policy in $VISUAL or $EDITOR, and save it when you close the file.
-    Edit(policy::EditArgs),
-}
-
 #[derive(Args)]
 struct VerifyArgs {
     /// Evidence path, or `-` for stdin.
     evidence: PathBuf,
     /// The Stogas environment whose signed evidence to trust.
-    #[arg(long, default_value = "prod", value_parser = parse_environment)]
+    #[cfg_attr(
+        feature = "staging",
+        arg(long, default_value = "prod", value_parser = parse_environment)
+    )]
+    #[cfg_attr(not(feature = "staging"), arg(skip = stogas::Environment::Production))]
     environment: stogas::Environment,
     /// Emit stable JSON.
     #[arg(long)]
@@ -271,7 +279,11 @@ struct ProofArgs {
     #[arg(long, requires = "evidence")]
     boot: Option<PathBuf>,
     /// The Stogas environment whose signed evidence to trust.
-    #[arg(long, default_value = "prod", value_parser = parse_environment)]
+    #[cfg_attr(
+        feature = "staging",
+        arg(long, default_value = "prod", value_parser = parse_environment)
+    )]
+    #[cfg_attr(not(feature = "staging"), arg(skip = stogas::Environment::Production))]
     environment: stogas::Environment,
     /// Emit stable JSON with the commitments and which sides were checked.
     #[arg(long)]
@@ -295,7 +307,11 @@ enum ProofSide {
 #[derive(Args)]
 struct ServeArgs {
     /// The Stogas environment whose signed evidence to trust.
-    #[arg(long, default_value = "prod", value_parser = parse_environment)]
+    #[cfg_attr(
+        feature = "staging",
+        arg(long, default_value = "prod", value_parser = parse_environment)
+    )]
+    #[cfg_attr(not(feature = "staging"), arg(skip = stogas::Environment::Production))]
     environment: stogas::Environment,
     /// Optional HTTPS API origin; the environment's evidence roots remain fixed.
     #[arg(long)]
@@ -396,9 +412,9 @@ async fn run() -> Result<()> {
         Command::Token(args) => workload::run(args, dashboard()?).await?,
         Command::Api(args) => api::run(args, &dashboard()?).await?,
         Command::Topup(args) => topup::run(args, &dashboard()?, route.onion).await?,
-        Command::Policy {
-            command: PolicyCommand::Edit(args),
-        } => policy::run(args, &dashboard()?, route.gateway()).await?,
+        Command::Policy { command } => {
+            policy::run(command, &dashboard()?, route.gateway()).await?;
+        }
         Command::Byok {
             command: ByokCommand::Check(args),
         } => byok::run(args, &dashboard()?, route.gateway()).await?,
@@ -1271,6 +1287,20 @@ mod tests {
         );
         assert_eq!(
             Cli::try_parse_from(["stogas", "serve", "--environment", "staging"]).is_ok(),
+            cfg!(feature = "staging")
+        );
+        // A build that knows production alone has no such flag, in its help or otherwise.
+        assert_eq!(
+            Cli::try_parse_from(["stogas", "serve", "--environment", "prod"]).is_ok(),
+            cfg!(feature = "staging")
+        );
+        let mut help = <Cli as clap::CommandFactory>::command();
+        let serve = help.find_subcommand_mut("serve").unwrap();
+        assert_eq!(
+            serve
+                .render_long_help()
+                .to_string()
+                .contains("--environment"),
             cfg!(feature = "staging")
         );
         // A saved key has an organization and a label, so serve takes both or neither.
