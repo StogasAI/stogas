@@ -263,7 +263,7 @@ fn open(
 
 /// The member that marks a value to encrypt in a policy that `stogas policy edit` opens with a
 /// key: `{"encrypt": value}` is saved as `{"encrypted": envelope}`.
-const MARK: &str = "encrypt";
+pub const MARK: &str = "encrypt";
 
 /// An encrypted value that the key opened: saving keeps its envelope while its author leaves the
 /// value as it is, so that an edit changes only what it changed.

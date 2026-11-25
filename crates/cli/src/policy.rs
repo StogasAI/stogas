@@ -182,6 +182,12 @@ pub trait PolicyApi: Sync {
     fn rewrites(&self) -> bool {
         false
     }
+    /// The JSON Pointers of the values that saving `config` encrypts, for its author to confirm
+    /// before anything is sent. None when saving encrypts nothing by design, or when the marks
+    /// are wrong, which the save then reports.
+    fn encrypts(&self, _config: &Value) -> Option<Vec<String>> {
+        None
+    }
 }
 
 pub struct Remote<'a> {
@@ -300,6 +306,11 @@ impl<A: PolicyApi, G: GrantApi, C: CheckGateway> PolicyApi for Opening<'_, A, G,
         KEY_SCHEMA
     }
 
+    fn encrypts(&self, config: &Value) -> Option<Vec<String>> {
+        let (_, parts) = customer_encryption::marked_parts(config.clone()).ok()?;
+        Some(parts.into_iter().map(|part| part.pointer).collect())
+    }
+
     fn rewrites(&self) -> bool {
         let opened = self.opened.lock().expect("no panic holds the lock");
         opened.iter().any(|value| !value.sealed_by(&self.keys[0]))
@@ -380,12 +391,50 @@ fn editor_command(editor: &str, file: &Path) -> Command {
     command
 }
 
-/// Asks on the terminal, yes by default. Without a terminal, or once its input ends, the answer is
-/// no.
-fn ask_on_terminal(question: &str) -> bool {
-    std::io::stdin().is_terminal()
-        && account::read_line(&format!("{question} [Y/n] "))
-            .is_ok_and(|answer| !matches!(answer.to_ascii_lowercase().as_str(), "n" | "no"))
+/// What `edit` asks the policy's author.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Question {
+    /// Whether to save, after the list of what saving encrypts.
+    Save,
+    /// Whether to open a file again that did not parse or that was refused.
+    EditAgain,
+    /// Whether to open the author's changes on a version that someone saved meanwhile.
+    Review,
+}
+
+/// Asks on the terminal, yes by default. Without a terminal, or once its input ends, nobody can
+/// answer: the edit that its author closed is then saved, as a scripted editor expects, and no
+/// file opens again.
+fn ask_on_terminal(question: Question) -> bool {
+    let text = match question {
+        Question::Save => "Save?",
+        Question::EditAgain => "Edit it again?",
+        Question::Review => "Review the combined policy in your editor?",
+    };
+    if !std::io::stdin().is_terminal() {
+        return question == Question::Save;
+    }
+    account::read_line(&format!("{text} [Y/n] "))
+        .is_ok_and(|answer| !matches!(answer.to_ascii_lowercase().as_str(), "n" | "no"))
+}
+
+/// What saving encrypts, for the author to compare with what they meant to keep secret.
+fn encryption_preview(pointers: &[String]) -> String {
+    if pointers.is_empty() {
+        return format!(
+            "Saving encrypts no value, because none is written as {{\"{}\": value}}. Every \
+             value is saved in plain text.",
+            customer_encryption::MARK
+        );
+    }
+    let mut lines = vec!["Saving encrypts these values:".to_owned()];
+    lines.extend(
+        pointers
+            .iter()
+            .map(|pointer| format!("  {}", printable(pointer))),
+    );
+    lines.push("Every other value is saved in plain text.".to_owned());
+    lines.join("\n")
 }
 
 /// A new directory that only this user can open, because a policy can hold secrets in plain text,
@@ -439,7 +488,7 @@ impl<E: Into<anyhow::Error>> From<E> for Failure {
 pub async fn edit(
     api: &impl PolicyApi,
     editor: &mut impl Editor,
-    ask: &mut (impl FnMut(&str) -> bool + Send),
+    ask: &mut (impl FnMut(Question) -> bool + Send),
     file: &Path,
 ) -> Result<Outcome, Failure> {
     let mut saved = api.read().await?;
@@ -476,7 +525,7 @@ pub async fn edit(
             Ok(document) => settings(&document),
             Err(error) => {
                 eprintln!("The file is not valid JSON: {error}");
-                if ask("Edit it again?") {
+                if ask(Question::EditAgain) {
                     continue;
                 }
                 return Err(kept(error));
@@ -485,6 +534,17 @@ pub async fn edit(
         let current = settings(&saved.config);
         if edited == current && !api.rewrites() {
             return Ok(Outcome::Unchanged(saved.revision));
+        }
+        // A value that its author forgot to mark would be saved readable, and a saved version
+        // stays in the policy's history, so they see what is encrypted before anything is sent.
+        if let Some(pointers) = api.encrypts(&edited) {
+            eprintln!("{}", encryption_preview(&pointers));
+            if !ask(Question::Save) {
+                if ask(Question::EditAgain) {
+                    continue;
+                }
+                return Err(kept(anyhow!("you chose not to save")));
+            }
         }
         let error = match api
             .save(&linked(&edited, &saved.config), saved.revision)
@@ -502,24 +562,8 @@ pub async fn edit(
                 return Ok(Outcome::AlreadySaved(saved.revision));
             }
             write_private(file, &shown(&rebased.config, api.schema())).map_err(kept)?;
-            eprintln!(
-                "Someone saved revision {} while you edited, so your changes now apply to it.",
-                saved.revision
-            );
-            if !rebased.conflicts.is_empty() {
-                eprintln!(
-                    "You both changed these, and your values stay: {}",
-                    printable(&rebased.conflicts.join(", "))
-                );
-            }
-            if !rebased.newer.is_empty() {
-                eprintln!(
-                    "Only revision {} changed these: {}",
-                    saved.revision,
-                    printable(&rebased.newer.join(", "))
-                );
-            }
-            if ask("Review the combined policy in your editor?") {
+            report_rebase(saved.revision, &rebased);
+            if ask(Question::Review) {
                 continue;
             }
             return Err(kept(anyhow!(
@@ -529,11 +573,30 @@ pub async fn edit(
         }
         if refusal.is_some_and(fixable) {
             eprintln!("The policy was not saved: {error}");
-            if ask("Edit it again?") {
+            if ask(Question::EditAgain) {
                 continue;
             }
         }
         return Err(kept(error));
+    }
+}
+
+/// Tells the author which settings moved when their changes went onto a newer revision.
+fn report_rebase(revision: u64, rebased: &Rebased) {
+    eprintln!(
+        "Someone saved revision {revision} while you edited, so your changes now apply to it."
+    );
+    if !rebased.conflicts.is_empty() {
+        eprintln!(
+            "You both changed these, and your values stay: {}",
+            printable(&rebased.conflicts.join(", "))
+        );
+    }
+    if !rebased.newer.is_empty() {
+        eprintln!(
+            "Only revision {revision} changed these: {}",
+            printable(&rebased.newer.join(", "))
+        );
     }
 }
 
@@ -922,7 +985,7 @@ pub mod tests {
     }
 
     /// Runs `edit` with a scripted editor and answers, and returns its result and the file it
-    /// left.
+    /// left. The author always confirms a save; the answers are for the other questions.
     pub async fn run_edit(
         api: &impl PolicyApi,
         steps: Vec<(Option<Value>, &str)>,
@@ -931,7 +994,9 @@ pub mod tests {
         let directory = private_directory().unwrap();
         let file = directory.join("key.json");
         let mut answers = VecDeque::from(answers);
-        let mut ask = |_: &str| answers.pop_front().expect("an unscripted question");
+        let mut ask = |question: Question| {
+            question == Question::Save || answers.pop_front().expect("an unscripted question")
+        };
         let mut typist = Typist {
             steps: steps
                 .into_iter()
@@ -1074,6 +1139,63 @@ pub mod tests {
         let (result, _) = run_edit(&opening, vec![(None, &edited)], vec![]).await;
         assert_eq!(result.ok(), Some(Outcome::Unchanged(8)));
         assert_eq!(valid.sent.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_key_edit_names_what_it_encrypts_and_saves_only_when_its_author_agrees() {
+        let key = customer_encryption::generate().unwrap();
+        let api = Script::new(
+            vec![saved(json!({ "limits": { "rpm": 5 } }), 3)],
+            vec![Ok(saved(Value::Null, 4))],
+        );
+        let grants = Api(Mutex::new(Vec::new()));
+        let valid = gateway(StatusCode::OK, json!({ "status": "valid" }));
+        let opening = Opening::new(&api, vec![key], ORGANIZATION, &grants, &valid);
+        // The author meant to encrypt both destinations and marked only the first.
+        let forgot = json!({ "plugins": { "export": { "destinations": [
+            { "encrypt": { "url": "https://logs.example.com/a?token=t" } },
+            { "url": "https://audit.example.com/b?token=u" }
+        ] } } });
+        assert_eq!(
+            opening.encrypts(&forgot),
+            Some(vec!["/plugins/export/destinations/0".to_owned()])
+        );
+        assert_eq!(
+            encryption_preview(&opening.encrypts(&forgot).unwrap()),
+            "Saving encrypts these values:\n  /plugins/export/destinations/0\nEvery other value \
+             is saved in plain text."
+        );
+        assert!(encryption_preview(&[]).starts_with("Saving encrypts no value"));
+        let marked = json!({ "plugins": { "export": { "destinations": { "encrypt": [
+            { "url": "https://logs.example.com/a?token=t" },
+            { "url": "https://audit.example.com/b?token=u" }
+        ] } } } });
+        // They decline the first save, mark the rest and agree to the second. Nothing of the
+        // first edit reaches the gateway or the dashboard.
+        let directory = private_directory().unwrap();
+        let file = directory.join("key.json");
+        let mut typist = Typist {
+            steps: [forgot, marked]
+                .into_iter()
+                .map(|text| (None, text.to_string()))
+                .collect(),
+        };
+        let mut asked = Vec::new();
+        let mut ask = |question: Question| {
+            asked.push(question);
+            asked.len() != 1
+        };
+        let result = edit(&opening, &mut typist, &mut ask, &file).await;
+        fs::remove_dir_all(directory).unwrap();
+        assert_eq!(result.ok(), Some(Outcome::Saved(4)));
+        assert_eq!(asked, [Question::Save, Question::EditAgain, Question::Save]);
+        let [(sent, 3)] = &api.sent()[..] else {
+            panic!("one save");
+        };
+        assert!(sent["plugins"]["export"]["destinations"]["encrypted"]["blob"].is_string());
+        assert_eq!(valid.sent.lock().unwrap().len(), 1);
+        // A policy opened without a key encrypts nothing, so it asks nothing.
+        assert_eq!(api.encrypts(&json!({})), None);
     }
 
     #[tokio::test]
@@ -1342,7 +1464,13 @@ pub mod tests {
         let api = Script::new(vec![saved(Value::Null, 1)], vec![]);
         let directory = private_directory().unwrap();
         let file = directory.join("key.json");
-        let result = edit(&api, &mut Quitter { rounds: 0 }, &mut |_: &str| true, &file).await;
+        let result = edit(
+            &api,
+            &mut Quitter { rounds: 0 },
+            &mut |_: Question| true,
+            &file,
+        )
+        .await;
         assert!(result.is_err_and(|failure| failure.edited));
         assert_eq!(fs::read_to_string(&file).unwrap(), "{");
         fs::remove_dir_all(directory).unwrap();
@@ -1352,7 +1480,7 @@ pub mod tests {
         let directory = private_directory().unwrap();
         let file = directory.join("key.json");
         let mut quitter = Quitter { rounds: 1 };
-        let result = edit(&api, &mut quitter, &mut |_: &str| true, &file).await;
+        let result = edit(&api, &mut quitter, &mut |_: Question| true, &file).await;
         assert!(result.is_err_and(|failure| !failure.edited));
         fs::remove_dir_all(directory).unwrap();
     }
