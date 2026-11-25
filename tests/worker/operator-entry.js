@@ -68,8 +68,8 @@ export default {
 					verify_mldsa65_ed25519(remoteKey, message, base64(remote.vectors[0].signature))
 				),
 				representatives,
-				rekorSignature: submission.spec.signature.content,
-				hash: submission.spec.data.hash,
+				rekorSignature: submission.hashedRekordRequestV002.signature.content,
+				digest: submission.hashedRekordRequestV002.digest,
 				otherDocument,
 				manifestKey: verifier.verify_key_manifest(encoded(manifest), sigstoreFiles).active_key
 					.key_id,

@@ -54,7 +54,9 @@ static const char OFFLINE_ROOT[] =
     "3xC6ug1h23Cm2TXMKeqo851ds5pVGdBPB+FMEsApiZwkPqGH+yTGRSAP/qWYkLcjsSEl4fM9O9TZ8zamiAg4Adye"
     "R8PdDJojuiGPWsDkR3NNheBXCejVoCAwcWPeJIY7rkUJDnuW+6SVWYRo84Vf9Qip0q69JUm5ZKy2pvHcvk/a9Dxh"
     "RoibgrDmkPyIwShmBS6j6gQrH3mIvKWuCA=="
-    "\"}}";
+    "\","
+    "\"rekor_v2\":{\"first_indexes\":{\"log2025-1.rekor.sigstore.dev\":214868990},"
+    "\"opened_from\":\"2026-11-24T22:51:00Z\"}}}";
 
 static void require(int passed, const char *message) {
     if (!passed) { fprintf(stderr, "%s\n", message); exit(1); }

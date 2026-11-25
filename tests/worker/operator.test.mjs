@@ -102,10 +102,7 @@ test('operator Worker verifies remote signatures, Rekor submissions, key manifes
 			wrongMessage: true,
 			representatives: [true, true, true],
 			rekorSignature: Buffer.from(signing.rekor_signature, 'hex').toString('base64'),
-			hash: {
-				algorithm: 'sha256',
-				value: createHash('sha256').update(Buffer.from(signing.message, 'hex')).digest('hex')
-			},
+			digest: createHash('sha256').update(Buffer.from(signing.message, 'hex')).digest('base64'),
 			otherDocument: true,
 			manifestKey: fixtures.manifest.document.active_key.key_id,
 			alteredManifest: true,
