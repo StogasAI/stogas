@@ -1,6 +1,7 @@
 import { abortableReader, readBoundedBody, TransportError } from './http.js';
 
-const MAX_BUFFERED_RESPONSE = 64 * 1024 * 1024 + 16 * 1024 + 16;
+// The largest response body, its Stogas metadata and the JSON that joins them.
+const MAX_BUFFERED_RESPONSE = 64 * 1024 * 1024 + 64 * 1024 + 16;
 
 // The receipt version that a request asks for in its Stogas-Metadata header.
 export const wantsReceipt = (headers) => headers.get('Stogas-Metadata') === 'v2';

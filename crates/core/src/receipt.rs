@@ -24,7 +24,9 @@ pub use events::StreamContent;
 
 pub const SCHEMA: &str = "stogas.receipt.v2";
 pub const MAX_BYTES: usize = 5 * 1024;
-pub const MAX_METADATA_BYTES: usize = 16 * 1024;
+// The largest `stogas` object that a gateway can write: the caller's part of the largest request
+// record, with its receipt and salts.
+pub const MAX_METADATA_BYTES: usize = 64 * 1024;
 pub const MAX_BUFFERED_BYTES: usize = 64 * 1024 * 1024 + MAX_METADATA_BYTES + 16;
 
 #[derive(Debug, thiserror::Error)]
