@@ -136,7 +136,7 @@ jobs:
       - if: ${{ !cancelled() && steps.check.outcome == 'success' }}
         name: Install the pinned Maven Central publisher and Sigstore signer
         run: |
-          curl --fail --location --silent --show-error https://github.com/jreleaser/jreleaser/releases/download/v1.26.0/jreleaser-1.26.0.zip --output "$RUNNER_TEMP/jreleaser.zip"
+          curl --fail --location --silent --show-error --retry 5 --retry-all-errors https://github.com/jreleaser/jreleaser/releases/download/v1.26.0/jreleaser-1.26.0.zip --output "$RUNNER_TEMP/jreleaser.zip"
           printf '%s  %s\n' c821df22b1715a841024ba17c4b5233375c868e6c9dcc81612c38329c8dec628 "$RUNNER_TEMP/jreleaser.zip" | sha256sum --check
           unzip -q "$RUNNER_TEMP/jreleaser.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/jreleaser-1.26.0/bin" >> "$GITHUB_PATH"

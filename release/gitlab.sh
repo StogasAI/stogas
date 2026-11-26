@@ -34,7 +34,7 @@ print(*(f"--platform={name}" for name, target in targets.items() if target["os"]
 fi
 
 test "$1" = attest
-curl --fail --location --silent --show-error --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+curl --fail --location --silent --show-error --retry 5 --retry-all-errors --header "JOB-TOKEN: $CI_JOB_TOKEN" \
 	--output /builds/apple.tar \
 	"$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/inputs/${CI_COMMIT_TAG#v}/apple.tar"
 # Stogas uploads these files, so they extract only inside their own directory.

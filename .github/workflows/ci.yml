@@ -234,7 +234,7 @@ jobs:
       - name: Install ProVerif and Valgrind
         run: |
           scripts/apt-install.sh ocaml valgrind libc6-dbg
-          curl --fail --location https://bblanche.gitlabpages.inria.fr/proverif/proverif2.05.tar.gz -o "$RUNNER_TEMP/proverif.tar.gz"
+          curl --fail --location --retry 5 --retry-all-errors https://bblanche.gitlabpages.inria.fr/proverif/proverif2.05.tar.gz -o "$RUNNER_TEMP/proverif.tar.gz"
           echo "4871f53c32ab4a04669a060c4886ba5d9080496963fb980a9a62d2c429ceabc4  $RUNNER_TEMP/proverif.tar.gz" | sha256sum --check
           mkdir "$RUNNER_TEMP/proverif"
           tar -xzf "$RUNNER_TEMP/proverif.tar.gz" -C "$RUNNER_TEMP/proverif" --strip-components=1

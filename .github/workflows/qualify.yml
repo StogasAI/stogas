@@ -70,7 +70,7 @@ jobs:
           MINGW_SHA256: ${{ fromJSON(inputs.target)['mingw-sha256'] }}
         run: |
           set -euo pipefail
-          curl -sSfL -o "$RUNNER_TEMP/$MINGW.zip" "https://github.com/mstorsjo/llvm-mingw/releases/download/20261006/$MINGW.zip"
+          curl -sSfL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/$MINGW.zip" "https://github.com/mstorsjo/llvm-mingw/releases/download/20261006/$MINGW.zip"
           echo "$MINGW_SHA256  $RUNNER_TEMP/$MINGW.zip" | sha256sum -c -
           python -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$RUNNER_TEMP/$MINGW.zip" "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/$MINGW/bin" >> "$GITHUB_PATH"
@@ -78,7 +78,7 @@ jobs:
         name: Install the pinned XcodeGen
         run: |
           set -euo pipefail
-          curl -sSfL -o "$RUNNER_TEMP/xcodegen.zip" https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip
+          curl -sSfL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/xcodegen.zip" https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip
           echo "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
           unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
@@ -106,8 +106,8 @@ jobs:
           mkdir -p "$sdk/$system" "$RUNNER_TEMP/avd/stogas.avd"
           ln -s "$ANDROID_HOME/platform-tools" "$sdk/platform-tools"
           repository=https://dl.google.com/android/repository
-          curl -sSfL -o "$RUNNER_TEMP/emulator.zip" "$repository/emulator-linux_x64-16428233.zip"
-          curl -sSfL -o "$RUNNER_TEMP/image.zip" "$repository/sys-img/google_apis/$IMAGE"
+          curl -sSfL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/emulator.zip" "$repository/emulator-linux_x64-16428233.zip"
+          curl -sSfL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/image.zip" "$repository/sys-img/google_apis/$IMAGE"
           sha256sum -c - <<SUMS
           b08fc43d8608d2955f607f1b287beb525041e730086bdca3af152accac3af9c1  $RUNNER_TEMP/emulator.zip
           $IMAGE_SHA256  $RUNNER_TEMP/image.zip
