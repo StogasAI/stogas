@@ -359,7 +359,7 @@ def python_version(version):
     release, _, pre = version.partition("-")
     if not pre:
         return release
-    # The pre-release forms that scripts/check-package-versions.py allows; PEP 440 numbers a bare one 0.
+    # The pre-release forms that scripts/package-versions.py allows; PEP 440 numbers a bare one 0.
     if not (match := re.fullmatch(r"(alpha|beta|rc)(?:\.([0-9]+))?", pre)):
         raise ValueError(f"No Python version for {version}")
     return f"{release}{ {'alpha': 'a', 'beta': 'b', 'rc': 'rc'}[match[1]] }{int(match[2] or 0)}"

@@ -83,6 +83,11 @@ jobs:
       - name: Test the release scripts
         if: ${{ !cancelled() }}
         run: python3 -B -m unittest discover -s release -p 'test_*.py' -v
+      # A release proposal writes its version to every package. Checking the current one on
+      # each push finds a new package or example that the script does not reach.
+      - name: Check that every package states the workspace version
+        if: ${{ !cancelled() }}
+        run: python3 -B scripts/package-versions.py check "$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)"
       # actionlint checks the workflows' syntax and expressions and runs ShellCheck on their
       # scripts. Version 1.7.12 does not know workflow cache modes, concurrency queues or `$/`
       # workflow calls yet. zizmor audits the workflows for security problems, and checks each

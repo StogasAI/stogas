@@ -52,7 +52,7 @@ jobs:
         env:
           PREVIEW: ${{ inputs.preview }}
         run: |
-          python3 scripts/check-package-versions.py "${GITHUB_REF_NAME#v}"
+          python3 scripts/package-versions.py check "${GITHUB_REF_NAME#v}"
           if [ "$PREVIEW" = true ] && [[ "$GITHUB_REF_NAME" != *-* ]]; then
             echo "::error::Only a pre-release version can be a preview"
             exit 1
