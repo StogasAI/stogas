@@ -541,6 +541,55 @@ class ReadbackTests(unittest.TestCase):
         )
 
 
+class GoTagTests(unittest.TestCase):
+    def test_the_tag_commit_follows_the_release_and_holds_only_the_module(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-go-test-")))
+        author = {"GITHUB_ACTOR": "releaser", "GITHUB_ACTOR_ID": "1", "GH_TOKEN": "unused"}
+        self.enterContext(mock.patch.dict(os.environ, author))
+        self.enterContext(mock.patch.object(publish, "REPOSITORY", str(directory / "origin")))
+
+        def git(*arguments, cwd=directory / "source"):
+            return publish.run(
+                ["git", *arguments], cwd=cwd, env={**os.environ, **publish.release_author()}
+            ).decode()
+
+        # The release's commit has a workflow, and its Go module has no native library yet.
+        source = directory / "source"
+        for name, text in ((".github/workflows/ci.yml", "on: push\n"), ("go/go.mod", "module m\n")):
+            (source / name).parent.mkdir(parents=True, exist_ok=True)
+            (source / name).write_text(text)
+        git("init", "--quiet", "--initial-branch", "main")
+        git("add", ".")
+        git("commit", "--quiet", "-m", "Release")
+        commit = git("rev-parse", "HEAD").strip()
+        git("clone", "--quiet", "--bare", str(source), str(directory / "origin.git"), cwd=directory)
+
+        packages = directory / "packages"
+        packages.mkdir()
+        with tarfile.open(packages / "stogas-go-v1.2.3.tar.gz", "w:gz") as archive:
+            for name, data in (("go/go.mod", b"module m\n"), ("go/native/lib.a", b"library")):
+                entry = tarfile.TarInfo(name)
+                entry.size = len(data)
+                archive.addfile(entry, io.BytesIO(data))
+
+        publish.go(packages, "1.2.3", {"commit": commit, "epoch": 1_700_000_000})
+
+        origin = directory / "origin.git"
+        self.assertEqual(git("rev-parse", "go/v1.2.3^", cwd=origin).strip(), commit)
+        self.assertEqual(
+            git("ls-tree", "-r", "--name-only", "go/v1.2.3", cwd=origin).split(),
+            ["go/go.mod", "go/native/lib.a"],
+        )
+        # A second run finds the tag and accepts it, and refuses one that holds other bytes.
+        tagged = git("rev-parse", "go/v1.2.3", cwd=origin)
+        publish.go(packages, "1.2.3", {"commit": commit, "epoch": 1_700_000_000})
+        self.assertEqual(git("rev-parse", "go/v1.2.3", cwd=origin), tagged)
+        git("tag", "go/v1.2.4", commit, cwd=origin)
+        (packages / "stogas-go-v1.2.3.tar.gz").rename(packages / "stogas-go-v1.2.4.tar.gz")
+        with self.assertRaisesRegex(ValueError, "differs from the approved module"):
+            publish.go(packages, "1.2.4", {"commit": commit, "epoch": 1_700_000_000})
+
+
 class StorageHostTests(unittest.TestCase):
     """static.crates.io and rubygems.org/downloads answered 403 for a missing file on November 5, 2026."""
 

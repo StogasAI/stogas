@@ -301,6 +301,10 @@ NPM_PACKAGES = (
     ("@stogas/sigstore", "stogas-sigstore"),
     ("stogas", "stogas"),
 )
+# npm scans a new version for malware before it serves it: about five minutes as a rule, and 15 or
+# more at busy times or for a large package
+# (https://github.blog/changelog/2026-07-28-npm-publish-time-malware-scanning-and-dual-use-metadata/).
+NPM_SCAN_MINUTES = 30
 
 
 def npm_document(name):
@@ -336,7 +340,7 @@ def npm(packages, version):
         path = packages / f"{filename}-{version}.tgz"
         if not npm_served(name, path, version):
             run(["npm", "publish", str(path), "--access", "public", *tag])
-        wait_for(lambda: npm_served(name, path, version), f"{name}@{version}")
+        wait_for(lambda: npm_served(name, path, version), f"{name}@{version}", NPM_SCAN_MINUTES)
 
 
 def pypi(packages, version):
@@ -541,12 +545,15 @@ def maven(packages, version):
 
 
 def go(packages, version, source):
+    """Tag the approved Go module. The tag's commit follows the release's commit and holds only
+    `go/`, which is all that Go reads of it. GitHub refuses a tag from the workflow's token when
+    the commit has a workflow file that differs from a branch's, as the release's commit does
+    once `main` has changed one, and that token can never get the permission."""
     tag = f"go/v{version}"
-    repository = "https://github.com/StogasAI/stogas.git"
     with tempfile.TemporaryDirectory(prefix="stogas-go-") as temporary:
         work = Path(temporary)
         unpack(packages / f"stogas-go-v{version}.tar.gz", work / "approved")
-        run(["git", "clone", "--quiet", "--no-checkout", repository, str(work / "repo")])
+        run(["git", "clone", "--quiet", "--no-checkout", f"{REPOSITORY}.git", str(work / "repo")])
         repo = work / "repo"
         approved = work / "approved/go"
 
@@ -559,25 +566,39 @@ def go(packages, version, source):
             run(["git", "checkout", "--quiet", "--detach", tag], cwd=repo)
             compare()
             return
-        run(["git", "checkout", "--quiet", "--detach", source["commit"]], cwd=repo)
-        shutil.rmtree(repo / "go")
-        shutil.copytree(approved, repo / "go")
         for path in approved.rglob("*"):
             if path.is_file() and path.stat().st_size > 100 * 1024**2:
                 raise ValueError("Go archive exceeds GitHub's per-file limit")
+        shutil.copytree(approved, repo / "go")
+        run(["git", "read-tree", "--empty"], cwd=repo)
         run(["git", "add", "--force", "go"], cwd=repo)
+        # Standard error stays apart, so that a warning never joins the object names.
+        tree = run(["git", "write-tree"], stderr=None, cwd=repo).decode().strip()
         environment = {
             **os.environ,
             **release_author(),
             "GIT_AUTHOR_DATE": f"@{source['epoch']} +0000",
             "GIT_COMMITTER_DATE": f"@{source['epoch']} +0000",
         }
-        run(
-            ["git", "commit", "--quiet", "-m", f"Publish approved Go SDK {version}"],
-            cwd=repo,
-            env=environment,
+        commit = (
+            run(
+                [
+                    "git",
+                    "commit-tree",
+                    tree,
+                    "-p",
+                    source["commit"],
+                    "-m",
+                    f"Publish approved Go SDK {version}",
+                ],
+                stderr=None,
+                cwd=repo,
+                env=environment,
+            )
+            .decode()
+            .strip()
         )
-        run(["git", "tag", tag], cwd=repo)
+        run(["git", "tag", tag, commit], cwd=repo)
         credential = base64.b64encode(
             ("x-access-token:" + os.environ["GH_TOKEN"]).encode()
         ).decode()
@@ -1084,7 +1105,11 @@ def npm_owner(packages, version):
                             "--provenance=false",
                         ]
                     )
-                    wait_for(lambda: npm_served(name, path, version), f"{name}@{version}")
+                    wait_for(
+                        lambda: npm_served(name, path, version),
+                        f"{name}@{version}",
+                        NPM_SCAN_MINUTES,
+                    )
             for name in untrusted:
                 # No workflow has published with these, and an expired one cannot be changed.
                 for config in json_objects(terminal(["npm", "trust", "list", name, "--json"])):
