@@ -57,7 +57,7 @@ Every file of a [release](https://github.com/StogasAI/stogas/releases) has a Git
 gh attestation verify <file> --repo StogasAI/stogas --signer-workflow StogasAI/stogas/.github/workflows/release.yml --source-ref refs/tags/v<version> --deny-self-hosted-runners
 ```
 
-From 0.1.0-alpha.6 on, GitLab.com's hosted runners also rebuild each release from the same tag, and `gitlab-attestation.jsonl` covers every file they built. Only Apple hardware runs Xcode, so GitLab packages the macOS and iOS compiler outputs of GitHub's build:
+GitLab.com's hosted runners also rebuild each full release from the same tag, and `gitlab-attestation.jsonl` covers every file they built. A preview, such as an alpha version, has that file only when GitLab rebuilt it. Only Apple hardware runs Xcode, so GitLab packages the macOS and iOS compiler outputs of GitHub's build:
 
 ```console
 cosign verify-blob-attestation <file> --bundle gitlab-attestation.jsonl --type https://slsa.dev/provenance/v1 --certificate-oidc-issuer https://gitlab.com --certificate-identity https://gitlab.com/stogasai/stogas//.gitlab-ci.yml@refs/tags/v<version>

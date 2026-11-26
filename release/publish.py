@@ -899,9 +899,10 @@ def container(packages, version, image=channels.IMAGE, output=None):
 def preview(packages):
     """A preview has no Stogas signature. Require the gate's preview, every file the manifest
     names and nothing else, and GitHub's build proof for the manifest and the qualification
-    report, which together name every artifact. When GitLab rebuilds the release, also require
-    GitLab's proof for the manifest, which names its digest only when GitLab's rebuild made the
-    same bytes. gh attestation verify accepts only github.com certificates, so cosign checks it."""
+    report, which together name every artifact. GitLab rebuilds every full release and a preview
+    only on request, so a preview that holds GitLab's proof must also pass it for the manifest,
+    which names its digest only when GitLab's rebuild made the same bytes. gh attestation verify
+    accepts only github.com certificates, so cosign checks it."""
     manifest, is_preview = check_release(packages)
     if not is_preview:
         raise ValueError("Only a preview is published without the Stogas signature")
@@ -930,10 +931,8 @@ def preview(packages):
                 "--deny-self-hosted-runners",
             ]
         )
-    if (SOURCE / ".gitlab-ci.yml").exists():
-        bundle = packages / "gitlab-attestation.jsonl"
-        if not bundle.exists():
-            raise ValueError("GitLab rebuilds this release, but it has no GitLab build proof")
+    bundle = packages / "gitlab-attestation.jsonl"
+    if bundle.exists():
         run(
             [
                 "cosign",
@@ -949,7 +948,8 @@ def preview(packages):
                 f"https://gitlab.com/stogasai/stogas//.gitlab-ci.yml@{reference}",
             ]
         )
-    print(f"Preview {manifest['version']}: the gate and the build proofs cover every file")
+    builders = "GitHub's and GitLab's build proofs" if bundle.exists() else "GitHub's build proof"
+    print(f"Preview {manifest['version']}: the gate and {builders} cover every file")
 
 
 def first_versions():

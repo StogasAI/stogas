@@ -61,8 +61,8 @@ jobs:
       # Stogas signs a release only after GitLab's rebuild matches GitHub's build, so a draft
       # made public without that check publishes nothing. The CLI comes from the tagged source,
       # not the release.
-      # Stogas does not sign a preview: its gate and the build proofs of GitHub and GitLab stand
-      # alone, and only a pre-release can be one.
+      # Stogas does not sign a preview: its gate and GitHub's build proof stand alone, with
+      # GitLab's proof when the preview was rebuilt, and only a pre-release can be one.
       - name: Require the Stogas signature on every file, or a preview's build proofs
         id: check
         env:

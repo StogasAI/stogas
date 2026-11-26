@@ -679,9 +679,8 @@ class StorageHostTests(unittest.TestCase):
 
 
 class PreviewTests(unittest.TestCase):
-    def test_a_preview_that_gitlab_rebuilds_needs_gitlab_proof_of_its_manifest(self):
-        # No Stogas signature binds a preview, so a draft made public without the release
-        # command's checks would otherwise publish with GitHub's proof alone.
+    def test_a_preview_passes_gitlabs_proof_of_its_manifest_when_it_holds_one(self):
+        # GitLab rebuilds a preview only on request, and a proof that the release holds must pass.
         packages = Path(
             self.enterContext(tempfile.TemporaryDirectory(prefix="stogas-preview-test-"))
         )
@@ -699,10 +698,10 @@ class PreviewTests(unittest.TestCase):
             )
         )
         self.enterContext(contextlib.redirect_stdout(io.StringIO()))
-        with self.assertRaisesRegex(
-            ValueError, "^GitLab rebuilds this release, but it has no GitLab build proof$"
-        ):
-            publish.preview(packages)
+        publish.preview(packages)
+        self.assertEqual(
+            [command[:3] for command in commands], [["gh", "attestation", "verify"]] * 2
+        )
         (packages / "gitlab-attestation.jsonl").write_bytes(b"{}")
         commands.clear()
         publish.preview(packages)
