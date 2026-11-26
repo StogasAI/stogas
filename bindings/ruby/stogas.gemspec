@@ -1,6 +1,6 @@
 Gem::Specification.new do |s|
   s.name = 'stogas'
-  s.version = '0.1.0.alpha.9'
+  s.version = '0.1.0.alpha.10'
   s.summary = 'Verified confidential HTTP transport backed by the Stogas Rust verifier.'
   s.authors = ['Stogas']
   s.license = 'Apache-2.0'
