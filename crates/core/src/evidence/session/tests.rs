@@ -303,7 +303,7 @@ fn genuine_hardware_boot_and_fresh_native_evidence_verify_as_one_guest() {
         .unwrap();
     assert_eq!(registration.hardware().node_id(), boot.hardware().node_id());
     assert_eq!(registration.document_sha256(), boot.document_sha256());
-    assert!(boot.integrated_time_unix_ms() <= now);
+    assert!(boot.logged_at_unix_ms() <= now);
     assert_eq!(peer.validity(), boot.hardware().validity());
     assert!(
         snapshot

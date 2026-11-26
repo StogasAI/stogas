@@ -248,7 +248,7 @@ fn real_boot_verifies_and_snapshot_outlives_refresh_and_verifier() {
         ));
         assert_eq!(logged["ok"], true, "{logged}");
         assert_eq!(logged["value"]["node_id"], archived["value"]["node_id"]);
-        assert!(logged["value"]["integrated_time_unix_ms"].as_i64().unwrap() <= now);
+        assert!(logged["value"]["logged_at_unix_ms"].as_i64().unwrap() <= now);
         let expired = logged["value"]["valid_until_unix_ms"].as_i64().unwrap();
         assert_eq!(
             take_json(stogas_evidence_verify_logged_boot(

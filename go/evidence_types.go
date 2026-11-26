@@ -38,17 +38,17 @@ type EvidenceOptions struct {
 
 // BootIdentity contains fields returned only after hardware and binding verification.
 type BootIdentity struct {
-	NodeID               string `json:"node_id"`
-	ChipID               string `json:"chip_id"`
-	ReportedTCB          string `json:"reported_tcb"`
-	BootSHA256           string `json:"boot_sha256"`
-	GatewayReleaseID     string `json:"gateway_release_id"`
-	SigningPublicKey     string `json:"signing_public_key"`
-	HPKEPublicKey        string `json:"hpke_public_key"`
-	TLSSPKISHA256        string `json:"tls_spki_sha256"`
-	ValidFromUnixMS      int64  `json:"valid_from_unix_ms"`
-	ValidUntilUnixMS     int64  `json:"valid_until_unix_ms"`
-	IntegratedTimeUnixMS *int64 `json:"integrated_time_unix_ms"`
+	NodeID           string `json:"node_id"`
+	ChipID           string `json:"chip_id"`
+	ReportedTCB      string `json:"reported_tcb"`
+	BootSHA256       string `json:"boot_sha256"`
+	GatewayReleaseID string `json:"gateway_release_id"`
+	SigningPublicKey string `json:"signing_public_key"`
+	HPKEPublicKey    string `json:"hpke_public_key"`
+	TLSSPKISHA256    string `json:"tls_spki_sha256"`
+	ValidFromUnixMS  int64  `json:"valid_from_unix_ms"`
+	ValidUntilUnixMS int64  `json:"valid_until_unix_ms"`
+	LoggedAtUnixMS   *int64 `json:"logged_at_unix_ms"`
 }
 
 // VerifiedReceipt confirms the metadata, and each side whose digest was given, under a

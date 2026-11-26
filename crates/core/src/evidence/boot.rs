@@ -173,7 +173,7 @@ impl VerifiedRegistration {
         self.identity_summary(None)
     }
 
-    fn identity_summary(&self, integrated_time_unix_ms: Option<i64>) -> serde_json::Value {
+    fn identity_summary(&self, logged_at_unix_ms: Option<i64>) -> serde_json::Value {
         serde_json::json!({
             "node_id": self.hardware.node_id(), "chip_id": self.hardware.chip_id(),
             "reported_tcb": self.hardware.reported_tcb(),
@@ -184,7 +184,7 @@ impl VerifiedRegistration {
             "tls_spki_sha256": self.record.report_data.tls_spki_sha256,
             "valid_from_unix_ms": self.hardware.validity().not_before_unix_ms,
             "valid_until_unix_ms": self.hardware.validity().not_after_unix_ms,
-            "integrated_time_unix_ms": integrated_time_unix_ms
+            "logged_at_unix_ms": logged_at_unix_ms
         })
     }
 
@@ -208,7 +208,7 @@ impl VerifiedRegistration {
 #[derive(Debug)]
 pub struct VerifiedBoot {
     identity: VerifiedRegistration,
-    integrated_time_unix_ms: i64,
+    logged_at_unix_ms: i64,
 }
 
 impl VerifiedBoot {
@@ -223,8 +223,7 @@ impl VerifiedBoot {
     /// Authenticated boot identity fields, including actual transparency inclusion time.
     #[must_use]
     pub fn summary(&self) -> serde_json::Value {
-        self.identity
-            .identity_summary(Some(self.integrated_time_unix_ms))
+        self.identity.identity_summary(Some(self.logged_at_unix_ms))
     }
 
     #[must_use]
@@ -243,8 +242,8 @@ impl VerifiedBoot {
     }
 
     #[must_use]
-    pub const fn integrated_time_unix_ms(&self) -> i64 {
-        self.integrated_time_unix_ms
+    pub const fn logged_at_unix_ms(&self) -> i64 {
+        self.logged_at_unix_ms
     }
 }
 
@@ -398,7 +397,7 @@ impl Snapshot {
             &signer.key_id,
             &signer.public_key,
         )?;
-        let integrated_time_unix_ms = crate::authority::verify_document_inclusion(
+        let logged_at_unix_ms = crate::authority::verify_document_inclusion(
             &publication,
             &proof.signature,
             &proof.inclusion,
@@ -409,7 +408,7 @@ impl Snapshot {
         let identity = self.verify_boot_report(document, record, now_unix_ms)?;
         Ok(VerifiedBoot {
             identity,
-            integrated_time_unix_ms,
+            logged_at_unix_ms,
         })
     }
 

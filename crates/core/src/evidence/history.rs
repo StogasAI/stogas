@@ -92,7 +92,7 @@ mod tests {
                 .verify_boot_archive(
                     &bytes(&archive),
                     &bytes(&evidence),
-                    boot.integrated_time_unix_ms() - 1
+                    boot.logged_at_unix_ms() - 1
                 )
                 .is_err()
         );
@@ -282,7 +282,7 @@ impl Verifier {
         }))
         .map_err(super::invalid)?;
         let boot = snapshot.verify_logged_boot(document.as_bytes(), &inclusion, at)?;
-        if boot.integrated_time_unix_ms() != at {
+        if boot.logged_at_unix_ms() != at {
             return Err(super::invalid("boot archive log time differs"));
         }
         Ok(boot)
