@@ -101,6 +101,15 @@ mod staging {
         for field in ["document", "signature", "inclusion"] {
             assert_eq!(summary[field], evidence[field]);
         }
+        // Each entry's time is its timestamp authority's, which Rekor v2 entries need.
+        let logged = |inclusion: &Value| {
+            stogas_sigstore::claimed_document_log_time(inclusion).unwrap() * 1000
+        };
+        assert_eq!(summary["logged_at_unix_ms"], logged(&evidence["inclusion"]));
+        assert_eq!(
+            summary["key_manifest_logged_at_unix_ms"],
+            logged(&evidence["document"]["keys"]["inclusion"])
+        );
 
         // The next revision lists the same releases and Sigstore files; their checks are not
         // repeated.
@@ -335,7 +344,9 @@ mod staging {
         let unsigned = verifier
             .check_unsigned(&encode(&evidence["document"]), now)
             .unwrap();
-        assert!(unsigned.summary()["signature"].is_null());
+        let summary = unsigned.summary();
+        assert!(summary["signature"].is_null() && summary["logged_at_unix_ms"].is_null());
+        assert!(summary["key_manifest_logged_at_unix_ms"].is_i64());
         assert!(verifier.current().is_none());
         let current = verifier.refresh(&encode(&evidence), now).unwrap();
         // Publishers check each candidate against the current revision before signing it.

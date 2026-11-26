@@ -430,6 +430,8 @@ pub struct VerifiedEvidence {
     proof: Option<Proof>,
     sigstore: Arc<VerifiedSigstore>,
     keys_digest: String,
+    /// When Rekor logged the key manifest, as its verified inclusion authenticates it.
+    keys_logged_unix_ms: i64,
     digest: String,
     expires_unix_ms: i64,
     /// The Rekor v2 scope of the root that checked it, which the entries it authorizes need.
@@ -462,6 +464,12 @@ impl VerifiedEvidence {
     #[must_use]
     pub const fn proof(&self) -> Option<&Proof> {
         self.proof.as_ref()
+    }
+
+    /// When Rekor logged the key manifest, in Unix milliseconds.
+    #[must_use]
+    pub const fn keys_logged_unix_ms(&self) -> i64 {
+        self.keys_logged_unix_ms
     }
 
     /// SHA-256 of the canonical document: the identity of this evidence revision.
@@ -807,6 +815,7 @@ fn check_document(
         proof: None,
         sigstore,
         keys_digest: keys.digest,
+        keys_logged_unix_ms: keys.published_unix_ms,
         rekor_v2,
     })
 }

@@ -146,7 +146,9 @@ impl Snapshot {
     }
 
     /// Verified public configuration for bindings. This does not appraise a live node.
-    /// Releases follow their sequence order. An operator's unsigned candidate has no signature.
+    /// Releases follow their sequence order. An operator's unsigned candidate has no signature,
+    /// and so no time when Rekor logged it. Log times are the timestamp authority's, in Unix
+    /// milliseconds.
     #[must_use]
     pub fn summary(&self) -> Value {
         let proof = self.evidence.proof();
@@ -155,6 +157,8 @@ impl Snapshot {
             "document": self.evidence.document(),
             "signature": proof.map(|proof| &proof.signature),
             "inclusion": proof.map(|proof| &proof.inclusion),
+            "logged_at_unix_ms": proof.map(|proof| proof.logged_unix_ms),
+            "key_manifest_logged_at_unix_ms": self.evidence.keys_logged_unix_ms(),
             "sigstore": self.evidence.sigstore().summary(),
             "gateways": by_sequence(&self.gateways, |release| release.sequence),
             "catalogs": by_sequence(&self.catalogs, |release| release.sequence)
