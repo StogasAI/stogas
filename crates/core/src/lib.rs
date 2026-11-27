@@ -1457,6 +1457,58 @@ mod tests {
         );
     }
 
+    /// Gateway v1.9.119, the first that GitHub Actions and a GitLab.com hosted runner each built
+    /// from its tag, on November 27, 2026.
+    fn built_gateway() -> AllowedIgvm {
+        let proof = |bytes: &[u8]| serde_json::from_slice::<Value>(bytes).unwrap();
+        AllowedIgvm {
+            document: serde_json::from_slice(include_bytes!(
+                "../../../tests/fixtures/gateway-v1.9.119-release.json"
+            ))
+            .unwrap(),
+            provenance: proof(include_bytes!(
+                "../../../tests/fixtures/gateway-v1.9.119-github-attestation.jsonl"
+            )),
+            gitlab_provenance: Some(proof(include_bytes!(
+                "../../../tests/fixtures/gateway-v1.9.119-gitlab-attestation.jsonl"
+            ))),
+        }
+    }
+
+    #[test]
+    fn a_gateway_that_github_built_needs_gitlabs_proof_of_the_same_files() {
+        let verified = verify_gateway_release(&built_gateway(), production()).unwrap();
+        assert!(matches!(verified.provenance, ReleaseProvenance::Builders));
+        assert!(verified.github_integrated_time_unix_ms.is_some());
+
+        let rejected = |edit: fn(&mut AllowedIgvm), message: &str| {
+            let mut changed = built_gateway();
+            edit(&mut changed);
+            let error = verify_gateway_release(&changed, production())
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(message), "{error}");
+        };
+        rejected(
+            |release| release.gitlab_provenance = None,
+            "release has no GitLab build proof",
+        );
+        // Neither builder's proof stands in for the other's.
+        rejected(
+            |release| release.gitlab_provenance = Some(release.provenance.clone()),
+            "gateway GitLab provenance",
+        );
+        rejected(
+            |release| release.provenance = release.gitlab_provenance.clone().unwrap(),
+            "gateway provenance",
+        );
+        // Another release, of which neither proof names the manifest.
+        rejected(
+            |release| release.document.minimum_catalog_sequence += 1,
+            "gateway provenance",
+        );
+    }
+
     #[cfg(feature = "staging")]
     #[test]
     fn a_placeholder_proof_excludes_gitlabs_proof() {
