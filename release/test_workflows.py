@@ -32,12 +32,14 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
     def test_apple_builds_use_the_cargo_auditable_of_the_release_image(self):
         root = WORKFLOWS.parents[1]
-        pins = re.findall(
-            r"cargo install cargo-auditable --version (\S+) --locked",
-            (root / "release/Dockerfile").read_text() + (WORKFLOWS / "release.yml").read_text(),
+        image, workflow = (
+            (root / "release/Dockerfile").read_text(),
+            (WORKFLOWS / "release.yml").read_text(),
         )
-        self.assertEqual(len(pins), 2)
-        self.assertEqual(len(set(pins)), 1)
+        archive = r"/cargo-auditable-([0-9.]+)\.crate"
+        self.assertEqual(re.findall(archive, image), re.findall(archive, workflow))
+        digest = re.search(r"sha256:([0-9a-f]{64}) \S+/cargo-auditable-", image)[1]
+        self.assertIn(f'echo "{digest}  $RUNNER_TEMP/cargo-auditable.crate"', workflow)
 
     def test_a_version_is_attested_once_at_its_tagged_commit(self):
         job = jobs("release.yml")["release"]
@@ -71,7 +73,7 @@ class CiWorkflowTests(unittest.TestCase):
             (root / "Cargo.lock").read_text(),
         )[1]
         pins = re.findall(
-            r"wasm-bindgen-cli --version =?(\S+)",
+            r"wasm-bindgen-cli(?: --version =|-)([0-9.]+[0-9])",
             (root / "release" / "Dockerfile").read_text() + (WORKFLOWS / "ci.yml").read_text(),
         )
         self.assertEqual(len(pins), 2)

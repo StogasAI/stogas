@@ -6,7 +6,11 @@ COPY --from=zig /usr/local/zig-x86_64-linux-0.16.0 /usr/local/zig-x86_64-linux-0
 COPY --from=zig /usr/local/cargo/bin/cargo-zigbuild /usr/local/cargo/bin/cargo-zigbuild
 RUN ln -s /usr/local/zig-x86_64-linux-0.16.0/zig /usr/local/bin/zig
 RUN rustup set auto-self-update disable && rustup toolchain install 1.97.1 --profile minimal --component llvm-tools-preview && rustup default 1.97.1
-RUN cargo install cargo-auditable --version 0.7.7 --locked
+# Each Cargo tool is its crate archive by digest, built with the dependencies of the archive's
+# own lock file, which names their digests.
+ADD --checksum=sha256:ccdd489bc94d1338cd04389a842e00661300331ec915fb376b4810ef7d480b5d https://static.crates.io/crates/cargo-auditable/cargo-auditable-0.7.7.crate /tmp/cargo-auditable.crate
+RUN mkdir /tmp/cargo-auditable && tar -xzf /tmp/cargo-auditable.crate --strip-components=1 -C /tmp/cargo-auditable && \
+    cargo install --locked --path /tmp/cargo-auditable && rm -rf /tmp/cargo-auditable /tmp/cargo-auditable.crate
 RUN curl --fail --location --silent --show-error --retry 5 --retry-all-errors \
     https://files.pythonhosted.org/packages/fe/91/b495e19e2f5c503b540452b2039115e7b2363867e8c5ad4179eb752fa92c/maturin-1.15.0-py3-none-manylinux_2_12_x86_64.manylinux2010_x86_64.musllinux_1_1_x86_64.whl \
     --output /tmp/maturin.whl && \
@@ -33,7 +37,9 @@ RUN mkdir /opt/llvm-mingw && tar -xJf /tmp/llvm-mingw.tar.xz --strip-components=
 
 FROM common AS android
 RUN rustup target add --toolchain 1.97.1 aarch64-linux-android x86_64-linux-android
-RUN cargo install cargo-ndk --version 4.1.2 --locked
+ADD --checksum=sha256:903cc87cda6ab7a2ff82a74065e1c2ae5baa869546b32eb4aacabcc6ed5a670f https://static.crates.io/crates/cargo-ndk/cargo-ndk-4.1.2.crate /tmp/cargo-ndk.crate
+RUN mkdir /tmp/cargo-ndk && tar -xzf /tmp/cargo-ndk.crate --strip-components=1 -C /tmp/cargo-ndk && \
+    cargo install --locked --path /tmp/cargo-ndk && rm -rf /tmp/cargo-ndk /tmp/cargo-ndk.crate
 ADD --checksum=sha256:753611f410d002cfcd3f3dc2ef49aad532089d3180b436c060a90bf0fcb64df2 https://dl.google.com/android/repository/android-ndk-r30-linux.zip /tmp/ndk.zip
 RUN unzip -q /tmp/ndk.zip -d /opt && rm /tmp/ndk.zip
 ENV ANDROID_NDK_HOME=/opt/android-ndk-r30
@@ -41,5 +47,7 @@ ENV ANDROID_NDK_HOME=/opt/android-ndk-r30
 FROM common AS portable
 COPY --from=node /usr/local/ /usr/local/
 RUN rustup target add --toolchain 1.97.1 wasm32-unknown-unknown
-RUN cargo install wasm-bindgen-cli --version 0.2.129 --locked
+ADD --checksum=sha256:5fd044ed178958a277eeaf21f3d384287b0f4428d38c019141df01da9c03168c https://static.crates.io/crates/wasm-bindgen-cli/wasm-bindgen-cli-0.2.129.crate /tmp/wasm-bindgen-cli.crate
+RUN mkdir /tmp/wasm-bindgen-cli && tar -xzf /tmp/wasm-bindgen-cli.crate --strip-components=1 -C /tmp/wasm-bindgen-cli && \
+    cargo install --locked --path /tmp/wasm-bindgen-cli && rm -rf /tmp/wasm-bindgen-cli /tmp/wasm-bindgen-cli.crate
 ENTRYPOINT ["python3", "release/build_portable.py"]

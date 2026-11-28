@@ -107,7 +107,14 @@ jobs:
           IFS=, read -ra triples <<< "$TRIPLES"
           rustup target add "${triples[@]}"
           rustup component add llvm-tools-preview
-          cargo install cargo-auditable --version 0.7.7 --locked
+          # The crate archive that release/Dockerfile installs, by the same digest.
+          curl --fail --location --silent --show-error --retry 5 --retry-all-errors \
+            https://static.crates.io/crates/cargo-auditable/cargo-auditable-0.7.7.crate \
+            --output "$RUNNER_TEMP/cargo-auditable.crate"
+          echo "ccdd489bc94d1338cd04389a842e00661300331ec915fb376b4810ef7d480b5d  $RUNNER_TEMP/cargo-auditable.crate" | shasum -a 256 --check
+          mkdir "$RUNNER_TEMP/cargo-auditable"
+          tar -xzf "$RUNNER_TEMP/cargo-auditable.crate" --strip-components=1 -C "$RUNNER_TEMP/cargo-auditable"
+          cargo install --locked --path "$RUNNER_TEMP/cargo-auditable"
       - if: runner.os == 'macOS'
         name: Select the reviewed Apple toolchain
         run: |
