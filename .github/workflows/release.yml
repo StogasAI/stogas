@@ -15,6 +15,11 @@ on:
 permissions:
   contents: read
 
+# A version gets one build, so a second run for the tag waits and then finds the first one's draft.
+concurrency:
+  group: sdk-release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   # Cargo and rustup retry a failed download three times by default. Cargo's
   # take about 10 seconds, which a hosted runner's DNS failure can outlast; ten
@@ -281,7 +286,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .sha)
+          tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF" --jq .sha)
           if [ "$tagged" != "$GITHUB_SHA" ]; then
             echo "::error::$GITHUB_REF_NAME names $tagged, not the built commit $GITHUB_SHA"
             exit 1

@@ -72,8 +72,19 @@ jobs:
           if [ -e "$RUNNER_TEMP/approved/stogas-signature.json" ]; then
             cargo build --locked --package stogas-cli
             target/debug/stogas verify-release "$RUNNER_TEMP/approved"
+            # The CLI accepts any of a release's files beside its proofs. A publication needs
+            # every file and nothing else.
+            python3 -B release/release.py gate "$RUNNER_TEMP/approved"
           else
             python3 -B release/publish.py preview "$RUNNER_TEMP/approved"
+          fi
+          # The proofs name the version and the commit that they were made for, so the files of
+          # another release under this tag publish nothing.
+          # shellcheck disable=SC2016 # jq reads the manifest's fields.
+          built=$(jq -r '"v\(.version) \(.source.commit)"' "$RUNNER_TEMP/approved/release-manifest.json")
+          if [ "$built" != "$GITHUB_REF_NAME $GITHUB_SHA" ]; then
+            echo "::error::The release holds $built, not $GITHUB_REF_NAME at $GITHUB_SHA"
+            exit 1
           fi
           echo "digest=$(cd "$RUNNER_TEMP/approved" && LC_ALL=C sha256sum -- * | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
 
