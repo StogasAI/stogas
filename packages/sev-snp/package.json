@@ -1,6 +1,6 @@
 {
 	"name": "@stogas/sev-snp",
-	"version": "0.1.0-alpha.10",
+	"version": "0.1.0-alpha.11",
 	"description": "Networkless WebAssembly verification of AMD SEV-SNP attestation reports",
 	"keywords": [
 		"amd",

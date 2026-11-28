@@ -1392,7 +1392,7 @@ dependencies = [
 
 [[package]]
 name = "stogas-core"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1430,7 +1430,7 @@ dependencies = [
 
 [[package]]
 name = "stogas-sev-snp"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "const-oid",
  "der",
@@ -1443,7 +1443,7 @@ dependencies = [
 
 [[package]]
 name = "stogas-sigstore"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "base64",
  "cms",

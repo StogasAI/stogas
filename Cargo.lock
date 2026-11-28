@@ -3929,7 +3929,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stogas"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -3967,11 +3967,11 @@ dependencies = [
 
 [[package]]
 name = "stogas-alloc-probe"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 
 [[package]]
 name = "stogas-cli"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "anstyle-query",
  "anyhow",
@@ -4002,7 +4002,7 @@ dependencies = [
 
 [[package]]
 name = "stogas-core"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -4044,7 +4044,7 @@ dependencies = [
 
 [[package]]
 name = "stogas-ffi"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -4058,7 +4058,7 @@ dependencies = [
 
 [[package]]
 name = "stogas-python"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "pyo3",
  "serde",
@@ -4069,7 +4069,7 @@ dependencies = [
 
 [[package]]
 name = "stogas-sev-snp"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "const-oid 0.10.3",
  "der 0.8.3",
@@ -4085,7 +4085,7 @@ dependencies = [
 
 [[package]]
 name = "stogas-sev-snp-wasm"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "hex",
  "js-sys",
@@ -4098,7 +4098,7 @@ dependencies = [
 
 [[package]]
 name = "stogas-sigstore"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "base64 0.22.1",
  "cms 0.3.0-rc.2",
@@ -4128,7 +4128,7 @@ dependencies = [
 
 [[package]]
 name = "stogas-sigstore-conformance"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -4140,7 +4140,7 @@ dependencies = [
 
 [[package]]
 name = "stogas-sigstore-wasm"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "js-sys",
  "serde",
@@ -4152,7 +4152,7 @@ dependencies = [
 
 [[package]]
 name = "stogas-wasm"
-version = "0.1.0-alpha.10"
+version = "0.1.0-alpha.11"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.3",
