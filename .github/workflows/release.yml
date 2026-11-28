@@ -338,6 +338,11 @@ jobs:
           # The draft names no target commit, because GitHub refuses the workflow token a release
           # whose target has workflow files that no branch has, as once main changes a workflow
           # during the build. The existing tag still decides the commit.
+          # GitHub adds a link to the commits since the newest public release. By itself it
+          # would compare with the tag before this one, which may never have become a release.
+          changes=(--generate-notes)
+          previous=$(gh release list --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // empty')
+          if [ -n "$previous" ]; then changes+=(--notes-start-tag "$previous"); fi
           gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/sdk-packages/"* \
             --draft "${prerelease[@]}" --verify-tag --title "Stogas SDK $GITHUB_REF_NAME" \
-            --notes "$notes"
+            --notes "$notes" "${changes[@]}"
