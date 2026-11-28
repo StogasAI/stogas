@@ -36,8 +36,8 @@ pub struct TrustUpdate {
 
 /// Verify Sigstore TUF files from the compiled root, without a clock.
 ///
-/// `roots` holds consecutive `N.root.json` files, oldest first. Versions at or below the
-/// compiled root are skipped, so one list serves verifiers compiled with different roots.
+/// `roots` holds the consecutive `N.root.json` files that follow the compiled root, oldest
+/// first. Every verifier compiles the same root, so one list serves them all.
 ///
 /// # Errors
 /// Rejects gaps, missing signatures, targets that the newest root does not authorize, and
