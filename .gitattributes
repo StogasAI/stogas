@@ -1,3 +1,0 @@
-# Rebuilds and signed fixtures need the committed bytes, so no checkout, on
-# Windows either, may convert line endings.
-* -text
