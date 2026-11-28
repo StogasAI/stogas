@@ -24,7 +24,8 @@ from publish import crate_metadata
 ROOT = Path(__file__).resolve().parents[1]
 
 # Plays npm for the owner's step: records each command, and lists the trust configurations that
-# FAKE_NPM_TRUST names, each as its own JSON document, as npm prints them.
+# FAKE_NPM_TRUST names, each as lines of `key: value` with an empty line around it, as npm prints
+# them.
 FAKE_NPM = """#!{python} -I
 import json, os, sys
 from pathlib import Path
@@ -34,7 +35,7 @@ with Path(os.environ["FAKE_NPM_LOG"]).open("a") as log:
     log.write(json.dumps([os.environ.get("NPM_CONFIG_USERCONFIG"), *command]) + "\\n")
 if command[:2] == ["trust", "list"]:
     for trust in json.loads(os.environ.get("FAKE_NPM_TRUST", "{{}}")).get(command[2], []):
-        print(json.dumps({{"id": trust, "type": "github", "file": "publish.yml"}}, indent=2) + "\\n")
+        print(f"\\ntype: github\\nid: {{trust}}\\nfile: publish.yml\\n")
 elif command[:1] == ["publish"] and "--provenance=false" not in command:
     # npm outside CI cannot generate the provenance that package.json's publishConfig asks for.
     print("npm error code EUSAGE")
@@ -266,10 +267,10 @@ class NpmTests(unittest.TestCase):
                     "latest",
                     "--provenance=false",
                 ],
-                ["trust", "list", "@stogas/sev-snp", "--json"],
+                ["trust", "list", "@stogas/sev-snp", "--color=false"],
                 ["trust", "github", "@stogas/sev-snp", *trust],
                 ["access", "set", "mfa=publish", "@stogas/sev-snp"],
-                ["trust", "list", "@stogas/sigstore", "--json"],
+                ["trust", "list", "@stogas/sigstore", "--color=false"],
                 ["trust", "revoke", "@stogas/sigstore", "--id", "expired"],
                 ["trust", "github", "@stogas/sigstore", *trust],
                 ["access", "set", "mfa=publish", "@stogas/sigstore"],

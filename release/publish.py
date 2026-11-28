@@ -1002,19 +1002,6 @@ def terminal(arguments):
     return printed.decode(errors="replace")
 
 
-def json_objects(text):
-    """Each JSON object in a tool's output, such as npm's one per trust configuration."""
-    decoder, found, start = json.JSONDecoder(), [], text.find("{")
-    while start >= 0:
-        try:
-            value, end = decoder.raw_decode(text, start)
-            found.append(value)
-        except ValueError:
-            end = start + 1
-        start = text.find("{", end)
-    return found
-
-
 def crates_owner(packages, version, token):
     """Upload this version of every crate with the owner's token, or one pasted here, then make
     publish.yml each crate's only publisher. A new crate can depend on this version of the others,
@@ -1112,8 +1099,11 @@ def npm_owner(packages, version):
                     )
             for name in untrusted:
                 # No workflow has published with these, and an expired one cannot be changed.
-                for config in json_objects(terminal(["npm", "trust", "list", name, "--json"])):
-                    terminal(["npm", "trust", "revoke", name, "--id", config["id"]])
+                # With --json npm keeps its two-factor link until the command ends, and the
+                # owner's browser may be on another computer.
+                listed = terminal(["npm", "trust", "list", name, "--color=false"])
+                for config in re.findall(r"^id: (\S+)\r?$", listed, re.MULTILINE):
+                    terminal(["npm", "trust", "revoke", name, "--id", config])
                 terminal(
                     [
                         "npm",
