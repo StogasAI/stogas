@@ -1,6 +1,6 @@
 {
 	"name": "@stogas/sigstore",
-	"version": "0.1.0-alpha.11",
+	"version": "0.1.0-alpha.12",
 	"description": "Lightweight networkless WASM verification for GitHub/Sigstore in-toto attestations",
 	"keywords": [
 		"attestation",
